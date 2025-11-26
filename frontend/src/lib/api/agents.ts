@@ -38,6 +38,7 @@ export interface Agent {
   pricing_tier: string;
   system_prompt: string;
   language: string;
+  voice: string;
   enabled_tools: string[];
   phone_number_id: string | null;
   enable_recording: boolean;
@@ -57,6 +58,7 @@ export interface CreateAgentRequest {
   pricing_tier: "budget" | "balanced" | "premium";
   system_prompt: string;
   language: string;
+  voice?: string;
   enabled_tools: string[];
   phone_number_id?: string;
   enable_recording: boolean;
@@ -111,6 +113,7 @@ export interface UpdateAgentRequest {
   pricing_tier?: "budget" | "balanced" | "premium";
   system_prompt?: string;
   language?: string;
+  voice?: string;
   enabled_tools?: string[];
   phone_number_id?: string | null;
   enable_recording?: boolean;

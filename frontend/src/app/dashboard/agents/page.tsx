@@ -3,7 +3,18 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Plus, Bot, MoreVertical, Play, Pause, AlertCircle, Copy, Mic } from "lucide-react";
+import {
+  Plus,
+  Bot,
+  MoreVertical,
+  Play,
+  Pause,
+  AlertCircle,
+  Phone,
+  PhoneOff,
+  Wrench,
+  Clock,
+} from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -15,6 +26,18 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+
+function formatRelativeTime(dateString: string): string {
+  const date = new Date(dateString);
+  const now = new Date();
+  const diffInSeconds = Math.floor((now.getTime() - date.getTime()) / 1000);
+
+  if (diffInSeconds < 60) return "just now";
+  if (diffInSeconds < 3600) return `${Math.floor(diffInSeconds / 60)}m ago`;
+  if (diffInSeconds < 86400) return `${Math.floor(diffInSeconds / 3600)}h ago`;
+  if (diffInSeconds < 604800) return `${Math.floor(diffInSeconds / 86400)}d ago`;
+  return date.toLocaleDateString();
+}
 
 export default function AgentsPage() {
   const queryClient = useQueryClient();
@@ -153,15 +176,11 @@ export default function AgentsPage() {
                       </Button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end">
-                      <DropdownMenuItem>
+                      <DropdownMenuItem asChild>
                         <Link href={`/dashboard/agents/${agent.id}`}>Edit</Link>
                       </DropdownMenuItem>
-                      <DropdownMenuItem onClick={() => handleTest(agent.id)}>
-                        <Mic className="mr-2 h-4 w-4" />
-                        Test
-                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => handleTest(agent.id)}>Test</DropdownMenuItem>
                       <DropdownMenuItem onClick={() => handleDuplicate(agent.id)}>
-                        <Copy className="mr-2 h-4 w-4" />
                         Duplicate
                       </DropdownMenuItem>
                       <DropdownMenuItem
@@ -192,17 +211,45 @@ export default function AgentsPage() {
                   </div>
                   <div className="flex items-center justify-between text-sm">
                     <span className="text-muted-foreground">Phone</span>
-                    <span className="font-mono text-xs">
-                      {agent.phone_number_id ?? "Not assigned"}
-                    </span>
+                    {agent.phone_number_id ? (
+                      <Badge variant="outline" className="font-mono text-xs">
+                        <Phone className="mr-1 h-3 w-3 text-green-500" />
+                        Assigned
+                      </Badge>
+                    ) : (
+                      <Badge variant="secondary" className="text-xs text-muted-foreground">
+                        <PhoneOff className="mr-1 h-3 w-3" />
+                        Not assigned
+                      </Badge>
+                    )}
                   </div>
                   <div className="flex items-center justify-between text-sm">
                     <span className="text-muted-foreground">Tools</span>
-                    <span className="font-semibold">{agent.enabled_tools.length}</span>
+                    {agent.enabled_tools.length > 0 ? (
+                      <Badge variant="outline" className="text-xs">
+                        <Wrench className="mr-1 h-3 w-3" />
+                        {agent.enabled_tools.length} enabled
+                      </Badge>
+                    ) : (
+                      <Badge variant="destructive" className="text-xs">
+                        No tools
+                      </Badge>
+                    )}
                   </div>
                   <div className="flex items-center justify-between text-sm">
-                    <span className="text-muted-foreground">Total Calls</span>
-                    <span className="font-semibold">{agent.total_calls}</span>
+                    <span className="text-muted-foreground">Calls</span>
+                    <div className="flex items-center gap-2">
+                      <span className="font-semibold">{agent.total_calls}</span>
+                      {agent.last_call_at && (
+                        <span
+                          className="flex items-center text-xs text-muted-foreground"
+                          title={`Last call: ${new Date(agent.last_call_at).toLocaleString()}`}
+                        >
+                          <Clock className="mr-1 h-3 w-3" />
+                          {formatRelativeTime(agent.last_call_at)}
+                        </span>
+                      )}
+                    </div>
                   </div>
                 </div>
               </CardContent>

@@ -52,6 +52,12 @@ class Agent(Base):
     language: Mapped[str] = mapped_column(
         String(10), nullable=False, default="en-US", comment="Agent language (e.g., en-US, es-ES)"
     )
+    voice: Mapped[str] = mapped_column(
+        String(50),
+        nullable=False,
+        default="shimmer",
+        comment="Voice for TTS (e.g., alloy, shimmer, coral)",
+    )
 
     # Integrations/tools
     enabled_tools: Mapped[list[str]] = mapped_column(

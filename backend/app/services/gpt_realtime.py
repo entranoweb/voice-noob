@@ -10,10 +10,89 @@ from openai import AsyncOpenAI
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.settings import get_user_api_keys
+from app.core.auth import user_id_to_uuid
 from app.core.config import settings
 from app.services.tools.registry import ToolRegistry
 
 logger = structlog.get_logger()
+
+# Language code to human-readable name mapping
+LANGUAGE_NAMES: dict[str, str] = {
+    "en-US": "English",
+    "en-GB": "English (British)",
+    "es-ES": "Spanish",
+    "es-MX": "Spanish (Mexican)",
+    "fr-FR": "French",
+    "de-DE": "German",
+    "it-IT": "Italian",
+    "pt-BR": "Portuguese (Brazilian)",
+    "pt-PT": "Portuguese",
+    "nl-NL": "Dutch",
+    "ja-JP": "Japanese",
+    "ko-KR": "Korean",
+    "zh-CN": "Chinese (Mandarin)",
+    "zh-TW": "Chinese (Traditional)",
+    "ru-RU": "Russian",
+    "ar-SA": "Arabic",
+    "hi-IN": "Hindi",
+    "pl-PL": "Polish",
+    "tr-TR": "Turkish",
+    "vi-VN": "Vietnamese",
+    "th-TH": "Thai",
+    "id-ID": "Indonesian",
+    "ms-MY": "Malay",
+    "fil-PH": "Filipino",
+}
+
+
+def build_instructions_with_language(
+    system_prompt: str,
+    language: str,
+    enabled_tools: list[str] | None = None,
+) -> str:
+    """Build comprehensive voice agent instructions.
+
+    Wraps the user's custom system prompt with voice-specific configuration
+    including language requirements, conversation guidelines, and tool context.
+
+    Args:
+        system_prompt: The agent's custom system prompt (from frontend UI)
+        language: Language code (e.g., "en-US", "es-ES")
+        enabled_tools: List of enabled tool IDs (optional, for context)
+
+    Returns:
+        Complete instructions string optimized for voice conversations
+    """
+    language_name = LANGUAGE_NAMES.get(language, language)
+
+    # Build the complete voice agent instructions
+    instructions = f"""[VOICE AGENT CONFIGURATION]
+Language: {language_name}
+Mode: Real-time voice conversation
+
+[LANGUAGE REQUIREMENT]
+You are in a live VOICE call. You MUST speak ONLY in {language_name} throughout this entire conversation.
+Never switch to another language, even if the caller speaks differently.
+
+[VOICE CONVERSATION GUIDELINES]
+- Keep responses concise and conversational - this is spoken audio, not text
+- Don't use markdown, bullet points, numbered lists, or any formatting
+- Use natural speech patterns and transitions appropriate for {language_name}
+- Confirm important details by repeating them back to the caller
+- If you didn't understand something, ask for clarification naturally
+- Pause briefly between different topics or when the caller might want to respond
+
+[YOUR ROLE AND INSTRUCTIONS]
+{system_prompt}
+
+[TOOL USAGE GUIDELINES]
+When using tools to look up information or perform actions:
+- Verbally summarize results in a natural, conversational way
+- Don't read raw data or technical details - interpret them for the caller
+- If a tool fails, explain the issue simply and offer alternatives
+- Confirm actions before and after performing them when appropriate"""
+
+    return instructions
 
 
 class GPTRealtimeSession:
@@ -29,7 +108,7 @@ class GPTRealtimeSession:
     def __init__(
         self,
         db: AsyncSession,
-        user_id: uuid.UUID,
+        user_id: int,
         agent_config: dict[str, Any],
         session_id: str | None = None,
     ) -> None:
@@ -37,12 +116,13 @@ class GPTRealtimeSession:
 
         Args:
             db: Database session
-            user_id: User ID
+            user_id: User ID (int, from users.id)
             agent_config: Agent configuration (system prompt, enabled integrations, etc.)
             session_id: Optional session ID
         """
         self.db = db
-        self.user_id = user_id
+        self.user_id = user_id  # int for ToolRegistry (Contact queries)
+        self.user_id_uuid = user_id_to_uuid(user_id)  # UUID for UserSettings queries
         self.agent_config = agent_config
         self.session_id = session_id or str(uuid.uuid4())
         self.connection: Any = None
@@ -58,8 +138,8 @@ class GPTRealtimeSession:
         """Initialize the Realtime session with internal tools."""
         self.logger.info("gpt_realtime_session_initializing")
 
-        # Get user's API keys from settings
-        user_settings = await get_user_api_keys(self.user_id, self.db)
+        # Get user's API keys from settings (uses UUID)
+        user_settings = await get_user_api_keys(self.user_id_uuid, self.db)
 
         # Determine which API key to use (user settings or global config)
         api_key = None
@@ -127,20 +207,26 @@ class GPTRealtimeSession:
         enabled_tools = self.agent_config.get("enabled_tools", [])
         tools = self.tool_registry.get_all_tool_definitions(enabled_tools)
 
+        # Build instructions with language directive
+        system_prompt = self.agent_config.get("system_prompt", "You are a helpful voice assistant.")
+        language = self.agent_config.get("language", "en-US")
+        voice = self.agent_config.get("voice", "shimmer")
+        instructions = build_instructions_with_language(system_prompt, language)
+
         session_config = {
             "modalities": ["text", "audio"],
-            "instructions": self.agent_config.get(
-                "system_prompt", "You are a helpful voice assistant."
-            ),
-            "voice": "shimmer",
+            "instructions": instructions,
+            "voice": voice,
+            "speed": 1.15,  # Slightly faster speech (1.0 = normal, range: 0.25-4.0)
             "input_audio_format": "pcm16",
             "output_audio_format": "pcm16",
             "input_audio_transcription": {"model": "whisper-1"},
             "turn_detection": {
                 "type": "server_vad",
                 "threshold": 0.5,
-                "prefix_padding_ms": 300,
-                "silence_duration_ms": 500,
+                "prefix_padding_ms": 200,
+                "silence_duration_ms": 200,
+                "eagerness": "high",
             },
             "tools": tools,
             "tool_choice": "auto",

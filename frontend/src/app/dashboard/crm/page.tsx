@@ -15,6 +15,16 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
   Select,
   SelectContent,
   SelectItem,
@@ -32,6 +42,7 @@ import {
   X,
   FolderOpen,
 } from "lucide-react";
+import { InfoTooltip } from "@/components/ui/info-tooltip";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { toast } from "sonner";
@@ -89,6 +100,7 @@ export default function CRMPage() {
   const [selectedContact, setSelectedContact] = useState<Contact | null>(null);
   const [formData, setFormData] = useState<ContactFormData>(emptyFormData);
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string>("all");
+  const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
 
   // Fetch workspaces
   const { data: workspaces = [] } = useQuery<Workspace[]>({
@@ -206,9 +218,14 @@ export default function CRMPage() {
   };
 
   const handleDelete = () => {
-    if (selectedContact && confirm("Are you sure you want to delete this contact?")) {
+    setIsDeleteDialogOpen(true);
+  };
+
+  const confirmDelete = () => {
+    if (selectedContact) {
       deleteContactMutation.mutate(selectedContact.id);
     }
+    setIsDeleteDialogOpen(false);
   };
 
   const getStatusColor = (status: string) => {
@@ -484,7 +501,10 @@ export default function CRMPage() {
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="status">Status</Label>
+                <Label htmlFor="status" className="flex items-center gap-1">
+                  Status
+                  <InfoTooltip content="Track where this contact is in your sales pipeline. New = first contact, Contacted = reached out, Qualified = good fit, Converted = became a customer, Lost = not interested." />
+                </Label>
                 <Select
                   value={formData.status}
                   onValueChange={(value) => setFormData({ ...formData, status: value })}
@@ -509,6 +529,7 @@ export default function CRMPage() {
                     <span className="flex items-center gap-2">
                       <FolderOpen className="h-4 w-4" />
                       Workspace
+                      <InfoTooltip content="Assign this contact to a workspace. Workspaces help organize contacts, appointments, and agents for different businesses or projects." />
                     </span>
                   </Label>
                   <Select
@@ -531,7 +552,10 @@ export default function CRMPage() {
               )}
 
               <div className="space-y-2">
-                <Label htmlFor="tags">Tags</Label>
+                <Label htmlFor="tags" className="flex items-center gap-1">
+                  Tags
+                  <InfoTooltip content="Add comma-separated labels to categorize contacts. Use tags like VIP, Enterprise, or Lead to filter and organize your contacts." />
+                </Label>
                 <Input
                   id="tags"
                   value={formData.tags}
@@ -589,6 +613,28 @@ export default function CRMPage() {
           </form>
         </DialogContent>
       </Dialog>
+
+      {/* Delete Confirmation Dialog */}
+      <AlertDialog open={isDeleteDialogOpen} onOpenChange={setIsDeleteDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Contact</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete {selectedContact?.first_name}{" "}
+              {selectedContact?.last_name}? This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={confirmDelete}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

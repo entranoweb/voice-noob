@@ -11,6 +11,7 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import undefer
 
+from app.core.auth import CurrentUser
 from app.core.cache import cache_get, cache_invalidate, cache_set
 from app.core.limiter import limiter
 from app.db.session import get_db
@@ -166,14 +167,6 @@ class ContactCreate(BaseModel):
         return v
 
 
-def _get_current_user_id() -> int:
-    """Get current user ID (placeholder until auth is implemented).
-
-    TODO: Replace with actual authentication - use CurrentUser dependency from app.core.auth
-    """
-    return 1
-
-
 async def _validate_workspace_ownership(
     workspace_id_str: str,
     user_id: int,
@@ -210,14 +203,14 @@ async def _validate_workspace_ownership(
 @limiter.limit("100/minute")
 async def list_contacts(
     request: Request,
+    current_user: CurrentUser,
     skip: int = 0,
     limit: int = 100,
     workspace_id: str | None = None,
     db: AsyncSession = Depends(get_db),
 ) -> list[dict[str, object]]:
     """List all contacts for the current user, optionally filtered by workspace."""
-    # Get current user ID (placeholder)
-    user_id = _get_current_user_id()
+    user_id = current_user.id
 
     # Validate pagination parameters to prevent DoS
     if skip < 0:
@@ -302,10 +295,11 @@ async def list_contacts(
 async def get_contact(
     request: Request,
     contact_id: int,
+    current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, object]:
     """Get a single contact by ID (must belong to current user)."""
-    user_id = _get_current_user_id()
+    user_id = current_user.id
     cache_key = f"crm:contact:{user_id}:{contact_id}"
 
     # Try cache first
@@ -366,10 +360,11 @@ async def get_contact(
 async def create_contact(
     request: Request,
     contact_data: ContactCreate,
+    current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, object]:
     """Create a new contact for the current user."""
-    user_id = _get_current_user_id()
+    user_id = current_user.id
 
     # Validate workspace_id if provided
     workspace_uuid = None
@@ -582,10 +577,11 @@ async def update_contact(
     request: Request,
     contact_id: int,
     contact_data: ContactUpdate,
+    current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, object]:
     """Update an existing contact (must belong to current user)."""
-    user_id = _get_current_user_id()
+    user_id = current_user.id
 
     # Validate workspace_id if provided
     workspace_uuid = None
@@ -693,10 +689,11 @@ async def update_contact(
 async def delete_contact(
     request: Request,
     contact_id: int,
+    current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> None:
     """Delete a contact (must belong to current user)."""
-    user_id = _get_current_user_id()
+    user_id = current_user.id
 
     # Fetch existing contact - filter by user_id for security
     try:
@@ -753,25 +750,42 @@ async def delete_contact(
 @limiter.limit("100/minute")
 async def get_crm_stats(
     request: Request,
+    current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, int]:
     """Get CRM statistics with 60-second cache."""
-    # Try to get from cache first
-    cache_key = "crm:stats:all"
+    user_id = current_user.id
+
+    # Try to get from cache first (include user_id in cache key)
+    cache_key = f"crm:stats:{user_id}"
     cached_stats = await cache_get(cache_key)
 
     if cached_stats is not None:
-        logger.debug("Returning cached CRM stats")
+        logger.debug("Returning cached CRM stats for user %d", user_id)
         return dict(cached_stats)
 
     # Cache miss - fetch from database with separate count queries
-    logger.debug("Cache miss - fetching CRM stats from database")
+    logger.debug("Cache miss - fetching CRM stats from database for user %d", user_id)
 
-    # Use separate count queries to avoid cartesian product issues
-    # This prevents count multiplication when contacts have multiple appointments/calls
-    total_contacts = await db.scalar(select(func.count()).select_from(Contact))
-    total_appointments = await db.scalar(select(func.count()).select_from(Appointment))
-    total_calls = await db.scalar(select(func.count()).select_from(CallInteraction))
+    # Use separate count queries filtered by user_id to avoid data leaks
+    # Contacts are directly linked to user_id
+    total_contacts = await db.scalar(
+        select(func.count()).select_from(Contact).where(Contact.user_id == user_id)
+    )
+    # Appointments are linked through contacts
+    total_appointments = await db.scalar(
+        select(func.count())
+        .select_from(Appointment)
+        .join(Contact)
+        .where(Contact.user_id == user_id)
+    )
+    # CallInteractions are linked through contacts
+    total_calls = await db.scalar(
+        select(func.count())
+        .select_from(CallInteraction)
+        .join(Contact)
+        .where(Contact.user_id == user_id)
+    )
 
     stats = {
         "total_contacts": total_contacts or 0,
@@ -781,7 +795,7 @@ async def get_crm_stats(
 
     # Cache the results for 60 seconds
     await cache_set(cache_key, stats, ttl=60)
-    logger.debug("Cached CRM stats")
+    logger.debug("Cached CRM stats for user %d", user_id)
 
     return stats
 
@@ -907,6 +921,7 @@ class AppointmentUpdate(BaseModel):
 @limiter.limit("100/minute")
 async def list_appointments(
     request: Request,
+    current_user: CurrentUser,
     skip: int = 0,
     limit: int = 100,
     status: str | None = None,
@@ -918,7 +933,7 @@ async def list_appointments(
 
     from sqlalchemy.orm import selectinload
 
-    user_id = _get_current_user_id()
+    user_id = current_user.id
 
     # Validate pagination
     if skip < 0:
@@ -999,6 +1014,7 @@ async def list_appointments(
 async def get_appointment(
     request: Request,
     appointment_id: int,
+    current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, object]:
     """Get a single appointment by ID."""
@@ -1006,7 +1022,7 @@ async def get_appointment(
 
     from sqlalchemy.orm import selectinload
 
-    user_id = _get_current_user_id()
+    user_id = current_user.id
 
     try:
         result = await db.execute(
@@ -1054,6 +1070,7 @@ async def get_appointment(
 async def create_appointment(
     request: Request,
     appointment_data: AppointmentCreate,
+    current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, object]:
     """Create a new appointment."""
@@ -1061,7 +1078,7 @@ async def create_appointment(
 
     from sqlalchemy.orm import selectinload
 
-    user_id = _get_current_user_id()
+    user_id = current_user.id
 
     # Verify contact belongs to user
     contact_result = await db.execute(
@@ -1143,6 +1160,7 @@ async def update_appointment(
     request: Request,
     appointment_id: int,
     appointment_data: AppointmentUpdate,
+    current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, object]:
     """Update an existing appointment."""
@@ -1150,7 +1168,7 @@ async def update_appointment(
 
     from sqlalchemy.orm import selectinload
 
-    user_id = _get_current_user_id()
+    user_id = current_user.id
 
     # Fetch appointment with contact
     try:
@@ -1227,10 +1245,11 @@ async def update_appointment(
 async def delete_appointment(
     request: Request,
     appointment_id: int,
+    current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> None:
     """Delete an appointment."""
-    user_id = _get_current_user_id()
+    user_id = current_user.id
 
     try:
         result = await db.execute(

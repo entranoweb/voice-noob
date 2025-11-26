@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.auth import CurrentUser, user_id_to_uuid
 from app.db.session import get_db
 from app.models.agent import Agent
 
@@ -26,10 +27,27 @@ class CreateAgentRequest(BaseModel):
     pricing_tier: str = Field(..., pattern="^(budget|balanced|premium)$")
     system_prompt: str = Field(..., min_length=10)
     language: str = Field(default="en-US")
+    voice: str = Field(default="shimmer")
     enabled_tools: list[str] = Field(default_factory=list)
     phone_number_id: str | None = None
     enable_recording: bool = False
     enable_transcript: bool = True
+
+
+class UpdateAgentRequest(BaseModel):
+    """Request to update a voice agent."""
+
+    name: str | None = Field(None, min_length=1, max_length=200)
+    description: str | None = None
+    pricing_tier: str | None = Field(None, pattern="^(budget|balanced|premium)$")
+    system_prompt: str | None = Field(None, min_length=10)
+    language: str | None = None
+    voice: str | None = None
+    enabled_tools: list[str] | None = None
+    phone_number_id: str | None = None
+    enable_recording: bool | None = None
+    enable_transcript: bool | None = None
+    is_active: bool | None = None
 
 
 class AgentResponse(BaseModel):
@@ -41,6 +59,7 @@ class AgentResponse(BaseModel):
     pricing_tier: str
     system_prompt: str
     language: str
+    voice: str
     enabled_tools: list[str]
     phone_number_id: str | None
     enable_recording: bool
@@ -54,26 +73,17 @@ class AgentResponse(BaseModel):
     last_call_at: str | None
 
 
-# Dependency to get current user ID (placeholder)
-async def get_current_user_id() -> uuid.UUID:
-    """Get current user ID from auth token.
-
-    TODO: Implement actual authentication
-    """
-    return uuid.UUID("00000000-0000-0000-0000-000000000001")
-
-
 @router.post("", response_model=AgentResponse, status_code=status.HTTP_201_CREATED)
 async def create_agent(
     request: CreateAgentRequest,
-    user_id: uuid.UUID = Depends(get_current_user_id),
+    current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> AgentResponse:
     """Create a new voice agent.
 
     Args:
         request: Agent creation request
-        user_id: Current user ID
+        current_user: Authenticated user
         db: Database session
 
     Returns:
@@ -81,14 +91,16 @@ async def create_agent(
     """
     # Build provider config based on tier (from pricing-tiers.ts)
     provider_config = _get_provider_config(request.pricing_tier)
+    user_uuid = user_id_to_uuid(current_user.id)
 
     agent = Agent(
-        user_id=user_id,
+        user_id=user_uuid,
         name=request.name,
         description=request.description,
         pricing_tier=request.pricing_tier,
         system_prompt=request.system_prompt,
         language=request.language,
+        voice=request.voice,
         enabled_tools=request.enabled_tools,
         phone_number_id=request.phone_number_id,
         enable_recording=request.enable_recording,
@@ -107,17 +119,17 @@ async def create_agent(
 
 @router.get("", response_model=list[AgentResponse])
 async def list_agents(
+    current_user: CurrentUser,
     skip: int = 0,
     limit: int = 50,
-    user_id: uuid.UUID = Depends(get_current_user_id),
     db: AsyncSession = Depends(get_db),
 ) -> list[AgentResponse]:
     """List all agents for current user with pagination.
 
     Args:
+        current_user: Authenticated user
         skip: Number of records to skip (default 0)
         limit: Maximum number of records to return (default 50, max 100)
-        user_id: Current user ID
         db: Database session
 
     Returns:
@@ -134,9 +146,10 @@ async def list_agents(
     if limit > MAX_AGENTS_LIMIT:
         raise HTTPException(status_code=400, detail=f"Limit cannot exceed {MAX_AGENTS_LIMIT}")
 
+    user_uuid = user_id_to_uuid(current_user.id)
     result = await db.execute(
         select(Agent)
-        .where(Agent.user_id == user_id)
+        .where(Agent.user_id == user_uuid)
         .order_by(Agent.created_at.desc())
         .offset(skip)
         .limit(limit)
@@ -149,14 +162,14 @@ async def list_agents(
 @router.get("/{agent_id}", response_model=AgentResponse)
 async def get_agent(
     agent_id: str,
-    user_id: uuid.UUID = Depends(get_current_user_id),
+    current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> AgentResponse:
     """Get a specific agent.
 
     Args:
         agent_id: Agent UUID
-        user_id: Current user ID
+        current_user: Authenticated user
         db: Database session
 
     Returns:
@@ -165,10 +178,11 @@ async def get_agent(
     Raises:
         HTTPException: If agent not found or unauthorized
     """
+    user_uuid = user_id_to_uuid(current_user.id)
     result = await db.execute(
         select(Agent).where(
             Agent.id == uuid.UUID(agent_id),
-            Agent.user_id == user_id,
+            Agent.user_id == user_uuid,
         )
     )
     agent = result.scalar_one_or_none()
@@ -185,23 +199,24 @@ async def get_agent(
 @router.delete("/{agent_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_agent(
     agent_id: str,
-    user_id: uuid.UUID = Depends(get_current_user_id),
+    current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> None:
     """Delete an agent.
 
     Args:
         agent_id: Agent UUID
-        user_id: Current user ID
+        current_user: Authenticated user
         db: Database session
 
     Raises:
         HTTPException: If agent not found or unauthorized
     """
+    user_uuid = user_id_to_uuid(current_user.id)
     result = await db.execute(
         select(Agent).where(
             Agent.id == uuid.UUID(agent_id),
-            Agent.user_id == user_id,
+            Agent.user_id == user_uuid,
         )
     )
     agent = result.scalar_one_or_none()
@@ -214,6 +229,73 @@ async def delete_agent(
 
     await db.delete(agent)
     await db.commit()
+
+
+@router.put("/{agent_id}", response_model=AgentResponse)
+async def update_agent(
+    agent_id: str,
+    request: UpdateAgentRequest,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+) -> AgentResponse:
+    """Update an agent.
+
+    Args:
+        agent_id: Agent UUID
+        request: Update request
+        current_user: Authenticated user
+        db: Database session
+
+    Returns:
+        Updated agent
+
+    Raises:
+        HTTPException: If agent not found or unauthorized
+    """
+    user_uuid = user_id_to_uuid(current_user.id)
+    result = await db.execute(
+        select(Agent).where(
+            Agent.id == uuid.UUID(agent_id),
+            Agent.user_id == user_uuid,
+        )
+    )
+    agent = result.scalar_one_or_none()
+
+    if not agent:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Agent not found",
+        )
+
+    # Update only provided fields
+    if request.name is not None:
+        agent.name = request.name
+    if request.description is not None:
+        agent.description = request.description
+    if request.pricing_tier is not None:
+        agent.pricing_tier = request.pricing_tier
+        agent.provider_config = _get_provider_config(request.pricing_tier)
+    if request.system_prompt is not None:
+        agent.system_prompt = request.system_prompt
+    if request.language is not None:
+        agent.language = request.language
+    if request.voice is not None:
+        agent.voice = request.voice
+    if request.enabled_tools is not None:
+        agent.enabled_tools = request.enabled_tools
+    if request.phone_number_id is not None:
+        agent.phone_number_id = request.phone_number_id
+    if request.enable_recording is not None:
+        agent.enable_recording = request.enable_recording
+    if request.enable_transcript is not None:
+        agent.enable_transcript = request.enable_transcript
+    if request.is_active is not None:
+        agent.is_active = request.is_active
+
+    await db.commit()
+    await db.refresh(agent)
+
+    return _agent_to_response(agent)
 
 
 def _get_provider_config(tier: str) -> dict[str, Any]:
@@ -271,6 +353,7 @@ def _agent_to_response(agent: Agent) -> AgentResponse:
         pricing_tier=agent.pricing_tier,
         system_prompt=agent.system_prompt,
         language=agent.language,
+        voice=agent.voice,
         enabled_tools=agent.enabled_tools,
         phone_number_id=agent.phone_number_id,
         enable_recording=agent.enable_recording,

@@ -34,6 +34,19 @@ import { Badge } from "@/components/ui/badge";
 import { TierSelector } from "@/components/tier-selector";
 import { PRICING_TIERS } from "@/lib/pricing-tiers";
 import { ChevronRight } from "lucide-react";
+import { InfoTooltip } from "@/components/ui/info-tooltip";
+
+// OpenAI Realtime API voices (only for Premium tier)
+const REALTIME_VOICES = [
+  { id: "alloy", name: "Alloy", description: "Neutral and balanced" },
+  { id: "ash", name: "Ash", description: "Clear and precise" },
+  { id: "ballad", name: "Ballad", description: "Melodic and smooth" },
+  { id: "coral", name: "Coral", description: "Warm and friendly" },
+  { id: "echo", name: "Echo", description: "Resonant and deep" },
+  { id: "sage", name: "Sage", description: "Calm and thoughtful" },
+  { id: "shimmer", name: "Shimmer", description: "Bright and energetic" },
+  { id: "verse", name: "Verse", description: "Versatile and expressive" },
+] as const;
 
 // Tool configurations - defined outside component to prevent recreation on every render
 const AVAILABLE_TOOLS = [
@@ -59,6 +72,7 @@ const agentFormSchema = z.object({
   description: z.string().optional(),
   language: z.string().default("en-US"),
   systemPrompt: z.string().min(10, "System prompt is required"),
+  voice: z.string().default("shimmer"),
 
   // Step 2: Tools
   enabledTools: z.array(z.string()).default([]),
@@ -82,6 +96,7 @@ export default function NewAgentSimplifiedPage() {
       systemPrompt: "",
       pricingTier: "balanced",
       language: "en-US",
+      voice: "shimmer",
       enabledTools: [],
       phoneNumberId: "",
       enableRecording: true,
@@ -119,6 +134,7 @@ export default function NewAgentSimplifiedPage() {
       pricing_tier: data.pricingTier,
       system_prompt: data.systemPrompt,
       language: data.language,
+      voice: data.pricingTier === "premium" ? data.voice : undefined,
       enabled_tools: data.enabledTools,
       phone_number_id: data.phoneNumberId,
       enable_recording: data.enableRecording,
@@ -201,7 +217,10 @@ export default function NewAgentSimplifiedPage() {
             <div className="space-y-6">
               <Card>
                 <CardHeader>
-                  <CardTitle>Choose Your Pricing Tier</CardTitle>
+                  <CardTitle className="flex items-center gap-1">
+                    Choose Your Pricing Tier
+                    <InfoTooltip content="Pricing tiers determine which AI model and voice providers your agent uses. Higher tiers offer better quality but cost more per minute of conversation." />
+                  </CardTitle>
                   <CardDescription>
                     Select the right balance of cost and performance
                   </CardDescription>
@@ -275,12 +294,45 @@ export default function NewAgentSimplifiedPage() {
                     )}
                   />
 
+                  {pricingTier === "premium" && (
+                    <FormField
+                      control={form.control}
+                      name="voice"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>Voice</FormLabel>
+                          <Select onValueChange={field.onChange} value={field.value}>
+                            <FormControl>
+                              <SelectTrigger>
+                                <SelectValue placeholder="Select a voice" />
+                              </SelectTrigger>
+                            </FormControl>
+                            <SelectContent position="popper" sideOffset={4}>
+                              {REALTIME_VOICES.map((voice) => (
+                                <SelectItem key={voice.id} value={voice.id}>
+                                  {voice.name} - {voice.description}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                          <FormDescription>
+                            Choose the voice for your agent (OpenAI Realtime voices)
+                          </FormDescription>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                  )}
+
                   <FormField
                     control={form.control}
                     name="systemPrompt"
                     render={({ field }) => (
                       <FormItem>
-                        <FormLabel>System Prompt</FormLabel>
+                        <FormLabel className="flex items-center gap-1">
+                          System Prompt
+                          <InfoTooltip content="The system prompt defines how your agent behaves. Include its role, personality, guidelines, and any rules it should follow. This is the most important setting for your agent." />
+                        </FormLabel>
                         <FormControl>
                           <Textarea
                             placeholder="You are a helpful customer support agent. Be polite, professional, and concise..."
@@ -318,7 +370,10 @@ export default function NewAgentSimplifiedPage() {
             <div className="space-y-6">
               <Card>
                 <CardHeader>
-                  <CardTitle>Tools & Integrations</CardTitle>
+                  <CardTitle className="flex items-center gap-1">
+                    Tools & Integrations
+                    <InfoTooltip content="Tools give your agent abilities like looking up customer info or booking appointments. Enable tools your agent needs to help callers." />
+                  </CardTitle>
                   <CardDescription>Enable integrations for your agent (optional)</CardDescription>
                 </CardHeader>
                 <CardContent>
@@ -465,7 +520,10 @@ export default function NewAgentSimplifiedPage() {
                     render={({ field }) => (
                       <FormItem className="flex flex-row items-center justify-between rounded-lg border p-4">
                         <div className="space-y-0.5">
-                          <FormLabel className="text-base">Enable Call Recording</FormLabel>
+                          <FormLabel className="flex items-center gap-1 text-base">
+                            Enable Call Recording
+                            <InfoTooltip content="Records audio of all calls. Useful for quality assurance, training, and compliance. Recordings are stored securely and accessible from the Calls page." />
+                          </FormLabel>
                           <FormDescription>Record all calls for quality assurance</FormDescription>
                         </div>
                         <FormControl>
@@ -481,7 +539,10 @@ export default function NewAgentSimplifiedPage() {
                     render={({ field }) => (
                       <FormItem className="flex flex-row items-center justify-between rounded-lg border p-4">
                         <div className="space-y-0.5">
-                          <FormLabel className="text-base">Enable Transcripts</FormLabel>
+                          <FormLabel className="flex items-center gap-1 text-base">
+                            Enable Transcripts
+                            <InfoTooltip content="Saves a text transcript of every conversation. Transcripts are searchable and can be reviewed to understand what was discussed during calls." />
+                          </FormLabel>
                           <FormDescription>Save conversation transcripts</FormDescription>
                         </div>
                         <FormControl>

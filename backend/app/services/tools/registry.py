@@ -1,6 +1,5 @@
 """Tool registry for managing available tools for voice agents."""
 
-import uuid
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,12 +16,12 @@ class ToolRegistry:
     - Tool execution routing
     """
 
-    def __init__(self, db: AsyncSession, user_id: uuid.UUID) -> None:
+    def __init__(self, db: AsyncSession, user_id: int) -> None:
         """Initialize tool registry.
 
         Args:
             db: Database session
-            user_id: User ID
+            user_id: User ID (integer matching users.id)
         """
         self.db = db
         self.user_id = user_id

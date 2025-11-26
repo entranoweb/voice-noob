@@ -11,6 +11,7 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core.auth import CurrentUser
 from app.core.limiter import limiter
 from app.db.session import get_db
 from app.models.agent import Agent
@@ -148,19 +149,15 @@ class SetAgentWorkspacesRequest(BaseModel):
     workspace_ids: list[str]
 
 
-def _get_current_user_id() -> int:
-    """Get current user ID (placeholder until auth is implemented)."""
-    return 1
-
-
 @router.get("", response_model=list[WorkspaceResponse])
 @limiter.limit("100/minute")
 async def list_workspaces(
     request: Request,
+    current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> list[dict[str, Any]]:
     """List all workspaces for the current user."""
-    user_id = _get_current_user_id()
+    user_id = current_user.id
 
     try:
         result = await db.execute(
@@ -206,10 +203,11 @@ async def list_workspaces(
 async def get_workspace(
     request: Request,
     workspace_id: str,
+    current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     """Get a single workspace by ID."""
-    user_id = _get_current_user_id()
+    user_id = current_user.id
 
     try:
         workspace_uuid = uuid.UUID(workspace_id)
@@ -250,10 +248,11 @@ async def get_workspace(
 async def create_workspace(
     request: Request,
     workspace_data: WorkspaceCreate,
+    current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     """Create a new workspace."""
-    user_id = _get_current_user_id()
+    user_id = current_user.id
 
     try:
         workspace = Workspace(
@@ -303,10 +302,11 @@ async def update_workspace(
     request: Request,
     workspace_id: str,
     workspace_data: WorkspaceUpdate,
+    current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     """Update an existing workspace."""
-    user_id = _get_current_user_id()
+    user_id = current_user.id
 
     try:
         workspace_uuid = uuid.UUID(workspace_id)
@@ -380,10 +380,11 @@ async def update_workspace(
 async def delete_workspace(
     request: Request,
     workspace_id: str,
+    current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> None:
     """Delete a workspace (cannot delete default workspace)."""
-    user_id = _get_current_user_id()
+    user_id = current_user.id
 
     try:
         workspace_uuid = uuid.UUID(workspace_id)
@@ -432,10 +433,11 @@ async def delete_workspace(
 async def list_workspace_agents(
     request: Request,
     workspace_id: str,
+    current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> list[dict[str, Any]]:
     """List all agents assigned to a workspace."""
-    user_id = _get_current_user_id()
+    user_id = current_user.id
 
     try:
         workspace_uuid = uuid.UUID(workspace_id)
@@ -474,10 +476,11 @@ async def add_agent_to_workspace(
     request: Request,
     workspace_id: str,
     data: AddAgentToWorkspaceRequest,
+    current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, str]:
     """Add an agent to a workspace."""
-    user_id = _get_current_user_id()
+    user_id = current_user.id
 
     try:
         workspace_uuid = uuid.UUID(workspace_id)
@@ -546,10 +549,11 @@ async def remove_agent_from_workspace(
     request: Request,
     workspace_id: str,
     agent_id: str,
+    current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> None:
     """Remove an agent from a workspace."""
-    user_id = _get_current_user_id()
+    user_id = current_user.id
 
     try:
         workspace_uuid = uuid.UUID(workspace_id)
@@ -594,10 +598,11 @@ async def remove_agent_from_workspace(
 async def get_agent_workspaces(
     request: Request,
     agent_id: str,
+    current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> list[dict[str, str]]:
     """Get all workspaces for an agent."""
-    user_id = _get_current_user_id()
+    user_id = current_user.id
 
     try:
         agent_uuid = uuid.UUID(agent_id)
@@ -636,10 +641,11 @@ async def set_agent_workspaces(
     request: Request,
     agent_id: str,
     data: SetAgentWorkspacesRequest,
+    current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, str]:
     """Set all workspaces for an agent (bulk operation)."""
-    user_id = _get_current_user_id()
+    user_id = current_user.id
 
     try:
         agent_uuid = uuid.UUID(agent_id)

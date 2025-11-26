@@ -1,6 +1,6 @@
 "use client";
 
-import { use } from "react";
+import { use, useState } from "react";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
 import { useRouter } from "next/navigation";
@@ -35,6 +35,7 @@ import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { AlertCircle, ArrowLeft, Loader2, Trash2, FolderOpen } from "lucide-react";
 import { api } from "@/lib/api";
+
 import {
   AlertDialog,
   AlertDialogAction,
@@ -47,6 +48,9 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Slider } from "@/components/ui/slider";
+import { cn } from "@/lib/utils";
+import { InfoTooltip } from "@/components/ui/info-tooltip";
 
 interface Workspace {
   id: string;
@@ -101,6 +105,28 @@ const agentFormSchema = z.object({
 
 type AgentFormValues = z.infer<typeof agentFormSchema>;
 
+// Map fields to their respective tabs for error tracking
+const TAB_FIELDS: Record<string, (keyof AgentFormValues)[]> = {
+  basic: ["name", "description", "language", "selectedWorkspaces", "isActive"],
+  voice: [
+    "ttsProvider",
+    "elevenLabsModel",
+    "elevenLabsVoiceId",
+    "ttsSpeed",
+    "sttProvider",
+    "deepgramModel",
+  ],
+  llm: ["llmProvider", "llmModel", "systemPrompt", "temperature", "maxTokens"],
+  tools: ["enabledTools"],
+  advanced: [
+    "telephonyProvider",
+    "phoneNumberId",
+    "enableRecording",
+    "enableTranscript",
+    "turnDetectionMode",
+  ],
+};
+
 interface EditAgentPageProps {
   params: Promise<{ id: string }>;
 }
@@ -109,6 +135,7 @@ export default function EditAgentPage({ params }: EditAgentPageProps) {
   const { id: agentId } = use(params);
   const router = useRouter();
   const queryClient = useQueryClient();
+  const [activeTab, setActiveTab] = useState("basic");
 
   const {
     data: agent,
@@ -140,6 +167,9 @@ export default function EditAgentPage({ params }: EditAgentPageProps) {
 
   const form = useForm<AgentFormValues>({
     resolver: zodResolver(agentFormSchema),
+    defaultValues: {
+      llmProvider: "openai-realtime",
+    },
     values: agent
       ? {
           name: agent.name,
@@ -203,6 +233,32 @@ export default function EditAgentPage({ params }: EditAgentPageProps) {
       void queryClient.invalidateQueries({ queryKey: ["agent-workspaces", agentId] });
     },
   });
+
+  // Get error count for a specific tab
+  const getTabErrorCount = (tabName: string): number => {
+    const fields = TAB_FIELDS[tabName] ?? [];
+    const errors = form.formState.errors;
+    return fields.filter((field) => field in errors).length;
+  };
+
+  // Render tab trigger with optional error badge
+  const TabTriggerWithErrors = ({ value, label }: { value: string; label: string }) => {
+    const errorCount = getTabErrorCount(value);
+    return (
+      <TabsTrigger
+        value={value}
+        onClick={() => setActiveTab(value)}
+        className={cn(errorCount > 0 && "text-destructive")}
+      >
+        {label}
+        {errorCount > 0 && (
+          <span className="ml-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-destructive text-[10px] font-medium text-destructive-foreground">
+            {errorCount}
+          </span>
+        )}
+      </TabsTrigger>
+    );
+  };
 
   async function onSubmit(data: AgentFormValues) {
     // Determine pricing tier based on LLM provider
@@ -300,10 +356,36 @@ export default function EditAgentPage({ params }: EditAgentPageProps) {
           </AlertDialogTrigger>
           <AlertDialogContent>
             <AlertDialogHeader>
-              <AlertDialogTitle>Are you sure?</AlertDialogTitle>
-              <AlertDialogDescription>
-                This action cannot be undone. This will permanently delete the agent &ldquo;
-                {agent.name}&rdquo; and all associated call history.
+              <AlertDialogTitle className="text-destructive">
+                Delete &ldquo;{agent.name}&rdquo;?
+              </AlertDialogTitle>
+              <AlertDialogDescription asChild>
+                <div className="space-y-3">
+                  <p>This action cannot be undone. The following will be permanently deleted:</p>
+                  <div className="rounded-md border border-destructive/20 bg-destructive/5 p-3">
+                    <ul className="space-y-1 text-sm">
+                      <li className="flex items-center justify-between">
+                        <span>Call recordings & transcripts</span>
+                        <span className="font-medium">{agent.total_calls} calls</span>
+                      </li>
+                      <li className="flex items-center justify-between">
+                        <span>Total call duration</span>
+                        <span className="font-medium">
+                          {Math.round(agent.total_duration_seconds / 60)} minutes
+                        </span>
+                      </li>
+                      <li className="flex items-center justify-between">
+                        <span>Agent configuration</span>
+                        <span className="font-medium">All settings</span>
+                      </li>
+                    </ul>
+                  </div>
+                  {agent.total_calls > 0 && (
+                    <p className="text-sm font-medium text-destructive">
+                      Warning: This agent has call history that will be lost.
+                    </p>
+                  )}
+                </div>
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
@@ -312,7 +394,7 @@ export default function EditAgentPage({ params }: EditAgentPageProps) {
                 onClick={() => deleteAgentMutation.mutate()}
                 className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
               >
-                {deleteAgentMutation.isPending ? "Deleting..." : "Delete"}
+                {deleteAgentMutation.isPending ? "Deleting..." : "Delete Permanently"}
               </AlertDialogAction>
             </AlertDialogFooter>
           </AlertDialogContent>
@@ -326,13 +408,13 @@ export default function EditAgentPage({ params }: EditAgentPageProps) {
           }}
           className="space-y-6"
         >
-          <Tabs defaultValue="basic" className="w-full">
+          <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
             <TabsList className="grid w-full grid-cols-5">
-              <TabsTrigger value="basic">Basic</TabsTrigger>
-              <TabsTrigger value="voice">Voice & Speech</TabsTrigger>
-              <TabsTrigger value="llm">AI Model</TabsTrigger>
-              <TabsTrigger value="tools">Tools</TabsTrigger>
-              <TabsTrigger value="advanced">Advanced</TabsTrigger>
+              <TabTriggerWithErrors value="basic" label="Basic" />
+              <TabTriggerWithErrors value="voice" label="Voice & Speech" />
+              <TabTriggerWithErrors value="llm" label="AI Model" />
+              <TabTriggerWithErrors value="tools" label="Tools" />
+              <TabTriggerWithErrors value="advanced" label="Advanced" />
             </TabsList>
 
             <TabsContent value="basic" className="mt-6 space-y-4">
@@ -491,7 +573,10 @@ export default function EditAgentPage({ params }: EditAgentPageProps) {
             <TabsContent value="voice" className="mt-6 space-y-4">
               <Card>
                 <CardHeader>
-                  <CardTitle>Text-to-Speech (TTS)</CardTitle>
+                  <CardTitle className="flex items-center gap-2">
+                    Text-to-Speech (TTS)
+                    <InfoTooltip content="TTS converts your agent's text responses into natural-sounding speech. Different providers offer varying quality, latency, and voice options." />
+                  </CardTitle>
                   <CardDescription>Configure how your agent speaks</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
@@ -587,7 +672,10 @@ export default function EditAgentPage({ params }: EditAgentPageProps) {
 
               <Card>
                 <CardHeader>
-                  <CardTitle>Speech-to-Text (STT)</CardTitle>
+                  <CardTitle className="flex items-center gap-2">
+                    Speech-to-Text (STT)
+                    <InfoTooltip content="STT converts caller speech into text for the AI to understand. Accuracy is measured by Word Error Rate (WER) - lower is better. Deepgram Nova-3 has 6.84% WER." />
+                  </CardTitle>
                   <CardDescription>Configure how your agent listens</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
@@ -651,7 +739,10 @@ export default function EditAgentPage({ params }: EditAgentPageProps) {
             <TabsContent value="llm" className="mt-6 space-y-4">
               <Card>
                 <CardHeader>
-                  <CardTitle>Language Model Configuration</CardTitle>
+                  <CardTitle className="flex items-center gap-2">
+                    Language Model Configuration
+                    <InfoTooltip content="The LLM (Large Language Model) is the AI brain that understands user intent and generates responses. Realtime API provides end-to-end voice with lowest latency." />
+                  </CardTitle>
                   <CardDescription>Configure the AI brain of your voice agent</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
@@ -731,45 +822,91 @@ export default function EditAgentPage({ params }: EditAgentPageProps) {
                   <FormField
                     control={form.control}
                     name="systemPrompt"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>System Prompt</FormLabel>
-                        <FormControl>
-                          <Textarea
-                            placeholder="You are a helpful customer support agent. Be polite, professional, and concise..."
-                            className="min-h-[120px]"
-                            {...field}
-                          />
-                        </FormControl>
-                        <FormDescription>
-                          Instructions that define your agent&apos;s personality and behavior
-                        </FormDescription>
-                        <FormMessage />
-                      </FormItem>
-                    )}
+                    render={({ field }) => {
+                      const charCount = field.value?.length ?? 0;
+                      const isOptimal = charCount >= 100 && charCount <= 2000;
+                      const isTooShort = charCount > 0 && charCount < 100;
+                      const isTooLong = charCount > 2000;
+                      return (
+                        <FormItem>
+                          <div className="flex items-center justify-between">
+                            <FormLabel>System Prompt</FormLabel>
+                            <span
+                              className={cn(
+                                "text-xs",
+                                isOptimal && "text-green-600",
+                                isTooShort && "text-yellow-600",
+                                isTooLong && "text-destructive"
+                              )}
+                            >
+                              {charCount.toLocaleString()} characters
+                              {isTooShort && " (recommended: 100+)"}
+                              {isTooLong && " (recommended: under 2,000)"}
+                            </span>
+                          </div>
+                          <FormControl>
+                            <Textarea
+                              placeholder="You are a helpful customer support agent. Be polite, professional, and concise..."
+                              className="min-h-[120px]"
+                              {...field}
+                            />
+                          </FormControl>
+                          <FormDescription>
+                            Instructions that define your agent&apos;s personality and behavior. Aim
+                            for 100-2,000 characters for best results.
+                          </FormDescription>
+                          <FormMessage />
+                        </FormItem>
+                      );
+                    }}
                   />
 
                   <div className="grid grid-cols-2 gap-4">
                     <FormField
                       control={form.control}
                       name="temperature"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>Temperature</FormLabel>
-                          <FormControl>
-                            <Input
-                              type="number"
-                              step="0.1"
-                              min="0"
-                              max="2"
-                              {...field}
-                              onChange={(e) => field.onChange(parseFloat(e.target.value))}
-                            />
-                          </FormControl>
-                          <FormDescription>0 = focused, 2 = creative</FormDescription>
-                          <FormMessage />
-                        </FormItem>
-                      )}
+                      render={({ field }) => {
+                        const getTemperatureLabel = (value: number) => {
+                          if (value <= 0.3) return "Focused";
+                          if (value <= 0.7) return "Balanced";
+                          if (value <= 1.2) return "Creative";
+                          return "Very Creative";
+                        };
+                        return (
+                          <FormItem>
+                            <div className="flex items-center justify-between">
+                              <FormLabel className="flex items-center gap-1.5">
+                                Temperature
+                                <InfoTooltip content="Controls randomness in responses. Lower (0-0.3) = precise, consistent answers. Higher (0.8-2.0) = more creative, varied responses. 0.7 is a good default for conversations." />
+                              </FormLabel>
+                              <span className="text-sm font-medium">
+                                {field.value?.toFixed(1) ?? "0.7"} (
+                                {getTemperatureLabel(field.value ?? 0.7)})
+                              </span>
+                            </div>
+                            <FormControl>
+                              <div className="space-y-2">
+                                <Slider
+                                  min={0}
+                                  max={2}
+                                  step={0.1}
+                                  value={[field.value ?? 0.7]}
+                                  onValueChange={(value) => field.onChange(value[0])}
+                                  className="w-full"
+                                />
+                                <div className="flex justify-between text-xs text-muted-foreground">
+                                  <span>Focused</span>
+                                  <span>Creative</span>
+                                </div>
+                              </div>
+                            </FormControl>
+                            <FormDescription>
+                              Lower values produce more focused and deterministic responses
+                            </FormDescription>
+                            <FormMessage />
+                          </FormItem>
+                        );
+                      }}
                     />
 
                     <FormField
@@ -777,18 +914,32 @@ export default function EditAgentPage({ params }: EditAgentPageProps) {
                       name="maxTokens"
                       render={({ field }) => (
                         <FormItem>
-                          <FormLabel>Max Tokens</FormLabel>
+                          <div className="flex items-center justify-between">
+                            <FormLabel className="flex items-center gap-1.5">
+                              Max Tokens
+                              <InfoTooltip content="Maximum response length in tokens (1 token ≈ 4 characters). Higher values allow longer responses but cost more. 1000-2000 is recommended for conversations." />
+                            </FormLabel>
+                            <span className="text-sm font-medium">
+                              {(field.value ?? 2000).toLocaleString()}
+                            </span>
+                          </div>
                           <FormControl>
-                            <Input
-                              type="number"
-                              step="100"
-                              min="100"
-                              max="4000"
-                              {...field}
-                              onChange={(e) => field.onChange(parseInt(e.target.value))}
-                            />
+                            <div className="space-y-2">
+                              <Slider
+                                min={100}
+                                max={4000}
+                                step={100}
+                                value={[field.value ?? 2000]}
+                                onValueChange={(value) => field.onChange(value[0])}
+                                className="w-full"
+                              />
+                              <div className="flex justify-between text-xs text-muted-foreground">
+                                <span>100</span>
+                                <span>4,000</span>
+                              </div>
+                            </div>
                           </FormControl>
-                          <FormDescription>Response length limit</FormDescription>
+                          <FormDescription>Maximum length of each response</FormDescription>
                           <FormMessage />
                         </FormItem>
                       )}
@@ -961,17 +1112,47 @@ export default function EditAgentPage({ params }: EditAgentPageProps) {
                     render={({ field }) => (
                       <FormItem>
                         <FormLabel>Phone Number</FormLabel>
-                        <Select onValueChange={field.onChange} value={field.value}>
-                          <FormControl>
-                            <SelectTrigger>
-                              <SelectValue placeholder="Select a phone number" />
-                            </SelectTrigger>
-                          </FormControl>
-                          <SelectContent>
-                            <SelectItem value="none">No phone number assigned</SelectItem>
-                          </SelectContent>
-                        </Select>
-                        <FormDescription>Assign a phone number to this agent</FormDescription>
+                        <div className="rounded-lg border border-dashed p-4">
+                          <div className="flex items-center justify-between">
+                            <div className="space-y-1">
+                              <p className="text-sm font-medium">
+                                {field.value && field.value !== "none"
+                                  ? "Phone number assigned"
+                                  : "No phone number assigned"}
+                              </p>
+                              <p className="text-xs text-muted-foreground">
+                                Phone numbers allow your agent to receive and make calls
+                              </p>
+                            </div>
+                            <Badge
+                              variant={
+                                field.value && field.value !== "none" ? "default" : "secondary"
+                              }
+                            >
+                              {field.value && field.value !== "none" ? "Active" : "Not configured"}
+                            </Badge>
+                          </div>
+                          <div className="mt-3 flex gap-2">
+                            <Button type="button" variant="outline" size="sm" asChild>
+                              <Link href="/dashboard/settings/phone-numbers">
+                                Manage Phone Numbers
+                              </Link>
+                            </Button>
+                            {field.value && field.value !== "none" && (
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => field.onChange("none")}
+                              >
+                                Unassign
+                              </Button>
+                            )}
+                          </div>
+                        </div>
+                        <FormDescription>
+                          Purchase phone numbers from Settings to enable inbound/outbound calling
+                        </FormDescription>
                         <FormMessage />
                       </FormItem>
                     )}
@@ -1016,7 +1197,10 @@ export default function EditAgentPage({ params }: EditAgentPageProps) {
                     name="turnDetectionMode"
                     render={({ field }) => (
                       <FormItem>
-                        <FormLabel>Turn Detection</FormLabel>
+                        <FormLabel className="flex items-center gap-1.5">
+                          Turn Detection
+                          <InfoTooltip content="How the agent knows when the caller finished speaking. Server VAD (Voice Activity Detection) automatically detects pauses. Push to Talk requires explicit signals - useful for noisy environments." />
+                        </FormLabel>
                         <Select onValueChange={field.onChange} value={field.value}>
                           <FormControl>
                             <SelectTrigger>

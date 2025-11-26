@@ -15,6 +15,16 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
   Select,
   SelectContent,
   SelectItem,
@@ -32,6 +42,7 @@ import {
   User,
   FolderOpen,
 } from "lucide-react";
+import { InfoTooltip } from "@/components/ui/info-tooltip";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { toast } from "sonner";
@@ -92,6 +103,7 @@ export default function AppointmentsPage() {
   const [selectedAppointment, setSelectedAppointment] = useState<Appointment | null>(null);
   const [formData, setFormData] = useState<AppointmentFormData>(emptyFormData);
   const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string>("all");
 
   // Fetch workspaces
@@ -236,9 +248,14 @@ export default function AppointmentsPage() {
   };
 
   const handleDelete = () => {
-    if (selectedAppointment && confirm("Are you sure you want to delete this appointment?")) {
+    setIsDeleteDialogOpen(true);
+  };
+
+  const confirmDelete = () => {
+    if (selectedAppointment) {
       deleteAppointmentMutation.mutate(selectedAppointment.id);
     }
+    setIsDeleteDialogOpen(false);
   };
 
   const getStatusColor = (status: string) => {
@@ -528,7 +545,10 @@ export default function AppointmentsPage() {
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="duration_minutes">Duration (minutes)</Label>
+                <Label htmlFor="duration_minutes" className="flex items-center gap-1">
+                  Duration (minutes)
+                  <InfoTooltip content="How long the appointment will last. Choose a duration that fits the type of service or meeting you're scheduling." />
+                </Label>
                 <Select
                   value={formData.duration_minutes.toString()}
                   onValueChange={(value) =>
@@ -552,7 +572,10 @@ export default function AppointmentsPage() {
 
               {(modalMode === "edit" || modalMode === "view") && (
                 <div className="space-y-2">
-                  <Label htmlFor="status">Status</Label>
+                  <Label htmlFor="status" className="flex items-center gap-1">
+                    Status
+                    <InfoTooltip content="Track the appointment state. Scheduled = upcoming, Completed = done, Cancelled = called off, No Show = contact didn't attend." />
+                  </Label>
                   <Select
                     value={formData.status}
                     onValueChange={(value) => setFormData({ ...formData, status: value })}
@@ -572,7 +595,10 @@ export default function AppointmentsPage() {
               )}
 
               <div className="space-y-2">
-                <Label htmlFor="service_type">Service Type</Label>
+                <Label htmlFor="service_type" className="flex items-center gap-1">
+                  Service Type
+                  <InfoTooltip content="Describe what kind of appointment this is. Examples: Consultation, Follow-up call, Product demo, Support session." />
+                </Label>
                 <Input
                   id="service_type"
                   value={formData.service_type}
@@ -638,6 +664,29 @@ export default function AppointmentsPage() {
           </form>
         </DialogContent>
       </Dialog>
+
+      {/* Delete Confirmation Dialog */}
+      <AlertDialog open={isDeleteDialogOpen} onOpenChange={setIsDeleteDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Appointment</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete this appointment
+              {selectedAppointment?.contact_name ? ` with ${selectedAppointment.contact_name}` : ""}
+              ? This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={confirmDelete}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

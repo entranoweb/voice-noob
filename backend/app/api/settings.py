@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.auth import CurrentUser, user_id_to_uuid
 from app.db.session import get_db
 from app.models.user_settings import UserSettings
 
@@ -35,29 +36,22 @@ class SettingsResponse(BaseModel):
     twilio_account_sid_set: bool
 
 
-async def get_current_user_id() -> uuid.UUID:
-    """Get current user ID.
-
-    TODO: Implement actual authentication
-    """
-    return uuid.UUID("00000000-0000-0000-0000-000000000001")
-
-
 @router.get("", response_model=SettingsResponse)
 async def get_settings(
-    user_id: uuid.UUID = Depends(get_current_user_id),
+    current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> SettingsResponse:
     """Get user settings (API keys masked).
 
     Args:
-        user_id: Current user ID
+        current_user: Authenticated user
         db: Database session
 
     Returns:
         Settings with masked API keys
     """
-    result = await db.execute(select(UserSettings).where(UserSettings.user_id == user_id))
+    user_uuid = user_id_to_uuid(current_user.id)
+    result = await db.execute(select(UserSettings).where(UserSettings.user_id == user_uuid))
     settings = result.scalar_one_or_none()
 
     if not settings:
@@ -81,20 +75,21 @@ async def get_settings(
 @router.post("", status_code=status.HTTP_200_OK)
 async def update_settings(
     request: UpdateSettingsRequest,
-    user_id: uuid.UUID = Depends(get_current_user_id),
+    current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, str]:
     """Update user settings.
 
     Args:
         request: Settings update request
-        user_id: Current user ID
+        current_user: Authenticated user
         db: Database session
 
     Returns:
         Success message
     """
-    result = await db.execute(select(UserSettings).where(UserSettings.user_id == user_id))
+    user_uuid = user_id_to_uuid(current_user.id)
+    result = await db.execute(select(UserSettings).where(UserSettings.user_id == user_uuid))
     settings = result.scalar_one_or_none()
 
     if settings:
@@ -118,7 +113,7 @@ async def update_settings(
     else:
         # Create new
         settings = UserSettings(
-            user_id=user_id,
+            user_id=user_uuid,
             openai_api_key=request.openai_api_key,
             deepgram_api_key=request.deepgram_api_key,
             elevenlabs_api_key=request.elevenlabs_api_key,
@@ -138,7 +133,7 @@ async def get_user_api_keys(user_id: uuid.UUID, db: AsyncSession) -> UserSetting
     """Get user API keys for internal use.
 
     Args:
-        user_id: User ID
+        user_id: User ID (UUID)
         db: Database session
 
     Returns:

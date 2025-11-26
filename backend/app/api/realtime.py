@@ -14,11 +14,12 @@ from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.settings import get_current_user_id, get_user_api_keys
+from app.api.settings import get_user_api_keys
+from app.core.auth import CurrentUser, get_user_id_from_uuid, user_id_to_uuid
 from app.core.config import settings
 from app.db.session import get_db
 from app.models.agent import Agent
-from app.services.gpt_realtime import GPTRealtimeSession
+from app.services.gpt_realtime import GPTRealtimeSession, build_instructions_with_language
 from app.services.tools.registry import ToolRegistry
 
 router = APIRouter(prefix="/ws", tags=["realtime"])
@@ -99,17 +100,30 @@ async def realtime_websocket(
             tools_count=len(agent.enabled_tools),
         )
 
+        # Look up the int user_id from the agent's UUID user_id
+        user_id_int = await get_user_id_from_uuid(agent.user_id, db)
+        if user_id_int is None:
+            await websocket.send_json(
+                {
+                    "type": "error",
+                    "error": "Agent owner not found",
+                }
+            )
+            await websocket.close()
+            return
+
         # Build agent config for GPT Realtime
         agent_config = {
             "system_prompt": agent.system_prompt,
             "enabled_tools": agent.enabled_tools,
             "language": agent.language,
+            "voice": agent.voice or "shimmer",
         }
 
         # Initialize GPT Realtime session with internal tools
         async with GPTRealtimeSession(
             db=db,
-            user_id=agent.user_id,
+            user_id=user_id_int,
             agent_config=agent_config,
             session_id=session_id,
         ) as realtime_session:
@@ -248,7 +262,7 @@ async def _bridge_audio_streams(
 async def create_webrtc_session(
     agent_id: str,
     request: Request,
-    user_id: uuid.UUID = Depends(get_current_user_id),
+    current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> Response:
     """Create a WebRTC session for GPT Realtime API.
@@ -262,16 +276,18 @@ async def create_webrtc_session(
     Args:
         agent_id: Agent UUID
         request: HTTP request containing SDP offer
-        user_id: Current user ID
+        current_user: Authenticated user
         db: Database session
 
     Returns:
         SDP answer from OpenAI
     """
+    user_id = current_user.id
+    user_uuid = user_id_to_uuid(user_id)
     session_logger = logger.bind(
         endpoint="webrtc_session",
         agent_id=agent_id,
-        user_id=str(user_id),
+        user_id=user_id,
     )
 
     session_logger.info("webrtc_session_requested")
@@ -303,8 +319,8 @@ async def create_webrtc_session(
         tools_count=len(agent.enabled_tools),
     )
 
-    # Get OpenAI API key
-    user_settings = await get_user_api_keys(user_id, db)
+    # Get OpenAI API key (user_uuid for UserSettings lookup)
+    user_settings = await get_user_api_keys(user_uuid, db)
     api_key = None
     if user_settings and user_settings.openai_api_key:
         api_key = user_settings.openai_api_key
@@ -318,22 +334,28 @@ async def create_webrtc_session(
             detail="OpenAI API key not configured. Please add it in Settings.",
         )
 
-    # Build tool definitions
+    # Build tool definitions (user_id int for Contact queries)
     tool_registry = ToolRegistry(db, user_id)
     tools = tool_registry.get_all_tool_definitions(agent.enabled_tools)
+
+    # Build instructions with language directive
+    system_prompt = agent.system_prompt or "You are a helpful voice assistant."
+    instructions = build_instructions_with_language(system_prompt, agent.language)
 
     # Build session configuration for OpenAI Realtime
     session_config: dict[str, Any] = {
         "type": "realtime",
         "model": "gpt-4o-realtime-preview-2024-12-17",
-        "instructions": agent.system_prompt or "You are a helpful voice assistant.",
-        "voice": "shimmer",
+        "instructions": instructions,
+        "voice": agent.voice or "shimmer",
+        "speed": 1.15,  # Slightly faster speech (1.0 = normal, range: 0.25-4.0)
         "input_audio_transcription": {"model": "whisper-1"},
         "turn_detection": {
             "type": "server_vad",
             "threshold": 0.5,
-            "prefix_padding_ms": 300,
-            "silence_duration_ms": 500,
+            "prefix_padding_ms": 200,
+            "silence_duration_ms": 200,
+            "eagerness": "high",
         },
     }
 
@@ -388,7 +410,7 @@ async def create_webrtc_session(
 @webrtc_router.get("/token/{agent_id}")
 async def get_ephemeral_token(
     agent_id: str,
-    user_id: uuid.UUID = Depends(get_current_user_id),
+    current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     """Get an ephemeral token for OpenAI Realtime API WebRTC connection.
@@ -398,16 +420,18 @@ async def get_ephemeral_token(
 
     Args:
         agent_id: Agent UUID
-        user_id: Current user ID
+        current_user: Authenticated user
         db: Database session
 
     Returns:
         Ephemeral token response with client_secret value and session config
     """
+    user_id = current_user.id
+    user_uuid = user_id_to_uuid(user_id)
     token_logger = logger.bind(
         endpoint="ephemeral_token",
         agent_id=agent_id,
-        user_id=str(user_id),
+        user_id=user_id,
     )
 
     token_logger.info("ephemeral_token_requested")
@@ -427,8 +451,8 @@ async def get_ephemeral_token(
             status_code=400, detail="WebRTC Realtime only available for Premium tier agents"
         )
 
-    # Get OpenAI API key
-    user_settings = await get_user_api_keys(user_id, db)
+    # Get OpenAI API key (user_uuid for UserSettings lookup)
+    user_settings = await get_user_api_keys(user_uuid, db)
     api_key = None
     if user_settings and user_settings.openai_api_key:
         api_key = user_settings.openai_api_key
@@ -445,10 +469,11 @@ async def get_ephemeral_token(
     # Build minimal session configuration for ephemeral token request
     # The SDK will configure instructions, voice, tools etc. after connection via data channel
     # Using the latest 2025 model as per official OpenAI examples
+    agent_voice = agent.voice or "shimmer"
     session_config: dict[str, Any] = {
         "model": "gpt-4o-realtime-preview-2025-06-03",
         "modalities": ["audio", "text"],
-        "voice": "alloy",
+        "voice": agent_voice,
     }
 
     token_logger.info(
@@ -494,6 +519,12 @@ async def get_ephemeral_token(
                 enabled_tools=agent.enabled_tools,
             )
 
+            # Build instructions with language for the frontend to use
+            system_prompt = agent.system_prompt or "You are a helpful voice assistant."
+            instructions_with_language = build_instructions_with_language(
+                system_prompt, agent.language
+            )
+
             # Return token data with agent info and tools
             return {
                 "client_secret": token_data.get("client_secret", {}),
@@ -502,6 +533,9 @@ async def get_ephemeral_token(
                     "name": agent.name,
                     "tier": agent.pricing_tier,
                     "system_prompt": agent.system_prompt,
+                    "language": agent.language,
+                    "voice": agent_voice,
+                    "instructions": instructions_with_language,
                     "enabled_tools": agent.enabled_tools,
                 },
                 "session_config": session_config,

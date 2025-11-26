@@ -21,6 +21,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Separator } from "@/components/ui/separator";
+import { InfoTooltip } from "@/components/ui/info-tooltip";
 
 const apiKeysSchema = z.object({
   openaiApiKey: z.string().optional(),
@@ -127,7 +128,10 @@ export default function SettingsPage() {
                     name="openaiApiKey"
                     render={({ field }) => (
                       <FormItem>
-                        <FormLabel>OpenAI API Key</FormLabel>
+                        <FormLabel className="flex items-center gap-1">
+                          OpenAI API Key
+                          <InfoTooltip content="Powers the AI brain of your voice agents. Get your key from platform.openai.com. Required for GPT-4o and language understanding." />
+                        </FormLabel>
                         <FormControl>
                           <Input type="password" placeholder="sk-..." {...field} />
                         </FormControl>
@@ -144,7 +148,10 @@ export default function SettingsPage() {
                     name="deepgramApiKey"
                     render={({ field }) => (
                       <FormItem>
-                        <FormLabel>Deepgram API Key</FormLabel>
+                        <FormLabel className="flex items-center gap-1">
+                          Deepgram API Key
+                          <InfoTooltip content="Converts speech to text in real-time. Deepgram offers fast, accurate transcription for voice agents. Get your key from console.deepgram.com." />
+                        </FormLabel>
                         <FormControl>
                           <Input type="password" placeholder="••••••••" {...field} />
                         </FormControl>
@@ -159,7 +166,10 @@ export default function SettingsPage() {
                     name="elevenLabsApiKey"
                     render={({ field }) => (
                       <FormItem>
-                        <FormLabel>ElevenLabs API Key</FormLabel>
+                        <FormLabel className="flex items-center gap-1">
+                          ElevenLabs API Key
+                          <InfoTooltip content="Creates natural-sounding voice output for your agents. ElevenLabs provides premium voice quality. Get your key from elevenlabs.io." />
+                        </FormLabel>
                         <FormControl>
                           <Input type="password" placeholder="••••••••" {...field} />
                         </FormControl>
@@ -184,7 +194,10 @@ export default function SettingsPage() {
                     name="telnyxApiKey"
                     render={({ field }) => (
                       <FormItem>
-                        <FormLabel>Telnyx API Key</FormLabel>
+                        <FormLabel className="flex items-center gap-1">
+                          Telnyx API Key
+                          <InfoTooltip content="Handles phone calls for your voice agents. Telnyx provides phone numbers and call routing. Get your key from portal.telnyx.com." />
+                        </FormLabel>
                         <FormControl>
                           <Input type="password" placeholder="KEY..." {...field} />
                         </FormControl>
@@ -197,13 +210,19 @@ export default function SettingsPage() {
                   <Separator />
 
                   <div className="space-y-4">
-                    <div className="text-sm font-medium">Twilio (Optional)</div>
+                    <div className="flex items-center gap-1 text-sm font-medium">
+                      Twilio (Optional)
+                      <InfoTooltip content="Alternative telephony provider. Use Twilio if you already have an account or prefer their service. Both Account SID and Auth Token are required." />
+                    </div>
                     <FormField
                       control={form.control}
                       name="twilioAccountSid"
                       render={({ field }) => (
                         <FormItem>
-                          <FormLabel>Account SID</FormLabel>
+                          <FormLabel className="flex items-center gap-1">
+                            Account SID
+                            <InfoTooltip content="Your Twilio Account SID starts with 'AC'. Find it on your Twilio Console dashboard." />
+                          </FormLabel>
                           <FormControl>
                             <Input type="password" placeholder="AC..." {...field} />
                           </FormControl>
@@ -217,7 +236,10 @@ export default function SettingsPage() {
                       name="twilioAuthToken"
                       render={({ field }) => (
                         <FormItem>
-                          <FormLabel>Auth Token</FormLabel>
+                          <FormLabel className="flex items-center gap-1">
+                            Auth Token
+                            <InfoTooltip content="Your Twilio Auth Token is used to authenticate API requests. Keep this secret and never share it publicly." />
+                          </FormLabel>
                           <FormControl>
                             <Input type="password" placeholder="••••••••" {...field} />
                           </FormControl>

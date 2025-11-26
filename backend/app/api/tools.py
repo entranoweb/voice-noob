@@ -1,6 +1,5 @@
 """API endpoints for tool execution."""
 
-import uuid
 from typing import Any
 
 import structlog
@@ -8,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.settings import get_current_user_id
+from app.core.auth import CurrentUser
 from app.db.session import get_db
 from app.services.tools.registry import ToolRegistry
 
@@ -27,7 +26,7 @@ class ToolExecuteRequest(BaseModel):
 @router.post("/execute")
 async def execute_tool(
     request: ToolExecuteRequest,
-    user_id: uuid.UUID = Depends(get_current_user_id),
+    current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     """Execute a tool and return the result.
@@ -38,17 +37,18 @@ async def execute_tool(
 
     Args:
         request: Tool execution request
-        user_id: Current user ID
+        current_user: Authenticated user
         db: Database session
 
     Returns:
         Tool execution result
     """
+    user_id = current_user.id
     tool_logger = logger.bind(
         endpoint="execute_tool",
         tool_name=request.tool_name,
         agent_id=request.agent_id,
-        user_id=str(user_id),
+        user_id=user_id,
     )
 
     tool_logger.info("tool_execution_requested", arguments=request.arguments)

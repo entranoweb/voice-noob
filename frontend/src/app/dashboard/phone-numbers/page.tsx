@@ -15,6 +15,16 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
   Select,
   SelectContent,
   SelectItem,
@@ -67,6 +77,8 @@ export default function PhoneNumbersPage() {
   const [availableNumbers, setAvailableNumbers] = useState<AvailableNumber[]>([]);
   const [selectedAvailableNumber, setSelectedAvailableNumber] = useState<string | null>(null);
   const [isPurchasing, setIsPurchasing] = useState(false);
+  const [isReleaseDialogOpen, setIsReleaseDialogOpen] = useState(false);
+  const [numberToRelease, setNumberToRelease] = useState<PhoneNumber | null>(null);
 
   // Mock data - will be replaced with API call
   const phoneNumbers: PhoneNumber[] = [];
@@ -165,21 +177,23 @@ export default function PhoneNumbersPage() {
     }
   };
 
-  const handleReleaseNumber = async (number: PhoneNumber) => {
-    if (
-      !confirm(
-        `Are you sure you want to release ${number.phoneNumber}? This action cannot be undone.`
-      )
-    ) {
-      return;
-    }
+  const handleReleaseNumber = (number: PhoneNumber) => {
+    setNumberToRelease(number);
+    setIsReleaseDialogOpen(true);
+  };
+
+  const confirmReleaseNumber = async () => {
+    if (!numberToRelease) return;
 
     try {
       // Simulate API call
       await new Promise((resolve) => setTimeout(resolve, 1000));
-      toast.success(`Released ${number.phoneNumber}`);
+      toast.success(`Released ${numberToRelease.phoneNumber}`);
     } catch {
       toast.error("Failed to release number");
+    } finally {
+      setIsReleaseDialogOpen(false);
+      setNumberToRelease(null);
     }
   };
 
@@ -429,6 +443,28 @@ export default function PhoneNumbersPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Release Number Confirmation Dialog */}
+      <AlertDialog open={isReleaseDialogOpen} onOpenChange={setIsReleaseDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Release Phone Number</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to release {numberToRelease?.phoneNumber}? This action cannot be
+              undone and you may not be able to get this number back.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => void confirmReleaseNumber()}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Release
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

@@ -16,6 +16,16 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
   Select,
   SelectContent,
   SelectItem,
@@ -37,6 +47,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
+import { InfoTooltip } from "@/components/ui/info-tooltip";
 
 interface WorkspaceSettings {
   timezone?: string;
@@ -107,6 +118,7 @@ export default function WorkspacesPage() {
   const queryClient = useQueryClient();
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isAgentsModalOpen, setIsAgentsModalOpen] = useState(false);
+  const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
   const [modalMode, setModalMode] = useState<"add" | "edit" | "view">("add");
   const [selectedWorkspace, setSelectedWorkspace] = useState<Workspace | null>(null);
   const [formData, setFormData] = useState<WorkspaceFormData>(emptyFormData);
@@ -261,14 +273,15 @@ export default function WorkspacesPage() {
         toast.error("Cannot delete the default workspace");
         return;
       }
-      if (
-        confirm(
-          "Are you sure you want to delete this workspace? All associated data will be moved to your default workspace."
-        )
-      ) {
-        deleteWorkspaceMutation.mutate(selectedWorkspace.id);
-      }
+      setIsDeleteDialogOpen(true);
     }
+  };
+
+  const confirmDelete = () => {
+    if (selectedWorkspace) {
+      deleteWorkspaceMutation.mutate(selectedWorkspace.id);
+    }
+    setIsDeleteDialogOpen(false);
   };
 
   const isSubmitting = createWorkspaceMutation.isPending || updateWorkspaceMutation.isPending;
@@ -511,7 +524,13 @@ export default function WorkspacesPage() {
 
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
-                  <Label htmlFor="default_appointment_duration">Default Duration (min)</Label>
+                  <Label
+                    htmlFor="default_appointment_duration"
+                    className="flex items-center gap-1.5"
+                  >
+                    Default Duration (min)
+                    <InfoTooltip content="Standard length of appointments in this workspace. Can be overridden per appointment. 30-60 minutes is typical for most services." />
+                  </Label>
                   <Input
                     id="default_appointment_duration"
                     type="number"
@@ -529,7 +548,10 @@ export default function WorkspacesPage() {
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="booking_buffer_minutes">Buffer Time (min)</Label>
+                  <Label htmlFor="booking_buffer_minutes" className="flex items-center gap-1.5">
+                    Buffer Time (min)
+                    <InfoTooltip content="Gap between appointments for preparation or travel. A 15-min buffer means a 30-min appointment blocks a 45-min slot. Prevents back-to-back scheduling." />
+                  </Label>
                   <Input
                     id="booking_buffer_minutes"
                     type="number"
@@ -548,7 +570,10 @@ export default function WorkspacesPage() {
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="max_advance_booking_days">Max Advance Booking (days)</Label>
+                <Label htmlFor="max_advance_booking_days" className="flex items-center gap-1.5">
+                  Max Advance Booking (days)
+                  <InfoTooltip content="How far in the future customers can book appointments. 30 days is typical. Lower values give more control over your schedule." />
+                </Label>
                 <Input
                   id="max_advance_booking_days"
                   type="number"
@@ -567,7 +592,10 @@ export default function WorkspacesPage() {
 
               <div className="flex items-center justify-between rounded-lg border p-4">
                 <div className="space-y-0.5">
-                  <Label htmlFor="allow_same_day_booking">Allow Same-Day Booking</Label>
+                  <Label htmlFor="allow_same_day_booking" className="flex items-center gap-1.5">
+                    Allow Same-Day Booking
+                    <InfoTooltip content="Whether customers can book appointments for today. Disable for services needing preparation time (e.g., consultations, inspections)." />
+                  </Label>
                   <p className="text-sm text-muted-foreground">
                     Allow customers to book appointments for today
                   </p>
@@ -686,6 +714,28 @@ export default function WorkspacesPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Delete Workspace Confirmation Dialog */}
+      <AlertDialog open={isDeleteDialogOpen} onOpenChange={setIsDeleteDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Workspace</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete {selectedWorkspace?.name}? All associated data will be
+              moved to your default workspace. This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={confirmDelete}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
