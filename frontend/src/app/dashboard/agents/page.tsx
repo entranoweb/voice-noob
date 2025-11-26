@@ -3,11 +3,12 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Plus, Bot, MoreVertical, Play, Pause, AlertCircle } from "lucide-react";
+import { Plus, Bot, MoreVertical, Play, Pause, AlertCircle, Copy, Mic } from "lucide-react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { fetchAgents, deleteAgent } from "@/lib/api/agents";
+import { fetchAgents, deleteAgent, createAgent, getAgent } from "@/lib/api/agents";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -17,6 +18,7 @@ import {
 
 export default function AgentsPage() {
   const queryClient = useQueryClient();
+  const router = useRouter();
 
   // Fetch agents from API
   const {
@@ -39,8 +41,41 @@ export default function AgentsPage() {
     },
   });
 
+  const duplicateMutation = useMutation({
+    mutationFn: async (agentId: string) => {
+      const agent = await getAgent(agentId);
+      return createAgent({
+        name: `${agent.name} (Copy)`,
+        description: agent.description ?? undefined,
+        pricing_tier: agent.pricing_tier as "budget" | "balanced" | "premium",
+        system_prompt: agent.system_prompt,
+        language: agent.language,
+        enabled_tools: agent.enabled_tools,
+        phone_number_id: undefined, // Don't copy phone number
+        enable_recording: agent.enable_recording,
+        enable_transcript: agent.enable_transcript,
+      });
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["agents"] });
+      toast.success("Agent duplicated successfully");
+    },
+    onError: (error: Error) => {
+      toast.error(`Failed to duplicate agent: ${error.message}`);
+    },
+  });
+
   const handleDelete = (agentId: string) => {
     void deleteMutation.mutateAsync(agentId);
+  };
+
+  const handleDuplicate = (agentId: string) => {
+    void duplicateMutation.mutateAsync(agentId);
+  };
+
+  const handleTest = (agentId: string) => {
+    // Navigate to test page with the agent pre-selected
+    router.push(`/dashboard/test?agent=${agentId}`);
   };
 
   return (
@@ -121,8 +156,14 @@ export default function AgentsPage() {
                       <DropdownMenuItem>
                         <Link href={`/dashboard/agents/${agent.id}`}>Edit</Link>
                       </DropdownMenuItem>
-                      <DropdownMenuItem>Test</DropdownMenuItem>
-                      <DropdownMenuItem>Duplicate</DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => handleTest(agent.id)}>
+                        <Mic className="mr-2 h-4 w-4" />
+                        Test
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => handleDuplicate(agent.id)}>
+                        <Copy className="mr-2 h-4 w-4" />
+                        Duplicate
+                      </DropdownMenuItem>
                       <DropdownMenuItem
                         className="text-destructive"
                         onClick={() => handleDelete(agent.id)}

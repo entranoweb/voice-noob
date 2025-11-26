@@ -1,10 +1,12 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useRef } from "react";
 import { useDebounce } from "use-debounce";
+import { useRouter } from "next/navigation";
+import { toast } from "sonner";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { History, Download, Play } from "lucide-react";
+import { History, Download, Play, Pause } from "lucide-react";
 import {
   Table,
   TableBody,
@@ -36,9 +38,65 @@ type Call = {
 };
 
 export default function CallHistoryPage() {
+  const router = useRouter();
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [playingCallId, setPlayingCallId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [debouncedSearchQuery] = useDebounce(searchQuery, 300);
   const [statusFilter, setStatusFilter] = useState("all");
+
+  const handlePlayRecording = (call: Call) => {
+    if (!call.recordingUrl) {
+      toast.error("No recording available for this call");
+      return;
+    }
+
+    // If already playing this call, pause it
+    if (playingCallId === call.id && audioRef.current) {
+      audioRef.current.pause();
+      setPlayingCallId(null);
+      return;
+    }
+
+    // Stop any currently playing audio
+    if (audioRef.current) {
+      audioRef.current.pause();
+    }
+
+    // Create new audio element and play
+    const audio = new Audio(call.recordingUrl);
+    audioRef.current = audio;
+    setPlayingCallId(call.id);
+
+    audio.play().catch((error) => {
+      toast.error(`Failed to play recording: ${error.message}`);
+      setPlayingCallId(null);
+    });
+
+    audio.onended = () => {
+      setPlayingCallId(null);
+    };
+  };
+
+  const handleDownloadTranscript = (call: Call) => {
+    if (!call.transcriptUrl) {
+      toast.error("No transcript available for this call");
+      return;
+    }
+
+    // Create a temporary link to download the transcript
+    const link = document.createElement("a");
+    link.href = call.transcriptUrl;
+    link.download = `transcript-${call.id}.txt`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    toast.success("Transcript download started");
+  };
+
+  const handleRowClick = (callId: string) => {
+    router.push(`/dashboard/calls/${callId}`);
+  };
 
   // Mock data - will be replaced with API call
   // Memoize to prevent the dependency warning
@@ -131,7 +189,11 @@ export default function CallHistoryPage() {
               </TableHeader>
               <TableBody>
                 {filteredCalls.map((call) => (
-                  <TableRow key={call.id}>
+                  <TableRow
+                    key={call.id}
+                    className="cursor-pointer"
+                    onClick={() => handleRowClick(call.id)}
+                  >
                     <TableCell className="text-sm">
                       {new Date(call.timestamp).toLocaleString()}
                     </TableCell>
@@ -159,12 +221,32 @@ export default function CallHistoryPage() {
                     <TableCell>
                       <div className="flex gap-1">
                         {call.recordingUrl && (
-                          <Button variant="ghost" size="icon" title="Play recording">
-                            <Play className="h-4 w-4" />
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            title={playingCallId === call.id ? "Pause recording" : "Play recording"}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handlePlayRecording(call);
+                            }}
+                          >
+                            {playingCallId === call.id ? (
+                              <Pause className="h-4 w-4" />
+                            ) : (
+                              <Play className="h-4 w-4" />
+                            )}
                           </Button>
                         )}
                         {call.transcriptUrl && (
-                          <Button variant="ghost" size="icon" title="Download transcript">
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            title="Download transcript"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDownloadTranscript(call);
+                            }}
+                          >
                             <Download className="h-4 w-4" />
                           </Button>
                         )}
