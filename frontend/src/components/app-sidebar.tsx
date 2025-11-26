@@ -1,7 +1,17 @@
 "use client";
 
 import * as React from "react";
-import { Bot, Phone, History, Settings, LayoutDashboard, Mic, Zap, Users } from "lucide-react";
+import {
+  Bot,
+  Phone,
+  History,
+  Settings,
+  LayoutDashboard,
+  Mic,
+  Zap,
+  Users,
+  Headphones,
+} from "lucide-react";
 
 import {
   Sidebar,
@@ -27,6 +37,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { logout } from "@/lib/api";
 
 const navItems = [
   {
@@ -79,11 +90,11 @@ export function AppSidebar() {
       <SidebarHeader className="border-b px-6 py-4">
         <div className="flex items-center gap-2">
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
-            <Bot className="h-5 w-5" />
+            <Headphones className="h-5 w-5" />
           </div>
           <div className="flex flex-col">
-            <span className="text-sm font-semibold">Voice Agent</span>
-            <span className="text-xs text-muted-foreground">Platform</span>
+            <span className="text-sm font-semibold">Voice Noob</span>
+            <span className="text-xs text-muted-foreground">AI Voice Platform</span>
           </div>
         </div>
       </SidebarHeader>
@@ -126,10 +137,10 @@ export function AppSidebar() {
               <Link href="/dashboard/settings">Settings</Link>
             </DropdownMenuItem>
             <DropdownMenuItem asChild>
-              <Link href="/dashboard/settings/api-keys">API Keys</Link>
+              <Link href="/dashboard/settings">API Keys</Link>
             </DropdownMenuItem>
             <DropdownMenuSeparator />
-            <DropdownMenuItem>Log out</DropdownMenuItem>
+            <DropdownMenuItem onClick={logout}>Log out</DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
       </SidebarFooter>

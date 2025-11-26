@@ -9,7 +9,7 @@ import { fetchAgents } from "@/lib/api/agents";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Phone, PhoneOff, Mic, MicOff } from "lucide-react";
+import { Phone, PhoneOff, Mic, MicOff, User, Bot, Settings2 } from "lucide-react";
 import {
   Select,
   SelectContent,
@@ -37,6 +37,12 @@ export default function TestAgentPage() {
   const [audioStatus, setAudioStatus] = useState<string>("Not connected");
 
   const sessionRef = useRef<RealtimeSession | null>(null);
+  const transcriptEndRef = useRef<HTMLDivElement | null>(null);
+
+  // Auto-scroll to bottom when transcript updates
+  useEffect(() => {
+    transcriptEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [transcript]);
 
   // Fetch agents from API
   const { data: agents = [] } = useQuery({
@@ -308,8 +314,11 @@ export default function TestAgentPage() {
         addTranscript("System", "WebRTC connected! Speak to test your agent.");
 
         // Get tools from token response and system prompt from agent
-        const tools = tokenData.tools || [];
-        const systemPrompt = tokenData.agent?.system_prompt || selectedAgent.system_prompt || "You are a helpful voice assistant.";
+        const tools = tokenData.tools ?? [];
+        const systemPrompt =
+          tokenData.agent?.system_prompt ??
+          selectedAgent.system_prompt ??
+          "You are a helpful voice assistant.";
 
         console.log("[WebRTC] Configuring session with", tools.length, "tools");
 
@@ -331,7 +340,10 @@ export default function TestAgentPage() {
           },
         };
         dataChannel.send(JSON.stringify(sessionUpdate));
-        console.log("[WebRTC] Sent session.update with tools:", tools.map((t: { name: string }) => t.name));
+        console.log(
+          "[WebRTC] Sent session.update with tools:",
+          tools.map((t: { name: string }) => t.name)
+        );
       };
 
       dataChannel.onmessage = async (event) => {
@@ -341,7 +353,7 @@ export default function TestAgentPage() {
 
           // Handle session.updated confirmation
           if (data.type === "session.updated") {
-            const toolsConfigured = data.session?.tools?.length || 0;
+            const toolsConfigured = data.session?.tools?.length ?? 0;
             console.log("[WebRTC] Session updated - tools configured:", toolsConfigured);
             if (toolsConfigured > 0) {
               addTranscript("System", `Session configured with ${toolsConfigured} tools`);
@@ -391,7 +403,10 @@ export default function TestAgentPage() {
               dataChannel.send(JSON.stringify(responseCreate));
               console.log("[WebRTC] Sent response.create");
 
-              addTranscript("System", `Tool ${name} result: ${toolResult.success ? "Success" : "Failed"}`);
+              addTranscript(
+                "System",
+                `Tool ${name} result: ${toolResult.success ? "Success" : "Failed"}`
+              );
             } catch (toolError) {
               console.error("[WebRTC] Tool execution error:", toolError);
               // Send error output
@@ -408,7 +423,7 @@ export default function TestAgentPage() {
             }
           } else if (data.type === "error") {
             console.error("[WebRTC] Error event:", data);
-            addTranscript("System", `Error: ${data.error?.message || "Unknown error"}`);
+            addTranscript("System", `Error: ${data.error?.message ?? "Unknown error"}`);
           }
         } catch (e) {
           console.error("[WebRTC] Failed to parse message:", e);
@@ -561,29 +576,88 @@ export default function TestAgentPage() {
 
               <Card className="bg-muted/50">
                 <CardHeader className="pb-3">
-                  <CardTitle className="text-sm">Live Transcript</CardTitle>
+                  <CardTitle className="flex items-center gap-2 text-sm">
+                    <Mic className="h-4 w-4" />
+                    Live Transcript
+                  </CardTitle>
                 </CardHeader>
                 <CardContent>
-                  <ScrollArea className="h-[300px] w-full rounded-md">
+                  <ScrollArea className="h-[350px] w-full rounded-md border bg-background p-4">
                     {transcript.length === 0 ? (
-                      <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-                        Start a test call to see the live transcript
+                      <div className="flex h-full flex-col items-center justify-center text-center">
+                        <div className="mb-3 rounded-full bg-muted p-3">
+                          <Mic className="h-6 w-6 text-muted-foreground" />
+                        </div>
+                        <p className="text-sm font-medium">No conversation yet</p>
+                        <p className="text-xs text-muted-foreground">
+                          Start a test call to see the live transcript
+                        </p>
                       </div>
                     ) : (
-                      <div className="space-y-3">
+                      <div className="space-y-4">
                         {transcript.map((item) => (
-                          <div key={item.id} className="space-y-1">
-                            <div className="flex items-center gap-2">
-                              <Badge variant="outline" className="text-xs">
-                                {item.speaker}
-                              </Badge>
-                              <span className="text-xs text-muted-foreground">
-                                {item.timestamp.toLocaleTimeString()}
-                              </span>
+                          <div
+                            key={item.id}
+                            className={`flex gap-3 ${
+                              item.speaker === "You" ? "flex-row-reverse" : "flex-row"
+                            }`}
+                          >
+                            {/* Avatar */}
+                            <div
+                              className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full ${
+                                item.speaker === "You"
+                                  ? "bg-primary text-primary-foreground"
+                                  : item.speaker === "Agent"
+                                    ? "bg-green-500 text-white"
+                                    : "bg-muted text-muted-foreground"
+                              }`}
+                            >
+                              {item.speaker === "You" ? (
+                                <User className="h-4 w-4" />
+                              ) : item.speaker === "Agent" ? (
+                                <Bot className="h-4 w-4" />
+                              ) : (
+                                <Settings2 className="h-4 w-4" />
+                              )}
                             </div>
-                            <p className="text-sm">{item.text}</p>
+
+                            {/* Message Bubble */}
+                            <div
+                              className={`max-w-[75%] space-y-1 ${
+                                item.speaker === "You" ? "items-end" : "items-start"
+                              }`}
+                            >
+                              <div
+                                className={`rounded-2xl px-4 py-2 ${
+                                  item.speaker === "You"
+                                    ? "rounded-tr-sm bg-primary text-primary-foreground"
+                                    : item.speaker === "Agent"
+                                      ? "rounded-tl-sm bg-green-500/10 text-foreground"
+                                      : "rounded-tl-sm bg-muted italic text-muted-foreground"
+                                }`}
+                              >
+                                <p className="text-sm">{item.text}</p>
+                              </div>
+                              <div
+                                className={`flex items-center gap-2 px-1 ${
+                                  item.speaker === "You" ? "justify-end" : "justify-start"
+                                }`}
+                              >
+                                <span className="text-[10px] text-muted-foreground">
+                                  {item.speaker}
+                                </span>
+                                <span className="text-[10px] text-muted-foreground">
+                                  {item.timestamp.toLocaleTimeString([], {
+                                    hour: "2-digit",
+                                    minute: "2-digit",
+                                    second: "2-digit",
+                                  })}
+                                </span>
+                              </div>
+                            </div>
                           </div>
                         ))}
+                        <div ref={transcriptEndRef} />
                       </div>
                     )}
                   </ScrollArea>

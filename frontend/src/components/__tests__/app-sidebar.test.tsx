@@ -21,8 +21,8 @@ describe("AppSidebar", () => {
   it("contains application branding", () => {
     renderSidebar();
     // Test basic rendering - shadcn/ui components may have complex DOM structure
-    expect(screen.getByText("Voice Agent")).toBeInTheDocument();
-    expect(screen.getByText("Platform")).toBeInTheDocument();
+    expect(screen.getByText("Voice Noob")).toBeInTheDocument();
+    expect(screen.getByText("AI Voice Platform")).toBeInTheDocument();
   });
 
   it("renders navigation items", () => {

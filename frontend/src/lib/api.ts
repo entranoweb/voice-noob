@@ -28,6 +28,16 @@ function safeRemoveItem(key: string): void {
   }
 }
 
+// Logout function - clears auth token and redirects to login
+export function logout(): void {
+  safeRemoveItem("access_token");
+  try {
+    window.location.href = "/login";
+  } catch (navError) {
+    console.error("Failed to redirect to login:", navError);
+  }
+}
+
 // Request interceptor for adding auth token
 api.interceptors.request.use(
   (config) => {

@@ -94,7 +94,7 @@ export default function DashboardPage() {
               <div className="text-sm text-muted-foreground">Purchase a number for your agents</div>
             </a>
             <a
-              href="/dashboard/settings/api-keys"
+              href="/dashboard/settings"
               className="block rounded-lg border p-4 transition-colors hover:bg-accent"
             >
               <div className="font-medium">Configure API Keys</div>

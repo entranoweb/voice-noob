@@ -614,9 +614,7 @@ export default function NewAgentPage() {
               <Card>
                 <CardHeader>
                   <CardTitle>External Integrations</CardTitle>
-                  <CardDescription>
-                    Connect external services (coming soon)
-                  </CardDescription>
+                  <CardDescription>Connect external services (coming soon)</CardDescription>
                 </CardHeader>
                 <CardContent>
                   <FormField
@@ -642,19 +640,13 @@ export default function NewAgentPage() {
                               render={() => (
                                 <FormItem className="flex flex-row items-start space-x-3 space-y-0 rounded-md border p-4 opacity-50">
                                   <FormControl>
-                                    <input
-                                      type="checkbox"
-                                      className="mt-0.5 h-4 w-4"
-                                      disabled
-                                    />
+                                    <input type="checkbox" className="mt-0.5 h-4 w-4" disabled />
                                   </FormControl>
                                   <div className="space-y-1 leading-none">
                                     <FormLabel className="cursor-not-allowed font-medium">
                                       {tool.name}
                                     </FormLabel>
-                                    <FormDescription>
-                                      {tool.desc} (Coming soon)
-                                    </FormDescription>
+                                    <FormDescription>{tool.desc} (Coming soon)</FormDescription>
                                   </div>
                                 </FormItem>
                               )}
@@ -662,9 +654,7 @@ export default function NewAgentPage() {
                           ))}
                           <div className="pt-4">
                             <Button type="button" variant="outline" size="sm" asChild>
-                              <Link href="/dashboard/integrations">
-                                Manage Integrations
-                              </Link>
+                              <Link href="/dashboard/integrations">Manage Integrations</Link>
                             </Button>
                           </div>
                         </div>
@@ -791,7 +781,12 @@ export default function NewAgentPage() {
           </Tabs>
 
           <div className="flex justify-end gap-4">
-            <Button type="button" variant="outline" asChild disabled={createAgentMutation.isPending}>
+            <Button
+              type="button"
+              variant="outline"
+              asChild
+              disabled={createAgentMutation.isPending}
+            >
               <Link href="/dashboard/agents">Cancel</Link>
             </Button>
             <Button type="submit" disabled={createAgentMutation.isPending}>
