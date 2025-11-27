@@ -1,14 +1,15 @@
 "use client";
 
-import { useState, useMemo, memo } from "react";
+import { useState, useMemo, memo, useCallback } from "react";
 import { useDebounce } from "use-debounce";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { api } from "@/lib/api";
+import { api, integrationsApi, type IntegrationResponse } from "@/lib/api";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Search,
@@ -29,6 +30,11 @@ import {
   Send,
   Clock,
   FolderOpen,
+  Loader2,
+  Trash2,
+  Eye,
+  EyeOff,
+  ExternalLink,
 } from "lucide-react";
 import {
   Dialog,
@@ -38,6 +44,16 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { AVAILABLE_INTEGRATIONS, type Integration } from "@/lib/integrations";
 import {
   Select,
@@ -55,7 +71,7 @@ interface Workspace {
 }
 
 const getIntegrationIcon = (integrationId: string) => {
-  const iconMap: Record<string, React.ComponentType> = {
+  const iconMap: Record<string, React.ComponentType<{ className?: string }>> = {
     salesforce: Users,
     hubspot: Users,
     pipedrive: Users,
@@ -93,9 +109,31 @@ export default function IntegrationsPage() {
     },
   });
 
-  // Internal tools are always "connected" (no credentials needed)
-  const internalTools = new Set<string>(["crm", "bookings"]);
-  const connectedIntegrations = internalTools;
+  // Fetch connected integrations
+  const { data: connectedIntegrationsData } = useQuery({
+    queryKey: ["integrations", selectedWorkspaceId],
+    queryFn: async () => {
+      const wsId = selectedWorkspaceId === "all" ? undefined : selectedWorkspaceId;
+      return integrationsApi.list(wsId);
+    },
+  });
+
+  // Build set of connected integration IDs
+  const connectedIntegrations = useMemo(() => {
+    const internalTools = new Set<string>(["crm", "bookings"]);
+    const connected = connectedIntegrationsData?.integrations ?? [];
+    const connectedIds = new Set(connected.map((i) => i.integration_id));
+    return new Set([...internalTools, ...connectedIds]);
+  }, [connectedIntegrationsData]);
+
+  // Map of integration_id to connection data
+  const connectionDataMap = useMemo(() => {
+    const map = new Map<string, IntegrationResponse>();
+    (connectedIntegrationsData?.integrations ?? []).forEach((i) => {
+      map.set(i.integration_id, i);
+    });
+    return map;
+  }, [connectedIntegrationsData]);
 
   const categories = [
     { value: "all", label: "All" },
@@ -119,7 +157,7 @@ export default function IntegrationsPage() {
     });
   }, [debouncedSearchQuery, selectedCategory]);
 
-  const connectedCount = Array.from(connectedIntegrations).length;
+  const connectedCount = connectedIntegrations.size;
 
   return (
     <div className="space-y-6">
@@ -199,6 +237,10 @@ export default function IntegrationsPage() {
                   key={integration.id}
                   integration={integration}
                   isConnected={connectedIntegrations.has(integration.id)}
+                  connectionData={connectionDataMap.get(integration.id)}
+                  selectedWorkspaceId={
+                    selectedWorkspaceId === "all" ? undefined : selectedWorkspaceId
+                  }
                 />
               ))}
             </div>
@@ -212,9 +254,13 @@ export default function IntegrationsPage() {
 const IntegrationCard = memo(function IntegrationCard({
   integration,
   isConnected,
+  connectionData,
+  selectedWorkspaceId,
 }: {
   integration: Integration;
   isConnected: boolean;
+  connectionData?: IntegrationResponse;
+  selectedWorkspaceId?: string;
 }) {
   const [isConfigDialogOpen, setIsConfigDialogOpen] = useState(false);
   const Icon = getIntegrationIcon(integration.id);
@@ -268,16 +314,23 @@ const IntegrationCard = memo(function IntegrationCard({
             </DialogTrigger>
             <DialogContent className="max-w-md">
               <DialogHeader>
-                <DialogTitle>Connect {integration.name}</DialogTitle>
+                <DialogTitle className="flex items-center gap-2">
+                  <Icon className="h-5 w-5" />
+                  {isConnected ? `Configure ${integration.name}` : `Connect ${integration.name}`}
+                </DialogTitle>
                 <DialogDescription>
                   {integration.authType === "oauth"
                     ? "Click Connect to authorize access via OAuth"
-                    : "Enter your API credentials below"}
+                    : integration.authType === "none"
+                      ? "This integration is always available"
+                      : "Enter your API credentials below"}
                 </DialogDescription>
               </DialogHeader>
               <IntegrationConfigForm
                 integration={integration}
                 isConnected={isConnected}
+                connectionData={connectionData}
+                selectedWorkspaceId={selectedWorkspaceId}
                 onClose={() => setIsConfigDialogOpen(false)}
               />
             </DialogContent>
@@ -285,6 +338,7 @@ const IntegrationCard = memo(function IntegrationCard({
           {integration.documentationUrl && (
             <Button variant="ghost" size="sm" className="h-7 text-xs" asChild>
               <a href={integration.documentationUrl} target="_blank" rel="noopener noreferrer">
+                <ExternalLink className="mr-1 h-3 w-3" />
                 Docs
               </a>
             </Button>
@@ -297,13 +351,102 @@ const IntegrationCard = memo(function IntegrationCard({
 
 const IntegrationConfigForm = memo(function IntegrationConfigForm({
   integration,
-  isConnected: _isConnected,
+  isConnected,
+  connectionData,
+  selectedWorkspaceId,
   onClose,
 }: {
   integration: Integration;
   isConnected: boolean;
+  connectionData?: IntegrationResponse;
+  selectedWorkspaceId?: string;
   onClose: () => void;
 }) {
+  const queryClient = useQueryClient();
+  const [credentials, setCredentials] = useState<Record<string, string>>({});
+  const [showPasswords, setShowPasswords] = useState<Record<string, boolean>>({});
+  const [showDisconnectDialog, setShowDisconnectDialog] = useState(false);
+
+  // Connect mutation
+  const connectMutation = useMutation({
+    mutationFn: async () => {
+      return integrationsApi.connect({
+        integration_id: integration.id,
+        integration_name: integration.name,
+        workspace_id: selectedWorkspaceId ?? null,
+        credentials,
+      });
+    },
+    onSuccess: () => {
+      toast.success(`${integration.name} connected successfully`);
+      void queryClient.invalidateQueries({ queryKey: ["integrations"] });
+      onClose();
+    },
+    onError: (error: Error & { response?: { data?: { detail?: string } } }) => {
+      toast.error(error.response?.data?.detail ?? `Failed to connect ${integration.name}`);
+    },
+  });
+
+  // Update mutation
+  const updateMutation = useMutation({
+    mutationFn: async () => {
+      return integrationsApi.update(integration.id, { credentials }, selectedWorkspaceId);
+    },
+    onSuccess: () => {
+      toast.success(`${integration.name} updated successfully`);
+      void queryClient.invalidateQueries({ queryKey: ["integrations"] });
+      onClose();
+    },
+    onError: (error: Error & { response?: { data?: { detail?: string } } }) => {
+      toast.error(error.response?.data?.detail ?? `Failed to update ${integration.name}`);
+    },
+  });
+
+  // Disconnect mutation
+  const disconnectMutation = useMutation({
+    mutationFn: async () => {
+      return integrationsApi.disconnect(integration.id, selectedWorkspaceId);
+    },
+    onSuccess: () => {
+      toast.success(`${integration.name} disconnected`);
+      void queryClient.invalidateQueries({ queryKey: ["integrations"] });
+      setShowDisconnectDialog(false);
+      onClose();
+    },
+    onError: (error: Error & { response?: { data?: { detail?: string } } }) => {
+      toast.error(error.response?.data?.detail ?? `Failed to disconnect ${integration.name}`);
+    },
+  });
+
+  const handleFieldChange = useCallback((fieldName: string, value: string) => {
+    setCredentials((prev) => ({ ...prev, [fieldName]: value }));
+  }, []);
+
+  const togglePasswordVisibility = useCallback((fieldName: string) => {
+    setShowPasswords((prev) => ({ ...prev, [fieldName]: !prev[fieldName] }));
+  }, []);
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+
+    // Validate required fields
+    const requiredFields = integration.fields?.filter((f) => f.required) ?? [];
+    const missingFields = requiredFields.filter((f) => !credentials[f.name]?.trim());
+
+    if (missingFields.length > 0) {
+      toast.error(`Please fill in: ${missingFields.map((f) => f.label).join(", ")}`);
+      return;
+    }
+
+    if (isConnected) {
+      updateMutation.mutate();
+    } else {
+      connectMutation.mutate();
+    }
+  };
+
+  const isLoading = connectMutation.isPending || updateMutation.isPending;
+
   // For internal tools (authType: "none"), just show info
   if (integration.authType === "none") {
     return (
@@ -314,8 +457,7 @@ const IntegrationConfigForm = memo(function IntegrationConfigForm({
             <span className="text-sm font-medium">Always Available</span>
           </div>
           <p className="mt-2 text-sm text-muted-foreground">
-            This is an internal tool that works with your existing CRM data. No configuration
-            needed.
+            This is an internal tool that works with your existing data. No configuration needed.
           </p>
         </div>
         <Button onClick={onClose} className="w-full">
@@ -325,24 +467,131 @@ const IntegrationConfigForm = memo(function IntegrationConfigForm({
     );
   }
 
-  // External integrations - coming soon
-  const handleExternalIntegration = () => {
-    toast.info("External integrations coming soon! Use internal CRM and Bookings tools for now.");
-    onClose();
-  };
-
-  // All other integrations - show coming soon message
-  return (
-    <div className="space-y-4">
-      <div className="rounded-lg border p-4">
-        <p className="text-sm text-muted-foreground">
-          External integrations are coming soon! For now, use the internal CRM and Bookings tools
-          which work with your existing data.
-        </p>
+  // No fields defined - show placeholder
+  if (!integration.fields || integration.fields.length === 0) {
+    return (
+      <div className="space-y-4">
+        <div className="rounded-lg border p-4">
+          <p className="text-sm text-muted-foreground">
+            This integration requires OAuth authentication which is coming soon.
+          </p>
+        </div>
+        <Button onClick={onClose} className="w-full">
+          Close
+        </Button>
       </div>
-      <Button onClick={handleExternalIntegration} className="w-full">
-        Coming Soon
-      </Button>
-    </div>
+    );
+  }
+
+  return (
+    <>
+      <form onSubmit={handleSubmit} className="space-y-4">
+        {/* Show connection status if already connected */}
+        {isConnected && connectionData && (
+          <div className="rounded-lg border border-green-500/20 bg-green-500/10 p-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 text-green-600 dark:text-green-400">
+                <Check className="h-4 w-4" />
+                <span className="text-sm font-medium">Connected</span>
+              </div>
+              {connectionData.connected_at && (
+                <span className="text-xs text-muted-foreground">
+                  Since {new Date(connectionData.connected_at).toLocaleDateString()}
+                </span>
+              )}
+            </div>
+            {connectionData.credential_fields.length > 0 && (
+              <p className="mt-1 text-xs text-muted-foreground">
+                Credentials set: {connectionData.credential_fields.join(", ")}
+              </p>
+            )}
+          </div>
+        )}
+
+        {/* Credential fields */}
+        {integration.fields.map((field) => (
+          <div key={field.name} className="space-y-2">
+            <Label htmlFor={field.name} className="text-sm">
+              {field.label}
+              {field.required && <span className="ml-1 text-destructive">*</span>}
+            </Label>
+            <div className="relative">
+              <Input
+                id={field.name}
+                type={field.type === "password" && !showPasswords[field.name] ? "password" : "text"}
+                placeholder={field.placeholder ?? `Enter ${field.label.toLowerCase()}`}
+                value={credentials[field.name] ?? ""}
+                onChange={(e) => handleFieldChange(field.name, e.target.value)}
+                className="pr-10"
+              />
+              {field.type === "password" && (
+                <button
+                  type="button"
+                  onClick={() => togglePasswordVisibility(field.name)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                >
+                  {showPasswords[field.name] ? (
+                    <EyeOff className="h-4 w-4" />
+                  ) : (
+                    <Eye className="h-4 w-4" />
+                  )}
+                </button>
+              )}
+            </div>
+            {field.description && (
+              <p className="text-xs text-muted-foreground">{field.description}</p>
+            )}
+          </div>
+        ))}
+
+        {/* Action buttons */}
+        <div className="flex gap-2 pt-2">
+          {isConnected ? (
+            <>
+              <Button type="submit" className="flex-1" disabled={isLoading}>
+                {isLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                Update Credentials
+              </Button>
+              <Button
+                type="button"
+                variant="destructive"
+                onClick={() => setShowDisconnectDialog(true)}
+                disabled={disconnectMutation.isPending}
+              >
+                <Trash2 className="h-4 w-4" />
+              </Button>
+            </>
+          ) : (
+            <Button type="submit" className="w-full" disabled={isLoading}>
+              {isLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              Connect
+            </Button>
+          )}
+        </div>
+      </form>
+
+      {/* Disconnect confirmation dialog */}
+      <AlertDialog open={showDisconnectDialog} onOpenChange={setShowDisconnectDialog}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Disconnect {integration.name}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will remove your stored credentials. Any agents using this integration will no
+              longer have access to it.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => disconnectMutation.mutate()}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {disconnectMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              Disconnect
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
   );
 });

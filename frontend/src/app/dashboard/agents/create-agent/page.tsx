@@ -230,30 +230,37 @@ export default function CreateAgentPage() {
       </div>
 
       {/* Progress Bar */}
-      <div className="flex items-center gap-1">
+      <div className="grid grid-cols-[1fr_1.5rem_1fr_1.5rem_1fr_1.5rem_1fr_1.5rem_1fr] items-center">
         {WIZARD_STEPS.map((s, idx) => {
           const Icon = s.icon;
           const isActive = s.id === step;
           const isCompleted = s.id < step;
+          const isNextStep = s.id === step + 1;
+          const prevCompleted = idx > 0 && step > idx;
 
           return (
-            <div key={s.id} className="flex flex-1 items-center">
+            <>
+              {/* Step card */}
               <button
+                key={s.id}
                 type="button"
                 onClick={() => s.id < step && setStep(s.id)}
                 disabled={s.id > step}
                 className={cn(
-                  "flex flex-1 items-center gap-2 rounded-lg border p-2 transition-all",
-                  isActive && "border-primary bg-primary/5 ring-1 ring-primary",
+                  "relative z-10 flex items-center gap-2 rounded-lg border p-2 transition-all duration-300",
+                  isActive &&
+                    "border-primary bg-primary/10 shadow-[0_0_12px_hsl(var(--primary)/0.4)] ring-1 ring-primary",
                   isCompleted &&
-                    "cursor-pointer border-primary/50 bg-primary/5 hover:bg-primary/10",
-                  !isActive && !isCompleted && "cursor-not-allowed border-border bg-muted/30"
+                    "cursor-pointer border-primary bg-primary/5 shadow-[0_0_8px_hsl(var(--primary)/0.3)] hover:bg-primary/10",
+                  !isActive && !isCompleted && "cursor-not-allowed border-border bg-muted/30",
+                  isNextStep && "border-primary/30"
                 )}
               >
                 <div
                   className={cn(
-                    "flex h-7 w-7 items-center justify-center rounded-full text-xs font-medium",
-                    isActive && "bg-primary text-primary-foreground",
+                    "flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-medium transition-all duration-300",
+                    isActive &&
+                      "bg-primary text-primary-foreground shadow-[0_0_8px_hsl(var(--primary))]",
                     isCompleted && "bg-primary text-primary-foreground",
                     !isActive && !isCompleted && "bg-muted text-muted-foreground"
                   )}
@@ -274,16 +281,54 @@ export default function CreateAgentPage() {
                 >
                   {s.label}
                 </span>
+
+                {/* Active step pulsing glow */}
+                {isActive && (
+                  <div className="absolute inset-0 -z-10 animate-pulse-glow rounded-lg bg-primary/10" />
+                )}
+
+                {/* Left connector point - where line enters card */}
+                {idx > 0 && (
+                  <div
+                    className={cn(
+                      "absolute -left-1 top-1/2 h-2 w-2 -translate-y-1/2 rounded-full transition-all duration-300",
+                      prevCompleted || isActive
+                        ? "bg-primary shadow-[0_0_6px_hsl(var(--primary))]"
+                        : "bg-border"
+                    )}
+                  />
+                )}
+
+                {/* Right connector point - where line exits card */}
+                {idx < WIZARD_STEPS.length - 1 && (
+                  <div
+                    className={cn(
+                      "absolute -right-1 top-1/2 h-2 w-2 -translate-y-1/2 rounded-full transition-all duration-300",
+                      isCompleted ? "bg-primary shadow-[0_0_6px_hsl(var(--primary))]" : "bg-border"
+                    )}
+                  />
+                )}
               </button>
+
+              {/* Connector line between steps */}
               {idx < WIZARD_STEPS.length - 1 && (
-                <div
-                  className={cn(
-                    "mx-1 h-0.5 w-4 rounded-full",
-                    isCompleted ? "bg-primary" : "bg-border"
+                <div key={`connector-${idx}`} className="relative -mx-1 h-1 overflow-hidden">
+                  {/* Base track */}
+                  <div className="absolute inset-0 bg-border/50" />
+                  {/* Completed glow line */}
+                  {isCompleted && (
+                    <>
+                      <div className="absolute inset-0 bg-primary shadow-[0_0_8px_hsl(var(--primary)),0_0_16px_hsl(var(--primary)/0.5)]" />
+                      {/* Shimmer */}
+                      <div
+                        className="absolute inset-0 animate-shimmer-flow bg-gradient-to-r from-transparent via-white/50 to-transparent"
+                        style={{ animationDelay: `${idx * 0.3}s` }}
+                      />
+                    </>
                   )}
-                />
+                </div>
               )}
-            </div>
+            </>
           );
         })}
       </div>

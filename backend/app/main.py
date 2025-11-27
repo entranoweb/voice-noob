@@ -27,6 +27,7 @@ from app.api import (
     compliance,
     crm,
     health,
+    integrations,
     phone_numbers,
     realtime,
     telephony,
@@ -128,7 +129,7 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # ty
 # Add security headers middleware
 app.add_middleware(SecurityHeadersMiddleware)
 
-# Add CORS middleware
+# Add CORS middleware (must be added AFTER security headers so it runs first)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
@@ -153,6 +154,7 @@ app.include_router(calls.router)  # Call history API
 app.include_router(phone_numbers.router)  # Phone numbers API
 app.include_router(auth.router)  # Authentication API
 app.include_router(compliance.router)  # Compliance API (GDPR/CCPA)
+app.include_router(integrations.router)  # Integrations API (external tools)
 
 
 @app.get("/")

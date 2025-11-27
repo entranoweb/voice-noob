@@ -6,6 +6,7 @@ import { useState } from "react";
 import { Toaster } from "sonner";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { AuthProvider } from "@/hooks/use-auth";
+import { Preloader } from "@/components/preloader";
 
 export default function RootLayout({
   children,
@@ -34,6 +35,7 @@ export default function RootLayout({
         <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
       </head>
       <body className="antialiased">
+        <Preloader />
         <ErrorBoundary>
           <QueryClientProvider client={queryClient}>
             <AuthProvider>{children}</AuthProvider>

@@ -38,7 +38,19 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background p-4">
+    <div className="flex min-h-screen flex-col items-center justify-center bg-black p-4">
+      {/* Logo */}
+      <div className="mb-8">
+        <span
+          className="animate-gradient-flow bg-clip-text text-3xl font-bold tracking-tight text-transparent"
+          style={{
+            backgroundImage: "linear-gradient(90deg, #e2e8f0, #94a3b8, #e2e8f0, #94a3b8, #e2e8f0)",
+            backgroundSize: "200% 100%",
+          }}
+        >
+          Voice Noob
+        </span>
+      </div>
       <Card className="w-full max-w-md">
         <CardHeader className="space-y-1">
           <CardTitle className="text-2xl font-bold">Sign in</CardTitle>

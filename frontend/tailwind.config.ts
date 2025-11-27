@@ -65,6 +65,20 @@ const config: Config = {
   			lg: 'var(--radius)',
   			md: 'calc(var(--radius) - 2px)',
   			sm: 'calc(var(--radius) - 4px)'
+  		},
+  		keyframes: {
+  			'shimmer-flow': {
+  				'0%': { transform: 'translateX(-100%)' },
+  				'100%': { transform: 'translateX(100%)' }
+  			},
+  			'pulse-glow': {
+  				'0%, 100%': { opacity: '0.4' },
+  				'50%': { opacity: '1' }
+  			}
+  		},
+  		animation: {
+  			'shimmer-flow': 'shimmer-flow 2s ease-in-out infinite',
+  			'pulse-glow': 'pulse-glow 2s ease-in-out infinite'
   		}
   	}
   },

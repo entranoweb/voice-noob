@@ -91,4 +91,83 @@ api.interceptors.response.use(
   }
 );
 
+// Integration types
+export interface IntegrationResponse {
+  id: string;
+  integration_id: string;
+  integration_name: string;
+  workspace_id: string | null;
+  is_active: boolean;
+  is_connected: boolean;
+  connected_at: string | null;
+  last_used_at: string | null;
+  has_credentials: boolean;
+  credential_fields: string[];
+}
+
+export interface IntegrationListResponse {
+  integrations: IntegrationResponse[];
+  total: number;
+}
+
+export interface ConnectIntegrationRequest {
+  integration_id: string;
+  integration_name: string;
+  workspace_id?: string | null;
+  credentials: Record<string, string>;
+  metadata?: Record<string, unknown>;
+}
+
+export interface UpdateIntegrationRequest {
+  credentials?: Record<string, string>;
+  metadata?: Record<string, unknown>;
+  is_active?: boolean;
+}
+
+// Integration API functions
+export const integrationsApi = {
+  // List all connected integrations for the user (optionally filtered by workspace)
+  list: async (workspaceId?: string): Promise<IntegrationListResponse> => {
+    const params = workspaceId ? { workspace_id: workspaceId } : {};
+    const response = await api.get<IntegrationListResponse>("/api/v1/integrations", { params });
+    return response.data;
+  },
+
+  // Get a specific integration's connection status
+  get: async (integrationId: string, workspaceId?: string): Promise<IntegrationResponse> => {
+    const params = workspaceId ? { workspace_id: workspaceId } : {};
+    const response = await api.get<IntegrationResponse>(`/api/v1/integrations/${integrationId}`, {
+      params,
+    });
+    return response.data;
+  },
+
+  // Connect a new integration
+  connect: async (request: ConnectIntegrationRequest): Promise<IntegrationResponse> => {
+    const response = await api.post<IntegrationResponse>("/api/v1/integrations", request);
+    return response.data;
+  },
+
+  // Update an integration's credentials or settings
+  update: async (
+    integrationId: string,
+    request: UpdateIntegrationRequest,
+    workspaceId?: string
+  ): Promise<IntegrationResponse> => {
+    const params = workspaceId ? { workspace_id: workspaceId } : {};
+    const response = await api.put<IntegrationResponse>(
+      `/api/v1/integrations/${integrationId}`,
+      request,
+      { params }
+    );
+    return response.data;
+  },
+
+  // Disconnect an integration
+  disconnect: async (integrationId: string, workspaceId?: string): Promise<void> => {
+    const params = workspaceId ? { workspace_id: workspaceId } : {};
+    await api.delete(`/api/v1/integrations/${integrationId}`, { params });
+  },
+};
+
 export default api;
