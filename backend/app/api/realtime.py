@@ -93,7 +93,7 @@ def get_realtime_model_for_tier(pricing_tier: str) -> str:
 
 
 @router.websocket("/realtime/{agent_id}")
-async def realtime_websocket(
+async def realtime_websocket(  # noqa: PLR0915
     websocket: WebSocket,
     agent_id: str,
     workspace_id: str,
@@ -118,6 +118,7 @@ async def realtime_websocket(
     client_logger = logger.bind(
         endpoint="realtime_websocket",
         agent_id=agent_id,
+        workspace_id=workspace_id,
         session_id=session_id,
     )
 
@@ -125,8 +126,22 @@ async def realtime_websocket(
     client_logger.info("websocket_connected")
 
     try:
-        # Load agent configuration
-        result = await db.execute(select(Agent).where(Agent.id == uuid.UUID(agent_id)))
+        # Validate UUIDs first
+        try:
+            agent_uuid = uuid.UUID(agent_id)
+            workspace_uuid = uuid.UUID(workspace_id)
+        except ValueError:
+            client_logger.warning("invalid_uuid_format")
+            await websocket.send_json(
+                {"type": "error", "error": "Invalid agent or workspace ID format"}
+            )
+            await websocket.close(code=4000)
+            return
+
+        # Load agent configuration with workspace verification
+        from app.models.workspace import AgentWorkspace
+
+        result = await db.execute(select(Agent).where(Agent.id == agent_uuid))
         agent = result.scalar_one_or_none()
 
         if not agent:
@@ -158,6 +173,25 @@ async def realtime_websocket(
                 }
             )
             await websocket.close()
+            return
+
+        # Verify agent is associated with the specified workspace (authorization check)
+        workspace_check = await db.execute(
+            select(AgentWorkspace).where(
+                AgentWorkspace.agent_id == agent_uuid,
+                AgentWorkspace.workspace_id == workspace_uuid,
+            )
+        )
+        if not workspace_check.scalar_one_or_none():
+            client_logger.warning(
+                "unauthorized_workspace_access",
+                agent_id=agent_id,
+                workspace_id=workspace_id,
+            )
+            await websocket.send_json(
+                {"type": "error", "error": "Agent not authorized for this workspace"}
+            )
+            await websocket.close(code=4003)
             return
 
         client_logger.info(
@@ -266,9 +300,13 @@ async def _bridge_audio_streams(
                         logger.debug("client_audio_received", size_bytes=audio_size)
                         await realtime_session.send_audio(message["bytes"])
                     elif "text" in message:
-                        # JSON event
-                        data = json.loads(message["text"])
-                        logger.info("client_event", event_type=data.get("type"), data=data)
+                        # JSON event - with error handling for malformed JSON
+                        try:
+                            data = json.loads(message["text"])
+                            logger.info("client_event", event_type=data.get("type"), data=data)
+                        except json.JSONDecodeError as e:
+                            logger.warning("invalid_json_from_client", error=str(e))
+                            continue  # Skip malformed message
 
         except WebSocketDisconnect:
             logger.info("client_disconnected_exception")
@@ -313,12 +351,23 @@ async def _bridge_audio_streams(
         except Exception as e:
             logger.exception("realtime_to_client_error", error=str(e), error_type=type(e).__name__)
 
-    # Run both directions concurrently
-    await asyncio.gather(
+    # Run both directions concurrently and check for errors
+    results = await asyncio.gather(
         client_to_realtime(),
         realtime_to_client(),
         return_exceptions=True,
     )
+
+    # Check and log any exceptions from the concurrent tasks
+    for i, result in enumerate(results):
+        if isinstance(result, BaseException):
+            task_name = "client_to_realtime" if i == 0 else "realtime_to_client"
+            logger.error(
+                "bridge_task_failed",
+                task=task_name,
+                error=str(result),
+                error_type=type(result).__name__,
+            )
 
 
 # =============================================================================

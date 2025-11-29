@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.core.auth import CurrentUser, user_id_to_uuid
 from app.db.session import get_db
@@ -93,9 +94,17 @@ async def list_calls(
     log = logger.bind(user_id=current_user.id)
     log.info("listing_calls", page=page, page_size=page_size)
 
-    # Build query
+    # Build query with eager loading to prevent N+1 queries
     user_uuid = user_id_to_uuid(current_user.id)
-    query = select(CallRecord).where(CallRecord.user_id == user_uuid)
+    query = (
+        select(CallRecord)
+        .where(CallRecord.user_id == user_uuid)
+        .options(
+            selectinload(CallRecord.agent),
+            selectinload(CallRecord.contact),
+            selectinload(CallRecord.workspace),
+        )
+    )
 
     # Apply filters
     if agent_id:

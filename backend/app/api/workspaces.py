@@ -6,7 +6,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, field_validator
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -174,14 +174,20 @@ async def list_workspaces(
             detail="Database temporarily unavailable. Please try again later.",
         ) from e
 
+    # Get contact counts for all workspaces in a single query (prevents N+1)
+    workspace_ids = [ws.id for ws in workspaces]
+    contact_counts: dict[uuid.UUID, int] = {}
+    if workspace_ids:
+        count_result = await db.execute(
+            select(Contact.workspace_id, func.count(Contact.id))
+            .where(Contact.workspace_id.in_(workspace_ids))
+            .group_by(Contact.workspace_id)
+        )
+        for ws_id, count in count_result.all():
+            contact_counts[ws_id] = count
+
     response = []
     for ws in workspaces:
-        # Get contact count for this workspace
-        contact_count_result = await db.execute(
-            select(Contact).where(Contact.workspace_id == ws.id)
-        )
-        contact_count = len(list(contact_count_result.scalars().all()))
-
         response.append(
             {
                 "id": str(ws.id),
@@ -191,7 +197,7 @@ async def list_workspaces(
                 "settings": ws.settings,
                 "is_default": ws.is_default,
                 "agent_count": len(ws.agent_workspaces),
-                "contact_count": contact_count,
+                "contact_count": contact_counts.get(ws.id, 0),
             }
         )
 

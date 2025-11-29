@@ -1,7 +1,7 @@
 """Authentication API routes."""
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordRequestForm
 from jose import jwt
 from passlib.context import CryptContext
@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import CurrentUser
 from app.core.config import settings
+from app.core.limiter import limiter
 from app.db.session import get_db
 from app.models.user import User
 
@@ -83,8 +84,10 @@ def create_access_token(user_id: int) -> str:
 
 
 @router.post("/register", response_model=UserResponse)
+@limiter.limit("5/minute")  # Strict rate limit to prevent account spam
 async def register(
     request: RegisterRequest,
+    http_request: Request,  # Required for rate limiter
     db: AsyncSession = Depends(get_db),
 ) -> UserResponse:
     """Register a new user.
@@ -122,7 +125,9 @@ async def register(
 
 
 @router.post("/login", response_model=TokenResponse)
+@limiter.limit("10/minute")  # Strict rate limit to prevent brute force attacks
 async def login(
+    request: Request,  # Required for rate limiter
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: AsyncSession = Depends(get_db),
 ) -> TokenResponse:
