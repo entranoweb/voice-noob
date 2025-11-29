@@ -317,7 +317,7 @@ export function EmbedAgentDialog({ open, onOpenChange, agent }: EmbedAgentDialog
                 variant="outline"
                 onClick={() => {
                   window.open(
-                    `/embed/${embedSettings.public_id}?position=${position}&theme=${theme}`,
+                    `/embed/${embedSettings.public_id}/preview?position=${position}&theme=${theme}`,
                     "_blank"
                   );
                 }}

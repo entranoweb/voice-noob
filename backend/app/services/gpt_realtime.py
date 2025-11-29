@@ -9,6 +9,7 @@ import structlog
 from openai import AsyncOpenAI
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.integrations import get_workspace_integrations
 from app.api.settings import get_user_api_keys
 from app.core.auth import user_id_to_uuid
 from app.core.config import settings
@@ -173,8 +174,17 @@ class GPTRealtimeSession:
         # Initialize OpenAI client with user's or global API key
         self.client = AsyncOpenAI(api_key=api_key)
 
-        # Initialize tool registry with enabled tools
-        self.tool_registry = ToolRegistry(self.db, self.user_id)
+        # Get integration credentials for the workspace
+        integrations: dict[str, Any] = {}
+        if self.workspace_id:
+            integrations = await get_workspace_integrations(
+                self.user_id_uuid, self.workspace_id, self.db
+            )
+
+        # Initialize tool registry with enabled tools and workspace context
+        self.tool_registry = ToolRegistry(
+            self.db, self.user_id, integrations=integrations, workspace_id=self.workspace_id
+        )
 
         # Connect to OpenAI Realtime API
         await self._connect_realtime_api()

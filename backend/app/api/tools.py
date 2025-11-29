@@ -1,14 +1,18 @@
 """API endpoints for tool execution."""
 
+import uuid
 from typing import Any
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.auth import CurrentUser
+from app.api.integrations import get_workspace_integrations
+from app.core.auth import CurrentUser, user_id_to_uuid
 from app.db.session import get_db
+from app.models.workspace import AgentWorkspace
 from app.services.tools.registry import ToolRegistry
 
 router = APIRouter(prefix="/api/v1/tools", tags=["tools"])
@@ -54,8 +58,30 @@ async def execute_tool(
     tool_logger.info("tool_execution_requested", arguments=request.arguments)
 
     try:
+        # Get workspace for the agent (for proper CRM scoping)
+        workspace_id: uuid.UUID | None = None
+        if request.agent_id:
+            try:
+                agent_uuid = uuid.UUID(request.agent_id)
+                workspace_result = await db.execute(
+                    select(AgentWorkspace).where(AgentWorkspace.agent_id == agent_uuid).limit(1)
+                )
+                agent_workspace = workspace_result.scalar_one_or_none()
+                if agent_workspace:
+                    workspace_id = agent_workspace.workspace_id
+            except ValueError:
+                tool_logger.warning("invalid_agent_id_format", agent_id=request.agent_id)
+
+        # Get integration credentials for the workspace
+        integrations: dict[str, dict[str, Any]] = {}
+        if workspace_id:
+            user_uuid = user_id_to_uuid(user_id)
+            integrations = await get_workspace_integrations(user_uuid, workspace_id, db)
+
         # Create tool registry and execute tool
-        tool_registry = ToolRegistry(db, user_id)
+        tool_registry = ToolRegistry(
+            db, user_id, integrations=integrations, workspace_id=workspace_id
+        )
         result = await tool_registry.execute_tool(request.tool_name, request.arguments)
 
         tool_logger.info("tool_execution_completed", success=result.get("success", False))

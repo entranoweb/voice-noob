@@ -31,6 +31,7 @@ from slowapi.util import get_remote_address
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.integrations import get_workspace_integrations
 from app.db.session import get_db
 from app.models.agent import Agent
 from app.services.gpt_realtime import GPTRealtimeSession
@@ -605,7 +606,16 @@ async def get_embed_ephemeral_token(  # noqa: PLR0915
             # Get user_id for the agent owner (needed for tool registry)
             user_id_int = await get_user_id_from_uuid(agent.user_id, db) or 0
 
-            tool_registry = ToolRegistry(db=db, user_id=user_id_int)
+            # Get integration credentials for the workspace
+            workspace_id = agent_workspace.workspace_id
+            integrations = await get_workspace_integrations(agent.user_id, workspace_id, db)
+
+            tool_registry = ToolRegistry(
+                db=db,
+                user_id=user_id_int,
+                integrations=integrations,
+                workspace_id=workspace_id,
+            )
             tools = tool_registry.get_all_tool_definitions(
                 agent.enabled_tools or [], agent.enabled_tool_ids
             )
@@ -689,10 +699,29 @@ async def execute_embed_tool_call(
     if user_id_int is None:
         return {"success": False, "error": "Agent owner not found"}
 
-    # Create tool registry (matching token endpoint)
+    # Get workspace for this agent (needed for proper CRM scoping)
+    from app.models.workspace import AgentWorkspace
+
+    workspace_result = await db.execute(
+        select(AgentWorkspace).where(AgentWorkspace.agent_id == agent.id).limit(1)
+    )
+    agent_workspace = workspace_result.scalar_one_or_none()
+    workspace_id = agent_workspace.workspace_id if agent_workspace else None
+
+    # Get integration credentials for the workspace
+    integrations: dict[str, dict[str, Any]] = {}
+    if workspace_id:
+        integrations = await get_workspace_integrations(agent.user_id, workspace_id, db)
+
+    # Create tool registry with workspace context
     from app.services.tools.registry import ToolRegistry
 
-    tool_registry = ToolRegistry(db=db, user_id=user_id_int)
+    tool_registry = ToolRegistry(
+        db=db,
+        user_id=user_id_int,
+        integrations=integrations,
+        workspace_id=workspace_id,
+    )
 
     # Get the enabled tools for this agent (same method as token endpoint)
     enabled_tool_defs = tool_registry.get_all_tool_definitions(

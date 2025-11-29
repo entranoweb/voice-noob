@@ -13,9 +13,41 @@ from app.core.auth import CurrentUser, user_id_to_uuid
 from app.core.limiter import limiter
 from app.db.session import get_db
 from app.models.phone_number import PhoneNumber
+from app.models.workspace import Workspace
 
 router = APIRouter(prefix="/api/v1/phone-numbers", tags=["phone-numbers"])
 logger = structlog.get_logger()
+
+
+async def validate_workspace_access(workspace_id: str, user_id: int, db: AsyncSession) -> uuid.UUID:
+    """Validate that user has access to the workspace.
+
+    Args:
+        workspace_id: Workspace ID string
+        user_id: User ID (integer)
+        db: Database session
+
+    Returns:
+        Workspace UUID if valid
+
+    Raises:
+        HTTPException: If workspace not found or user doesn't have access
+    """
+    workspace_uuid = uuid.UUID(workspace_id)
+
+    # Check if user owns the workspace
+    workspace_result = await db.execute(
+        select(Workspace).where(
+            Workspace.id == workspace_uuid,
+            Workspace.user_id == user_id,
+        )
+    )
+    workspace = workspace_result.scalar_one_or_none()
+
+    if not workspace:
+        raise HTTPException(status_code=403, detail="You don't have access to this workspace")
+
+    return workspace_uuid
 
 
 # =============================================================================
@@ -269,15 +301,20 @@ async def create_phone_number(
 
     user_uuid = user_id_to_uuid(current_user.id)
 
+    # Validate workspace access if workspace_id is provided
+    workspace_uuid: uuid.UUID | None = None
+    if create_request.workspace_id:
+        workspace_uuid = await validate_workspace_access(
+            create_request.workspace_id, current_user.id, db
+        )
+
     phone_number = PhoneNumber(
         user_id=user_uuid,
         phone_number=create_request.phone_number,
         friendly_name=create_request.friendly_name,
         provider=create_request.provider,
         provider_id=create_request.provider_id,
-        workspace_id=uuid.UUID(create_request.workspace_id)
-        if create_request.workspace_id
-        else None,
+        workspace_id=workspace_uuid,
         can_receive_calls=create_request.can_receive_calls,
         can_make_calls=create_request.can_make_calls,
         can_receive_sms=create_request.can_receive_sms,
@@ -350,9 +387,14 @@ async def update_phone_number(
     if update_request.friendly_name is not None:
         phone_number.friendly_name = update_request.friendly_name
     if update_request.workspace_id is not None:
-        phone_number.workspace_id = (
-            uuid.UUID(update_request.workspace_id) if update_request.workspace_id else None
-        )
+        # Validate workspace access before updating
+        if update_request.workspace_id:
+            workspace_uuid = await validate_workspace_access(
+                update_request.workspace_id, current_user.id, db
+            )
+            phone_number.workspace_id = workspace_uuid
+        else:
+            phone_number.workspace_id = None
     if update_request.assigned_agent_id is not None:
         phone_number.assigned_agent_id = (
             uuid.UUID(update_request.assigned_agent_id)

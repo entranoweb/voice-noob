@@ -14,6 +14,7 @@ from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.integrations import get_workspace_integrations
 from app.api.settings import get_user_api_keys
 from app.core.auth import CurrentUser, get_user_id_from_uuid, user_id_to_uuid
 from app.core.config import settings
@@ -446,8 +447,13 @@ async def create_webrtc_session(
     workspace_uuid = uuid.UUID(workspace_id)
     api_key = await get_openai_api_key_for_workspace(user_uuid, workspace_uuid, db, session_logger)
 
-    # Build tool definitions (user_id int for Contact queries)
-    tool_registry = ToolRegistry(db, user_id)
+    # Get integration credentials for the workspace
+    integrations = await get_workspace_integrations(user_uuid, workspace_uuid, db)
+
+    # Build tool definitions (user_id int for Contact queries, workspace_uuid for scoping)
+    tool_registry = ToolRegistry(
+        db, user_id, integrations=integrations, workspace_id=workspace_uuid
+    )
     tools = tool_registry.get_all_tool_definitions(agent.enabled_tools, agent.enabled_tool_ids)
 
     # Build instructions with language directive
@@ -618,8 +624,15 @@ async def get_ephemeral_token(
             token_data = response.json()
             token_logger.info("ephemeral_token_created")
 
+            # Get integration credentials for the workspace
+            integrations: dict[str, dict[str, Any]] = {}
+            if workspace_uuid:
+                integrations = await get_workspace_integrations(user_uuid, workspace_uuid, db)
+
             # Build tool definitions for the agent
-            tool_registry = ToolRegistry(db, user_id)
+            tool_registry = ToolRegistry(
+                db, user_id, integrations=integrations, workspace_id=workspace_uuid
+            )
             tools = tool_registry.get_all_tool_definitions(
                 agent.enabled_tools, agent.enabled_tool_ids
             )

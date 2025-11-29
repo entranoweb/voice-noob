@@ -1,5 +1,6 @@
 """CRM tools for voice agents - bookings, contacts, appointments."""
 
+import uuid
 from datetime import datetime
 from typing import Any
 
@@ -27,16 +28,25 @@ class CRMTools:
     - Canceling appointments
     """
 
-    def __init__(self, db: AsyncSession, user_id: int) -> None:
+    def __init__(
+        self,
+        db: AsyncSession,
+        user_id: int,
+        workspace_id: uuid.UUID | None = None,
+    ) -> None:
         """Initialize CRM tools.
 
         Args:
             db: Database session
             user_id: User ID (agent owner) - integer matching Contact.user_id
+            workspace_id: Workspace UUID for scoping contacts
         """
         self.db = db
         self.user_id = user_id
-        self.logger = logger.bind(component="crm_tools", user_id=user_id)
+        self.workspace_id = workspace_id
+        self.logger = logger.bind(
+            component="crm_tools", user_id=user_id, workspace_id=str(workspace_id)
+        )
 
     @staticmethod
     def get_tool_definitions() -> list[dict[str, Any]]:
@@ -201,19 +211,31 @@ class CRMTools:
             Customer information or error
         """
         try:
-            # Search by phone, email, or name - filtered by user_id for security
+            # Search by phone, email, or name - filtered by workspace_id for proper scoping
+            # Falls back to user_id if workspace_id not available (backward compatibility)
             # Also search full name (first + last) for queries like "John Smith"
             full_name = func.concat(Contact.first_name, " ", func.coalesce(Contact.last_name, ""))
-            stmt = select(Contact).where(
-                Contact.user_id == self.user_id,
-                (
-                    (Contact.phone_number.ilike(f"%{query}%"))
-                    | (Contact.email.ilike(f"%{query}%"))
-                    | (Contact.first_name.ilike(f"%{query}%"))
-                    | (Contact.last_name.ilike(f"%{query}%"))
-                    | (full_name.ilike(f"%{query}%"))
-                ),
+
+            # Build base query with search conditions
+            search_conditions = (
+                (Contact.phone_number.ilike(f"%{query}%"))
+                | (Contact.email.ilike(f"%{query}%"))
+                | (Contact.first_name.ilike(f"%{query}%"))
+                | (Contact.last_name.ilike(f"%{query}%"))
+                | (full_name.ilike(f"%{query}%"))
             )
+
+            # Scope by workspace if available, otherwise by user
+            if self.workspace_id:
+                stmt = select(Contact).where(
+                    Contact.workspace_id == self.workspace_id,
+                    search_conditions,
+                )
+            else:
+                stmt = select(Contact).where(
+                    Contact.user_id == self.user_id,
+                    search_conditions,
+                )
 
             result = await self.db.execute(stmt)
             contacts = list(result.scalars().all())
@@ -272,6 +294,7 @@ class CRMTools:
         try:
             contact = Contact(
                 user_id=self.user_id,
+                workspace_id=self.workspace_id,
                 first_name=first_name,
                 last_name=last_name,
                 phone_number=phone_number,
@@ -320,17 +343,21 @@ class CRMTools:
             # Parse date
             target_date = datetime.strptime(date, "%Y-%m-%d").date()
 
-            # Get existing appointments for that day - filtered by user's contacts
-            stmt = (
+            # Get existing appointments for that day - filtered by workspace or user
+            base_stmt = (
                 select(Appointment)
                 .join(Contact)
                 .where(
-                    Contact.user_id == self.user_id,
                     Appointment.scheduled_at >= datetime.combine(target_date, datetime.min.time()),
                     Appointment.scheduled_at < datetime.combine(target_date, datetime.max.time()),
                     Appointment.status == "scheduled",
                 )
             )
+
+            if self.workspace_id:
+                stmt = base_stmt.where(Contact.workspace_id == self.workspace_id)
+            else:
+                stmt = base_stmt.where(Contact.user_id == self.user_id)
 
             result = await self.db.execute(stmt)
             booked_appointments = list(result.scalars().all())
@@ -382,11 +409,17 @@ class CRMTools:
             Booking confirmation
         """
         try:
-            # Find contact - filtered by user_id for security
-            stmt = select(Contact).where(
-                Contact.user_id == self.user_id,
-                Contact.phone_number == contact_phone,
-            )
+            # Find contact - filtered by workspace or user for security
+            if self.workspace_id:
+                stmt = select(Contact).where(
+                    Contact.workspace_id == self.workspace_id,
+                    Contact.phone_number == contact_phone,
+                )
+            else:
+                stmt = select(Contact).where(
+                    Contact.user_id == self.user_id,
+                    Contact.phone_number == contact_phone,
+                )
             result = await self.db.execute(stmt)
             contact = result.scalar_one_or_none()
 
@@ -399,9 +432,10 @@ class CRMTools:
             # Parse datetime
             appointment_time = datetime.fromisoformat(scheduled_at.replace("Z", "+00:00"))
 
-            # Create appointment
+            # Create appointment (inherit workspace_id from contact)
             appointment = Appointment(
                 contact_id=contact.id,
+                workspace_id=contact.workspace_id,
                 scheduled_at=appointment_time,
                 duration_minutes=duration_minutes,
                 service_type=service_type,
@@ -453,13 +487,13 @@ class CRMTools:
         """
         try:
             # Use selectinload to eagerly load contacts in a single query (fixes N+1)
-            # Filter by user_id for security
-            stmt = (
-                select(Appointment)
-                .join(Contact)
-                .options(selectinload(Appointment.contact))
-                .where(Contact.user_id == self.user_id)
-            )
+            # Filter by workspace or user for security
+            base_stmt = select(Appointment).join(Contact).options(selectinload(Appointment.contact))
+
+            if self.workspace_id:
+                stmt = base_stmt.where(Contact.workspace_id == self.workspace_id)
+            else:
+                stmt = base_stmt.where(Contact.user_id == self.user_id)
 
             # Apply filters
             if contact_phone:
@@ -520,15 +554,14 @@ class CRMTools:
             Cancellation confirmation
         """
         try:
-            # Verify appointment belongs to user's contact
-            stmt = (
-                select(Appointment)
-                .join(Contact)
-                .where(
-                    Appointment.id == appointment_id,
-                    Contact.user_id == self.user_id,
-                )
-            )
+            # Verify appointment belongs to user's workspace/contact
+            base_stmt = select(Appointment).join(Contact).where(Appointment.id == appointment_id)
+
+            if self.workspace_id:
+                stmt = base_stmt.where(Contact.workspace_id == self.workspace_id)
+            else:
+                stmt = base_stmt.where(Contact.user_id == self.user_id)
+
             result = await self.db.execute(stmt)
             appointment = result.scalar_one_or_none()
 
@@ -572,15 +605,14 @@ class CRMTools:
             Reschedule confirmation
         """
         try:
-            # Verify appointment belongs to user's contact
-            stmt = (
-                select(Appointment)
-                .join(Contact)
-                .where(
-                    Appointment.id == appointment_id,
-                    Contact.user_id == self.user_id,
-                )
-            )
+            # Verify appointment belongs to user's workspace/contact
+            base_stmt = select(Appointment).join(Contact).where(Appointment.id == appointment_id)
+
+            if self.workspace_id:
+                stmt = base_stmt.where(Contact.workspace_id == self.workspace_id)
+            else:
+                stmt = base_stmt.where(Contact.user_id == self.user_id)
+
             result = await self.db.execute(stmt)
             appointment = result.scalar_one_or_none()
 

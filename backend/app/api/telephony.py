@@ -26,6 +26,7 @@ from app.core.webhook_security import verify_telnyx_webhook, verify_twilio_webho
 from app.db.session import get_db
 from app.models.agent import Agent
 from app.models.call_record import CallDirection, CallRecord, CallStatus
+from app.models.workspace import AgentWorkspace
 from app.services.telephony.telnyx_service import TelnyxService
 from app.services.telephony.twilio_service import TwilioService
 
@@ -157,6 +158,23 @@ async def get_agent_by_phone_number(phone_number: str, db: AsyncSession) -> Agen
         )
     )
     return result.scalar_one_or_none()
+
+
+async def get_agent_workspace_id(agent_id: uuid.UUID, db: AsyncSession) -> uuid.UUID | None:
+    """Get the workspace ID for an agent.
+
+    Args:
+        agent_id: Agent UUID
+        db: Database session
+
+    Returns:
+        Workspace UUID if agent belongs to a workspace, None otherwise
+    """
+    result = await db.execute(
+        select(AgentWorkspace.workspace_id).where(AgentWorkspace.agent_id == agent_id).limit(1)
+    )
+    row = result.scalar_one_or_none()
+    return row
 
 
 # =============================================================================
@@ -501,9 +519,10 @@ async def initiate_call(
 
     log.info("call_initiated", call_id=call_info.call_id, provider=provider)
 
-    # Create call record for outbound call
+    # Create call record for outbound call (workspace_uuid already available from query param)
     call_record = CallRecord(
         user_id=user_id_to_uuid(current_user.id),
+        workspace_id=workspace_uuid,
         provider=provider,
         provider_call_id=call_info.call_id,
         agent_id=uuid.UUID(call_request.agent_id),
@@ -623,9 +642,13 @@ async def twilio_voice_webhook(
             media_type="application/xml",
         )
 
+    # Get workspace for the agent
+    agent_workspace_id = await get_agent_workspace_id(agent.id, db)
+
     # Create call record for inbound call
     call_record = CallRecord(
         user_id=agent.user_id,
+        workspace_id=agent_workspace_id,
         provider="twilio",
         provider_call_id=call_sid,
         agent_id=agent.id,
@@ -791,9 +814,13 @@ async def telnyx_voice_webhook(
             media_type="application/xml",
         )
 
+    # Get workspace for the agent
+    agent_workspace_id = await get_agent_workspace_id(agent.id, db)
+
     # Create call record for inbound call
     call_record = CallRecord(
         user_id=agent.user_id,
+        workspace_id=agent_workspace_id,
         provider="telnyx",
         provider_call_id=call_control_id,
         agent_id=agent.id,

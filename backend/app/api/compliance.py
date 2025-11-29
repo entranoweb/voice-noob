@@ -148,9 +148,19 @@ async def get_or_create_privacy_settings(user_id: int, db: AsyncSession) -> Priv
 
 
 async def get_user_settings(user_id: int, db: AsyncSession) -> UserSettings | None:
-    """Get user settings (API keys etc)."""
+    """Get user-level settings (API keys etc).
+
+    Note: This returns user-level settings (where workspace_id is NULL),
+    not workspace-specific settings. For compliance purposes, we check
+    user-level API key configuration.
+    """
     user_uuid = user_id_to_uuid(user_id)
-    result = await db.execute(select(UserSettings).where(UserSettings.user_id == user_uuid))
+    result = await db.execute(
+        select(UserSettings).where(
+            UserSettings.user_id == user_uuid,
+            UserSettings.workspace_id.is_(None),
+        )
+    )
     return result.scalar_one_or_none()
 
 
