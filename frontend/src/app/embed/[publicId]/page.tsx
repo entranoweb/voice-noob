@@ -55,6 +55,12 @@ type AudioResources = {
   animationFrame: number | null;
 };
 
+// Transcript entry type
+type TranscriptEntry = {
+  role: "user" | "assistant";
+  content: string;
+};
+
 // Number of bars in the audio visualizer
 const BAR_COUNT = 24;
 
@@ -92,6 +98,12 @@ export default function EmbedPage() {
 
   // AbortController for cancelling connection
   const abortControllerRef = useRef<AbortController | null>(null);
+
+  // Transcript tracking
+  const transcriptRef = useRef<TranscriptEntry[]>([]);
+  const currentAssistantTextRef = useRef<string>("");
+  const sessionIdRef = useRef<string>("");
+  const sessionStartTimeRef = useRef<number>(0);
 
   // Detect system theme
   const [resolvedTheme, setResolvedTheme] = useState<"light" | "dark">("light");
@@ -238,6 +250,55 @@ export default function EmbedPage() {
     setSmoothedLevel(0);
   }, []);
 
+  // Save transcript to backend
+  const saveTranscript = useCallback(async () => {
+    // Flush any remaining assistant text
+    if (currentAssistantTextRef.current.trim()) {
+      transcriptRef.current.push({
+        role: "assistant",
+        content: currentAssistantTextRef.current.trim(),
+      });
+      currentAssistantTextRef.current = "";
+    }
+
+    // Skip if no transcript entries or no session
+    if (transcriptRef.current.length === 0 || !sessionIdRef.current) {
+      return;
+    }
+
+    // Format transcript
+    const transcriptText = transcriptRef.current
+      .map((entry) => `[${entry.role === "user" ? "User" : "Assistant"}]: ${entry.content}`)
+      .join("\n\n");
+
+    // Calculate duration
+    const durationSeconds = sessionStartTimeRef.current
+      ? Math.floor((Date.now() - sessionStartTimeRef.current) / 1000)
+      : 0;
+
+    try {
+      await fetch(`/api/public/embed/${publicId}/transcript`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Origin: window.location.origin,
+        },
+        body: JSON.stringify({
+          session_id: sessionIdRef.current,
+          transcript: transcriptText,
+          duration_seconds: durationSeconds,
+        }),
+      });
+    } catch {
+      // Silently fail - transcript saving is not critical
+    }
+
+    // Reset transcript state
+    transcriptRef.current = [];
+    sessionIdRef.current = "";
+    sessionStartTimeRef.current = 0;
+  }, [publicId]);
+
   // Cleanup function
   const cleanup = useCallback(() => {
     const { peerConnection, dataChannel, audioStream, audioElement } = webrtcRef.current;
@@ -303,6 +364,9 @@ export default function EmbedPage() {
       abortControllerRef.current = null;
     }
 
+    // Save transcript before cleanup (fire and forget)
+    void saveTranscript();
+
     cleanup();
     setStatus("idle");
     setIsExpanded(false);
@@ -311,7 +375,7 @@ export default function EmbedPage() {
     if (window.parent !== window) {
       window.parent.postMessage({ type: "voice-agent:close" }, "*");
     }
-  }, [cleanup]);
+  }, [cleanup, saveTranscript]);
 
   // Start voice session using manual WebRTC
   const startSession = useCallback(async () => {
@@ -320,6 +384,12 @@ export default function EmbedPage() {
     // Create AbortController for this connection attempt
     const abortController = new AbortController();
     abortControllerRef.current = abortController;
+
+    // Initialize transcript tracking
+    transcriptRef.current = [];
+    currentAssistantTextRef.current = "";
+    sessionIdRef.current = crypto.randomUUID();
+    sessionStartTimeRef.current = Date.now();
 
     setStatus("connecting");
     setError(null);
@@ -576,6 +646,30 @@ export default function EmbedPage() {
             void executeToolCall(callId, toolName, args);
           } else if (data.type === "error") {
             setError(data.error?.message ?? "Unknown error");
+          }
+
+          // Capture transcript events
+          if (data.type === "conversation.item.input_audio_transcription.completed") {
+            // User speech transcription completed
+            const userText = data.transcript as string;
+            if (userText?.trim()) {
+              transcriptRef.current.push({ role: "user", content: userText.trim() });
+            }
+          } else if (data.type === "response.audio_transcript.delta") {
+            // Assistant speech transcript delta
+            const delta = data.delta as string;
+            if (delta) {
+              currentAssistantTextRef.current += delta;
+            }
+          } else if (data.type === "response.audio_transcript.done") {
+            // Assistant speech transcript complete - flush to transcript
+            if (currentAssistantTextRef.current.trim()) {
+              transcriptRef.current.push({
+                role: "assistant",
+                content: currentAssistantTextRef.current.trim(),
+              });
+            }
+            currentAssistantTextRef.current = "";
           }
         } catch {
           // Ignore parse errors

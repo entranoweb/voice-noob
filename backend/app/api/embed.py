@@ -661,6 +661,14 @@ class ToolCallRequest(BaseModel):
     arguments: dict[str, Any]
 
 
+class SaveTranscriptRequest(BaseModel):
+    """Request model for saving call transcript."""
+
+    session_id: str
+    transcript: str
+    duration_seconds: int = 0
+
+
 @router.post("/{public_id}/tool-call")
 async def execute_embed_tool_call(
     public_id: str,
@@ -763,3 +771,91 @@ async def execute_embed_tool_call(
         return {"success": False, "error": str(e)}
     finally:
         await tool_registry.close()
+
+
+@router.post("/{public_id}/transcript")
+async def save_embed_transcript(
+    public_id: str,
+    transcript_request: SaveTranscriptRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    origin: str | None = Header(None),
+) -> dict[str, Any]:
+    """Save a call transcript from an embed widget session.
+
+    This endpoint creates a CallRecord with the transcript for widget calls.
+    Widget calls use 'widget' as the provider since they're not telephony calls.
+
+    Security:
+    - Origin validation against allowed domains
+    - Only saves for active, embed-enabled agents
+    """
+    from app.models.call_record import CallDirection, CallRecord, CallStatus
+    from app.models.workspace import AgentWorkspace
+
+    log = logger.bind(
+        endpoint="embed_transcript",
+        public_id=public_id,
+        session_id=transcript_request.session_id,
+        origin=origin,
+    )
+
+    # Get agent
+    agent = await get_agent_by_public_id(public_id, db)
+    if not agent:
+        log.warning("agent_not_found")
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    if not agent.embed_enabled or not agent.is_active:
+        log.warning("agent_not_available")
+        raise HTTPException(status_code=403, detail="Agent not available")
+
+    # Validate origin
+    if not validate_origin(origin, agent.allowed_domains):
+        log.warning("origin_not_allowed", allowed=agent.allowed_domains)
+        raise HTTPException(status_code=403, detail="Origin not allowed")
+
+    # Check if transcripts are enabled for this agent
+    if not agent.enable_transcript:
+        log.info("transcripts_disabled_for_agent")
+        return {"success": True, "message": "Transcripts not enabled for this agent"}
+
+    # Skip if transcript is empty
+    if not transcript_request.transcript.strip():
+        log.info("empty_transcript_skipped")
+        return {"success": True, "message": "Empty transcript skipped"}
+
+    # Get workspace for this agent
+    workspace_result = await db.execute(
+        select(AgentWorkspace).where(AgentWorkspace.agent_id == agent.id).limit(1)
+    )
+    agent_workspace = workspace_result.scalar_one_or_none()
+    workspace_id = agent_workspace.workspace_id if agent_workspace else None
+
+    # Create call record for widget session
+    call_record = CallRecord(
+        user_id=agent.user_id,
+        workspace_id=workspace_id,
+        provider="widget",
+        provider_call_id=transcript_request.session_id,
+        agent_id=agent.id,
+        direction=CallDirection.INBOUND.value,
+        status=CallStatus.COMPLETED.value,
+        from_number="widget",
+        to_number="widget",
+        duration_seconds=transcript_request.duration_seconds,
+        transcript=transcript_request.transcript,
+        started_at=datetime.now(UTC) - timedelta(seconds=transcript_request.duration_seconds),
+        ended_at=datetime.now(UTC),
+    )
+    db.add(call_record)
+    await db.commit()
+
+    log.info(
+        "transcript_saved",
+        record_id=str(call_record.id),
+        transcript_length=len(transcript_request.transcript),
+        duration_seconds=transcript_request.duration_seconds,
+    )
+
+    return {"success": True, "call_id": str(call_record.id)}

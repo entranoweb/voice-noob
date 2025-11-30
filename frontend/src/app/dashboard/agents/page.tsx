@@ -379,6 +379,11 @@ export default function AgentsPage() {
                         <DropdownMenuItem onSelect={() => handleEmbed(agent)}>
                           Embed
                         </DropdownMenuItem>
+                        <DropdownMenuItem asChild>
+                          <Link href={`/dashboard/agents/${agent.id}/transcripts`} prefetch={false}>
+                            Transcripts
+                          </Link>
+                        </DropdownMenuItem>
                         <DropdownMenuSeparator />
                         <DropdownMenuItem
                           className="text-destructive"

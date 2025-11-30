@@ -45,6 +45,12 @@ type TranscriptItem = {
   timestamp: Date;
 };
 
+// Transcript entry for saving to backend
+type TranscriptEntry = {
+  role: "user" | "assistant";
+  content: string;
+};
+
 // Connection status type
 type ConnectionStatus = "idle" | "connecting" | "connected";
 
@@ -219,6 +225,9 @@ export default function TestAgentPage() {
   const [callDuration, setCallDuration] = useState(0);
   const [audioStream, setAudioStream] = useState<MediaStream | null>(null);
 
+  // Ref to track selected agent ID for use in callbacks (avoids stale closures)
+  const selectedAgentIdRef = useRef<string>("");
+
   // Settings state
   const [voice, setVoice] = useState("marin");
   const [language, setLanguage] = useState("en-US");
@@ -284,6 +293,11 @@ export default function TestAgentPage() {
   const pendingTranscriptsRef = useRef<TranscriptItem[]>([]);
   const flushTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Transcript tracking for saving to backend
+  const transcriptEntriesRef = useRef<TranscriptEntry[]>([]);
+  const sessionIdRef = useRef<string>("");
+  const sessionStartTimeRef = useRef<number>(0);
+
   // Auto-scroll to bottom when transcript updates
   useEffect(() => {
     transcriptEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -304,6 +318,11 @@ export default function TestAgentPage() {
   useEffect(() => {
     setSelectedAgentId("");
   }, [selectedWorkspaceId]);
+
+  // Sync agent ID ref whenever it changes
+  useEffect(() => {
+    selectedAgentIdRef.current = selectedAgentId;
+  }, [selectedAgentId]);
 
   // Update all settings when agent changes
   useEffect(() => {
@@ -471,6 +490,70 @@ export default function TestAgentPage() {
     };
   }, [cleanup]);
 
+  // Save transcript to backend
+  const saveTranscript = useCallback(async () => {
+    const agentId = selectedAgentIdRef.current;
+
+    // Skip if no transcript entries or no session
+    if (transcriptEntriesRef.current.length === 0 || !sessionIdRef.current || !agentId) {
+      console.log("[Transcript] Skipping save - no transcript entries or session", {
+        entriesCount: transcriptEntriesRef.current.length,
+        sessionId: sessionIdRef.current,
+        agentId,
+      });
+      return;
+    }
+
+    // Format transcript
+    const transcriptText = transcriptEntriesRef.current
+      .map((entry) => `[${entry.role === "user" ? "User" : "Assistant"}]: ${entry.content}`)
+      .join("\n\n");
+
+    // Calculate duration
+    const durationSeconds = sessionStartTimeRef.current
+      ? Math.floor((Date.now() - sessionStartTimeRef.current) / 1000)
+      : 0;
+
+    console.log("[Transcript] Saving transcript", {
+      agentId,
+      sessionId: sessionIdRef.current,
+      entriesCount: transcriptEntriesRef.current.length,
+      duration: durationSeconds,
+    });
+
+    try {
+      const apiBase = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+      const authToken = localStorage.getItem("access_token");
+
+      const response = await fetch(`${apiBase}/api/v1/realtime/transcript/${agentId}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(authToken && { Authorization: `Bearer ${authToken}` }),
+        },
+        body: JSON.stringify({
+          session_id: sessionIdRef.current,
+          transcript: transcriptText,
+          duration_seconds: durationSeconds,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error("[Transcript] Failed to save:", response.status, errorText);
+      } else {
+        console.log("[Transcript] Saved transcript to backend successfully");
+      }
+    } catch (error) {
+      console.error("[Transcript] Failed to save transcript:", error);
+    }
+
+    // Reset transcript state
+    transcriptEntriesRef.current = [];
+    sessionIdRef.current = "";
+    sessionStartTimeRef.current = 0;
+  }, []);
+
   // Immediate addTranscript for critical messages (system messages during connect)
   const addTranscriptImmediate = useCallback(
     (speaker: "user" | "assistant" | "system", text: string) => {
@@ -492,6 +575,9 @@ export default function TestAgentPage() {
 
   const handleConnect = async () => {
     if (connectionStatus === "connected") {
+      // Save transcript before cleanup (fire and forget)
+      void saveTranscript();
+
       // Disconnect
       cleanup();
       setConnectionStatus("idle");
@@ -521,6 +607,11 @@ export default function TestAgentPage() {
 
     // Set connecting state
     setConnectionStatus("connecting");
+
+    // Initialize transcript tracking
+    transcriptEntriesRef.current = [];
+    sessionIdRef.current = crypto.randomUUID();
+    sessionStartTimeRef.current = Date.now();
 
     try {
       addTranscriptImmediate("system", `Connecting to ${selectedAgent.name}...`);
@@ -650,6 +741,20 @@ export default function TestAgentPage() {
           "[WebRTC] Sent session.update with tools:",
           tools.map((t: { name: string }) => t.name)
         );
+
+        // Trigger initial greeting if one is configured
+        const initialGreeting = tokenData.agent?.initial_greeting;
+        if (initialGreeting) {
+          dataChannel.send(
+            JSON.stringify({
+              type: "response.create",
+              response: {
+                instructions: `Start the conversation by saying exactly this (do not add anything else): "${initialGreeting}"`,
+              },
+            })
+          );
+          console.log("[WebRTC] Sent initial greeting:", initialGreeting);
+        }
       };
 
       dataChannel.onmessage = async (event) => {
@@ -666,8 +771,22 @@ export default function TestAgentPage() {
           // Handle transcription - use immediate updates for real-time feel
           if (data.type === "conversation.item.input_audio_transcription.completed") {
             addTranscriptImmediate("user", data.transcript);
+            // Also capture for saving to backend
+            if (data.transcript?.trim()) {
+              transcriptEntriesRef.current.push({
+                role: "user",
+                content: data.transcript.trim(),
+              });
+            }
           } else if (data.type === "response.audio_transcript.done") {
             addTranscriptImmediate("assistant", data.transcript);
+            // Also capture for saving to backend
+            if (data.transcript?.trim()) {
+              transcriptEntriesRef.current.push({
+                role: "assistant",
+                content: data.transcript.trim(),
+              });
+            }
           } else if (data.type === "response.function_call_arguments.done") {
             // Handle function/tool call
             const { call_id, name, arguments: argsJson } = data;
@@ -712,7 +831,11 @@ export default function TestAgentPage() {
                 // Wait a bit for the AI to finish its farewell, then end the session
                 setTimeout(() => {
                   console.log("[WebRTC] Executing end_call cleanup");
+                  void saveTranscript();
                   cleanup();
+                  setConnectionStatus("idle");
+                  setAudioStream(null);
+                  setCallDuration(0);
                 }, 3000); // 3 second delay for farewell
               }
             } catch (toolError) {
@@ -755,6 +878,7 @@ export default function TestAgentPage() {
       pc.onconnectionstatechange = () => {
         console.log("[WebRTC] Connection state:", pc.connectionState);
         if (pc.connectionState === "disconnected" || pc.connectionState === "failed") {
+          void saveTranscript();
           cleanup();
           setConnectionStatus("idle");
           setAudioStream(null);

@@ -11,6 +11,7 @@ import httpx
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -663,6 +664,7 @@ async def get_ephemeral_token(
                     "voice": agent_voice,
                     "instructions": instructions_with_language,
                     "enabled_tools": agent.enabled_tools,
+                    "initial_greeting": agent.initial_greeting,
                 },
                 "session_config": session_config,
                 "tools": tools,
@@ -671,3 +673,113 @@ async def get_ephemeral_token(
     except httpx.RequestError as e:
         token_logger.exception("openai_token_request_error", error=str(e))
         raise HTTPException(status_code=500, detail=f"Failed to connect to OpenAI: {e!s}") from e
+
+
+# =============================================================================
+# Transcript Saving Endpoint
+# =============================================================================
+
+
+class SaveTranscriptRequest(BaseModel):
+    """Request body for saving a transcript."""
+
+    session_id: str
+    transcript: str
+    duration_seconds: int = 0
+
+
+@webrtc_router.post("/transcript/{agent_id}")
+async def save_transcript(
+    agent_id: str,
+    request: SaveTranscriptRequest,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+    workspace_id: str | None = None,
+) -> dict[str, Any]:
+    """Save a transcript from a Test Agent or WebRTC session.
+
+    This endpoint creates a CallRecord with provider="test" for test sessions.
+
+    Args:
+        agent_id: Agent UUID
+        request: Transcript data
+        current_user: Authenticated user
+        db: Database session
+        workspace_id: Optional workspace UUID
+
+    Returns:
+        Success response with call record ID
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from app.models.call_record import CallRecord
+    from app.models.workspace import AgentWorkspace
+
+    user_id = current_user.id
+    transcript_logger = logger.bind(
+        endpoint="save_transcript",
+        agent_id=agent_id,
+        user_id=user_id,
+        session_id=request.session_id,
+    )
+
+    transcript_logger.info("saving_transcript", length=len(request.transcript))
+
+    # Validate agent exists and user has access
+    result = await db.execute(select(Agent).where(Agent.id == uuid.UUID(agent_id)))
+    agent = result.scalar_one_or_none()
+
+    if not agent:
+        raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found")
+
+    # Verify user owns this agent
+    user_uuid = user_id_to_uuid(user_id)
+    if agent.user_id != user_uuid:
+        raise HTTPException(status_code=403, detail="Not authorized to access this agent")
+
+    # Skip if transcript is empty
+    if not request.transcript.strip():
+        transcript_logger.debug("empty_transcript_skipped")
+        return {"success": True, "message": "Empty transcript skipped"}
+
+    # Get workspace for this agent (like embed does)
+    workspace_result = await db.execute(
+        select(AgentWorkspace).where(AgentWorkspace.agent_id == agent.id).limit(1)
+    )
+    agent_workspace = workspace_result.scalar_one_or_none()
+    agent_workspace_id = agent_workspace.workspace_id if agent_workspace else None
+
+    # Create call record with proper timestamps
+    ended_at = datetime.now(UTC)
+    started_at = ended_at - timedelta(seconds=request.duration_seconds)
+
+    call_record = CallRecord(
+        user_id=user_uuid,
+        workspace_id=agent_workspace_id,
+        agent_id=uuid.UUID(agent_id),
+        provider="test",
+        provider_call_id=request.session_id,
+        direction="outbound",
+        from_number="test",
+        to_number="test",
+        status="completed",
+        started_at=started_at,
+        ended_at=ended_at,
+        duration_seconds=request.duration_seconds,
+        transcript=request.transcript,
+    )
+
+    db.add(call_record)
+    await db.commit()
+    await db.refresh(call_record)
+
+    transcript_logger.info(
+        "transcript_saved",
+        record_id=str(call_record.id),
+        duration=request.duration_seconds,
+    )
+
+    return {
+        "success": True,
+        "call_id": str(call_record.id),
+    }

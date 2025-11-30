@@ -18,10 +18,50 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.auth import get_user_id_from_uuid
 from app.db.session import get_db
 from app.models.agent import Agent
+from app.models.call_record import CallRecord
+from app.models.workspace import AgentWorkspace
 from app.services.gpt_realtime import GPTRealtimeSession
 
 router = APIRouter(prefix="/ws/telephony", tags=["telephony-ws"])
 logger = structlog.get_logger()
+
+
+async def get_agent_workspace_id(agent_id: uuid.UUID, db: AsyncSession) -> uuid.UUID | None:
+    """Get workspace ID for an agent."""
+    result = await db.execute(
+        select(AgentWorkspace.workspace_id).where(AgentWorkspace.agent_id == agent_id).limit(1)
+    )
+    row = result.scalar_one_or_none()
+    return row
+
+
+async def save_transcript_to_call_record(
+    call_sid: str,
+    transcript: str,
+    db: AsyncSession,
+    log: Any,
+) -> None:
+    """Save transcript to the call record.
+
+    Args:
+        call_sid: Provider call ID (CallSid for Twilio, call_control_id for Telnyx)
+        transcript: Formatted transcript text
+        db: Database session
+        log: Logger instance
+    """
+    if not transcript.strip():
+        log.debug("empty_transcript_skipped")
+        return
+
+    result = await db.execute(select(CallRecord).where(CallRecord.provider_call_id == call_sid))
+    call_record = result.scalar_one_or_none()
+
+    if call_record:
+        call_record.transcript = transcript
+        await db.commit()
+        log.info("transcript_saved", record_id=str(call_record.id), length=len(transcript))
+    else:
+        log.warning("call_record_not_found_for_transcript", call_sid=call_sid)
 
 
 @router.websocket("/twilio/{agent_id}")
@@ -78,12 +118,16 @@ async def twilio_media_stream(
             await websocket.close(code=4004, reason="Agent owner not found")
             return
 
+        # Get workspace for the agent
+        workspace_id = await get_agent_workspace_id(agent.id, db)
+
         # Build agent config
         agent_config = {
             "system_prompt": agent.system_prompt,
             "enabled_tools": agent.enabled_tools,
             "language": agent.language,
             "voice": agent.voice or "shimmer",
+            "enable_transcript": agent.enable_transcript,
         }
 
         # Initialize GPT Realtime session
@@ -92,13 +136,20 @@ async def twilio_media_stream(
             user_id=user_id_int,
             agent_config=agent_config,
             session_id=session_id,
+            workspace_id=workspace_id,
         ) as realtime_session:
-            # Handle Twilio media stream
-            await _handle_twilio_stream(
+            # Handle Twilio media stream and capture call_sid
+            call_sid = await _handle_twilio_stream(
                 websocket=websocket,
                 realtime_session=realtime_session,
                 log=log,
+                enable_transcript=agent.enable_transcript,
             )
+
+            # Save transcript to call record if enabled
+            if agent.enable_transcript and call_sid:
+                transcript = realtime_session.get_transcript()
+                await save_transcript_to_call_record(call_sid, transcript, db, log)
 
     except WebSocketDisconnect:
         log.info("twilio_websocket_disconnected")
@@ -112,13 +163,18 @@ async def _handle_twilio_stream(  # noqa: PLR0915
     websocket: WebSocket,
     realtime_session: GPTRealtimeSession,
     log: Any,
-) -> None:
+    enable_transcript: bool = False,
+) -> str:
     """Handle Twilio Media Stream messages.
 
     Args:
         websocket: WebSocket connection from Twilio
         realtime_session: GPT Realtime session
         log: Logger instance
+        enable_transcript: Whether to capture transcript
+
+    Returns:
+        The call_sid for transcript saving
     """
     stream_sid = ""
     call_sid = ""
@@ -203,6 +259,25 @@ async def _handle_twilio_stream(  # noqa: PLR0915
                     )
                     await realtime_session.handle_function_call_event(event)
 
+                # Capture transcript events
+                elif (
+                    enable_transcript
+                    and event_type == "conversation.item.input_audio_transcription.completed"
+                ):
+                    # User speech transcription
+                    if hasattr(event, "transcript") and event.transcript:
+                        realtime_session.add_user_transcript(event.transcript)
+                        log.debug("user_transcript_captured", length=len(event.transcript))
+
+                elif enable_transcript and event_type == "response.audio_transcript.delta":
+                    # Assistant speech transcript delta
+                    if hasattr(event, "delta") and event.delta:
+                        realtime_session.accumulate_assistant_text(event.delta)
+
+                elif enable_transcript and event_type == "response.audio_transcript.done":
+                    # Assistant speech transcript complete
+                    realtime_session.flush_assistant_text()
+
                 # Log other events
                 elif event_type in [
                     "response.audio.done",
@@ -221,6 +296,8 @@ async def _handle_twilio_stream(  # noqa: PLR0915
         realtime_to_twilio(),
         return_exceptions=True,
     )
+
+    return call_sid
 
 
 @router.websocket("/telnyx/{agent_id}")
@@ -276,12 +353,16 @@ async def telnyx_media_stream(
             await websocket.close(code=4004, reason="Agent owner not found")
             return
 
+        # Get workspace for the agent
+        workspace_id = await get_agent_workspace_id(agent.id, db)
+
         # Build agent config
         agent_config = {
             "system_prompt": agent.system_prompt,
             "enabled_tools": agent.enabled_tools,
             "language": agent.language,
             "voice": agent.voice or "shimmer",
+            "enable_transcript": agent.enable_transcript,
         }
 
         # Initialize GPT Realtime session
@@ -290,13 +371,20 @@ async def telnyx_media_stream(
             user_id=user_id_int,
             agent_config=agent_config,
             session_id=session_id,
+            workspace_id=workspace_id,
         ) as realtime_session:
-            # Handle Telnyx media stream
-            await _handle_telnyx_stream(
+            # Handle Telnyx media stream and capture call_control_id
+            call_control_id = await _handle_telnyx_stream(
                 websocket=websocket,
                 realtime_session=realtime_session,
                 log=log,
+                enable_transcript=agent.enable_transcript,
             )
+
+            # Save transcript to call record if enabled
+            if agent.enable_transcript and call_control_id:
+                transcript = realtime_session.get_transcript()
+                await save_transcript_to_call_record(call_control_id, transcript, db, log)
 
     except WebSocketDisconnect:
         log.info("telnyx_websocket_disconnected")
@@ -306,17 +394,22 @@ async def telnyx_media_stream(
         log.info("telnyx_websocket_closed", stream_id=stream_id, call_control_id=call_control_id)
 
 
-async def _handle_telnyx_stream(
+async def _handle_telnyx_stream(  # noqa: PLR0915
     websocket: WebSocket,
     realtime_session: GPTRealtimeSession,
     log: Any,
-) -> None:
+    enable_transcript: bool = False,
+) -> str:
     """Handle Telnyx Media Stream messages.
 
     Args:
         websocket: WebSocket connection from Telnyx
         realtime_session: GPT Realtime session
         log: Logger instance
+        enable_transcript: Whether to capture transcript
+
+    Returns:
+        The call_control_id for transcript saving
     """
     stream_id = ""
     call_control_id = ""
@@ -392,6 +485,25 @@ async def _handle_telnyx_stream(
                     )
                     await realtime_session.handle_function_call_event(event)
 
+                # Capture transcript events
+                elif (
+                    enable_transcript
+                    and event_type == "conversation.item.input_audio_transcription.completed"
+                ):
+                    # User speech transcription
+                    if hasattr(event, "transcript") and event.transcript:
+                        realtime_session.add_user_transcript(event.transcript)
+                        log.debug("user_transcript_captured", length=len(event.transcript))
+
+                elif enable_transcript and event_type == "response.audio_transcript.delta":
+                    # Assistant speech transcript delta
+                    if hasattr(event, "delta") and event.delta:
+                        realtime_session.accumulate_assistant_text(event.delta)
+
+                elif enable_transcript and event_type == "response.audio_transcript.done":
+                    # Assistant speech transcript complete
+                    realtime_session.flush_assistant_text()
+
                 elif event_type in [
                     "response.audio.done",
                     "response.done",
@@ -409,3 +521,5 @@ async def _handle_telnyx_stream(
         realtime_to_telnyx(),
         return_exceptions=True,
     )
+
+    return call_control_id

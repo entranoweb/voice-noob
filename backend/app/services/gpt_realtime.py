@@ -101,6 +101,20 @@ Current: {current_datetime}
     return instructions
 
 
+class TranscriptEntry:
+    """Single transcript entry representing one turn in the conversation."""
+
+    def __init__(self, role: str, content: str, timestamp: str | None = None) -> None:
+        from datetime import UTC, datetime
+
+        self.role = role  # "user" or "assistant"
+        self.content = content
+        self.timestamp = timestamp or datetime.now(UTC).isoformat()
+
+    def to_dict(self) -> dict[str, str]:
+        return {"role": self.role, "content": self.content, "timestamp": self.timestamp}
+
+
 class GPTRealtimeSession:
     """Manages a GPT Realtime API session for a voice call.
 
@@ -109,6 +123,7 @@ class GPTRealtimeSession:
     - Internal tool integration
     - Audio streaming
     - Tool call routing to internal tool handlers
+    - Transcript accumulation
     """
 
     def __init__(
@@ -137,6 +152,9 @@ class GPTRealtimeSession:
         self.connection: Any = None
         self.tool_registry: ToolRegistry | None = None
         self.client: AsyncOpenAI | None = None
+        # Transcript accumulation
+        self._transcript_entries: list[TranscriptEntry] = []
+        self._current_assistant_text: str = ""
         self.logger = logger.bind(
             component="gpt_realtime",
             session_id=self.session_id,
@@ -407,9 +425,66 @@ class GPTRealtimeSession:
         except Exception as e:
             self.logger.exception("send_audio_error", error=str(e), error_type=type(e).__name__)
 
+    def add_user_transcript(self, text: str) -> None:
+        """Add a user transcript entry.
+
+        Args:
+            text: Transcribed user speech
+        """
+        if text.strip():
+            self._transcript_entries.append(TranscriptEntry(role="user", content=text.strip()))
+            self.logger.debug("user_transcript_added", text_length=len(text))
+
+    def add_assistant_transcript(self, text: str) -> None:
+        """Add an assistant transcript entry.
+
+        Args:
+            text: Assistant response text
+        """
+        if text.strip():
+            self._transcript_entries.append(TranscriptEntry(role="assistant", content=text.strip()))
+            self.logger.debug("assistant_transcript_added", text_length=len(text))
+
+    def accumulate_assistant_text(self, delta: str) -> None:
+        """Accumulate assistant text delta for transcript.
+
+        Args:
+            delta: Text delta from response.text.delta event
+        """
+        self._current_assistant_text += delta
+
+    def flush_assistant_text(self) -> None:
+        """Flush accumulated assistant text to transcript."""
+        if self._current_assistant_text.strip():
+            self.add_assistant_transcript(self._current_assistant_text)
+        self._current_assistant_text = ""
+
+    def get_transcript(self) -> str:
+        """Get the full transcript as formatted text.
+
+        Returns:
+            Formatted transcript string
+        """
+        lines = []
+        for entry in self._transcript_entries:
+            role_label = "User" if entry.role == "user" else "Assistant"
+            lines.append(f"[{role_label}]: {entry.content}")
+        return "\n\n".join(lines)
+
+    def get_transcript_entries(self) -> list[dict[str, str]]:
+        """Get transcript entries as list of dicts.
+
+        Returns:
+            List of transcript entry dictionaries
+        """
+        return [entry.to_dict() for entry in self._transcript_entries]
+
     async def cleanup(self) -> None:
         """Cleanup resources."""
         self.logger.info("gpt_realtime_session_cleanup_started")
+
+        # Flush any remaining assistant text
+        self.flush_assistant_text()
 
         # Close Realtime connection
         if self.connection:
@@ -423,7 +498,10 @@ class GPTRealtimeSession:
             # No cleanup needed for internal tools
             pass
 
-        self.logger.info("gpt_realtime_session_cleanup_completed")
+        self.logger.info(
+            "gpt_realtime_session_cleanup_completed",
+            transcript_entries=len(self._transcript_entries),
+        )
 
     async def __aenter__(self) -> "GPTRealtimeSession":
         """Async context manager entry."""
