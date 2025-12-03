@@ -106,28 +106,32 @@ export default function PhoneNumbersPage() {
   const [numberToRelease, setNumberToRelease] = useState<PhoneNumber | null>(null);
   const [isAssigning, setIsAssigning] = useState(false);
 
-  // Load phone numbers and agents on mount
+  // Load phone numbers and agents on mount and when workspace changes
   useEffect(() => {
     void loadData();
-  }, []);
+  }, [selectedWorkspaceId]);
 
   const loadData = async () => {
     setIsLoading(true);
     try {
-      // Load phone numbers from both providers and workspaces
-      const [telnyxNumbers, twilioNumbers, agentsList, workspacesResult] = await Promise.allSettled(
+      // First load workspaces to get a valid workspace_id
+      const workspacesResult = await api.get("/api/v1/workspaces");
+      const loadedWorkspaces = workspacesResult.data as Workspace[];
+      setWorkspaces(loadedWorkspaces);
+      
+      // Use selected workspace or first available workspace
+      const workspaceId = selectedWorkspaceId !== "all" 
+        ? selectedWorkspaceId 
+        : loadedWorkspaces[0]?.id;
+
+      // Load phone numbers from both providers with workspace_id
+      const [telnyxNumbers, twilioNumbers, agentsList] = await Promise.allSettled(
         [
-          listPhoneNumbers("telnyx"),
-          listPhoneNumbers("twilio"),
+          listPhoneNumbers("telnyx", workspaceId),
+          listPhoneNumbers("twilio", workspaceId),
           fetchAgents(),
-          api.get("/api/v1/workspaces"),
         ]
       );
-
-      // Set workspaces
-      if (workspacesResult.status === "fulfilled") {
-        setWorkspaces(workspacesResult.value.data as Workspace[]);
-      }
 
       const numbers: PhoneNumber[] = [];
 
@@ -198,6 +202,15 @@ export default function PhoneNumbersPage() {
       toast.error("Please enter at least 3 digits for area code");
       return;
     }
+    
+    const workspaceId = selectedWorkspaceId !== "all" 
+      ? selectedWorkspaceId 
+      : workspaces[0]?.id;
+      
+    if (!workspaceId) {
+      toast.error("Please select a workspace first");
+      return;
+    }
 
     setIsSearching(true);
     try {
@@ -205,6 +218,7 @@ export default function PhoneNumbersPage() {
         provider: selectedProvider,
         area_code: searchAreaCode,
         limit: 10,
+        workspace_id: workspaceId,
       });
 
       setAvailableNumbers(
@@ -230,12 +244,22 @@ export default function PhoneNumbersPage() {
       toast.error("Please select a number to purchase");
       return;
     }
+    
+    const workspaceId = selectedWorkspaceId !== "all" 
+      ? selectedWorkspaceId 
+      : workspaces[0]?.id;
+      
+    if (!workspaceId) {
+      toast.error("Please select a workspace first");
+      return;
+    }
 
     setIsPurchasing(true);
     try {
       await purchasePhoneNumber({
         provider: selectedProvider,
         phone_number: selectedAvailableNumber,
+        workspace_id: workspaceId,
       });
       toast.success(`Successfully purchased ${selectedAvailableNumber}`);
       setIsPurchaseModalOpen(false);
@@ -288,9 +312,13 @@ export default function PhoneNumbersPage() {
 
   const confirmReleaseNumber = async () => {
     if (!numberToRelease) return;
+    
+    const workspaceId = selectedWorkspaceId !== "all" 
+      ? selectedWorkspaceId 
+      : workspaces[0]?.id;
 
     try {
-      await releasePhoneNumber(numberToRelease.id, numberToRelease.provider as Provider);
+      await releasePhoneNumber(numberToRelease.id, numberToRelease.provider as Provider, workspaceId);
       toast.success(`Released ${numberToRelease.phoneNumber}`);
       // Reload to reflect changes
       await loadData();
