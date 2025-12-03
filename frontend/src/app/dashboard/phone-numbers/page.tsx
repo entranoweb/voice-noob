@@ -120,9 +120,23 @@ export default function PhoneNumbersPage() {
       setWorkspaces(loadedWorkspaces);
       
       // Use selected workspace or first available workspace
-      const workspaceId = selectedWorkspaceId !== "all" 
+      let workspaceId = selectedWorkspaceId !== "all" 
         ? selectedWorkspaceId 
         : loadedWorkspaces[0]?.id;
+      
+      // Auto-select first workspace if none selected
+      if (selectedWorkspaceId === "all" && loadedWorkspaces[0]?.id) {
+        setSelectedWorkspaceId(loadedWorkspaces[0].id);
+        workspaceId = loadedWorkspaces[0].id;
+      }
+      
+      // Skip API calls if no workspace available
+      if (!workspaceId) {
+        setPhoneNumbers([]);
+        setAgents([]);
+        setIsLoading(false);
+        return;
+      }
 
       // Load phone numbers from both providers with workspace_id
       const [telnyxNumbers, twilioNumbers, agentsList] = await Promise.allSettled(
