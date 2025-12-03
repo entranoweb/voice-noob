@@ -64,17 +64,40 @@ jobs:
         run: |
           BRANCH_NAME="sync-upstream-$(date +%Y%m%d-%H%M%S)"
           git checkout -b $BRANCH_NAME
-          git checkout upstream/main -- .
-          git add -A
-          git commit -m "Sync from upstream (conflicts need resolution)"
+          
+          # Try merge again but keep conflict markers for manual resolution
+          git merge upstream/main --no-commit || true
+          
+          # Check if there are actual conflicts
+          if git diff --name-only --diff-filter=U | grep -q .; then
+            # There are conflicts - commit with markers
+            git add -A
+            git commit -m "Sync from upstream (CONFLICTS - needs manual resolution)" || true
+          else
+            # No conflicts, just uncommitted changes
+            git add -A
+            git commit -m "Sync from upstream" || true
+          fi
+          
           git push origin $BRANCH_NAME
+          
           gh pr create \
-            --title "⚠️ Upstream sync requires manual conflict resolution" \
-            --body "This PR was automatically created because there are merge conflicts between our main branch and upstream (KenKaiii/voice-noob).
+            --title "⚠️ Upstream sync requires review" \
+            --body "This PR syncs changes from upstream (KenKaiii/voice-noob).
 
-          **Please review and resolve conflicts manually.**
-
-          Upstream changes are included in this branch. Compare carefully with main before merging." \
+          **⚠️ IMPORTANT: Review carefully before merging!**
+          
+          Our custom changes (Azure OpenAI support, etc.) may conflict with upstream.
+          
+          Files with our customizations:
+          - \`backend/app/models/user_settings.py\`
+          - \`backend/app/api/settings.py\`
+          - \`backend/app/services/gpt_realtime.py\`
+          - \`frontend/src/app/dashboard/settings/page.tsx\`
+          - \`frontend/src/lib/api/settings.ts\`
+          - \`backend/migrations/versions/015_add_azure_openai_fields.py\`
+          
+          Check these files for conflict markers (\`<<<<<<<\`) and resolve manually." \
             --base main \
             --head $BRANCH_NAME
         env:
