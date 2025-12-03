@@ -98,6 +98,35 @@ const API_KEY_PROVIDERS: ApiKeyProvider[] = [
     ],
   },
   {
+    id: "azure-openai",
+    name: "Azure OpenAI",
+    description:
+      "Use Azure OpenAI for GPT Realtime with your Microsoft credits. Alternative to direct OpenAI.",
+    category: "voice-ai",
+    icon: Brain,
+    documentationUrl: "https://portal.azure.com/#view/Microsoft_Azure_ProjectOxford/CognitiveServicesHub",
+    fields: [
+      {
+        name: "azure_openai_endpoint",
+        label: "Endpoint URL",
+        placeholder: "https://your-resource.openai.azure.com/",
+        settingsKey: "azure_openai_endpoint_set",
+      },
+      {
+        name: "azure_openai_api_key",
+        label: "API Key",
+        placeholder: "Enter your Azure OpenAI API key",
+        settingsKey: "azure_openai_api_key_set",
+      },
+      {
+        name: "azure_openai_deployment_name",
+        label: "Deployment Name",
+        placeholder: "gpt-realtime",
+        settingsKey: "azure_openai_deployment_name_set",
+      },
+    ],
+  },
+  {
     id: "deepgram",
     name: "Deepgram",
     description: "Fast and accurate speech-to-text transcription for real-time voice recognition.",
@@ -168,6 +197,59 @@ const API_KEY_PROVIDERS: ApiKeyProvider[] = [
     ],
   },
 ];
+
+// Provider selector component for choosing between OpenAI and Azure
+const ProviderSelector = memo(function ProviderSelector({
+  currentProvider,
+  hasOpenAI,
+  hasAzure,
+  workspaceId,
+}: {
+  currentProvider: string;
+  hasOpenAI: boolean;
+  hasAzure: boolean;
+  workspaceId?: string;
+}) {
+  const queryClient = useQueryClient();
+  const [isUpdating, setIsUpdating] = useState(false);
+
+  const handleProviderChange = async (newProvider: string) => {
+    setIsUpdating(true);
+    try {
+      await updateSettings({ openai_provider: newProvider }, workspaceId);
+      toast.success(`Switched to ${newProvider === "azure" ? "Azure OpenAI" : "OpenAI"}`);
+      void queryClient.invalidateQueries({ queryKey: ["settings"] });
+    } catch (error) {
+      toast.error("Failed to update provider");
+    } finally {
+      setIsUpdating(false);
+    }
+  };
+
+  return (
+    <Select
+      value={currentProvider}
+      onValueChange={handleProviderChange}
+      disabled={isUpdating}
+    >
+      <SelectTrigger className="w-[180px]">
+        {isUpdating ? (
+          <Loader2 className="h-4 w-4 animate-spin" />
+        ) : (
+          <SelectValue />
+        )}
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value="openai" disabled={!hasOpenAI}>
+          OpenAI {!hasOpenAI && "(not configured)"}
+        </SelectItem>
+        <SelectItem value="azure" disabled={!hasAzure}>
+          Azure OpenAI {!hasAzure && "(not configured)"}
+        </SelectItem>
+      </SelectContent>
+    </Select>
+  );
+});
 
 export default function SettingsPage() {
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string>("all");
@@ -247,6 +329,28 @@ export default function SettingsPage() {
         </div>
 
         <TabsContent value="api-keys" className="mt-6 space-y-8">
+          {/* Active AI Provider Selection */}
+          {settings && (settings.openai_api_key_set || settings.azure_openai_api_key_set) && (
+            <Card className="border-primary/20 bg-primary/5">
+              <CardContent className="p-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="text-sm font-medium">Active AI Provider</h3>
+                    <p className="text-xs text-muted-foreground">
+                      Select which provider to use for voice agents
+                    </p>
+                  </div>
+                  <ProviderSelector
+                    currentProvider={settings.openai_provider}
+                    hasOpenAI={settings.openai_api_key_set}
+                    hasAzure={settings.azure_openai_api_key_set}
+                    workspaceId={selectedWorkspaceId === "all" ? undefined : selectedWorkspaceId}
+                  />
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
           {/* Voice & AI Providers Section */}
           <div className="space-y-4">
             <div>

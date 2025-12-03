@@ -3,7 +3,7 @@
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import DateTime, ForeignKey, String, Text, UniqueConstraint, Uuid
+from sqlalchemy import DateTime, ForeignKey, String, Text, UniqueConstraint, Uuid, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -40,6 +40,20 @@ class UserSettings(Base):
     )
     elevenlabs_api_key: Mapped[str | None] = mapped_column(
         Text, nullable=True, comment="ElevenLabs API key for TTS"
+    )
+
+    # Azure OpenAI Configuration (alternative to direct OpenAI)
+    azure_openai_endpoint: Mapped[str | None] = mapped_column(
+        Text, nullable=True, comment="Azure OpenAI endpoint URL"
+    )
+    azure_openai_api_key: Mapped[str | None] = mapped_column(
+        Text, nullable=True, comment="Azure OpenAI API key"
+    )
+    azure_openai_deployment_name: Mapped[str | None] = mapped_column(
+        String(255), nullable=True, comment="Azure OpenAI deployment name (e.g., gpt-realtime)"
+    )
+    openai_provider: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="openai", comment="OpenAI provider: 'openai' or 'azure'"
     )
 
     # Telephony API Keys

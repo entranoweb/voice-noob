@@ -50,6 +50,11 @@ export interface SettingsResponse {
   elevenlabs_api_key_set: boolean;
   telnyx_api_key_set: boolean;
   twilio_account_sid_set: boolean;
+  // Azure OpenAI fields
+  azure_openai_endpoint_set: boolean;
+  azure_openai_api_key_set: boolean;
+  azure_openai_deployment_name_set: boolean;
+  openai_provider: string;
   workspace_id: string | null;
 }
 
@@ -61,6 +66,11 @@ export interface UpdateSettingsRequest {
   telnyx_public_key?: string;
   twilio_account_sid?: string;
   twilio_auth_token?: string;
+  // Azure OpenAI fields
+  azure_openai_endpoint?: string;
+  azure_openai_api_key?: string;
+  azure_openai_deployment_name?: string;
+  openai_provider?: string;
 }
 
 export async function fetchSettings(workspaceId?: string): Promise<SettingsResponse> {

@@ -25,6 +25,11 @@ class UpdateSettingsRequest(BaseModel):
     telnyx_public_key: str | None = None
     twilio_account_sid: str | None = None
     twilio_auth_token: str | None = None
+    # Azure OpenAI fields
+    azure_openai_endpoint: str | None = None
+    azure_openai_api_key: str | None = None
+    azure_openai_deployment_name: str | None = None
+    openai_provider: str | None = None  # "openai" or "azure"
 
 
 class SettingsResponse(BaseModel):
@@ -35,6 +40,11 @@ class SettingsResponse(BaseModel):
     elevenlabs_api_key_set: bool
     telnyx_api_key_set: bool
     twilio_account_sid_set: bool
+    # Azure OpenAI fields
+    azure_openai_endpoint_set: bool = False
+    azure_openai_api_key_set: bool = False
+    azure_openai_deployment_name_set: bool = False
+    openai_provider: str = "openai"
     workspace_id: str | None = None
 
 
@@ -98,6 +108,10 @@ async def get_settings(
             elevenlabs_api_key_set=False,
             telnyx_api_key_set=False,
             twilio_account_sid_set=False,
+            azure_openai_endpoint_set=False,
+            azure_openai_api_key_set=False,
+            azure_openai_deployment_name_set=False,
+            openai_provider="openai",
             workspace_id=workspace_id,
         )
 
@@ -107,6 +121,10 @@ async def get_settings(
         elevenlabs_api_key_set=bool(settings.elevenlabs_api_key),
         telnyx_api_key_set=bool(settings.telnyx_api_key),
         twilio_account_sid_set=bool(settings.twilio_account_sid),
+        azure_openai_endpoint_set=bool(settings.azure_openai_endpoint),
+        azure_openai_api_key_set=bool(settings.azure_openai_api_key),
+        azure_openai_deployment_name_set=bool(settings.azure_openai_deployment_name),
+        openai_provider=settings.openai_provider or "openai",
         workspace_id=str(settings.workspace_id) if settings.workspace_id else None,
     )
 
@@ -160,6 +178,15 @@ async def update_settings(
             settings.twilio_account_sid = request.twilio_account_sid or None
         if request.twilio_auth_token is not None:
             settings.twilio_auth_token = request.twilio_auth_token or None
+        # Azure OpenAI fields
+        if request.azure_openai_endpoint is not None:
+            settings.azure_openai_endpoint = request.azure_openai_endpoint or None
+        if request.azure_openai_api_key is not None:
+            settings.azure_openai_api_key = request.azure_openai_api_key or None
+        if request.azure_openai_deployment_name is not None:
+            settings.azure_openai_deployment_name = request.azure_openai_deployment_name or None
+        if request.openai_provider is not None:
+            settings.openai_provider = request.openai_provider or "openai"
 
         db.add(settings)
     else:
@@ -174,6 +201,10 @@ async def update_settings(
             telnyx_public_key=request.telnyx_public_key,
             twilio_account_sid=request.twilio_account_sid,
             twilio_auth_token=request.twilio_auth_token,
+            azure_openai_endpoint=request.azure_openai_endpoint,
+            azure_openai_api_key=request.azure_openai_api_key,
+            azure_openai_deployment_name=request.azure_openai_deployment_name,
+            openai_provider=request.openai_provider or "openai",
         )
         db.add(settings)
 

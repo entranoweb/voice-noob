@@ -6,7 +6,7 @@ import uuid
 from typing import Any
 
 import structlog
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, AsyncAzureOpenAI
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -172,17 +172,40 @@ class GPTRealtimeSession:
             self.user_id_uuid, self.db, workspace_id=self.workspace_id
         )
 
-        # Strictly use workspace API key - no fallback to global key for billing isolation
-        if not user_settings or not user_settings.openai_api_key:
-            self.logger.warning("workspace_missing_openai_key", workspace_id=str(self.workspace_id))
+        if not user_settings:
+            self.logger.warning("workspace_missing_settings", workspace_id=str(self.workspace_id))
             raise ValueError(
-                "OpenAI API key not configured for this workspace. Please add it in Settings > Workspace API Keys."
+                "API keys not configured for this workspace. Please add them in Settings > Workspace API Keys."
             )
-        api_key = user_settings.openai_api_key
-        self.logger.info("using_workspace_openai_key")
 
-        # Initialize OpenAI client with user's or global API key
-        self.client = AsyncOpenAI(api_key=api_key)
+        # Check which provider to use (Azure or OpenAI)
+        provider = getattr(user_settings, "openai_provider", "openai") or "openai"
+        self._openai_provider = provider
+
+        if provider == "azure":
+            # Use Azure OpenAI
+            if not user_settings.azure_openai_endpoint or not user_settings.azure_openai_api_key:
+                self.logger.warning("workspace_missing_azure_openai_key", workspace_id=str(self.workspace_id))
+                raise ValueError(
+                    "Azure OpenAI credentials not configured for this workspace. Please add them in Settings > Workspace API Keys."
+                )
+            self.client = AsyncAzureOpenAI(
+                azure_endpoint=user_settings.azure_openai_endpoint,
+                api_key=user_settings.azure_openai_api_key,
+                api_version="2024-10-01-preview",
+            )
+            self._azure_deployment_name = user_settings.azure_openai_deployment_name or "gpt-realtime"
+            self.logger.info("using_azure_openai", deployment=self._azure_deployment_name)
+        else:
+            # Use direct OpenAI
+            if not user_settings.openai_api_key:
+                self.logger.warning("workspace_missing_openai_key", workspace_id=str(self.workspace_id))
+                raise ValueError(
+                    "OpenAI API key not configured for this workspace. Please add it in Settings > Workspace API Keys."
+                )
+            self.client = AsyncOpenAI(api_key=user_settings.openai_api_key)
+            self._azure_deployment_name = None
+            self.logger.info("using_openai_direct")
 
         # Get integration credentials for the workspace
         integrations: dict[str, Any] = {}
@@ -206,9 +229,14 @@ class GPTRealtimeSession:
         if not self.client:
             raise ValueError("OpenAI client not initialized")
 
-        # Use the latest production gpt-realtime model (released Aug 2025)
-        model = "gpt-realtime-2025-08-28"
-        self.logger.info("connecting_to_openai_realtime", model=model)
+        # Use Azure deployment name if Azure, otherwise use OpenAI model
+        if self._openai_provider == "azure" and self._azure_deployment_name:
+            model = self._azure_deployment_name
+            self.logger.info("connecting_to_azure_openai_realtime", deployment=model)
+        else:
+            # Use the latest production gpt-realtime model (released Aug 2025)
+            model = "gpt-realtime-2025-08-28"
+            self.logger.info("connecting_to_openai_realtime", model=model)
 
         try:
             # Use official SDK's realtime.connect() method
