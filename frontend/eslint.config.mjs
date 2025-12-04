@@ -23,6 +23,7 @@ export default [
       "**/dist/**",
       "**/next-env.d.ts",
       "**/*.config.{js,mjs,ts}",
+      "**/public/widget/**",
     ],
   },
   ...compat.extends("next/core-web-vitals", "next/typescript"),
