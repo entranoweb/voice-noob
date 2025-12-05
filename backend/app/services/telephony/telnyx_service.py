@@ -426,6 +426,107 @@ class TelnyxService(TelephonyProvider):
             self.logger.exception("configure_failed", id=phone_number_id, error=str(e))
             return False
 
+    async def configure_phone_number_webhook(
+        self,
+        phone_number_id: str,
+        voice_url: str,
+        status_callback_url: str | None = None,
+    ) -> bool:
+        """Configure webhook URLs for a phone number via TeXML application.
+
+        For Telnyx, we need to create/get a TeXML application with the webhook URL,
+        then assign it to the phone number.
+
+        Args:
+            phone_number_id: Phone number ID
+            voice_url: URL for incoming call webhooks
+            status_callback_url: URL for status callbacks (optional)
+
+        Returns:
+            True if successful
+        """
+        self.logger.info(
+            "configuring_phone_number_webhook",
+            id=phone_number_id,
+            voice_url=voice_url,
+        )
+
+        try:
+            # Get or create TeXML application with our webhook URL
+            texml_app_id = await self._get_or_create_texml_application(
+                voice_url, status_callback_url
+            )
+
+            if not texml_app_id:
+                self.logger.error("failed_to_get_texml_app")
+                return False
+
+            # Assign the TeXML application to the phone number
+            return await self.configure_phone_number(
+                phone_number_id=phone_number_id,
+                texml_application_id=texml_app_id,
+            )
+        except Exception as e:
+            self.logger.exception("webhook_config_failed", id=phone_number_id, error=str(e))
+            return False
+
+    async def _get_or_create_texml_application(
+        self,
+        voice_url: str,
+        status_callback_url: str | None = None,
+    ) -> str | None:
+        """Get or create a TeXML application with the specified webhook URL.
+
+        Args:
+            voice_url: URL for incoming call webhooks
+            status_callback_url: URL for status callbacks (optional)
+
+        Returns:
+            TeXML application ID or None if failed
+        """
+        client = await self._get_http_client()
+        app_name = "voice-noob-inbound"
+
+        try:
+            # List existing TeXML applications
+            response = await client.get("/texml_applications")
+            response.raise_for_status()
+            data = response.json()
+
+            # Look for existing app with our name
+            for app in data.get("data", []):
+                if app.get("friendly_name") == app_name:
+                    app_id = app.get("id")
+                    # Update the webhook URL in case it changed
+                    update_payload: dict[str, str] = {"voice_url": voice_url}
+                    if status_callback_url:
+                        update_payload["status_callback_url"] = status_callback_url
+
+                    await client.patch(f"/texml_applications/{app_id}", json=update_payload)
+                    self.logger.info("updated_texml_app", id=app_id)
+                    return str(app_id)
+
+            # Create new TeXML application
+            create_payload: dict[str, str] = {
+                "friendly_name": app_name,
+                "voice_url": voice_url,
+                "voice_method": "POST",
+            }
+            if status_callback_url:
+                create_payload["status_callback_url"] = status_callback_url
+                create_payload["status_callback_method"] = "POST"
+
+            response = await client.post("/texml_applications", json=create_payload)
+            response.raise_for_status()
+            new_data = response.json()
+            app_id = new_data.get("data", {}).get("id")
+            self.logger.info("created_texml_app", id=app_id)
+            return str(app_id) if app_id else None
+
+        except Exception as e:
+            self.logger.exception("texml_app_error", error=str(e))
+            return None
+
     async def _get_connection_id(self) -> str:
         """Get or create a Telnyx connection for outbound calls.
 
