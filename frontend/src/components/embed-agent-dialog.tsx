@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Copy, Check, Code, ExternalLink } from "lucide-react";
+import { Copy, Check, Code, ExternalLink, Settings, Globe, AlertCircle } from "lucide-react";
 import { toast } from "sonner";
 import {
   Dialog,
@@ -22,6 +22,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { Badge } from "@/components/ui/badge";
 import { api } from "@/lib/api";
 import type { Agent } from "@/lib/api/agents";
 import { updateEmbedSettings } from "@/lib/api/agents";
@@ -62,6 +64,8 @@ export function EmbedAgentDialog({ open, onOpenChange, agent }: EmbedAgentDialog
   const [theme, setTheme] = useState("auto");
   const [buttonText, setButtonText] = useState("Talk to us");
   const [isSaving, setIsSaving] = useState(false);
+  const [productionUrl, setProductionUrl] = useState("");
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   // Fetch embed settings
   const { data: embedSettings, isLoading } = useQuery<EmbedSettings>({
@@ -73,12 +77,18 @@ export function EmbedAgentDialog({ open, onOpenChange, agent }: EmbedAgentDialog
     enabled: open,
   });
 
-  // Initialize button text from embed settings
+  // Initialize settings from embed settings
   useEffect(() => {
     if (embedSettings?.embed_settings) {
-      const settings = embedSettings.embed_settings as { button_text?: string };
+      const settings = embedSettings.embed_settings as {
+        button_text?: string;
+        production_url?: string;
+      };
       if (settings.button_text) {
         setButtonText(settings.button_text);
+      }
+      if (settings.production_url) {
+        setProductionUrl(settings.production_url);
       }
     }
   }, [embedSettings]);
@@ -99,6 +109,22 @@ export function EmbedAgentDialog({ open, onOpenChange, agent }: EmbedAgentDialog
     }
   };
 
+  // Save production URL (also auto-whitelists the domain)
+  const saveProductionUrl = async (url: string) => {
+    setIsSaving(true);
+    try {
+      await updateEmbedSettings(agent.id, {
+        embed_settings: { production_url: url },
+      });
+      await queryClient.invalidateQueries({ queryKey: ["agent-embed", agent.id] });
+      toast.success("Production URL saved and domain whitelisted");
+    } catch {
+      toast.error("Failed to save production URL");
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
   // Reset states when dialog closes
   useEffect(() => {
     if (!open) {
@@ -107,10 +133,19 @@ export function EmbedAgentDialog({ open, onOpenChange, agent }: EmbedAgentDialog
     }
   }, [open]);
 
+  // Get the base URL for embed codes (production URL if set, otherwise current origin)
+  const getBaseUrl = () => {
+    if (productionUrl) {
+      // Remove trailing slash if present
+      return productionUrl.replace(/\/$/, "");
+    }
+    return typeof window !== "undefined" ? window.location.origin : "";
+  };
+
   // Generate embed codes with selected options
   const getScriptTag = () => {
     if (!embedSettings) return "";
-    const baseUrl = typeof window !== "undefined" ? window.location.origin : "";
+    const baseUrl = getBaseUrl();
     return `<!-- Voice Noob Widget -->
 <script src="${baseUrl}/widget/v1/widget.js" defer></script>
 <voice-agent
@@ -122,7 +157,7 @@ export function EmbedAgentDialog({ open, onOpenChange, agent }: EmbedAgentDialog
 
   const getIframeCode = () => {
     if (!embedSettings) return "";
-    const baseUrl = typeof window !== "undefined" ? window.location.origin : "";
+    const baseUrl = getBaseUrl();
     return `<iframe
   src="${baseUrl}/embed/${embedSettings.public_id}?position=${position}&theme=${theme}"
   allow="microphone"
@@ -326,6 +361,84 @@ export function EmbedAgentDialog({ open, onOpenChange, agent }: EmbedAgentDialog
                 Open Preview
               </Button>
             </div>
+
+            {/* Deployment Settings */}
+            <Collapsible open={settingsOpen} onOpenChange={setSettingsOpen}>
+              <CollapsibleTrigger asChild>
+                <Button variant="ghost" className="flex w-full items-center justify-between p-3">
+                  <div className="flex items-center gap-2">
+                    <Settings className="h-4 w-4" />
+                    <span className="text-sm font-medium">Deployment Settings</span>
+                  </div>
+                  <span className="text-xs text-muted-foreground">
+                    {settingsOpen ? "Hide" : "Show"}
+                  </span>
+                </Button>
+              </CollapsibleTrigger>
+              <CollapsibleContent className="space-y-4 px-1 pt-2">
+                {/* Production URL */}
+                <div className="space-y-2">
+                  <Label htmlFor="productionUrl" className="flex items-center gap-2">
+                    <Globe className="h-3.5 w-3.5" />
+                    Production URL
+                  </Label>
+                  <p className="text-xs text-muted-foreground">
+                    Set your production URL to generate correct embed codes. The domain will be
+                    automatically whitelisted.
+                  </p>
+                  <div className="flex gap-2">
+                    <Input
+                      id="productionUrl"
+                      value={productionUrl}
+                      onChange={(e) => setProductionUrl(e.target.value)}
+                      placeholder="https://yoursite.com"
+                      className="flex-1"
+                    />
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => void saveProductionUrl(productionUrl)}
+                      disabled={isSaving}
+                    >
+                      {isSaving ? "..." : "Save"}
+                    </Button>
+                  </div>
+                  {!productionUrl && (
+                    <div className="flex items-start gap-2 rounded-md border border-yellow-500/20 bg-yellow-500/10 p-2 text-xs text-yellow-600 dark:text-yellow-400">
+                      <AlertCircle className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />
+                      <span>
+                        No production URL set. Embed codes are using your current URL (
+                        {typeof window !== "undefined" ? window.location.origin : "localhost"}).
+                      </span>
+                    </div>
+                  )}
+                </div>
+
+                {/* Allowed Domains */}
+                <div className="space-y-2">
+                  <Label className="flex items-center gap-2">
+                    <Globe className="h-3.5 w-3.5" />
+                    Allowed Domains
+                  </Label>
+                  <p className="text-xs text-muted-foreground">
+                    These domains are allowed to embed your widget. Empty list allows all domains.
+                  </p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {embedSettings.allowed_domains.length > 0 ? (
+                      embedSettings.allowed_domains.map((domain) => (
+                        <Badge key={domain} variant="secondary" className="text-xs">
+                          {domain}
+                        </Badge>
+                      ))
+                    ) : (
+                      <span className="text-xs italic text-muted-foreground">
+                        All domains allowed
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </CollapsibleContent>
+            </Collapsible>
           </div>
         ) : (
           <div className="flex h-48 items-center justify-center">
