@@ -1,0 +1,4 @@
+# file: E:\AI\0_SYNTHIQ\Synthiq Voice\voice-noob\backend\app\core\config.py
+# hypothesis_version: 6.148.3
+
+[1.0, 2.0, 10.0, 15.0, 20.0, 30.0, 5432, 6379, 8000, '*', '.env', '/api/v1', '0.0.0.0', '0.1.0', 'Admin', 'DATABASE_URL', 'HS256', 'POSTGRES_PASSWORD', 'POSTGRES_PORT', 'POSTGRES_SERVER', 'POSTGRES_USER', 'REDIS_PASSWORD', 'REDIS_URL', 'Voice Noob API', 'admin', 'admin@voicenoob.com', 'before', 'development', 'ignore', 'localhost', 'postgres', 'postgresql+asyncpg', 'utf-8', 'voicenoob', 'voicenoob-api']

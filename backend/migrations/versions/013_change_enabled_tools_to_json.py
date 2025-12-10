@@ -15,8 +15,8 @@ from sqlalchemy.dialects import postgresql
 
 
 # revision identifiers, used by Alembic.
-revision = "013_change_enabled_tools_to_json"
-down_revision = "012_add_production_indexes"
+revision = "013_tools_to_json"
+down_revision = "012_prod_indexes"
 branch_labels = None
 depends_on = None
 

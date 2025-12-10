@@ -1,0 +1,4 @@
+# file: E:\AI\0_SYNTHIQ\Synthiq Voice\voice-noob\backend\app\api\auth.py
+# hypothesis_version: 6.148.3
+
+['/api/v1/auth', '/login', '/me', '/register', '10/minute', '5/minute', 'Bearer', 'User', 'UserResponse', 'WWW-Authenticate', 'auth', 'auto', 'bcrypt', 'bearer', 'exp', 'from_attributes', 'login_attempt', 'login_failed', 'login_success', 'registering_user', 'sub', 'user_registered']

@@ -1,0 +1,4 @@
+# file: E:\AI\0_SYNTHIQ\Synthiq Voice\voice-noob\backend\app\models\call_interaction.py
+# hypothesis_version: 6.148.3
+
+[255, 'CASCADE', 'Contact', 'Workspace', 'Workspace | None', 'call_interactions', 'contacts.id', 'workspaces.id']

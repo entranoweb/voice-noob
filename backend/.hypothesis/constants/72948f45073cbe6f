@@ -1,0 +1,4 @@
+# file: E:\AI\0_SYNTHIQ\Synthiq Voice\voice-noob\backend\app\services\tools\sms_tools.py
+# hypothesis_version: 6.148.3
+
+[30.0, 1600, '/Messages.json', '/messages', 'Authorization', 'Body', 'Content-Type', 'From', 'Message content', 'SMS', 'To', 'application/json', 'body', 'completed_at', 'data', 'date_sent', 'description', 'detail', 'error', 'error_code', 'error_message', 'errors', 'from', 'function', 'id', 'message', 'message_id', 'message_sid', 'messaging_profile_id', 'name', 'object', 'parameters', 'phone_number', 'properties', 'required', 'sid', 'status', 'string', 'success', 'telnyx_send_sms', 'text', 'to', 'twilio_send_sms', 'type']

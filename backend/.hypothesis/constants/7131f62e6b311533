@@ -1,0 +1,4 @@
+# file: E:\AI\0_SYNTHIQ\Synthiq Voice\voice-noob\backend\app\api\calls.py
+# hypothesis_version: 6.148.3
+
+[100, 404, '/api/v1/calls', '/{call_id}', 'Filter by agent ID', 'Filter by status', 'calls', 'completed', 'completed_calls', 'from_attributes', 'getting_call', 'inbound', 'inbound_calls', 'listing_calls', 'outbound', 'outbound_calls', 'total_calls']

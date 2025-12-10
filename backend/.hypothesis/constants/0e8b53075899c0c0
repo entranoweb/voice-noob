@@ -1,0 +1,4 @@
+# file: E:\AI\0_SYNTHIQ\Synthiq Voice\voice-noob\backend\app\models\privacy_settings.py
+# hypothesis_version: 6.148.3
+
+[365, 'CASCADE', 'call_recording', 'consent_records', 'data_processing', 'marketing', 'privacy_settings', 'third_party_sharing', 'users.id']

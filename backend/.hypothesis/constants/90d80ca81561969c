@@ -1,0 +1,4 @@
+# file: E:\AI\0_SYNTHIQ\Synthiq Voice\voice-noob\backend\app\api\integrations.py
+# hypothesis_version: 6.148.3
+
+['/api/v1/integrations', '/{integration_id}', 'Updated metadata', 'Workspace not found', 'from_attributes', 'integrations']

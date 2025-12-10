@@ -1,0 +1,4 @@
+# file: E:\AI\0_SYNTHIQ\Synthiq Voice\voice-noob\backend\app\api\agents.py
+# hypothesis_version: 6.148.3
+
+[0.0, 0.5, 0.7, 1.0, 2.0, 100, 200, 300, 400, 500, 1000, 2000, 16000, '/api/v1/agents', '/{agent_id}', '/{agent_id}/embed', '20/minute', '30/minute', '5/minute', '60/minute', 'Agent not found', 'agents', 'balanced', 'budget', 'built-in', 'cerebras', 'deepgram', 'description', 'eleven_flash_v2_5', 'elevenlabs', 'en-US', 'enable_recording', 'enable_transcript', 'enabled_tool_ids', 'enabled_tools', 'gemini-2.5-flash', 'google', 'initial_greeting', 'is_active', 'language', 'llama-3.3-70b', 'llm_model', 'llm_provider', 'max_tokens', 'name', 'normal', 'nova-3', 'openai', 'openai-realtime', 'phone_number_id', 'premium', 'premium-mini', 'shimmer', 'stt_model', 'stt_provider', 'system_prompt', 'temperature', 'tts_model', 'tts_provider', 'turn_detection_mode', 'voice']

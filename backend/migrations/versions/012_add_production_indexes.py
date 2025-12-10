@@ -12,8 +12,8 @@ from alembic import op
 
 
 # revision identifiers, used by Alembic.
-revision: str = "012_add_production_indexes"
-down_revision: Union[str, None] = "011_add_workspace_to_user_settings"
+revision: str = "012_prod_indexes"
+down_revision: Union[str, None] = "011_ws_user_settings"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

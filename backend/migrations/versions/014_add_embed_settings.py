@@ -18,8 +18,8 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = "014_add_embed_settings"
-down_revision: Union[str, Sequence[str], None] = "013_change_enabled_tools_to_json"
+revision: str = "014_embed_settings"
+down_revision: Union[str, Sequence[str], None] = "013_tools_to_json"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

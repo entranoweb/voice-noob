@@ -11,8 +11,8 @@ import sqlalchemy as sa
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision: str = "006_add_voice_to_agents"
-down_revision: str | None = "005_add_workspaces"
+revision: str = "006_voice_to_agents"
+down_revision: str | None = "005_workspaces"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

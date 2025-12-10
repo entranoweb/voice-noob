@@ -1,0 +1,4 @@
+# file: E:\AI\0_SYNTHIQ\Synthiq Voice\voice-noob\backend\app\models\__init__.py
+# hypothesis_version: 6.148.3
+
+['Agent', 'AgentWorkspace', 'Appointment', 'CallInteraction', 'CallRecord', 'ConsentRecord', 'Contact', 'PhoneNumber', 'PrivacySettings', 'User', 'UserIntegration', 'Workspace']

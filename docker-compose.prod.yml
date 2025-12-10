@@ -1,0 +1,111 @@
+# Production Docker Compose for Coolify Deployment
+# All services on one server - Backend, Frontend, Postgres, Redis
+# Coolify handles SSL/domains via Traefik automatically
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:17-alpine
+    container_name: synthiq-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme_in_production}
+      POSTGRES_DB: ${POSTGRES_DB:-voice_agent}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - synthiq-network
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: synthiq-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-changeme_in_production}
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-changeme_in_production}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - synthiq-network
+
+  # FastAPI Backend
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: synthiq-backend
+    restart: unless-stopped
+    environment:
+      # Database
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-changeme_in_production}@postgres:5432/${POSTGRES_DB:-voice_agent}
+      # Redis
+      REDIS_URL: redis://:${REDIS_PASSWORD:-changeme_in_production}@redis:6379/0
+      # Security
+      SECRET_KEY: ${SECRET_KEY:-generate_a_secure_key_here}
+      # CORS - Allow frontend domain
+      CORS_ORIGINS: '["${FRONTEND_URL:-http://localhost:3000}"]'
+      # Admin credentials
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@synthiq.io}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-changeme}
+      ADMIN_NAME: ${ADMIN_NAME:-Admin}
+      # Postgres connection for entrypoint health check
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      REDIS_HOST: redis
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      - synthiq-network
+
+  # Next.js Frontend
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${BACKEND_URL:-http://backend:8000}
+        NEXT_PUBLIC_WS_URL: ${BACKEND_WS_URL:-ws://backend:8000}
+    container_name: synthiq-frontend
+    restart: unless-stopped
+    environment:
+      NEXT_PUBLIC_API_URL: ${BACKEND_URL:-http://backend:8000}
+      NEXT_PUBLIC_WS_URL: ${BACKEND_WS_URL:-ws://backend:8000}
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    networks:
+      - synthiq-network
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+
+networks:
+  synthiq-network:
+    driver: bridge

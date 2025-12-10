@@ -1,0 +1,4 @@
+# file: E:\AI\0_SYNTHIQ\Synthiq Voice\voice-noob\backend\app\models\call_record.py
+# hypothesis_version: 6.148.3
+
+[255, 'Agent', 'Agent | None', 'CASCADE', 'Call status', 'Call transcript', 'Caller phone number', 'Contact', 'Contact | None', 'Owner user ID', 'SET NULL', 'When the call ended', 'Workspace', 'Workspace | None', 'agents.id', 'busy', 'call_records', 'canceled', 'completed', 'contacts.id', 'failed', 'in_progress', 'inbound', 'initiated', 'no_answer', 'outbound', 'ringing', 'selectin', 'workspaces.id']

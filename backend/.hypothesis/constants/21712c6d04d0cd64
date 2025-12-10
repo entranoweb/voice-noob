@@ -1,0 +1,4 @@
+# file: E:\AI\0_SYNTHIQ\Synthiq Voice\voice-noob\backend\app\api\crm.py
+# hypothesis_version: 6.148.3
+
+[100, 201, 204, 255, 300, 400, 404, 409, 480, 500, 503, 600, 1000, 10000, 1000000, '+00:00', '/appointments', '/contacts', '/crm', '/stats', '100/minute', 'Contact not found', 'Workspace not found', 'Z', '[^\\d+]', 'agent_id', 'cancelled', 'company_name', 'completed', 'contact', 'contact_id', 'contact_name', 'contact_phone', 'contacted', 'converted', 'created_by_agent', 'crm', 'crm:stats:*', 'duration_minutes', 'email', 'first_name', 'from_attributes', 'id', 'last_name', 'lost', 'new', 'no_show', 'notes', 'orig', 'phone_number', 'qualified', 'scheduled', 'scheduled_at', 'service_type', 'status', 'tags', 'total_appointments', 'total_calls', 'total_contacts', 'user_id', 'workspace_id']

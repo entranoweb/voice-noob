@@ -1,0 +1,4 @@
+# file: E:\AI\0_SYNTHIQ\Synthiq Voice\voice-noob\backend\app\db\redis.py
+# hypothesis_version: 6.148.3
+
+[5.0, 10.0, 100, 'Redis', 'Redis client closed', 'Redis | None', 'utf-8']

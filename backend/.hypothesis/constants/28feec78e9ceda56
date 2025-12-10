@@ -1,0 +1,4 @@
+# file: E:\AI\0_SYNTHIQ\Synthiq Voice\voice-noob\backend\app\models\user_settings.py
+# hypothesis_version: 6.148.3
+
+[255, 'CASCADE', 'Telnyx API key', 'Telnyx public key', 'Twilio Account SID', 'Twilio Auth Token', 'user_id', 'user_settings', 'workspace_id', 'workspaces.id']

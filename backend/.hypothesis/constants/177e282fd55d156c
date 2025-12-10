@@ -1,0 +1,4 @@
+# file: E:\AI\0_SYNTHIQ\Synthiq Voice\voice-noob\backend\app\models\workspace.py
+# hypothesis_version: 6.148.3
+
+[200, 'Agent', 'AgentWorkspace', 'Appointment', 'CASCADE', 'CallInteraction', 'Contact', 'User', 'Workspace', 'Workspace name', 'agent_id', 'agent_workspaces', 'agents.id', 'all, delete-orphan', 'uq_agent_workspace', 'users.id', 'workspace', 'workspace_id', 'workspaces', 'workspaces.id']

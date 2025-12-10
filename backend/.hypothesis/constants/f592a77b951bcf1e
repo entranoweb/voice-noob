@@ -1,0 +1,4 @@
+# file: E:\AI\0_SYNTHIQ\Synthiq Voice\voice-noob\backend\app\services\telephony\base.py
+# hypothesis_version: 6.148.3
+
+['US', 'busy', 'canceled', 'completed', 'failed', 'in_progress', 'inbound', 'initiated', 'no_answer', 'outbound', 'ringing']

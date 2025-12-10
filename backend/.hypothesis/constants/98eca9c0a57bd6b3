@@ -1,0 +1,4 @@
+# file: E:\AI\0_SYNTHIQ\Synthiq Voice\voice-noob\backend\app\services\telephony\telnyx_service.py
+# hypothesis_version: 6.148.3
+
+[30.0, '&', '&amp;', '/number_orders', '/phone_numbers', '/texml/calls', 'Authorization', 'Content-Type', 'US', 'active', 'answer_failed', 'answering_call', 'application/json', 'both_tracks', 'call_control_id', 'call_initiated', 'configure_failed', 'connection_id', 'connection_name', 'data', 'features', 'filter[country_code]', 'filter[features]', 'filter[limit]', 'from', 'hanging_up_call', 'hangup_failed', 'id', 'initiating_call', 'messaging_profile_id', 'phone_number', 'phone_numbers', 'phone_numbers_found', 'phone_numbers_listed', 'region_information', 'region_name', 'release_failed', 'sid', 'sms', 'starting_stream', 'stream_start_failed', 'stream_track', 'stream_url', 'telnyx', 'texml_application_id', 'texml_url', 'to', 'voice', 'webhook_url']

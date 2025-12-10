@@ -1,0 +1,4 @@
+# file: E:\AI\0_SYNTHIQ\Synthiq Voice\voice-noob\backend\app\services\tools\registry.py
+# hypothesis_version: 6.148.3
+
+['access_token', 'account_sid', 'api_key', 'auth_token', 'book_appointment', 'bookings', 'calendly', 'calendly_get_event', 'calendly_list_events', 'call_control', 'cancel_appointment', 'check_availability', 'create_contact', 'crm', 'end_call', 'error', 'from_number', 'function', 'ghl_add_contact_tags', 'ghl_book_appointment', 'ghl_create_contact', 'ghl_get_appointments', 'ghl_get_calendars', 'ghl_get_contact', 'ghl_get_pipelines', 'ghl_search_contact', 'ghl_update_contact', 'gohighlevel', 'list_appointments', 'location_id', 'messaging_profile_id', 'name', 'search_customer', 'send_dtmf', 'shop_domain', 'shopify', 'shopify_get_order', 'success', 'telnyx-sms', 'telnyx_send_sms', 'transfer_call', 'twilio-sms', 'twilio_send_sms']

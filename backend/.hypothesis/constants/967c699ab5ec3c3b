@@ -1,0 +1,4 @@
+# file: E:\AI\0_SYNTHIQ\Synthiq Voice\voice-noob\backend\app\services\telephony\twilio_service.py
+# hypothesis_version: 6.148.3
+
+['/answer', '/status', 'POST', 'US', 'agent_id', 'answered', 'area_code', 'busy', 'call_initiated', 'canceled', 'completed', 'configuring_webhook', 'contains', 'failed', 'get_call_info_failed', 'hanging_up_call', 'hangup_failed', 'in-progress', 'inbound', 'initiated', 'initiating_call', 'limit', 'mms', 'no-answer', 'phone_numbers_found', 'phone_numbers_listed', 'queued', 'release_failed', 'ringing', 'sms', 'status_callback', 'twilio', 'voice', 'voice_enabled', 'voice_method', 'voice_url']

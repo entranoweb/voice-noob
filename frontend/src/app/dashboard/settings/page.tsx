@@ -219,7 +219,7 @@ const ProviderSelector = memo(function ProviderSelector({
       await updateSettings({ openai_provider: newProvider }, workspaceId);
       toast.success(`Switched to ${newProvider === "azure" ? "Azure OpenAI" : "OpenAI"}`);
       void queryClient.invalidateQueries({ queryKey: ["settings"] });
-    } catch (error) {
+    } catch {
       toast.error("Failed to update provider");
     } finally {
       setIsUpdating(false);
@@ -229,7 +229,7 @@ const ProviderSelector = memo(function ProviderSelector({
   return (
     <Select
       value={currentProvider}
-      onValueChange={handleProviderChange}
+      onValueChange={(value) => void handleProviderChange(value)}
       disabled={isUpdating}
     >
       <SelectTrigger className="w-[180px]">

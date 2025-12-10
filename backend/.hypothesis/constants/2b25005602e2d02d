@@ -1,0 +1,4 @@
+# file: E:\AI\0_SYNTHIQ\Synthiq Voice\voice-noob\backend\app\models\phone_number.py
+# hypothesis_version: 6.148.3
+
+[200, 255, 'Agent', 'Agent | None', 'Can receive SMS', 'Can send SMS', 'Owner user ID', 'Phone number status', 'SET NULL', 'Workspace', 'Workspace | None', 'active', 'agents.id', 'pending', 'phone_number', 'phone_numbers', 'released', 'selectin', 'suspended', 'telnyx', 'twilio', 'uq_user_phone_number', 'user_id', 'workspaces.id']

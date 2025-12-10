@@ -6,7 +6,7 @@ import uuid
 from typing import Any
 
 import structlog
-from openai import AsyncOpenAI, AsyncAzureOpenAI
+from openai import AsyncAzureOpenAI, AsyncOpenAI
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 

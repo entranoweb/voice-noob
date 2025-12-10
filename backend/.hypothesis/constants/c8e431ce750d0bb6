@@ -1,0 +1,4 @@
+# file: E:\AI\0_SYNTHIQ\Synthiq Voice\voice-noob\backend\app\middleware\security.py
+# hypothesis_version: 6.148.3
+
+['1; mode=block', 'DENY', 'Permissions-Policy', 'Referrer-Policy', 'X-Frame-Options', 'X-XSS-Protection', 'nosniff']

@@ -1,0 +1,4 @@
+# file: E:\AI\0_SYNTHIQ\Synthiq Voice\voice-noob\backend\app\services\tools\call_control_tools.py
+# hypothesis_version: 6.148.3
+
+[250, 'W', 'action', 'announce', 'description', 'destination', 'digits', 'duration_ms', 'end_call', 'end_call_requested', 'error', 'function', 'integer', 'message', 'name', 'object', 'parameters', 'properties', 'reason', 'required', 'send_dtmf', 'send_dtmf_requested', 'string', 'success', 'transfer_call', 'type', 'w']

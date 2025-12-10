@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -106,12 +106,7 @@ export default function PhoneNumbersPage() {
   const [numberToRelease, setNumberToRelease] = useState<PhoneNumber | null>(null);
   const [isAssigning, setIsAssigning] = useState(false);
 
-  // Load phone numbers and agents on mount and when workspace changes
-  useEffect(() => {
-    void loadData();
-  }, [selectedWorkspaceId]);
-
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
     setIsLoading(true);
     try {
       // First load workspaces to get a valid workspace_id
@@ -202,7 +197,12 @@ export default function PhoneNumbersPage() {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [selectedWorkspaceId]);
+
+  // Load phone numbers and agents on mount and when workspace changes
+  useEffect(() => {
+    void loadData();
+  }, [loadData]);
 
   const openPurchaseModal = () => {
     setSearchAreaCode("");

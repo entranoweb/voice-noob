@@ -1,0 +1,4 @@
+# file: E:\AI\0_SYNTHIQ\Synthiq Voice\voice-noob\backend\app\api\workspaces.py
+# hypothesis_version: 6.148.3
+
+[200, 201, 204, 400, 404, 409, 503, 2000, '/agent/{agent_id}', '/workspaces', '/{workspace_id}', '100/minute', 'Agent not found', 'Invalid ID format', 'UTC', 'Workspace not found', 'agent_count', 'agent_id', 'agent_name', 'contact_count', 'description', 'from_attributes', 'id', 'is_default', 'message', 'name', 'name cannot be empty', 'settings', 'user_id', 'workspace_id', 'workspace_name', 'workspaces']

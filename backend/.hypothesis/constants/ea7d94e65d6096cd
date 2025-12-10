@@ -1,0 +1,4 @@
+# file: E:\AI\0_SYNTHIQ\Synthiq Voice\voice-noob\backend\app\api\telephony_ws.py
+# hypothesis_version: 6.148.3
+
+[4003, 4004, '/telnyx/{agent_id}', '/twilio/{agent_id}', '/ws/telephony', 'Agent is not active', 'Agent not found', 'agent_loaded', 'agent_not_active', 'agent_not_found', 'callSid', 'call_control_id', 'connected', 'delta', 'enable_transcript', 'enabled_tools', 'event', 'language', 'mark', 'media', 'name', 'payload', 'realtime_event', 'response.audio.delta', 'response.audio.done', 'response.done', 'shimmer', 'start', 'stop', 'streamSid', 'stream_id', 'system_prompt', 'telephony-ws', 'telnyx_media_stream', 'transcript', 'transcript_saved', 'twilio_mark_event', 'twilio_media_stream', 'utf-8', 'voice']
