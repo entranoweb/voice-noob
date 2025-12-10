@@ -60,8 +60,8 @@ services:
     container_name: voice-agent-pgadmin
     restart: unless-stopped
     environment:
-      PGADMIN_DEFAULT_EMAIL: admin@voiceagent.local
-      PGADMIN_DEFAULT_PASSWORD: admin
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@localhost}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-change_this_password}
       PGADMIN_CONFIG_SERVER_MODE: 'False'
     ports:
       - "5050:80"

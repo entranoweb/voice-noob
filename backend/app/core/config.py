@@ -88,8 +88,9 @@ class Settings(BaseSettings):
     RATE_LIMIT_PER_MINUTE: int = 60
 
     # Default Admin User (created on first startup if no users exist)
-    ADMIN_EMAIL: str = "admin@voicenoob.com"
-    ADMIN_PASSWORD: str = "admin"
+    # IMPORTANT: Change these in production via environment variables!
+    ADMIN_EMAIL: str = "admin@example.com"
+    ADMIN_PASSWORD: str = "CHANGE_ME_IN_PRODUCTION"
     ADMIN_NAME: str = "Admin"
 
     # Voice & AI Services
