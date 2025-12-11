@@ -1,19 +1,30 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { usePathname } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 
 export function Preloader() {
+  const pathname = usePathname();
   const [isVisible, setIsVisible] = useState(true);
 
+  // Skip preloader for embed routes
+  const isEmbedRoute = pathname?.startsWith("/embed");
+
   useEffect(() => {
+    // Don't show preloader for embed routes
+    if (isEmbedRoute) {
+      setIsVisible(false);
+      return;
+    }
+
     // Show preloader for minimum time then fade out
     const timer = setTimeout(() => {
       setIsVisible(false);
     }, 2000);
 
     return () => clearTimeout(timer);
-  }, []);
+  }, [isEmbedRoute]);
 
   return (
     <AnimatePresence>
