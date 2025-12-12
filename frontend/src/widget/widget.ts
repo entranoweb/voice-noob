@@ -157,9 +157,7 @@ const styles = `
     right: 0;
     width: 380px;
     height: 520px;
-    background: white;
-    border-radius: 16px;
-    box-shadow: 0 8px 48px rgba(0, 0, 0, 0.15);
+    background: transparent;
     overflow: hidden;
     opacity: 0;
     transform: translateY(20px) scale(0.95);
@@ -374,7 +372,7 @@ class VoiceAgentElement extends HTMLElement {
       <div class="va-widget-container ${this.position}">
         <div class="va-widget-popup" id="popup">
           <iframe
-            src="${this.baseUrl}/embed/${this.agentId}?theme=${this.theme}"
+            src="${this.baseUrl}/embed/${this.agentId}?theme=${this.theme}&autostart=true"
             allow="microphone"
             title="Voice Agent"
           ></iframe>
@@ -405,6 +403,7 @@ class VoiceAgentElement extends HTMLElement {
     const buttonText = this.shadow.getElementById("button-text");
     const orbGradient = this.shadow.getElementById("orb-gradient");
     const orbDot = this.shadow.getElementById("orb-dot");
+    const iframe = popup?.querySelector("iframe");
 
     if (popup) {
       popup.classList.toggle("open", this.isOpen);
@@ -420,6 +419,11 @@ class VoiceAgentElement extends HTMLElement {
 
     if (orbDot) {
       orbDot.classList.toggle("active", this.isOpen);
+    }
+
+    // Send message to iframe to restart session when opening
+    if (this.isOpen && iframe?.contentWindow) {
+      iframe.contentWindow.postMessage({ type: "voice-agent:start" }, "*");
     }
 
     // Reset state when closing
