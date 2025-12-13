@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.auth import CurrentUser, user_id_to_uuid
+from app.core.auth import CurrentUser
 from app.core.limiter import limiter
 from app.core.public_id import generate_public_id
 from app.db.session import get_db
@@ -139,10 +139,9 @@ async def create_agent(
     """
     # Build provider config based on tier (from pricing-tiers.ts)
     provider_config = _get_provider_config(agent_request.pricing_tier)
-    user_uuid = user_id_to_uuid(current_user.id)
 
     agent = Agent(
-        user_id=user_uuid,
+        user_id=current_user.id,
         name=agent_request.name,
         description=agent_request.description,
         pricing_tier=agent_request.pricing_tier,
@@ -202,10 +201,9 @@ async def list_agents(
     if limit > MAX_AGENTS_LIMIT:
         raise HTTPException(status_code=400, detail=f"Limit cannot exceed {MAX_AGENTS_LIMIT}")
 
-    user_uuid = user_id_to_uuid(current_user.id)
     result = await db.execute(
         select(Agent)
-        .where(Agent.user_id == user_uuid)
+        .where(Agent.user_id == current_user.id)
         .order_by(Agent.created_at.desc())
         .offset(skip)
         .limit(limit)
@@ -234,11 +232,10 @@ async def get_agent(
     Raises:
         HTTPException: If agent not found or unauthorized
     """
-    user_uuid = user_id_to_uuid(current_user.id)
     result = await db.execute(
         select(Agent).where(
             Agent.id == uuid.UUID(agent_id),
-            Agent.user_id == user_uuid,
+            Agent.user_id == current_user.id,
         )
     )
     agent = result.scalar_one_or_none()
@@ -271,11 +268,10 @@ async def delete_agent(
     Raises:
         HTTPException: If agent not found or unauthorized
     """
-    user_uuid = user_id_to_uuid(current_user.id)
     result = await db.execute(
         select(Agent).where(
             Agent.id == uuid.UUID(agent_id),
-            Agent.user_id == user_uuid,
+            Agent.user_id == current_user.id,
         )
     )
     agent = result.scalar_one_or_none()
@@ -314,11 +310,10 @@ async def update_agent(
     Raises:
         HTTPException: If agent not found or unauthorized
     """
-    user_uuid = user_id_to_uuid(current_user.id)
     result = await db.execute(
         select(Agent).where(
             Agent.id == uuid.UUID(agent_id),
-            Agent.user_id == user_uuid,
+            Agent.user_id == current_user.id,
         )
     )
     agent = result.scalar_one_or_none()
@@ -511,11 +506,10 @@ async def get_embed_settings(
     Returns:
         Embed settings including embed code snippets
     """
-    user_uuid = user_id_to_uuid(current_user.id)
     result = await db.execute(
         select(Agent).where(
             Agent.id == uuid.UUID(agent_id),
-            Agent.user_id == user_uuid,
+            Agent.user_id == current_user.id,
         )
     )
     agent = result.scalar_one_or_none()
@@ -582,11 +576,10 @@ async def update_embed_settings(
     Returns:
         Updated embed settings
     """
-    user_uuid = user_id_to_uuid(current_user.id)
     result = await db.execute(
         select(Agent).where(
             Agent.id == uuid.UUID(agent_id),
-            Agent.user_id == user_uuid,
+            Agent.user_id == current_user.id,
         )
     )
     agent = result.scalar_one_or_none()
@@ -609,6 +602,22 @@ async def update_embed_settings(
         current_settings = dict(agent.embed_settings or {})
         current_settings.update(update_request.embed_settings)
         agent.embed_settings = current_settings
+
+        # Auto-whitelist domain when production_url is set
+        production_url = update_request.embed_settings.get("production_url")
+        if production_url:
+            from contextlib import suppress
+            from urllib.parse import urlparse
+
+            with suppress(ValueError, AttributeError):
+                parsed = urlparse(production_url)
+                hostname = parsed.hostname
+                if hostname:
+                    # Add domain to allowed_domains if not already present
+                    current_domains = list(agent.allowed_domains or [])
+                    if hostname not in current_domains:
+                        current_domains.append(hostname)
+                        agent.allowed_domains = current_domains
 
     await db.commit()
     await db.refresh(agent)
@@ -638,11 +647,10 @@ async def regenerate_public_id(
     Returns:
         Updated embed settings with new public_id
     """
-    user_uuid = user_id_to_uuid(current_user.id)
     result = await db.execute(
         select(Agent).where(
             Agent.id == uuid.UUID(agent_id),
-            Agent.user_id == user_uuid,
+            Agent.user_id == current_user.id,
         )
     )
     agent = result.scalar_one_or_none()
