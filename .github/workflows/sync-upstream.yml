@@ -5,14 +5,27 @@ on:
     # Run daily at 00:00 UTC
     - cron: '0 0 * * *'
   workflow_dispatch:
-    # Allow manual trigger
+    inputs:
+      sync_dev_branch:
+        description: 'Also sync synthiqvoice dev branch'
+        required: false
+        default: 'true'
+        type: boolean
+      create_backup:
+        description: 'Create backup branches before sync'
+        required: false
+        default: 'true'
+        type: boolean
 
 jobs:
-  sync:
+  sync-main:
     runs-on: ubuntu-latest
     permissions:
       contents: write
       pull-requests: write
+    outputs:
+      main_updated: ${{ steps.merge.outputs.merge_success }}
+      upstream_commits: ${{ steps.check.outputs.upstream_commits }}
 
     steps:
       - name: Checkout repository
@@ -43,7 +56,15 @@ jobs:
             echo "Found $UPSTREAM_COMMITS new commits from upstream"
           fi
 
-      - name: Try merge
+      - name: Create backup of main branch
+        if: steps.check.outputs.upstream_commits != '0' && (github.event.inputs.create_backup == 'true' || github.event_name == 'schedule')
+        run: |
+          BACKUP_NAME="backup/main-$(date +%Y%m%d-%H%M%S)"
+          git checkout main
+          git push origin main:$BACKUP_NAME
+          echo "Created backup: $BACKUP_NAME"
+
+      - name: Try merge to main
         id: merge
         if: steps.check.outputs.upstream_commits != '0'
         run: |
@@ -62,7 +83,7 @@ jobs:
       - name: Create PR if merge has conflicts
         if: steps.merge.outputs.merge_success == 'false'
         run: |
-          BRANCH_NAME="sync-upstream-$(date +%Y%m%d-%H%M%S)"
+          BRANCH_NAME="sync-upstream-main-$(date +%Y%m%d-%H%M%S)"
           git checkout -b $BRANCH_NAME
           
           # Try merge again but keep conflict markers for manual resolution
@@ -70,11 +91,9 @@ jobs:
           
           # Check if there are actual conflicts
           if git diff --name-only --diff-filter=U | grep -q .; then
-            # There are conflicts - commit with markers
             git add -A
             git commit -m "Sync from upstream (CONFLICTS - needs manual resolution)" || true
           else
-            # No conflicts, just uncommitted changes
             git add -A
             git commit -m "Sync from upstream" || true
           fi
@@ -82,8 +101,8 @@ jobs:
           git push origin $BRANCH_NAME
           
           gh pr create \
-            --title "⚠️ Upstream sync requires review" \
-            --body "This PR syncs changes from upstream (KenKaiii/voice-noob).
+            --title "⚠️ [main] Upstream sync requires review" \
+            --body "This PR syncs changes from upstream (KenKaiii/voice-noob) to **main** branch.
 
           **⚠️ IMPORTANT: Review carefully before merging!**
           
@@ -97,8 +116,133 @@ jobs:
           - \`frontend/src/lib/api/settings.ts\`
           - \`backend/migrations/versions/015_add_azure_openai_fields.py\`
           
-          Check these files for conflict markers (\`<<<<<<<\`) and resolve manually." \
+          Check these files for conflict markers (\`<<<<<<<\`) and resolve manually.
+          
+          A backup branch was created before this sync attempt." \
             --base main \
             --head $BRANCH_NAME
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  sync-dev-branch:
+    needs: sync-main
+    if: |
+      always() && 
+      (github.event.inputs.sync_dev_branch == 'true' || github.event_name == 'schedule') &&
+      needs.sync-main.outputs.upstream_commits != '0'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+          ref: synthiqvoice
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch all branches
+        run: |
+          git fetch origin main
+          git fetch origin synthiqvoice
+
+      - name: Check if dev branch needs sync
+        id: check_dev
+        run: |
+          # Check commits in main that aren't in synthiqvoice
+          COMMITS_BEHIND=$(git rev-list synthiqvoice..origin/main --count)
+          echo "commits_behind=$COMMITS_BEHIND" >> $GITHUB_OUTPUT
+          if [ "$COMMITS_BEHIND" -eq "0" ]; then
+            echo "synthiqvoice is up to date with main"
+          else
+            echo "synthiqvoice is $COMMITS_BEHIND commits behind main"
+          fi
+
+      - name: Create backup of synthiqvoice branch
+        if: steps.check_dev.outputs.commits_behind != '0' && (github.event.inputs.create_backup == 'true' || github.event_name == 'schedule')
+        run: |
+          BACKUP_NAME="backup/synthiqvoice-$(date +%Y%m%d-%H%M%S)"
+          git push origin synthiqvoice:$BACKUP_NAME
+          echo "Created backup: $BACKUP_NAME"
+
+      - name: Try merge main into synthiqvoice
+        id: merge_dev
+        if: steps.check_dev.outputs.commits_behind != '0'
+        run: |
+          git checkout synthiqvoice
+          if git merge origin/main --no-edit -m "Merge upstream changes from main"; then
+            echo "merge_success=true" >> $GITHUB_OUTPUT
+          else
+            git merge --abort
+            echo "merge_success=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Push if merge succeeded
+        if: steps.merge_dev.outputs.merge_success == 'true'
+        run: git push origin synthiqvoice
+
+      - name: Create PR if merge has conflicts
+        if: steps.merge_dev.outputs.merge_success == 'false'
+        run: |
+          BRANCH_NAME="sync-main-to-dev-$(date +%Y%m%d-%H%M%S)"
+          git checkout -b $BRANCH_NAME
+          
+          # Try merge again but keep conflict markers for manual resolution
+          git merge origin/main --no-commit || true
+          
+          # List conflicting files
+          CONFLICTS=$(git diff --name-only --diff-filter=U | tr '\n' ', ' | sed 's/,$//')
+          
+          if [ -n "$CONFLICTS" ]; then
+            git add -A
+            git commit -m "Merge main into synthiqvoice (CONFLICTS - needs resolution)" || true
+          else
+            git add -A
+            git commit -m "Merge main into synthiqvoice" || true
+          fi
+          
+          git push origin $BRANCH_NAME
+          
+          gh pr create \
+            --title "⚠️ [synthiqvoice] Upstream sync requires review" \
+            --body "This PR merges upstream changes from **main** into **synthiqvoice** dev branch.
+
+          **⚠️ CONFLICTS DETECTED - Manual resolution required!**
+          
+          Conflicting files: \`$CONFLICTS\`
+          
+          ## How to resolve:
+          1. Check out this branch locally
+          2. Resolve conflicts in the listed files
+          3. Keep our Azure OpenAI customizations
+          4. Push and merge
+          
+          ## Our custom files to preserve:
+          - \`backend/app/models/user_settings.py\` - Azure fields
+          - \`backend/app/api/settings.py\` - Azure API endpoints
+          - \`backend/app/services/gpt_realtime.py\` - Azure client init
+          - \`frontend/src/app/dashboard/settings/page.tsx\` - Azure UI
+          - \`backend/migrations/versions/015_add_azure_openai_fields.py\`
+          
+          A backup branch was created: check \`backup/synthiqvoice-*\` branches." \
+            --base synthiqvoice \
+            --head $BRANCH_NAME
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## Sync Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Branch | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| main | ${{ needs.sync-main.outputs.main_updated == 'true' && '✅ Synced' || '⚠️ PR Created' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| synthiqvoice | ${{ steps.merge_dev.outputs.merge_success == 'true' && '✅ Synced' || (steps.check_dev.outputs.commits_behind == '0' && '✅ Up to date' || '⚠️ PR Created') }} |" >> $GITHUB_STEP_SUMMARY
