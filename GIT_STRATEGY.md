@@ -5,9 +5,16 @@
 | Branch | Purpose | Updates From |
 |--------|---------|--------------|
 | `main` | Upstream sync | KenKaiii/voice-noob (auto via GitHub Actions) |
-| `synthiqvoice` | Development & new features | Auto-synced from `main` via GitHub Actions |
-| `deploysynthiqvoice` | Production deployment | Manual merges from `synthiqvoice` |
+| `synthiqvoice` | Development & testing MVP | Auto-synced from `main` via GitHub Actions |
+| `voice-prod` | Production hardening | Manual merges from `synthiqvoice` |
+| `deploy` | Production deployment | Manual merges from `voice-prod` |
 | `backup/*` | Auto-created backups | Created before each sync attempt |
+
+## Branch Purpose Details
+
+- **synthiqvoice**: Testing infrastructure, MVP features, experimental work
+- **voice-prod**: Production hardening - stability, security, performance optimizations
+- **deploy**: What actually runs in production (Coolify deployment)
 
 ## Remotes
 
@@ -38,9 +45,15 @@ upstream/main
       │
       ▼ (auto-sync after main updates)
 synthiqvoice ──────────────► backup/synthiqvoice-*
+      │  (testing MVP, experimental)
       │
-      ▼ (manual deploy)
-deploysynthiqvoice
+      ▼ (manual merge when stable)
+  voice-prod
+      │  (production hardening)
+      │
+      ▼ (manual deploy when ready)
+    deploy
+      │  (Coolify production)
 ```
 
 ### Manual Trigger
@@ -76,11 +89,21 @@ git push origin synthiqvoice --force
 
 ## Manual Operations
 
-### Deploying to Production
+### Promoting to Production Hardening
+When features are tested and stable in synthiqvoice:
 ```bash
-git checkout deploysynthiqvoice
+git checkout voice-prod
 git merge synthiqvoice
-git push origin deploysynthiqvoice
+git push origin voice-prod
+```
+
+### Deploying to Production
+When voice-prod is hardened and ready:
+```bash
+git checkout deploy
+git merge voice-prod
+git push origin deploy
+# Coolify auto-deploys from deploy branch
 ```
 
 ### Force Sync Dev Branch (if needed)
