@@ -404,6 +404,31 @@ export default function EditAgentPage({ params }: EditAgentPageProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [embedSettings]);
 
+  // Get selected workspaces for phone number fetching
+  const selectedWorkspaces = form.watch("selectedWorkspaces");
+  const telephonyProvider = form.watch("telephonyProvider");
+
+  // Fetch phone numbers from the first selected workspace
+  const { data: phoneNumbers = [], isLoading: isLoadingPhoneNumbers } = useQuery({
+    queryKey: ["phone-numbers", selectedWorkspaces[0], telephonyProvider],
+    queryFn: async () => {
+      if (!selectedWorkspaces[0]) return [];
+      const response = await api.get<
+        Array<{
+          id: string;
+          phone_number: string;
+          friendly_name: string | null;
+          provider: string;
+          assigned_agent_id: string | null;
+        }>
+      >(
+        `/api/v1/telephony/phone-numbers?workspace_id=${selectedWorkspaces[0]}&provider=${telephonyProvider}`
+      );
+      return response.data;
+    },
+    enabled: !!selectedWorkspaces[0] && !!agent && !isDeleting,
+  });
+
   // Watch the LLM provider to conditionally show/hide Voice tab
   const llmProvider = form.watch("llmProvider");
   const isRealtimeProvider = llmProvider === "openai-realtime";
@@ -1587,48 +1612,73 @@ export default function EditAgentPage({ params }: EditAgentPageProps) {
                     name="phoneNumberId"
                     render={({ field }) => (
                       <FormItem>
-                        <FormLabel>Phone Number</FormLabel>
-                        <div className="rounded-lg border border-dashed p-4">
-                          <div className="flex items-center justify-between">
-                            <div className="space-y-1">
-                              <p className="text-sm font-medium">
-                                {field.value && field.value !== "none"
-                                  ? "Phone number assigned"
-                                  : "No phone number assigned"}
-                              </p>
-                              <p className="text-xs text-muted-foreground">
-                                Phone numbers allow your agent to receive and make calls
-                              </p>
-                            </div>
-                            <Badge
-                              variant={
-                                field.value && field.value !== "none" ? "default" : "secondary"
-                              }
-                            >
-                              {field.value && field.value !== "none" ? "Active" : "Not configured"}
-                            </Badge>
+                        <FormLabel>Phone Number for Inbound Calls</FormLabel>
+                        {selectedWorkspaces.length === 0 ? (
+                          <div className="rounded-lg border border-dashed p-4">
+                            <p className="text-sm text-muted-foreground">
+                              Please select a workspace in the Basic tab first to see available
+                              phone numbers.
+                            </p>
                           </div>
-                          <div className="mt-3 flex gap-2">
-                            <Button type="button" variant="outline" size="sm" asChild>
-                              <Link href="/dashboard/settings/phone-numbers">
-                                Manage Phone Numbers
-                              </Link>
-                            </Button>
-                            {field.value && field.value !== "none" && (
+                        ) : phoneNumbers.length === 0 && !isLoadingPhoneNumbers ? (
+                          <div className="rounded-lg border border-dashed p-4">
+                            <div className="flex items-center justify-between">
+                              <div className="space-y-1">
+                                <p className="text-sm font-medium">No phone numbers available</p>
+                                <p className="text-xs text-muted-foreground">
+                                  Purchase a phone number to enable inbound calls
+                                </p>
+                              </div>
+                            </div>
+                            <div className="mt-3">
+                              <Button type="button" variant="outline" size="sm" asChild>
+                                <Link href="/dashboard/phone-numbers">Purchase Phone Numbers</Link>
+                              </Button>
+                            </div>
+                          </div>
+                        ) : (
+                          <>
+                            <Select
+                              onValueChange={field.onChange}
+                              value={field.value ?? "none"}
+                              disabled={isLoadingPhoneNumbers}
+                            >
+                              <FormControl>
+                                <SelectTrigger>
+                                  <SelectValue placeholder="Select a phone number" />
+                                </SelectTrigger>
+                              </FormControl>
+                              <SelectContent>
+                                <SelectItem value="none">
+                                  No phone number (inbound disabled)
+                                </SelectItem>
+                                {phoneNumbers.map((pn) => (
+                                  <SelectItem key={pn.id} value={pn.id}>
+                                    {pn.phone_number}
+                                    {pn.friendly_name && ` (${pn.friendly_name})`}
+                                    {pn.assigned_agent_id &&
+                                      pn.assigned_agent_id !== agentId &&
+                                      " - In use by another agent"}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                            <div className="mt-2 flex items-center justify-between">
+                              <FormDescription>
+                                Assign a phone number for this agent to receive inbound calls
+                              </FormDescription>
                               <Button
                                 type="button"
-                                variant="ghost"
+                                variant="link"
                                 size="sm"
-                                onClick={() => field.onChange("none")}
+                                className="h-auto p-0"
+                                asChild
                               >
-                                Unassign
+                                <Link href="/dashboard/phone-numbers">Manage Numbers</Link>
                               </Button>
-                            )}
-                          </div>
-                        </div>
-                        <FormDescription>
-                          Purchase phone numbers from Settings to enable inbound/outbound calling
-                        </FormDescription>
+                            </div>
+                          </>
+                        )}
                         <FormMessage />
                       </FormItem>
                     )}

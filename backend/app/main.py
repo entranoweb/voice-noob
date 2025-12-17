@@ -25,6 +25,7 @@ from app.api import (
     agents,
     auth,
     calls,
+    campaigns,
     compliance,
     crm,
     embed,
@@ -46,6 +47,7 @@ from app.db.session import AsyncSessionLocal, engine
 from app.middleware.request_tracing import RequestTracingMiddleware
 from app.middleware.security import SecurityHeadersMiddleware
 from app.models.user import User
+from app.services.campaign_worker import start_campaign_worker, stop_campaign_worker
 
 # Configure structured logging with async processors
 structlog.configure(
@@ -69,7 +71,7 @@ logger = structlog.get_logger()
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:  # noqa: PLR0915
     """Lifespan context manager for startup and shutdown events."""
     # Startup
     logger.info("Starting application", app_name=settings.APP_NAME)
@@ -122,10 +124,26 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         except Exception:
             logger.exception("Failed to initialize Sentry - continuing without error tracking")
 
+    # Start campaign worker (non-fatal)
+    try:
+        # Use PUBLIC_URL from settings if available, otherwise default to localhost
+        base_url = settings.PUBLIC_URL or f"http://{settings.HOST}:{settings.PORT}"
+        await start_campaign_worker(base_url=base_url)
+        logger.info("Campaign worker started", base_url=base_url)
+    except Exception:
+        logger.exception("Failed to start campaign worker - campaigns will not process")
+
     yield
 
     # Shutdown
     logger.info("Shutting down application")
+
+    # Stop campaign worker
+    try:
+        await stop_campaign_worker()
+        logger.info("Campaign worker stopped")
+    except Exception:
+        logger.exception("Error stopping campaign worker")
 
     # Close Redis connection
     try:
@@ -185,6 +203,7 @@ app.include_router(telephony.router)  # Telephony API (phone numbers, calls)
 app.include_router(telephony.webhook_router)  # Twilio/Telnyx webhooks
 app.include_router(telephony_ws.router)  # Telephony WebSocket for media streams
 app.include_router(calls.router)  # Call history API
+app.include_router(campaigns.router, prefix=settings.API_V1_PREFIX)  # Campaigns API
 app.include_router(phone_numbers.router)  # Phone numbers API
 app.include_router(auth.router)  # Authentication API
 app.include_router(compliance.router)  # Compliance API (GDPR/CCPA)

@@ -180,7 +180,10 @@ const agentFormSchema = z.object({
   phoneNumberId: z.string().optional(),
   enableRecording: z.boolean().default(true),
   enableTranscript: z.boolean().default(true),
-  selectedWorkspaces: z.array(z.string()).default([]),
+  selectedWorkspaces: z
+    .array(z.string())
+    .min(1, "Please select at least one workspace")
+    .default([]),
 });
 
 type AgentFormValues = z.infer<typeof agentFormSchema>;
@@ -312,7 +315,7 @@ export default function CreateAgentPage() {
         return true;
       }
       case 2:
-        return form.trigger("name");
+        return form.trigger(["name", "selectedWorkspaces"]);
       case 3:
         return form.trigger("systemPrompt");
       case 4:
@@ -688,7 +691,7 @@ export default function CreateAgentPage() {
                       <div className="mb-4">
                         <FormLabel className="flex items-center gap-2 text-base">
                           <FolderOpen className="h-4 w-4" />
-                          Workspaces
+                          Workspaces *
                         </FormLabel>
                         <FormDescription>
                           Assign this agent to workspaces. CRM contacts and appointments in these

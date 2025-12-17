@@ -74,18 +74,30 @@ class CRMTools:
             {
                 "type": "function",
                 "name": "create_contact",
-                "description": "Create a new contact/customer in the CRM",
+                "description": "Create a new contact/customer in the CRM. REQUIRED: first_name and phone_number. OPTIONAL: last_name, email, company_name. Do NOT ask for optional fields unless the customer volunteers the information.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "first_name": {"type": "string", "description": "Customer's first name"},
-                        "last_name": {"type": "string", "description": "Customer's last name"},
+                        "first_name": {
+                            "type": "string",
+                            "description": "REQUIRED. Customer's first name. Cannot be empty.",
+                        },
                         "phone_number": {
                             "type": "string",
-                            "description": "Customer's phone number",
+                            "description": "REQUIRED. Customer's phone number (7-20 digits). Format: digits only or E.164 format.",
                         },
-                        "email": {"type": "string", "description": "Customer's email address"},
-                        "company_name": {"type": "string", "description": "Company name"},
+                        "last_name": {
+                            "type": "string",
+                            "description": "OPTIONAL. Customer's last name. Only collect if volunteered.",
+                        },
+                        "email": {
+                            "type": "string",
+                            "description": "OPTIONAL. Customer's email address. Only collect if volunteered.",
+                        },
+                        "company_name": {
+                            "type": "string",
+                            "description": "OPTIONAL. Company or organization name. Only collect if volunteered.",
+                        },
                     },
                     "required": ["first_name", "phone_number"],
                 },

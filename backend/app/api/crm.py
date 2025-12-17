@@ -37,6 +37,105 @@ MIN_DURATION_MINUTES = 5  # Minimum appointment duration
 MAX_DURATION_MINUTES = 480  # Maximum appointment duration (8 hours)
 
 
+# --- Field Requirements Schemas and Endpoint ---
+
+
+class FieldRequirement(BaseModel):
+    """Field requirement information."""
+
+    name: str
+    required: bool
+    type: str
+    max_length: int | None = None
+    min_length: int | None = None
+    description: str
+    validation_hint: str | None = None
+
+
+class ContactFieldRequirements(BaseModel):
+    """Contact field requirements response."""
+
+    fields: list[FieldRequirement]
+
+
+@router.get("/contacts/requirements", response_model=ContactFieldRequirements)
+async def get_contact_field_requirements() -> ContactFieldRequirements:
+    """Get field requirements for contact creation.
+
+    Returns information about which fields are required vs optional,
+    their types, length limits, and validation hints.
+    """
+    return ContactFieldRequirements(
+        fields=[
+            FieldRequirement(
+                name="first_name",
+                required=True,
+                type="string",
+                max_length=MAX_NAME_LENGTH,
+                description="Customer's first name",
+                validation_hint="Cannot be empty",
+            ),
+            FieldRequirement(
+                name="last_name",
+                required=False,
+                type="string",
+                max_length=MAX_NAME_LENGTH,
+                description="Customer's last name",
+            ),
+            FieldRequirement(
+                name="phone_number",
+                required=True,
+                type="string",
+                max_length=MAX_PHONE_LENGTH,
+                min_length=MIN_PHONE_LENGTH,
+                description="Phone number (E.164 format preferred)",
+                validation_hint=f"Must be {MIN_PHONE_LENGTH}-{MAX_PHONE_LENGTH} digits",
+            ),
+            FieldRequirement(
+                name="email",
+                required=False,
+                type="email",
+                description="Email address",
+                validation_hint="Must be a valid email format",
+            ),
+            FieldRequirement(
+                name="company_name",
+                required=False,
+                type="string",
+                max_length=MAX_COMPANY_NAME_LENGTH,
+                description="Company or organization name",
+            ),
+            FieldRequirement(
+                name="status",
+                required=False,
+                type="enum",
+                description="Contact status in sales pipeline",
+                validation_hint="Options: new, contacted, qualified, converted, lost. Defaults to 'new'",
+            ),
+            FieldRequirement(
+                name="tags",
+                required=False,
+                type="string",
+                max_length=MAX_TAGS_LENGTH,
+                description="Comma-separated tags for categorization",
+            ),
+            FieldRequirement(
+                name="notes",
+                required=False,
+                type="text",
+                max_length=MAX_NOTES_LENGTH,
+                description="Additional notes about the contact",
+            ),
+            FieldRequirement(
+                name="workspace_id",
+                required=False,
+                type="uuid",
+                description="Workspace to assign contact to",
+            ),
+        ]
+    )
+
+
 # Pydantic schemas
 class ContactResponse(BaseModel):
     """Contact response schema."""

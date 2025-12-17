@@ -6,6 +6,7 @@ connecting them to our AI voice agent pipeline.
 
 import asyncio
 import base64
+import contextlib
 import json
 import uuid
 from typing import Any
@@ -15,7 +16,6 @@ from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.auth import get_user_id_from_uuid
 from app.db.session import get_db
 from app.models.agent import Agent
 from app.models.call_record import CallRecord
@@ -24,6 +24,9 @@ from app.services.gpt_realtime import GPTRealtimeSession
 
 router = APIRouter(prefix="/ws/telephony", tags=["telephony-ws"])
 logger = structlog.get_logger()
+
+# Constants for event logging
+EVENT_LOG_THRESHOLD = 20  # Log first N events, then every 100th
 
 
 async def get_agent_workspace_id(agent_id: uuid.UUID, db: AsyncSession) -> uuid.UUID | None:
@@ -111,12 +114,8 @@ async def twilio_media_stream(
 
         log.info("agent_loaded", agent_name=agent.name)
 
-        # Look up user ID
-        user_id_int = await get_user_id_from_uuid(agent.user_id, db)
-        if user_id_int is None:
-            log.error("agent_owner_not_found")
-            await websocket.close(code=4004, reason="Agent owner not found")
-            return
+        # agent.user_id is now directly the integer user ID
+        user_id_int = agent.user_id
 
         # Get workspace for the agent
         workspace_id = await get_agent_workspace_id(agent.id, db)
@@ -128,6 +127,7 @@ async def twilio_media_stream(
             "language": agent.language,
             "voice": agent.voice or "shimmer",
             "enable_transcript": agent.enable_transcript,
+            "initial_greeting": agent.initial_greeting,
         }
 
         # Initialize GPT Realtime session
@@ -178,13 +178,14 @@ async def _handle_twilio_stream(  # noqa: PLR0915
     """
     stream_sid = ""
     call_sid = ""
+    should_end_call = False  # Flag to signal call should end
 
     async def twilio_to_realtime() -> None:
         """Forward audio from Twilio to GPT Realtime."""
-        nonlocal stream_sid, call_sid
+        nonlocal stream_sid, call_sid, should_end_call
 
         try:
-            while True:
+            while not should_end_call:
                 message = await websocket.receive_text()
                 data = json.loads(message)
                 event = data.get("event", "")
@@ -223,23 +224,59 @@ async def _handle_twilio_stream(  # noqa: PLR0915
         except Exception as e:
             log.exception("twilio_to_realtime_error", error=str(e))
 
-    async def realtime_to_twilio() -> None:
+    async def realtime_to_twilio() -> None:  # noqa: PLR0912, PLR0915
         """Forward audio from GPT Realtime to Twilio."""
+        nonlocal should_end_call
+
         try:
             if not realtime_session.connection:
                 log.error("no_realtime_connection")
                 return
 
+            log.info("realtime_to_twilio_started", waiting_for_events=True)
+            event_count = 0
+            pending_end_call = False  # True when end_call requested but waiting for AI to finish
+            greeting_triggered = False  # Track if we've triggered the greeting
+
             async for event in realtime_session.connection:
                 event_type = event.type
+                event_count += 1
+
+                # Log all events for debugging
+                if event_count <= EVENT_LOG_THRESHOLD or event_count % 100 == 0:
+                    log.info("realtime_event_received", event_type=event_type, count=event_count)
+
+                # Trigger initial greeting after session is configured
+                # This avoids race condition where audio events arrive before listener is ready
+                if event_type == "session.updated" and not greeting_triggered:
+                    greeting_triggered = True
+                    triggered = await realtime_session.trigger_initial_greeting()
+                    if triggered:
+                        log.info("initial_greeting_triggered_after_session_update")
 
                 # Handle audio output
-                if event_type == "response.audio.delta":
+                elif event_type == "response.audio.delta":
                     # Get audio delta and send to Twilio
-                    if hasattr(event, "delta") and event.delta:
-                        audio_bytes = base64.b64decode(event.delta)
-                        # Encode for Twilio
+                    # Check various possible attribute names for the audio data
+                    delta_data = getattr(event, "delta", None)
+                    if not delta_data:
+                        # Log event attributes for debugging
+                        log.warning(
+                            "audio_delta_missing",
+                            event_attrs=dir(event),
+                            has_delta=hasattr(event, "delta"),
+                        )
+                        continue
+
+                    try:
+                        audio_bytes = base64.b64decode(delta_data)
+                        # Encode for Twilio (already in g711_ulaw format now)
                         payload = base64.b64encode(audio_bytes).decode("utf-8")
+                        log.info(
+                            "sending_audio_to_twilio",
+                            audio_size=len(audio_bytes),
+                            stream_sid=stream_sid,
+                        )
                         await websocket.send_text(
                             json.dumps(
                                 {
@@ -249,6 +286,8 @@ async def _handle_twilio_stream(  # noqa: PLR0915
                                 }
                             )
                         )
+                    except Exception as audio_err:
+                        log.exception("audio_send_error", error=str(audio_err))
 
                 # Handle tool calls
                 elif event_type == "response.function_call_arguments.done":
@@ -257,7 +296,11 @@ async def _handle_twilio_stream(  # noqa: PLR0915
                         call_id=event.call_id,
                         name=event.name,
                     )
-                    await realtime_session.handle_function_call_event(event)
+                    result = await realtime_session.handle_function_call_event(event)
+                    # Check if this is an end_call action
+                    if result.get("action") == "end_call":
+                        log.info("end_call_action_received", reason=result.get("reason"))
+                        pending_end_call = True
 
                 # Capture transcript events
                 elif (
@@ -278,10 +321,31 @@ async def _handle_twilio_stream(  # noqa: PLR0915
                     # Assistant speech transcript complete
                     realtime_session.flush_assistant_text()
 
+                # Handle response completion - check if we should end the call
+                elif event_type == "response.done":
+                    # Log full response details for debugging
+                    response_data = getattr(event, "response", None)
+                    if response_data:
+                        status = getattr(response_data, "status", "unknown")
+                        status_details = getattr(response_data, "status_details", None)
+                        output = getattr(response_data, "output", [])
+                        output_count = len(output) if output else 0
+                        log.info(
+                            "response_done_details",
+                            status=status,
+                            status_details=str(status_details) if status_details else None,
+                            output_count=output_count,
+                        )
+                    else:
+                        log.debug("realtime_event", event_type=event_type)
+                    if pending_end_call:
+                        log.info("ending_call_after_response_complete")
+                        should_end_call = True
+                        break
+
                 # Log other events
                 elif event_type in [
                     "response.audio.done",
-                    "response.done",
                     "input_audio_buffer.speech_started",
                     "input_audio_buffer.speech_stopped",
                 ]:
@@ -290,12 +354,24 @@ async def _handle_twilio_stream(  # noqa: PLR0915
         except Exception as e:
             log.exception("realtime_to_twilio_error", error=str(e))
 
-    # Run both directions concurrently
-    await asyncio.gather(
-        twilio_to_realtime(),
-        realtime_to_twilio(),
-        return_exceptions=True,
-    )
+    # Run both directions concurrently with timeout to prevent hung tasks
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(
+                twilio_to_realtime(),
+                realtime_to_twilio(),
+                return_exceptions=True,
+            ),
+            timeout=300.0,  # 5 minute max call duration before forced cleanup
+        )
+    except TimeoutError:
+        log.warning("twilio_bridge_timeout", message="Call exceeded max duration, forcing cleanup")
+
+    # Close WebSocket to hang up the call if end_call was triggered
+    if should_end_call:
+        log.info("closing_websocket_for_end_call")
+        with contextlib.suppress(Exception):
+            await websocket.close(code=1000, reason="Call ended by agent")
 
     return call_sid
 
@@ -346,12 +422,8 @@ async def telnyx_media_stream(
 
         log.info("agent_loaded", agent_name=agent.name)
 
-        # Look up user ID
-        user_id_int = await get_user_id_from_uuid(agent.user_id, db)
-        if user_id_int is None:
-            log.error("agent_owner_not_found")
-            await websocket.close(code=4004, reason="Agent owner not found")
-            return
+        # agent.user_id is now directly the integer user ID
+        user_id_int = agent.user_id
 
         # Get workspace for the agent
         workspace_id = await get_agent_workspace_id(agent.id, db)
@@ -363,6 +435,7 @@ async def telnyx_media_stream(
             "language": agent.language,
             "voice": agent.voice or "shimmer",
             "enable_transcript": agent.enable_transcript,
+            "initial_greeting": agent.initial_greeting,
         }
 
         # Initialize GPT Realtime session
@@ -413,13 +486,14 @@ async def _handle_telnyx_stream(  # noqa: PLR0915
     """
     stream_id = ""
     call_control_id = ""
+    should_end_call = False  # Flag to signal call should end
 
     async def telnyx_to_realtime() -> None:
         """Forward audio from Telnyx to GPT Realtime."""
-        nonlocal stream_id, call_control_id
+        nonlocal stream_id, call_control_id, should_end_call
 
         try:
-            while True:
+            while not should_end_call:
                 message = await websocket.receive_text()
                 data = json.loads(message)
                 event = data.get("event", "")
@@ -451,18 +525,31 @@ async def _handle_telnyx_stream(  # noqa: PLR0915
         except Exception as e:
             log.exception("telnyx_to_realtime_error", error=str(e))
 
-    async def realtime_to_telnyx() -> None:
+    async def realtime_to_telnyx() -> None:  # noqa: PLR0912
         """Forward audio from GPT Realtime to Telnyx."""
+        nonlocal should_end_call
+
         try:
             if not realtime_session.connection:
                 log.error("no_realtime_connection")
                 return
 
+            pending_end_call = False  # True when end_call requested but waiting for AI to finish
+            greeting_triggered = False  # Track if we've triggered the greeting
+
             async for event in realtime_session.connection:
                 event_type = event.type
 
+                # Trigger initial greeting after session is configured
+                # This avoids race condition where audio events arrive before listener is ready
+                if event_type == "session.updated" and not greeting_triggered:
+                    greeting_triggered = True
+                    triggered = await realtime_session.trigger_initial_greeting()
+                    if triggered:
+                        log.info("initial_greeting_triggered_after_session_update")
+
                 # Handle audio output
-                if event_type == "response.audio.delta":
+                elif event_type == "response.audio.delta":
                     if hasattr(event, "delta") and event.delta:
                         audio_bytes = base64.b64decode(event.delta)
                         payload = base64.b64encode(audio_bytes).decode("utf-8")
@@ -483,7 +570,11 @@ async def _handle_telnyx_stream(  # noqa: PLR0915
                         call_id=event.call_id,
                         name=event.name,
                     )
-                    await realtime_session.handle_function_call_event(event)
+                    result = await realtime_session.handle_function_call_event(event)
+                    # Check if this is an end_call action
+                    if result.get("action") == "end_call":
+                        log.info("end_call_action_received", reason=result.get("reason"))
+                        pending_end_call = True
 
                 # Capture transcript events
                 elif (
@@ -504,9 +595,16 @@ async def _handle_telnyx_stream(  # noqa: PLR0915
                     # Assistant speech transcript complete
                     realtime_session.flush_assistant_text()
 
+                # Handle response completion - check if we should end the call
+                elif event_type == "response.done":
+                    log.debug("realtime_event", event_type=event_type)
+                    if pending_end_call:
+                        log.info("ending_call_after_response_complete")
+                        should_end_call = True
+                        break
+
                 elif event_type in [
                     "response.audio.done",
-                    "response.done",
                     "input_audio_buffer.speech_started",
                     "input_audio_buffer.speech_stopped",
                 ]:
@@ -515,11 +613,23 @@ async def _handle_telnyx_stream(  # noqa: PLR0915
         except Exception as e:
             log.exception("realtime_to_telnyx_error", error=str(e))
 
-    # Run both directions concurrently
-    await asyncio.gather(
-        telnyx_to_realtime(),
-        realtime_to_telnyx(),
-        return_exceptions=True,
-    )
+    # Run both directions concurrently with timeout to prevent hung tasks
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(
+                telnyx_to_realtime(),
+                realtime_to_telnyx(),
+                return_exceptions=True,
+            ),
+            timeout=300.0,  # 5 minute max call duration before forced cleanup
+        )
+    except TimeoutError:
+        log.warning("telnyx_bridge_timeout", message="Call exceeded max duration, forcing cleanup")
+
+    # Close WebSocket to hang up the call if end_call was triggered
+    if should_end_call:
+        log.info("closing_websocket_for_end_call")
+        with contextlib.suppress(Exception):
+            await websocket.close(code=1000, reason="Call ended by agent")
 
     return call_control_id

@@ -70,6 +70,7 @@ export default function EmbedPage() {
   const publicId = params.publicId as string;
   const theme = (searchParams.get("theme") as "light" | "dark" | "auto") ?? "auto";
   const position = searchParams.get("position") ?? "bottom-right";
+  const autostart = searchParams.get("autostart") === "true";
 
   const [config, setConfig] = useState<AgentConfig | null>(null);
   const [status, setStatus] = useState<ConnectionStatus>("idle");
@@ -104,6 +105,9 @@ export default function EmbedPage() {
   const currentAssistantTextRef = useRef<string>("");
   const sessionIdRef = useRef<string>("");
   const sessionStartTimeRef = useRef<number>(0);
+
+  // Autostart tracking (prevent multiple starts)
+  const autostartTriggeredRef = useRef(false);
 
   // Detect system theme
   const [resolvedTheme, setResolvedTheme] = useState<"light" | "dark">("light");
@@ -705,6 +709,25 @@ export default function EmbedPage() {
     }
   }, [config, publicId, cleanup, setupAudioAnalysis, endSession]);
 
+  // Auto-start session when in widget mode
+  useEffect(() => {
+    if (autostart && config && !autostartTriggeredRef.current) {
+      autostartTriggeredRef.current = true;
+      void startSession();
+    }
+  }, [autostart, config, startSession]);
+
+  // Listen for start message from widget (for restart after close)
+  useEffect(() => {
+    const handleMessage = (event: MessageEvent) => {
+      if (event.data?.type === "voice-agent:start" && status === "idle" && config) {
+        void startSession();
+      }
+    };
+    window.addEventListener("message", handleMessage);
+    return () => window.removeEventListener("message", handleMessage);
+  }, [status, config, startSession]);
+
   // Toggle mute
   const toggleMute = useCallback(() => {
     const { audioStream } = webrtcRef.current;
@@ -719,10 +742,10 @@ export default function EmbedPage() {
 
   // Position classes
   const positionClasses: Record<string, string> = {
-    "bottom-right": "bottom-5 right-5",
-    "bottom-left": "bottom-5 left-5",
-    "top-right": "top-5 right-5",
-    "top-left": "top-5 left-5",
+    "bottom-right": "bottom-8 right-5",
+    "bottom-left": "bottom-8 left-5",
+    "top-right": "top-8 right-5",
+    "top-left": "top-8 left-5",
   };
 
   const isDark = resolvedTheme === "dark";
@@ -771,11 +794,11 @@ export default function EmbedPage() {
       {/* Expanded state - voice controls with audio visualizer */}
       {isExpanded ? (
         <div
-          className="relative flex flex-col items-center gap-3 rounded-3xl p-6 shadow-2xl transition-all duration-500"
+          className="relative flex flex-col items-center gap-3 rounded-3xl p-6 transition-all duration-500"
           style={{
             backgroundColor: isDark ? "rgba(17, 24, 39, 0.95)" : "rgba(255, 255, 255, 0.95)",
             backdropFilter: "blur(20px)",
-            boxShadow: `0 20px 60px rgba(0, 0, 0, 0.3), 0 0 ${40 + smoothedLevel * 60}px ${smoothedLevel * 20}px ${stateInfo.color}40`,
+            boxShadow: `0 0 ${40 + smoothedLevel * 60}px ${smoothedLevel * 20}px ${stateInfo.color}40`,
           }}
         >
           {/* Circular Audio Visualizer */}
@@ -895,6 +918,28 @@ export default function EmbedPage() {
           {/* Error message */}
           {error && <p className="max-w-[200px] text-center text-xs text-red-500">{error}</p>}
         </div>
+      ) : autostart ? (
+        /* Autostart mode - show connecting indicator while session starts */
+        <div className="flex flex-col items-center justify-center gap-3 p-4">
+          <div className="relative flex h-16 w-16 items-center justify-center">
+            <div
+              className="absolute inset-0 animate-spin rounded-full"
+              style={{
+                background: `conic-gradient(from 0deg, ${primaryColor} 0deg, transparent 120deg)`,
+                animationDuration: "1s",
+              }}
+            />
+            <div className="absolute inset-1 rounded-full bg-[#212121]" />
+            <div
+              className="absolute inset-3 rounded-full"
+              style={{ backgroundColor: primaryColor, opacity: 0.3 }}
+            />
+          </div>
+          <p className="text-sm font-medium text-gray-300">
+            {status === "connecting" ? "Connecting..." : "Starting..."}
+          </p>
+          {error && <p className="max-w-[200px] text-center text-xs text-red-500">{error}</p>}
+        </div>
       ) : (
         /* Collapsed state - floating button with mini visualizer */
         <button
@@ -944,19 +989,21 @@ export default function EmbedPage() {
         </button>
       )}
 
-      {/* Branding */}
-      <div className="mt-3 text-center text-xs" style={{ color: isDark ? "#6b7280" : "#9ca3af" }}>
-        Powered by{" "}
-        <a
-          href="https://voicenoob.com"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="transition-colors duration-200 hover:underline"
-          style={{ color: primaryColor }}
-        >
-          Voice Noob
-        </a>
-      </div>
+      {/* Branding - hide in widget mode since widget shows its own */}
+      {!autostart && (
+        <div className="mt-3 text-center text-xs" style={{ color: isDark ? "#6b7280" : "#9ca3af" }}>
+          Powered by{" "}
+          <a
+            href="https://voicenoob.com"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="transition-colors duration-200 hover:underline"
+            style={{ color: primaryColor }}
+          >
+            Voice Noob
+          </a>
+        </div>
+      )}
 
       <style jsx>{`
         @keyframes shimmer {

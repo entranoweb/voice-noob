@@ -34,6 +34,7 @@ import {
 import {
   Plus,
   Phone,
+  PhoneOutgoing,
   Mail,
   Building2,
   Tag,
@@ -45,6 +46,13 @@ import {
 import { InfoTooltip } from "@/components/ui/info-tooltip";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
+import { fetchAgents, type Agent } from "@/lib/api/agents";
+import {
+  initiateCall,
+  listPhoneNumbers,
+  type PhoneNumber,
+  type Provider,
+} from "@/lib/api/telephony";
 import { toast } from "sonner";
 import Link from "next/link";
 
@@ -93,14 +101,57 @@ const emptyFormData: ContactFormData = {
   workspace_id: "",
 };
 
+// Type for validation errors from 422 responses
+interface ValidationError {
+  loc: (string | number)[];
+  msg: string;
+  type: string;
+}
+
+interface FieldErrors {
+  [key: string]: string;
+}
+
+// Parse validation errors from FastAPI 422 response
+function parseValidationErrors(error: unknown): FieldErrors {
+  const fieldErrors: FieldErrors = {};
+
+  if (error && typeof error === "object" && "response" in error) {
+    const response = (error as { response?: { data?: { detail?: ValidationError[] } } }).response;
+    const detail = response?.data?.detail;
+
+    if (Array.isArray(detail)) {
+      for (const err of detail) {
+        // Get the field name from loc array (usually ['body', 'field_name'])
+        const fieldName = err.loc[err.loc.length - 1];
+        if (typeof fieldName === "string") {
+          // Make error messages more user-friendly
+          let message = err.msg;
+          // Replace "Value error, " prefix from Pydantic validators
+          message = message.replace(/^Value error,\s*/i, "");
+          // Capitalize first letter
+          message = message.charAt(0).toUpperCase() + message.slice(1);
+          fieldErrors[fieldName] = message;
+        }
+      }
+    }
+  }
+
+  return fieldErrors;
+}
+
 export default function CRMPage() {
   const queryClient = useQueryClient();
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [modalMode, setModalMode] = useState<"add" | "edit" | "view">("add");
   const [selectedContact, setSelectedContact] = useState<Contact | null>(null);
   const [formData, setFormData] = useState<ContactFormData>(emptyFormData);
+  const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string>("all");
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
+  const [isCallModalOpen, setIsCallModalOpen] = useState(false);
+  const [selectedAgentId, setSelectedAgentId] = useState<string>("");
+  const [selectedFromNumber, setSelectedFromNumber] = useState<string>("");
 
   // Fetch workspaces
   const { data: workspaces = [] } = useQuery<Workspace[]>({
@@ -127,6 +178,29 @@ export default function CRMPage() {
     },
   });
 
+  // Get the active workspace ID for fetching agents and phone numbers
+  const activeWorkspaceId = selectedWorkspaceId !== "all" ? selectedWorkspaceId : workspaces[0]?.id;
+
+  // Fetch agents for calling
+  const { data: agents = [] } = useQuery<Agent[]>({
+    queryKey: ["agents"],
+    queryFn: () => fetchAgents(),
+  });
+
+  // Fetch phone numbers from both providers
+  const { data: phoneNumbers = [] } = useQuery<PhoneNumber[]>({
+    queryKey: ["phoneNumbers", activeWorkspaceId],
+    queryFn: async () => {
+      if (!activeWorkspaceId) return [];
+      const providers: Provider[] = ["twilio", "telnyx"];
+      const results = await Promise.all(
+        providers.map((provider) => listPhoneNumbers(provider, activeWorkspaceId))
+      );
+      return results.flat();
+    },
+    enabled: !!activeWorkspaceId,
+  });
+
   const createContactMutation = useMutation({
     mutationFn: async (data: ContactFormData) => {
       const response = await api.post("/api/v1/crm/contacts", data);
@@ -135,10 +209,20 @@ export default function CRMPage() {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["contacts"] });
       toast.success("Contact created successfully");
+      setFieldErrors({});
       closeModal();
     },
-    onError: (error: Error) => {
-      toast.error(error.message || "Failed to create contact");
+    onError: (error: unknown) => {
+      const errors = parseValidationErrors(error);
+      if (Object.keys(errors).length > 0) {
+        setFieldErrors(errors);
+        // Show a summary toast with the first error
+        const firstError = Object.values(errors)[0];
+        toast.error(`Validation error: ${firstError}`);
+      } else {
+        const message = error instanceof Error ? error.message : "Failed to create contact";
+        toast.error(message);
+      }
     },
   });
 
@@ -150,10 +234,19 @@ export default function CRMPage() {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["contacts"] });
       toast.success("Contact updated successfully");
+      setFieldErrors({});
       closeModal();
     },
-    onError: (error: Error) => {
-      toast.error(error.message || "Failed to update contact");
+    onError: (error: unknown) => {
+      const errors = parseValidationErrors(error);
+      if (Object.keys(errors).length > 0) {
+        setFieldErrors(errors);
+        const firstError = Object.values(errors)[0];
+        toast.error(`Validation error: ${firstError}`);
+      } else {
+        const message = error instanceof Error ? error.message : "Failed to update contact";
+        toast.error(message);
+      }
     },
   });
 
@@ -170,6 +263,57 @@ export default function CRMPage() {
       toast.error(error.message || "Failed to delete contact");
     },
   });
+
+  const initiateCallMutation = useMutation({
+    mutationFn: async ({
+      toNumber,
+      fromNumber,
+      agentId,
+    }: {
+      toNumber: string;
+      fromNumber: string;
+      agentId: string;
+    }) => {
+      return initiateCall({
+        to_number: toNumber,
+        from_number: fromNumber,
+        agent_id: agentId,
+      });
+    },
+    onSuccess: (data) => {
+      toast.success(`Call initiated! Call ID: ${data.call_id}`);
+      setIsCallModalOpen(false);
+      setSelectedAgentId("");
+      setSelectedFromNumber("");
+    },
+    onError: (error: Error) => {
+      toast.error(error.message || "Failed to initiate call");
+    },
+  });
+
+  const openCallModal = () => {
+    if (!selectedContact) return;
+    // Pre-select first agent and phone number if available
+    if (agents.length > 0 && !selectedAgentId && agents[0]) {
+      setSelectedAgentId(agents[0].id);
+    }
+    if (phoneNumbers.length > 0 && !selectedFromNumber && phoneNumbers[0]) {
+      setSelectedFromNumber(phoneNumbers[0].phone_number);
+    }
+    setIsCallModalOpen(true);
+  };
+
+  const handleInitiateCall = () => {
+    if (!selectedContact || !selectedAgentId || !selectedFromNumber) {
+      toast.error("Please select an agent and phone number");
+      return;
+    }
+    initiateCallMutation.mutate({
+      toNumber: selectedContact.phone_number,
+      fromNumber: selectedFromNumber,
+      agentId: selectedAgentId,
+    });
+  };
 
   const openAddModal = () => {
     // Pre-fill workspace_id if a workspace is selected
@@ -206,6 +350,7 @@ export default function CRMPage() {
     setIsModalOpen(false);
     setSelectedContact(null);
     setFormData(emptyFormData);
+    setFieldErrors({});
   };
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -446,16 +591,37 @@ export default function CRMPage() {
 
           <form onSubmit={handleSubmit}>
             <div className="grid gap-4 py-4">
+              {/* Required fields note */}
+              {modalMode !== "view" && (
+                <p className="text-xs text-muted-foreground">
+                  Fields marked with <span className="text-destructive">*</span> are required
+                </p>
+              )}
+
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
-                  <Label htmlFor="first_name">First Name *</Label>
+                  <Label
+                    htmlFor="first_name"
+                    className={fieldErrors.first_name ? "text-destructive" : ""}
+                  >
+                    First Name <span className="text-destructive">*</span>
+                  </Label>
                   <Input
                     id="first_name"
                     value={formData.first_name}
-                    onChange={(e) => setFormData({ ...formData, first_name: e.target.value })}
+                    onChange={(e) => {
+                      setFormData({ ...formData, first_name: e.target.value });
+                      if (fieldErrors.first_name) {
+                        setFieldErrors({ ...fieldErrors, first_name: "" });
+                      }
+                    }}
                     disabled={modalMode === "view"}
-                    required
+                    className={fieldErrors.first_name ? "border-destructive" : ""}
+                    placeholder="Required"
                   />
+                  {fieldErrors.first_name && (
+                    <p className="text-xs text-destructive">{fieldErrors.first_name}</p>
+                  )}
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="last_name">Last Name</Label>
@@ -464,31 +630,58 @@ export default function CRMPage() {
                     value={formData.last_name}
                     onChange={(e) => setFormData({ ...formData, last_name: e.target.value })}
                     disabled={modalMode === "view"}
+                    placeholder="Optional"
                   />
                 </div>
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="phone_number">Phone Number *</Label>
+                <Label
+                  htmlFor="phone_number"
+                  className={fieldErrors.phone_number ? "text-destructive" : ""}
+                >
+                  Phone Number <span className="text-destructive">*</span>
+                </Label>
                 <Input
                   id="phone_number"
                   type="tel"
                   value={formData.phone_number}
-                  onChange={(e) => setFormData({ ...formData, phone_number: e.target.value })}
+                  onChange={(e) => {
+                    setFormData({ ...formData, phone_number: e.target.value });
+                    if (fieldErrors.phone_number) {
+                      setFieldErrors({ ...fieldErrors, phone_number: "" });
+                    }
+                  }}
                   disabled={modalMode === "view"}
-                  required
+                  className={fieldErrors.phone_number ? "border-destructive" : ""}
+                  placeholder="Required (7-20 digits)"
                 />
+                {fieldErrors.phone_number && (
+                  <p className="text-xs text-destructive">{fieldErrors.phone_number}</p>
+                )}
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="email">Email</Label>
+                <Label htmlFor="email" className={fieldErrors.email ? "text-destructive" : ""}>
+                  Email
+                </Label>
                 <Input
                   id="email"
                   type="email"
                   value={formData.email}
-                  onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+                  onChange={(e) => {
+                    setFormData({ ...formData, email: e.target.value });
+                    if (fieldErrors.email) {
+                      setFieldErrors({ ...fieldErrors, email: "" });
+                    }
+                  }}
                   disabled={modalMode === "view"}
+                  className={fieldErrors.email ? "border-destructive" : ""}
+                  placeholder="Optional"
                 />
+                {fieldErrors.email && (
+                  <p className="text-xs text-destructive">{fieldErrors.email}</p>
+                )}
               </div>
 
               <div className="space-y-2">
@@ -498,6 +691,7 @@ export default function CRMPage() {
                   value={formData.company_name}
                   onChange={(e) => setFormData({ ...formData, company_name: e.target.value })}
                   disabled={modalMode === "view"}
+                  placeholder="Optional"
                 />
               </div>
 
@@ -594,6 +788,15 @@ export default function CRMPage() {
                     )}
                     Delete
                   </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={openCallModal}
+                    disabled={agents.length === 0 || phoneNumbers.length === 0}
+                  >
+                    <PhoneOutgoing className="mr-2 h-4 w-4" />
+                    Call
+                  </Button>
                   <Button type="button" onClick={switchToEditMode}>
                     Edit Contact
                   </Button>
@@ -636,6 +839,95 @@ export default function CRMPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Call Modal */}
+      <Dialog open={isCallModalOpen} onOpenChange={setIsCallModalOpen}>
+        <DialogContent className="sm:max-w-[400px]">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <PhoneOutgoing className="h-5 w-5" />
+              Initiate Call
+            </DialogTitle>
+            <DialogDescription>
+              Call {selectedContact?.first_name} {selectedContact?.last_name} at{" "}
+              {selectedContact?.phone_number}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="grid gap-4 py-4">
+            <div className="space-y-2">
+              <Label htmlFor="agent">Select Agent</Label>
+              {agents.length === 0 ? (
+                <p className="text-sm text-muted-foreground">
+                  No agents available.{" "}
+                  <Link href="/dashboard/agents" className="text-primary hover:underline">
+                    Create an agent
+                  </Link>{" "}
+                  first.
+                </p>
+              ) : (
+                <Select value={selectedAgentId} onValueChange={setSelectedAgentId}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select an agent" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {agents.map((agent) => (
+                      <SelectItem key={agent.id} value={agent.id}>
+                        {agent.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="fromNumber">Call From</Label>
+              {phoneNumbers.length === 0 ? (
+                <p className="text-sm text-muted-foreground">
+                  No phone numbers available.{" "}
+                  <Link href="/dashboard/phone-numbers" className="text-primary hover:underline">
+                    Add a phone number
+                  </Link>{" "}
+                  first.
+                </p>
+              ) : (
+                <Select value={selectedFromNumber} onValueChange={setSelectedFromNumber}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select a phone number" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {phoneNumbers.map((phone) => (
+                      <SelectItem key={phone.id} value={phone.phone_number}>
+                        {phone.phone_number}
+                        {phone.friendly_name && ` (${phone.friendly_name})`}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setIsCallModalOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              onClick={handleInitiateCall}
+              disabled={!selectedAgentId || !selectedFromNumber || initiateCallMutation.isPending}
+            >
+              {initiateCallMutation.isPending ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <Phone className="mr-2 h-4 w-4" />
+              )}
+              Start Call
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

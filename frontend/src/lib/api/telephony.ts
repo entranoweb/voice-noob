@@ -91,16 +91,16 @@ export interface CallResponse {
 /**
  * List all phone numbers for the user's account
  */
-export async function listPhoneNumbers(provider: Provider, workspaceId?: string): Promise<PhoneNumber[]> {
-  const params = new URLSearchParams({ provider });
-  if (workspaceId) params.append("workspace_id", workspaceId);
-  
+export async function listPhoneNumbers(
+  provider: Provider,
+  workspaceId: string
+): Promise<PhoneNumber[]> {
   const response = await fetchWithTimeout(
-    `${API_BASE}/api/v1/telephony/phone-numbers?${params.toString()}`
+    `${API_BASE}/api/v1/telephony/phone-numbers?provider=${provider}&workspace_id=${workspaceId}`
   );
 
   if (!response.ok) {
-    // 400/422 typically means provider not configured or missing workspace - return empty array silently
+    // 400 typically means provider not configured - return empty array silently
     if (response.status === 400 || response.status === 422) {
       return [];
     }
@@ -115,28 +115,25 @@ export async function listPhoneNumbers(provider: Provider, workspaceId?: string)
  * Search for available phone numbers to purchase
  */
 export async function searchPhoneNumbers(
-  request: SearchPhoneNumbersRequest & { workspace_id?: string }
+  request: SearchPhoneNumbersRequest,
+  workspaceId: string
 ): Promise<PhoneNumber[]> {
-  const params = new URLSearchParams();
-  if (request.workspace_id) params.append("workspace_id", request.workspace_id);
-  
-  const url = params.toString() 
-    ? `${API_BASE}/api/v1/telephony/phone-numbers/search?${params.toString()}`
-    : `${API_BASE}/api/v1/telephony/phone-numbers/search`;
-    
-  const response = await fetchWithTimeout(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      provider: request.provider,
-      country: request.country ?? "US",
-      area_code: request.area_code,
-      contains: request.contains,
-      limit: request.limit ?? 10,
-    }),
-  });
+  const response = await fetchWithTimeout(
+    `${API_BASE}/api/v1/telephony/phone-numbers/search?workspace_id=${workspaceId}`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        provider: request.provider,
+        country: request.country ?? "US",
+        area_code: request.area_code,
+        contains: request.contains,
+        limit: request.limit ?? 10,
+      }),
+    }
+  );
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ detail: response.statusText }));
@@ -150,25 +147,19 @@ export async function searchPhoneNumbers(
  * Purchase a phone number
  */
 export async function purchasePhoneNumber(
-  request: PurchasePhoneNumberRequest & { workspace_id?: string }
+  request: PurchasePhoneNumberRequest,
+  workspaceId: string
 ): Promise<PhoneNumber> {
-  const params = new URLSearchParams();
-  if (request.workspace_id) params.append("workspace_id", request.workspace_id);
-  
-  const url = params.toString()
-    ? `${API_BASE}/api/v1/telephony/phone-numbers/purchase?${params.toString()}`
-    : `${API_BASE}/api/v1/telephony/phone-numbers/purchase`;
-    
-  const response = await fetchWithTimeout(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      provider: request.provider,
-      phone_number: request.phone_number,
-    }),
-  });
+  const response = await fetchWithTimeout(
+    `${API_BASE}/api/v1/telephony/phone-numbers/purchase?workspace_id=${workspaceId}`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(request),
+    }
+  );
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ detail: response.statusText }));
@@ -181,12 +172,13 @@ export async function purchasePhoneNumber(
 /**
  * Release a phone number
  */
-export async function releasePhoneNumber(phoneNumberId: string, provider: Provider, workspaceId?: string): Promise<void> {
-  const params = new URLSearchParams({ provider });
-  if (workspaceId) params.append("workspace_id", workspaceId);
-  
+export async function releasePhoneNumber(
+  phoneNumberId: string,
+  provider: Provider,
+  workspaceId: string
+): Promise<void> {
   const response = await fetchWithTimeout(
-    `${API_BASE}/api/v1/telephony/phone-numbers/${phoneNumberId}?${params.toString()}`,
+    `${API_BASE}/api/v1/telephony/phone-numbers/${phoneNumberId}?provider=${provider}&workspace_id=${workspaceId}`,
     {
       method: "DELETE",
     }

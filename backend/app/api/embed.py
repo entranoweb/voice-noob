@@ -285,7 +285,6 @@ async def _get_embed_session_context(
 
     Returns (agent, workspace_id, user_id_int) or None if validation fails.
     """
-    from app.core.auth import get_user_id_from_uuid
     from app.models.workspace import AgentWorkspace
 
     # Validate session
@@ -322,12 +321,8 @@ async def _get_embed_session_context(
         await websocket.close(code=4000)
         return None
 
-    # Look up user_id for the agent
-    user_id_int = await get_user_id_from_uuid(agent.user_id, db)
-    if user_id_int is None:
-        await websocket.send_json({"type": "error", "error": "Agent owner not found"})
-        await websocket.close()
-        return None
+    # agent.user_id is now directly the integer user ID
+    user_id_int = agent.user_id
 
     return agent, agent_workspace.workspace_id, user_id_int
 
@@ -490,7 +485,7 @@ async def get_embed_ephemeral_token(  # noqa: PLR0915
     import httpx
 
     from app.api.settings import get_user_api_keys
-    from app.core.auth import get_user_id_from_uuid, user_id_to_uuid
+    from app.core.auth import user_id_to_uuid
     from app.models.workspace import AgentWorkspace
     from app.services.gpt_realtime import build_instructions_with_language
 
@@ -531,8 +526,8 @@ async def get_embed_ephemeral_token(  # noqa: PLR0915
         log.warning("no_workspace_for_agent")
         raise HTTPException(status_code=500, detail="Agent not configured properly")
 
-    # Get OpenAI API key
-    user_uuid = user_id_to_uuid(await get_user_id_from_uuid(agent.user_id, db) or 0)
+    # Get OpenAI API key - agent.user_id is now directly the integer user ID
+    user_uuid = user_id_to_uuid(agent.user_id)
     user_settings = await get_user_api_keys(
         user_uuid, db, workspace_id=agent_workspace.workspace_id
     )
@@ -611,12 +606,14 @@ async def get_embed_ephemeral_token(  # noqa: PLR0915
             # happens via the /tool-call endpoint
             from app.services.tools.registry import ToolRegistry
 
-            # Get user_id for the agent owner (needed for tool registry)
-            user_id_int = await get_user_id_from_uuid(agent.user_id, db) or 0
+            # agent.user_id is now directly the integer user ID
+            user_id_int = agent.user_id
 
             # Get integration credentials for the workspace
             workspace_id = agent_workspace.workspace_id
-            integrations = await get_workspace_integrations(agent.user_id, workspace_id, db)
+            integrations = await get_workspace_integrations(
+                user_id_to_uuid(agent.user_id), workspace_id, db
+            )
 
             tool_registry = ToolRegistry(
                 db=db,
@@ -686,7 +683,7 @@ async def execute_embed_tool_call(
     - Origin validation against allowed domains
     - Only tools enabled for the agent are executed
     """
-    from app.core.auth import get_user_id_from_uuid
+    from app.core.auth import user_id_to_uuid
 
     log = logger.bind(
         endpoint="embed_tool_call",
@@ -710,10 +707,8 @@ async def execute_embed_tool_call(
         log.warning("origin_not_allowed", allowed=agent.allowed_domains)
         raise HTTPException(status_code=403, detail="Origin not allowed")
 
-    # Get user ID for tool execution
-    user_id_int = await get_user_id_from_uuid(agent.user_id, db)
-    if user_id_int is None:
-        return {"success": False, "error": "Agent owner not found"}
+    # agent.user_id is now directly the integer user ID
+    user_id_int = agent.user_id
 
     # Get workspace for this agent (needed for proper CRM scoping)
     from app.models.workspace import AgentWorkspace
@@ -727,7 +722,9 @@ async def execute_embed_tool_call(
     # Get integration credentials for the workspace
     integrations: dict[str, dict[str, Any]] = {}
     if workspace_id:
-        integrations = await get_workspace_integrations(agent.user_id, workspace_id, db)
+        integrations = await get_workspace_integrations(
+            user_id_to_uuid(agent.user_id), workspace_id, db
+        )
 
     # Create tool registry with workspace context
     from app.services.tools.registry import ToolRegistry

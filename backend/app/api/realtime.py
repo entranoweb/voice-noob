@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.integrations import get_workspace_integrations
 from app.api.settings import get_user_api_keys
-from app.core.auth import CurrentUser, get_user_id_from_uuid, user_id_to_uuid
+from app.core.auth import CurrentUser, user_id_to_uuid
 from app.core.config import settings
 from app.db.session import get_db
 from app.models.agent import Agent
@@ -95,7 +95,7 @@ def get_realtime_model_for_tier(pricing_tier: str) -> str:
 
 
 @router.websocket("/realtime/{agent_id}")
-async def realtime_websocket(  # noqa: PLR0915
+async def realtime_websocket(
     websocket: WebSocket,
     agent_id: str,
     workspace_id: str,
@@ -203,17 +203,8 @@ async def realtime_websocket(  # noqa: PLR0915
             tools_count=len(agent.enabled_tools),
         )
 
-        # Look up the int user_id from the agent's UUID user_id
-        user_id_int = await get_user_id_from_uuid(agent.user_id, db)
-        if user_id_int is None:
-            await websocket.send_json(
-                {
-                    "type": "error",
-                    "error": "Agent owner not found",
-                }
-            )
-            await websocket.close()
-            return
+        # agent.user_id is now directly the integer user ID
+        user_id_int = agent.user_id
 
         # Build agent config for GPT Realtime
         agent_config = {

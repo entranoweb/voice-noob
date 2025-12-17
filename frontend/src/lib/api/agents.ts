@@ -197,6 +197,7 @@ export interface EmbedSettings {
   primary_color: string;
   greeting_message: string;
   button_text: string;
+  production_url?: string; // Production URL for embed code generation
 }
 
 export interface EmbedSettingsResponse {

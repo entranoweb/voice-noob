@@ -15,10 +15,10 @@ engine = create_async_engine(
     echo=False,  # Disable SQL query logging (too verbose even in debug mode)
     future=True,
     pool_pre_ping=True,
-    pool_size=20,  # Production: increased from 10 for concurrent voice agents
-    max_overflow=30,  # Production: increased from 20 (total max: 50 connections)
-    pool_recycle=1800,  # Recycle every 30 min (faster than 1h for better connection health)
-    pool_timeout=30,  # Timeout for getting connection from pool
+    pool_size=50,  # Production: increased for 100+ concurrent voice agents
+    max_overflow=50,  # Production: total max 100 connections for scalability
+    pool_recycle=900,  # Recycle every 15 min for better connection health
+    pool_timeout=5,  # Fail fast if pool exhausted (prevents cascading timeouts)
     pool_use_lifo=True,  # Use LIFO for better connection reuse (keeps hot connections)
 )
 

@@ -499,8 +499,8 @@ async def add_agent_to_workspace(
     if not workspace:
         raise HTTPException(status_code=404, detail="Workspace not found")
 
-    # Verify agent exists
-    result = await db.execute(select(Agent).where(Agent.id == agent_uuid))
+    # Verify agent exists and belongs to user
+    result = await db.execute(select(Agent).where(Agent.id == agent_uuid, Agent.user_id == user_id))
     agent = result.scalar_one_or_none()
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
@@ -612,8 +612,8 @@ async def get_agent_workspaces(
     except ValueError as e:
         raise HTTPException(status_code=400, detail="Invalid agent ID format") from e
 
-    # Verify agent exists
-    result = await db.execute(select(Agent).where(Agent.id == agent_uuid))
+    # Verify agent exists and belongs to user
+    result = await db.execute(select(Agent).where(Agent.id == agent_uuid, Agent.user_id == user_id))
     agent = result.scalar_one_or_none()
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
@@ -655,8 +655,8 @@ async def set_agent_workspaces(
     except ValueError as e:
         raise HTTPException(status_code=400, detail="Invalid agent ID format") from e
 
-    # Verify agent exists
-    result = await db.execute(select(Agent).where(Agent.id == agent_uuid))
+    # Verify agent exists and belongs to user
+    result = await db.execute(select(Agent).where(Agent.id == agent_uuid, Agent.user_id == user_id))
     agent = result.scalar_one_or_none()
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")

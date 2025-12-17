@@ -2,6 +2,7 @@ import { defineConfig } from "vite";
 import { resolve } from "path";
 
 export default defineConfig({
+  publicDir: false, // Disable copying public directory for library builds
   build: {
     lib: {
       entry: resolve(__dirname, "src/widget/widget.ts"),

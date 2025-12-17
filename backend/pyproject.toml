@@ -8,7 +8,7 @@ dependencies = [
     # Web Framework
     "fastapi[standard]>=0.115.0",
     "uvicorn[standard]>=0.32.0",
-    "gunicorn>=23.0.0",  # Production WSGI server with worker management
+    "gunicorn>=23.0.0", # Production WSGI server with worker management
     # Database
     "sqlalchemy[asyncio]>=2.0.35",
     "asyncpg>=0.30.0",
@@ -48,6 +48,7 @@ dependencies = [
     "websockets>=14.1",
     # Utilities
     "python-dotenv>=1.0.1",
+    "pytz>=2025.2",
 ]
 
 [project.optional-dependencies]
