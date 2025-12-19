@@ -7,13 +7,13 @@ This module tests that data written to PostgreSQL persists correctly
 and can be retrieved with identical values.
 """
 
-import asyncio
 import os
 import tempfile
 from pathlib import Path
 
 import pytest
-from hypothesis import HealthCheck, given, settings, strategies as st
+from hypothesis import HealthCheck, given, settings
+from hypothesis import strategies as st
 from sqlalchemy import event, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
@@ -21,7 +21,6 @@ from sqlalchemy.pool import NullPool
 from app.db.base import Base
 from app.models.contact import Contact
 from app.models.user import User
-
 
 # Strategy for generating valid email addresses
 email_strategy = st.emails()

@@ -277,11 +277,35 @@ class QAEvaluator:
         import re
         from typing import cast
 
+        def coerce_numeric_fields(data: dict[str, Any]) -> dict[str, Any]:
+            """Coerce string numbers to proper types for numeric fields."""
+            numeric_int_fields = [
+                "overall_score", "intent_completion", "tool_usage", "compliance",
+                "response_quality", "coherence", "relevance", "groundedness", "fluency",
+            ]
+            numeric_float_fields = ["sentiment_score", "escalation_risk"]
+
+            for field in numeric_int_fields:
+                if field in data and data[field] is not None:
+                    try:
+                        data[field] = int(float(str(data[field])))
+                    except (ValueError, TypeError):
+                        data[field] = None
+
+            for field in numeric_float_fields:
+                if field in data and data[field] is not None:
+                    try:
+                        data[field] = float(str(data[field]))
+                    except (ValueError, TypeError):
+                        data[field] = None
+
+            return data
+
         # Try to parse as-is first
         try:
             result = json.loads(response_text)
             if isinstance(result, dict):
-                return cast("dict[str, Any]", result)
+                return coerce_numeric_fields(cast("dict[str, Any]", result))
         except json.JSONDecodeError:
             pass
 
@@ -291,19 +315,24 @@ class QAEvaluator:
             try:
                 result = json.loads(json_match.group(1))
                 if isinstance(result, dict):
-                    return cast("dict[str, Any]", result)
+                    return coerce_numeric_fields(cast("dict[str, Any]", result))
             except json.JSONDecodeError:
                 pass
 
-        # Try to find JSON object in response
-        json_match = re.search(r"\{[\s\S]*\}", response_text)
+        # Try to find JSON object in response (non-greedy to get first complete object)
+        json_match = re.search(r"\{[\s\S]*?\}", response_text)
         if json_match:
-            try:
-                result = json.loads(json_match.group(0))
-                if isinstance(result, dict):
-                    return cast("dict[str, Any]", result)
-            except json.JSONDecodeError:
-                pass
+            # Try progressively larger matches until we get valid JSON
+            start_idx = json_match.start()
+            for end_idx in range(json_match.end(), len(response_text) + 1):
+                candidate = response_text[start_idx:end_idx]
+                if candidate.count("{") == candidate.count("}"):
+                    try:
+                        result = json.loads(candidate)
+                        if isinstance(result, dict):
+                            return coerce_numeric_fields(cast("dict[str, Any]", result))
+                    except json.JSONDecodeError:
+                        continue
 
         return None
 
