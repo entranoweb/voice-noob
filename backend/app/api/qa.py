@@ -527,3 +527,194 @@ async def get_qa_metrics(
         avg_fluency=safe_avg([e.fluency for e in evaluations]),
         total_cost_cents=sum(e.evaluation_cost_cents or 0 for e in evaluations),
     )
+
+
+# =============================================================================
+# Dashboard Schemas
+# =============================================================================
+
+
+class DashboardMetricsResponse(BaseModel):
+    """Dashboard metrics response."""
+
+    total_evaluations: int
+    passed_count: int
+    failed_count: int
+    pass_rate: float
+    average_score: float
+    score_breakdown: dict[str, float]
+    quality_metrics: dict[str, float]
+    sentiment_distribution: dict[str, int]
+    latency: dict[str, float]
+    period_days: int
+
+
+class TrendDataResponse(BaseModel):
+    """Trend data for charts."""
+
+    dates: list[str]
+    values: list[float]
+    metric: str
+
+
+class FailureReasonResponse(BaseModel):
+    """Top failure reason with count."""
+
+    reason: str
+    count: int
+
+
+class AgentComparisonResponse(BaseModel):
+    """Agent comparison stats."""
+
+    agent_id: str
+    total_evaluations: int
+    average_score: float
+    pass_rate: float
+
+
+# =============================================================================
+# Dashboard Endpoints
+# =============================================================================
+
+
+@router.get("/dashboard/metrics", response_model=DashboardMetricsResponse)
+async def get_dashboard_metrics_endpoint(
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+    agent_id: str | None = Query(default=None, description="Filter by agent ID"),
+    workspace_id: str | None = Query(default=None, description="Filter by workspace ID"),
+    days: int = Query(default=7, ge=1, le=90, description="Number of days to include"),
+) -> DashboardMetricsResponse:
+    """Get dashboard metrics with aggregated data.
+
+    Args:
+        current_user: Authenticated user
+        db: Database session
+        agent_id: Optional agent ID filter
+        workspace_id: Optional workspace ID filter
+        days: Number of days to include (1-90)
+    """
+    from app.services.qa.dashboard import get_dashboard_metrics
+
+    log = logger.bind(user_id=current_user.id)
+    log.info("getting_dashboard_metrics", days=days)
+
+    agent_uuid = _parse_uuid(agent_id, "agent_id") if agent_id else None
+    workspace_uuid = _parse_uuid(workspace_id, "workspace_id") if workspace_id else None
+
+    metrics = await get_dashboard_metrics(
+        db=db,
+        workspace_id=workspace_uuid,
+        agent_id=agent_uuid,
+        days=days,
+    )
+
+    return DashboardMetricsResponse(**metrics)
+
+
+@router.get("/dashboard/trends", response_model=TrendDataResponse)
+async def get_dashboard_trends(
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+    agent_id: str | None = Query(default=None, description="Filter by agent ID"),
+    workspace_id: str | None = Query(default=None, description="Filter by workspace ID"),
+    metric: str = Query(default="overall_score", description="Metric to trend"),
+    days: int = Query(default=30, ge=1, le=90, description="Number of days to include"),
+) -> TrendDataResponse:
+    """Get trend data for charts.
+
+    Args:
+        current_user: Authenticated user
+        db: Database session
+        agent_id: Optional agent ID filter
+        workspace_id: Optional workspace ID filter
+        metric: Metric to trend (overall_score, pass_rate, intent_completion, etc.)
+        days: Number of days to include (1-90)
+    """
+    from app.services.qa.dashboard import get_trends
+
+    log = logger.bind(user_id=current_user.id)
+    log.info("getting_dashboard_trends", metric=metric, days=days)
+
+    agent_uuid = _parse_uuid(agent_id, "agent_id") if agent_id else None
+    workspace_uuid = _parse_uuid(workspace_id, "workspace_id") if workspace_id else None
+
+    trends = await get_trends(
+        db=db,
+        workspace_id=workspace_uuid,
+        agent_id=agent_uuid,
+        metric=metric,
+        days=days,
+    )
+
+    return TrendDataResponse(**trends)
+
+
+@router.get("/dashboard/failure-reasons", response_model=list[FailureReasonResponse])
+async def get_dashboard_failure_reasons(
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+    agent_id: str | None = Query(default=None, description="Filter by agent ID"),
+    workspace_id: str | None = Query(default=None, description="Filter by workspace ID"),
+    days: int = Query(default=7, ge=1, le=90, description="Number of days to include"),
+    limit: int = Query(default=10, ge=1, le=50, description="Max results"),
+) -> list[FailureReasonResponse]:
+    """Get top failure reasons.
+
+    Args:
+        current_user: Authenticated user
+        db: Database session
+        agent_id: Optional agent ID filter
+        workspace_id: Optional workspace ID filter
+        days: Number of days to include (1-90)
+        limit: Maximum number of results (1-50)
+    """
+    from app.services.qa.dashboard import get_top_failure_reasons
+
+    log = logger.bind(user_id=current_user.id)
+    log.info("getting_failure_reasons", days=days, limit=limit)
+
+    agent_uuid = _parse_uuid(agent_id, "agent_id") if agent_id else None
+    workspace_uuid = _parse_uuid(workspace_id, "workspace_id") if workspace_id else None
+
+    reasons = await get_top_failure_reasons(
+        db=db,
+        workspace_id=workspace_uuid,
+        agent_id=agent_uuid,
+        days=days,
+        limit=limit,
+    )
+
+    return [FailureReasonResponse(**r) for r in reasons]
+
+
+@router.get("/dashboard/agent-comparison", response_model=list[AgentComparisonResponse])
+async def get_dashboard_agent_comparison(
+    workspace_id: str,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+    days: int = Query(default=7, ge=1, le=90, description="Number of days to include"),
+) -> list[AgentComparisonResponse]:
+    """Compare agents within a workspace.
+
+    Args:
+        workspace_id: Workspace ID to compare agents in
+        current_user: Authenticated user
+        db: Database session
+        days: Number of days to include (1-90)
+    """
+    from app.services.qa.dashboard import get_agent_comparison
+
+    log = logger.bind(user_id=current_user.id, workspace_id=workspace_id)
+    log.info("getting_agent_comparison", days=days)
+
+    workspace_uuid = _parse_uuid(workspace_id, "workspace_id")
+
+    agents = await get_agent_comparison(
+        db=db,
+        workspace_id=workspace_uuid,
+        days=days,
+    )
+
+    return [AgentComparisonResponse(**a) for a in agents]
