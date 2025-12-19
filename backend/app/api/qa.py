@@ -23,6 +23,25 @@ router = APIRouter(prefix="/api/v1/qa", tags=["qa"])
 logger = structlog.get_logger()
 
 
+def _parse_uuid(value: str, field_name: str = "ID") -> uuid.UUID:
+    """Parse UUID string with proper error handling.
+
+    Args:
+        value: String value to parse as UUID
+        field_name: Field name for error message
+
+    Returns:
+        Parsed UUID
+
+    Raises:
+        HTTPException: If the value is not a valid UUID
+    """
+    try:
+        return uuid.UUID(value)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid {field_name} format") from e
+
+
 # =============================================================================
 # Pydantic Schemas
 # =============================================================================
@@ -175,9 +194,11 @@ async def list_evaluations(
 
     # Apply filters
     if agent_id:
-        query = query.where(CallEvaluation.agent_id == uuid.UUID(agent_id))
+        query = query.where(CallEvaluation.agent_id == _parse_uuid(agent_id, "agent_id"))
     if workspace_id:
-        query = query.where(CallEvaluation.workspace_id == uuid.UUID(workspace_id))
+        query = query.where(
+            CallEvaluation.workspace_id == _parse_uuid(workspace_id, "workspace_id")
+        )
     if passed is not None:
         query = query.where(CallEvaluation.passed == passed)
 
@@ -249,13 +270,14 @@ async def get_evaluation(
     log = logger.bind(user_id=current_user.id, evaluation_id=evaluation_id)
     log.info("getting_evaluation")
 
+    evaluation_uuid = _parse_uuid(evaluation_id, "evaluation_id")
     user_uuid = user_id_to_uuid(current_user.id)
 
     result = await db.execute(
         select(CallEvaluation)
         .join(CallRecord, CallEvaluation.call_id == CallRecord.id)
         .where(
-            CallEvaluation.id == uuid.UUID(evaluation_id),
+            CallEvaluation.id == evaluation_uuid,
             CallRecord.user_id == user_uuid,
         )
     )
@@ -309,12 +331,13 @@ async def get_call_evaluation(
     log = logger.bind(user_id=current_user.id, call_id=call_id)
     log.info("getting_call_evaluation")
 
+    call_uuid = _parse_uuid(call_id, "call_id")
     user_uuid = user_id_to_uuid(current_user.id)
 
     # Verify user owns the call
     call_result = await db.execute(
         select(CallRecord).where(
-            CallRecord.id == uuid.UUID(call_id),
+            CallRecord.id == call_uuid,
             CallRecord.user_id == user_uuid,
         )
     )
@@ -323,9 +346,7 @@ async def get_call_evaluation(
     if not call_record:
         raise HTTPException(status_code=404, detail="Call not found")
 
-    result = await db.execute(
-        select(CallEvaluation).where(CallEvaluation.call_id == uuid.UUID(call_id))
-    )
+    result = await db.execute(select(CallEvaluation).where(CallEvaluation.call_id == call_uuid))
     evaluation = result.scalar_one_or_none()
 
     if not evaluation:
@@ -384,8 +405,8 @@ async def evaluate_call(
     if not settings.ANTHROPIC_API_KEY:
         raise HTTPException(status_code=400, detail="Anthropic API key not configured")
 
+    call_uuid = _parse_uuid(request.call_id, "call_id")
     user_uuid = user_id_to_uuid(current_user.id)
-    call_uuid = uuid.UUID(request.call_id)
 
     # Verify user owns the call
     call_result = await db.execute(
@@ -454,9 +475,11 @@ async def get_qa_metrics(
     )
 
     if agent_id:
-        base_query = base_query.where(CallEvaluation.agent_id == uuid.UUID(agent_id))
+        base_query = base_query.where(CallEvaluation.agent_id == _parse_uuid(agent_id, "agent_id"))
     if workspace_id:
-        base_query = base_query.where(CallEvaluation.workspace_id == uuid.UUID(workspace_id))
+        base_query = base_query.where(
+            CallEvaluation.workspace_id == _parse_uuid(workspace_id, "workspace_id")
+        )
 
     # Get all evaluations for aggregation
     result = await db.execute(base_query)
