@@ -281,7 +281,7 @@ class QAEvaluator:
         try:
             result = json.loads(response_text)
             if isinstance(result, dict):
-                return cast(dict[str, Any], result)
+                return cast("dict[str, Any]", result)
         except json.JSONDecodeError:
             pass
 
@@ -291,7 +291,7 @@ class QAEvaluator:
             try:
                 result = json.loads(json_match.group(1))
                 if isinstance(result, dict):
-                    return cast(dict[str, Any], result)
+                    return cast("dict[str, Any]", result)
             except json.JSONDecodeError:
                 pass
 
@@ -301,7 +301,7 @@ class QAEvaluator:
             try:
                 result = json.loads(json_match.group(0))
                 if isinstance(result, dict):
-                    return cast(dict[str, Any], result)
+                    return cast("dict[str, Any]", result)
             except json.JSONDecodeError:
                 pass
 
