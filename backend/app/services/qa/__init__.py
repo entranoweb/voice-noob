@@ -1,8 +1,11 @@
 """QA Testing Framework services."""
 
 from app.services.qa.alerts import (
+    acknowledge_alert,
     check_failure_spike_alert,
     check_score_drop_alert,
+    create_alert,
+    get_alerts,
     send_failure_alert,
 )
 from app.services.qa.dashboard import (
@@ -25,9 +28,12 @@ __all__ = [
     "QAEvaluator",
     "TestResult",
     "TestRunner",
+    "acknowledge_alert",
     "check_failure_spike_alert",
     "check_score_drop_alert",
+    "create_alert",
     "get_agent_comparison",
+    "get_alerts",
     "get_built_in_scenarios",
     "get_dashboard_metrics",
     "get_scenarios_by_category",

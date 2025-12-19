@@ -323,3 +323,150 @@ async def check_failure_spike_alert(
         return True
 
     return False
+
+
+async def create_alert(
+    db: AsyncSession,
+    alert_type: str,
+    severity: str,
+    workspace_id: uuid.UUID,
+    agent_id: uuid.UUID | None = None,
+    message: str = "",
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Create and store a QA alert in workspace settings.
+
+    Alerts are stored in workspace.settings["qa_alerts"] as a list.
+    This avoids needing a separate table for MVP.
+
+    Args:
+        db: Database session
+        alert_type: Type of alert (score_drop, failure_spike, compliance_breach)
+        severity: Alert severity (low, medium, high, critical)
+        workspace_id: Workspace ID
+        agent_id: Optional agent ID
+        message: Alert message
+        metadata: Optional additional metadata
+
+    Returns:
+        The created alert dict
+    """
+    from datetime import UTC, datetime
+
+    result = await db.execute(select(Workspace).where(Workspace.id == workspace_id))
+    workspace = result.scalar_one_or_none()
+
+    if not workspace:
+        logger.warning("workspace_not_found_for_alert", workspace_id=str(workspace_id))
+        return {}
+
+    # Create alert record
+    alert = {
+        "id": str(uuid.uuid4()),
+        "type": alert_type,
+        "severity": severity,
+        "agent_id": str(agent_id) if agent_id else None,
+        "message": message,
+        "metadata": metadata or {},
+        "acknowledged": False,
+        "acknowledged_at": None,
+        "acknowledged_by": None,
+        "created_at": datetime.now(UTC).isoformat(),
+    }
+
+    # Store in workspace settings
+    settings_dict = workspace.settings or {}
+    alerts_list = settings_dict.get("qa_alerts", [])
+
+    # Keep only last 100 alerts
+    alerts_list = [*alerts_list[-99:], alert]
+    settings_dict["qa_alerts"] = alerts_list
+    workspace.settings = settings_dict
+
+    await db.commit()
+
+    logger.info(
+        "alert_created",
+        alert_id=alert["id"],
+        alert_type=alert_type,
+        severity=severity,
+        workspace_id=str(workspace_id),
+    )
+
+    return alert
+
+
+async def get_alerts(
+    db: AsyncSession,
+    workspace_id: uuid.UUID,
+    acknowledged: bool | None = None,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    """Get QA alerts for a workspace.
+
+    Args:
+        db: Database session
+        workspace_id: Workspace ID
+        acknowledged: Filter by acknowledged status (None = all)
+        limit: Max alerts to return
+
+    Returns:
+        List of alert dicts
+    """
+    result = await db.execute(select(Workspace).where(Workspace.id == workspace_id))
+    workspace = result.scalar_one_or_none()
+
+    if not workspace or not workspace.settings:
+        return []
+
+    alerts = workspace.settings.get("qa_alerts", [])
+
+    # Filter by acknowledged status if specified
+    if acknowledged is not None:
+        alerts = [a for a in alerts if a.get("acknowledged") == acknowledged]
+
+    # Return most recent first, limited
+    return list(reversed(alerts[-limit:]))
+
+
+async def acknowledge_alert(
+    db: AsyncSession,
+    workspace_id: uuid.UUID,
+    alert_id: str,
+    user_id: int,
+) -> dict[str, Any] | None:
+    """Acknowledge an alert.
+
+    Args:
+        db: Database session
+        workspace_id: Workspace ID
+        alert_id: Alert ID to acknowledge
+        user_id: User acknowledging the alert
+
+    Returns:
+        Updated alert dict or None if not found
+    """
+    from datetime import UTC, datetime
+
+    result = await db.execute(select(Workspace).where(Workspace.id == workspace_id))
+    workspace = result.scalar_one_or_none()
+
+    if not workspace or not workspace.settings:
+        return None
+
+    alerts = workspace.settings.get("qa_alerts", [])
+
+    # Find and update the alert
+    for alert in alerts:
+        if alert.get("id") == alert_id:
+            alert["acknowledged"] = True
+            alert["acknowledged_at"] = datetime.now(UTC).isoformat()
+            alert["acknowledged_by"] = user_id
+
+            workspace.settings = {**workspace.settings, "qa_alerts": alerts}
+            await db.commit()
+
+            logger.info("alert_acknowledged", alert_id=alert_id, user_id=user_id)
+            return dict(alert)
+
+    return None

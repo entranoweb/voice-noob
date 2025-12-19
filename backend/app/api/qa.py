@@ -5,6 +5,7 @@ Provides endpoints for managing call evaluations and QA metrics.
 
 import uuid
 from datetime import datetime
+from typing import Any
 
 import structlog
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
@@ -718,3 +719,102 @@ async def get_dashboard_agent_comparison(
     )
 
     return [AgentComparisonResponse(**a) for a in agents]
+
+
+# =============================================================================
+# Alert Schemas
+# =============================================================================
+
+
+class AlertResponse(BaseModel):
+    """QA Alert response."""
+
+    id: str
+    type: str
+    severity: str
+    agent_id: str | None
+    message: str
+    metadata: dict[str, Any] | None
+    acknowledged: bool
+    acknowledged_at: str | None
+    acknowledged_by: int | None
+    created_at: str
+
+
+class AcknowledgeAlertRequest(BaseModel):
+    """Request to acknowledge an alert."""
+
+
+
+# =============================================================================
+# Alert Endpoints
+# =============================================================================
+
+
+@router.get("/alerts", response_model=list[AlertResponse])
+async def get_qa_alerts(
+    workspace_id: str,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+    acknowledged: bool | None = Query(default=None, description="Filter by acknowledged status"),
+    limit: int = Query(default=50, ge=1, le=100, description="Max alerts to return"),
+) -> list[AlertResponse]:
+    """Get QA alerts for a workspace.
+
+    Args:
+        workspace_id: Workspace ID
+        current_user: Authenticated user
+        db: Database session
+        acknowledged: Filter by acknowledged status (None = all)
+        limit: Maximum number of alerts to return
+    """
+    from app.services.qa.alerts import get_alerts
+
+    log = logger.bind(user_id=current_user.id, workspace_id=workspace_id)
+    log.info("getting_qa_alerts")
+
+    workspace_uuid = _parse_uuid(workspace_id, "workspace_id")
+
+    alerts = await get_alerts(
+        db=db,
+        workspace_id=workspace_uuid,
+        acknowledged=acknowledged,
+        limit=limit,
+    )
+
+    return [AlertResponse(**a) for a in alerts]
+
+
+@router.post("/alerts/{alert_id}/acknowledge", response_model=AlertResponse)
+async def acknowledge_qa_alert(
+    alert_id: str,
+    workspace_id: str,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+) -> AlertResponse:
+    """Acknowledge a QA alert.
+
+    Args:
+        alert_id: Alert ID to acknowledge
+        workspace_id: Workspace ID
+        current_user: Authenticated user
+        db: Database session
+    """
+    from app.services.qa.alerts import acknowledge_alert
+
+    log = logger.bind(user_id=current_user.id, alert_id=alert_id)
+    log.info("acknowledging_alert")
+
+    workspace_uuid = _parse_uuid(workspace_id, "workspace_id")
+
+    alert = await acknowledge_alert(
+        db=db,
+        workspace_id=workspace_uuid,
+        alert_id=alert_id,
+        user_id=current_user.id,
+    )
+
+    if not alert:
+        raise HTTPException(status_code=404, detail="Alert not found")
+
+    return AlertResponse(**alert)
