@@ -68,34 +68,34 @@ def upgrade() -> None:
             default="medium",
             comment="Difficulty: easy, medium, hard",
         ),
-        # Test configuration
+        # Test configuration (using JSONB for better indexing/operations)
         sa.Column(
             "caller_persona",
-            postgresql.JSON(),
+            postgresql.JSONB(),
             nullable=False,
             comment="Simulated caller personality and context",
         ),
         sa.Column(
             "conversation_flow",
-            postgresql.JSON(),
+            postgresql.JSONB(),
             nullable=False,
             comment="Array of conversation turns with user messages",
         ),
         sa.Column(
             "expected_behaviors",
-            postgresql.JSON(),
+            postgresql.JSONB(),
             nullable=False,
             comment="Expected agent behaviors and responses",
         ),
         sa.Column(
             "expected_tool_calls",
-            postgresql.JSON(),
+            postgresql.JSONB(),
             nullable=True,
             comment="Expected tool invocations (if any)",
         ),
         sa.Column(
             "success_criteria",
-            postgresql.JSON(),
+            postgresql.JSONB(),
             nullable=False,
             comment="Criteria for pass/fail determination",
         ),
@@ -225,41 +225,41 @@ def upgrade() -> None:
             nullable=True,
             comment="Whether the test passed",
         ),
-        # Conversation data
+        # Conversation data (using JSONB for better indexing/operations)
         sa.Column(
             "actual_transcript",
-            postgresql.JSON(),
+            postgresql.JSONB(),
             nullable=True,
             comment="Actual conversation transcript",
         ),
         sa.Column(
             "actual_tool_calls",
-            postgresql.JSON(),
+            postgresql.JSONB(),
             nullable=True,
             comment="Tools actually invoked during test",
         ),
         # Detailed results
         sa.Column(
             "criteria_results",
-            postgresql.JSON(),
+            postgresql.JSONB(),
             nullable=True,
             comment="Pass/fail for each success criterion",
         ),
         sa.Column(
             "behavior_matches",
-            postgresql.JSON(),
+            postgresql.JSONB(),
             nullable=True,
             comment="Which expected behaviors were observed",
         ),
         sa.Column(
             "issues_found",
-            postgresql.JSON(),
+            postgresql.JSONB(),
             nullable=True,
             comment="List of issues identified during test",
         ),
         sa.Column(
             "recommendations",
-            postgresql.JSON(),
+            postgresql.JSONB(),
             nullable=True,
             comment="Recommendations for improvement",
         ),
@@ -272,7 +272,7 @@ def upgrade() -> None:
         ),
         sa.Column(
             "error_details",
-            postgresql.JSON(),
+            postgresql.JSONB(),
             nullable=True,
             comment="Detailed error information",
         ),

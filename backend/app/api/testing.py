@@ -10,12 +10,12 @@ from typing import Any
 import structlog
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import desc, func, select
+from sqlalchemy import desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import CurrentUser
 from app.core.config import settings
-from app.db.session import get_db
+from app.db.session import AsyncSessionLocal, get_db
 from app.models.agent import Agent
 from app.models.test_scenario import (
     ScenarioCategory,
@@ -25,6 +25,26 @@ from app.models.test_scenario import (
     TestScenario,
 )
 from app.services.qa.test_runner import TestRunner
+
+
+def _parse_uuid(value: str, field_name: str = "ID") -> uuid.UUID:
+    """Parse UUID string with proper error handling.
+
+    Args:
+        value: String value to parse as UUID
+        field_name: Field name for error message
+
+    Returns:
+        Parsed UUID
+
+    Raises:
+        HTTPException: If the value is not a valid UUID
+    """
+    try:
+        return uuid.UUID(value)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid {field_name} format") from e
+
 
 router = APIRouter(prefix="/api/v1/testing", tags=["testing"])
 logger = structlog.get_logger()
@@ -175,8 +195,14 @@ async def list_scenarios(
     log = logger.bind(user_id=current_user.id)
     log.info("listing_scenarios", page=page, page_size=page_size)
 
-    # Build query
-    query = select(TestScenario).where(TestScenario.is_active == True)  # noqa: E712
+    # Build query - only show built-in scenarios OR user's own scenarios (multi-tenant isolation)
+    query = select(TestScenario).where(
+        TestScenario.is_active == True,  # noqa: E712
+        or_(
+            TestScenario.is_built_in == True,  # noqa: E712
+            TestScenario.user_id == current_user.id,
+        ),
+    )
 
     if category:
         query = query.where(TestScenario.category == category)
@@ -231,7 +257,18 @@ async def get_scenario(
     db: AsyncSession = Depends(get_db),
 ) -> TestScenarioResponse:
     """Get a specific test scenario."""
-    result = await db.execute(select(TestScenario).where(TestScenario.id == uuid.UUID(scenario_id)))
+    scenario_uuid = _parse_uuid(scenario_id, "scenario_id")
+
+    # Only allow access to built-in scenarios OR user's own scenarios (multi-tenant isolation)
+    result = await db.execute(
+        select(TestScenario).where(
+            TestScenario.id == scenario_uuid,
+            or_(
+                TestScenario.is_built_in == True,  # noqa: E712
+                TestScenario.user_id == current_user.id,
+            ),
+        )
+    )
     scenario = result.scalar_one_or_none()
 
     if not scenario:
@@ -307,9 +344,21 @@ async def run_test(
     if not settings.ANTHROPIC_API_KEY:
         raise HTTPException(status_code=400, detail="Anthropic API key not configured")
 
-    # Verify scenario exists
+    scenario_uuid = _parse_uuid(request.scenario_id, "scenario_id")
+    agent_uuid = _parse_uuid(request.agent_id, "agent_id")
+    workspace_uuid = (
+        _parse_uuid(request.workspace_id, "workspace_id") if request.workspace_id else None
+    )
+
+    # Verify scenario exists and user has access (built-in or own)
     scenario_result = await db.execute(
-        select(TestScenario).where(TestScenario.id == uuid.UUID(request.scenario_id))
+        select(TestScenario).where(
+            TestScenario.id == scenario_uuid,
+            or_(
+                TestScenario.is_built_in == True,  # noqa: E712
+                TestScenario.user_id == current_user.id,
+            ),
+        )
     )
     if not scenario_result.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="Scenario not found")
@@ -317,7 +366,7 @@ async def run_test(
     # Verify agent exists and belongs to user
     agent_result = await db.execute(
         select(Agent).where(
-            Agent.id == uuid.UUID(request.agent_id),
+            Agent.id == agent_uuid,
             Agent.user_id == current_user.id,
         )
     )
@@ -327,10 +376,10 @@ async def run_test(
     # Run the test
     runner = TestRunner(db)
     test_run = await runner.run_scenario(
-        scenario_id=uuid.UUID(request.scenario_id),
-        agent_id=uuid.UUID(request.agent_id),
+        scenario_id=scenario_uuid,
+        agent_id=agent_uuid,
         user_id=current_user.id,
-        workspace_id=uuid.UUID(request.workspace_id) if request.workspace_id else None,
+        workspace_id=workspace_uuid,
     )
 
     return RunTestResponse(
@@ -338,6 +387,40 @@ async def run_test(
         test_run_id=str(test_run.id),
         status=test_run.status,
     )
+
+
+async def _run_all_scenarios_background(
+    agent_id: uuid.UUID,
+    user_id: int,
+    workspace_id: uuid.UUID | None,
+    category: str | None,
+) -> None:
+    """Background task to run all scenarios against an agent.
+
+    Creates its own database session to avoid issues with session lifecycle.
+    """
+    log = logger.bind(agent_id=str(agent_id), user_id=user_id, component="run_all_background")
+    log.info("starting_background_test_run")
+
+    try:
+        async with AsyncSessionLocal() as db:
+            runner = TestRunner(db)
+            results = await runner.run_all_scenarios(
+                agent_id=agent_id,
+                user_id=user_id,
+                workspace_id=workspace_id,
+                category=category,
+            )
+            passed = sum(1 for r in results if r.passed is True)
+            failed = sum(1 for r in results if r.passed is False)
+            log.info(
+                "background_test_run_completed",
+                total=len(results),
+                passed=passed,
+                failed=failed,
+            )
+    except Exception:
+        log.exception("background_test_run_failed")
 
 
 @router.post("/run-all", response_model=RunAllTestsResponse)
@@ -354,22 +437,34 @@ async def run_all_tests(
     if not settings.QA_ENABLED:
         raise HTTPException(status_code=400, detail="QA testing is disabled")
 
+    if not settings.ANTHROPIC_API_KEY:
+        raise HTTPException(status_code=400, detail="Anthropic API key not configured")
+
+    agent_uuid = _parse_uuid(request.agent_id, "agent_id")
+    workspace_uuid = (
+        _parse_uuid(request.workspace_id, "workspace_id") if request.workspace_id else None
+    )
+
     # Verify agent exists and belongs to user
     agent_result = await db.execute(
         select(Agent).where(
-            Agent.id == uuid.UUID(request.agent_id),
+            Agent.id == agent_uuid,
             Agent.user_id == current_user.id,
         )
     )
     if not agent_result.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="Agent not found")
 
-    # Count scenarios
+    # Count scenarios (only built-in + user's own for multi-tenant isolation)
     query = (
         select(func.count())
         .select_from(TestScenario)
         .where(
-            TestScenario.is_active == True  # noqa: E712
+            TestScenario.is_active == True,  # noqa: E712
+            or_(
+                TestScenario.is_built_in == True,  # noqa: E712
+                TestScenario.user_id == current_user.id,
+            ),
         )
     )
     if request.category:
@@ -381,10 +476,17 @@ async def run_all_tests(
     if scenario_count == 0:
         raise HTTPException(status_code=400, detail="No scenarios available to run")
 
-    # Queue background task (we'd need to implement this properly)
-    # For now, return that tests are queued
+    # Queue background task
+    background_tasks.add_task(
+        _run_all_scenarios_background,
+        agent_id=agent_uuid,
+        user_id=current_user.id,
+        workspace_id=workspace_uuid,
+        category=request.category,
+    )
+
     return RunAllTestsResponse(
-        message=f"Queued {scenario_count} tests for execution",
+        message=f"Queued {scenario_count} tests for background execution",
         test_count=scenario_count,
         queued=True,
     )
@@ -409,9 +511,9 @@ async def list_test_runs(
     query = select(TestRun).where(TestRun.user_id == current_user.id)
 
     if agent_id:
-        query = query.where(TestRun.agent_id == uuid.UUID(agent_id))
+        query = query.where(TestRun.agent_id == _parse_uuid(agent_id, "agent_id"))
     if scenario_id:
-        query = query.where(TestRun.scenario_id == uuid.UUID(scenario_id))
+        query = query.where(TestRun.scenario_id == _parse_uuid(scenario_id, "scenario_id"))
     if status:
         query = query.where(TestRun.status == status)
     if passed is not None:
@@ -465,9 +567,11 @@ async def get_test_run(
     db: AsyncSession = Depends(get_db),
 ) -> TestRunDetailResponse:
     """Get detailed test run results."""
+    run_uuid = _parse_uuid(run_id, "run_id")
+
     result = await db.execute(
         select(TestRun).where(
-            TestRun.id == uuid.UUID(run_id),
+            TestRun.id == run_uuid,
             TestRun.user_id == current_user.id,
         )
     )
@@ -513,18 +617,25 @@ async def get_agent_testing_summary(
     log = logger.bind(user_id=current_user.id, agent_id=agent_id)
     log.info("getting_testing_summary")
 
+    agent_uuid = _parse_uuid(agent_id, "agent_id")
+
     # Verify agent belongs to user
     agent_result = await db.execute(
         select(Agent).where(
-            Agent.id == uuid.UUID(agent_id),
+            Agent.id == agent_uuid,
             Agent.user_id == current_user.id,
         )
     )
     if not agent_result.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="Agent not found")
 
-    # Get test runs for this agent
-    result = await db.execute(select(TestRun).where(TestRun.agent_id == uuid.UUID(agent_id)))
+    # Get test runs for this agent (only user's own runs)
+    result = await db.execute(
+        select(TestRun).where(
+            TestRun.agent_id == agent_uuid,
+            TestRun.user_id == current_user.id,
+        )
+    )
     runs = result.scalars().all()
 
     if not runs:
