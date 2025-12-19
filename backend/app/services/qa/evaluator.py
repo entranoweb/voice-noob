@@ -258,6 +258,10 @@ class QAEvaluator:
                 cost_cents=round(cost_cents, 4),
             )
 
+            # Send failure alerts if evaluation failed
+            if not passed:
+                await self._send_failure_alerts(evaluation)
+
             return evaluation
 
         except Exception:
@@ -335,6 +339,51 @@ class QAEvaluator:
                         continue
 
         return None
+
+    async def _send_failure_alerts(self, evaluation: CallEvaluation) -> None:
+        """Send failure alerts when an evaluation fails.
+
+        Args:
+            evaluation: The failed CallEvaluation
+        """
+        from app.services.qa.alerts import create_alert, send_failure_alert
+
+        log = self.logger.bind(
+            evaluation_id=str(evaluation.id),
+            call_id=str(evaluation.call_id),
+        )
+
+        try:
+            # Send webhook/Slack alerts
+            await send_failure_alert(self.db, evaluation)
+
+            # Create an alert record in the workspace
+            if evaluation.workspace_id:
+                severity = "high" if evaluation.overall_score < 50 else "medium"  # noqa: PLR2004
+                failure_reasons = evaluation.failure_reasons or []
+                message = f"Call evaluation failed with score {evaluation.overall_score}/100"
+                if failure_reasons:
+                    message += f": {', '.join(failure_reasons[:3])}"
+
+                await create_alert(
+                    db=self.db,
+                    alert_type="qa_failure",
+                    severity=severity,
+                    workspace_id=evaluation.workspace_id,
+                    agent_id=evaluation.agent_id,
+                    message=message,
+                    metadata={
+                        "evaluation_id": str(evaluation.id),
+                        "call_id": str(evaluation.call_id),
+                        "overall_score": evaluation.overall_score,
+                        "failure_reasons": failure_reasons,
+                    },
+                )
+
+            log.info("failure_alerts_sent")
+
+        except Exception:
+            log.exception("failed_to_send_failure_alerts")
 
 
 async def trigger_qa_evaluation(call_id: uuid.UUID) -> None:

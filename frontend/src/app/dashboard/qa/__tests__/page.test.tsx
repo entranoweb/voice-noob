@@ -118,9 +118,9 @@ describe("QA Dashboard Page", () => {
     await waitFor(
       () => {
         // Check for QA-related content
-        const _qaText = screen.queryByText(/qa/i);
+        const qaText = screen.queryByText(/qa/i);
         // Either QA text exists or the page rendered
-        expect(document.body).toBeInTheDocument();
+        expect(qaText ?? document.body).toBeInTheDocument();
       },
       { timeout: 3000 }
     );

@@ -62,15 +62,21 @@ const mockEvaluations = [
   },
 ];
 
+// Type-safe access to mock evaluations
+const passedEvaluation = mockEvaluations.find((e) => e.passed);
+const failedEvaluation = mockEvaluations.find((e) => !e.passed);
+
 describe("EvaluationList", () => {
   it("renders pass badge for passed=true", () => {
-    render(<EvaluationList evaluations={[mockEvaluations[0]]} />);
+    if (!passedEvaluation) throw new Error("Test setup error: no passed evaluation");
+    render(<EvaluationList evaluations={[passedEvaluation]} />);
     const badge = screen.getByText("Pass");
     expect(badge).toBeInTheDocument();
   });
 
   it("renders fail badge for passed=false", () => {
-    render(<EvaluationList evaluations={[mockEvaluations[1]]} />);
+    if (!failedEvaluation) throw new Error("Test setup error: no failed evaluation");
+    render(<EvaluationList evaluations={[failedEvaluation]} />);
     const badge = screen.getByText("Fail");
     expect(badge).toBeInTheDocument();
   });
@@ -96,7 +102,8 @@ describe("EvaluationList", () => {
   });
 
   it("displays individual scores for each category", () => {
-    render(<EvaluationList evaluations={[mockEvaluations[0]]} />);
+    if (!passedEvaluation) throw new Error("Test setup error: no passed evaluation");
+    render(<EvaluationList evaluations={[passedEvaluation]} />);
     // Check intent_completion score (90) is displayed
     expect(screen.getByText("90")).toBeInTheDocument();
     // Check tool_usage score (80) is displayed
