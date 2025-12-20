@@ -9,6 +9,7 @@ from app.models.campaign import Campaign, CampaignContact
 from app.models.contact import Contact
 from app.models.phone_number import PhoneNumber
 from app.models.privacy_settings import ConsentRecord, PrivacySettings
+from app.models.test_scenario import TestRun, TestScenario
 from app.models.user import User
 from app.models.user_integration import UserIntegration
 from app.models.workspace import AgentWorkspace, Workspace
@@ -26,6 +27,8 @@ __all__ = [
     "Contact",
     "PhoneNumber",
     "PrivacySettings",
+    "TestRun",
+    "TestScenario",
     "User",
     "UserIntegration",
     "Workspace",

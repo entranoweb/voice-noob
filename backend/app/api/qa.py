@@ -5,6 +5,7 @@ Provides endpoints for managing call evaluations and QA metrics.
 
 import uuid
 from datetime import datetime
+from typing import Any
 
 import structlog
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
@@ -527,3 +528,293 @@ async def get_qa_metrics(
         avg_fluency=safe_avg([e.fluency for e in evaluations]),
         total_cost_cents=sum(e.evaluation_cost_cents or 0 for e in evaluations),
     )
+
+
+# =============================================================================
+# Dashboard Schemas
+# =============================================================================
+
+
+class DashboardMetricsResponse(BaseModel):
+    """Dashboard metrics response."""
+
+    total_evaluations: int
+    passed_count: int
+    failed_count: int
+    pass_rate: float
+    average_score: float
+    score_breakdown: dict[str, float]
+    quality_metrics: dict[str, float]
+    sentiment_distribution: dict[str, int]
+    latency: dict[str, float]
+    period_days: int
+
+
+class TrendDataResponse(BaseModel):
+    """Trend data for charts."""
+
+    dates: list[str]
+    values: list[float]
+    metric: str
+
+
+class FailureReasonResponse(BaseModel):
+    """Top failure reason with count."""
+
+    reason: str
+    count: int
+
+
+class AgentComparisonResponse(BaseModel):
+    """Agent comparison stats."""
+
+    agent_id: str
+    total_evaluations: int
+    average_score: float
+    pass_rate: float
+
+
+# =============================================================================
+# Dashboard Endpoints
+# =============================================================================
+
+
+@router.get("/dashboard/metrics", response_model=DashboardMetricsResponse)
+async def get_dashboard_metrics_endpoint(
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+    agent_id: str | None = Query(default=None, description="Filter by agent ID"),
+    workspace_id: str | None = Query(default=None, description="Filter by workspace ID"),
+    days: int = Query(default=7, ge=1, le=90, description="Number of days to include"),
+) -> DashboardMetricsResponse:
+    """Get dashboard metrics with aggregated data.
+
+    Args:
+        current_user: Authenticated user
+        db: Database session
+        agent_id: Optional agent ID filter
+        workspace_id: Optional workspace ID filter
+        days: Number of days to include (1-90)
+    """
+    from app.services.qa.dashboard import get_dashboard_metrics
+
+    log = logger.bind(user_id=current_user.id)
+    log.info("getting_dashboard_metrics", days=days)
+
+    agent_uuid = _parse_uuid(agent_id, "agent_id") if agent_id else None
+    workspace_uuid = _parse_uuid(workspace_id, "workspace_id") if workspace_id else None
+
+    metrics = await get_dashboard_metrics(
+        db=db,
+        workspace_id=workspace_uuid,
+        agent_id=agent_uuid,
+        days=days,
+    )
+
+    return DashboardMetricsResponse(**metrics)
+
+
+@router.get("/dashboard/trends", response_model=TrendDataResponse)
+async def get_dashboard_trends(
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+    agent_id: str | None = Query(default=None, description="Filter by agent ID"),
+    workspace_id: str | None = Query(default=None, description="Filter by workspace ID"),
+    metric: str = Query(default="overall_score", description="Metric to trend"),
+    days: int = Query(default=30, ge=1, le=90, description="Number of days to include"),
+) -> TrendDataResponse:
+    """Get trend data for charts.
+
+    Args:
+        current_user: Authenticated user
+        db: Database session
+        agent_id: Optional agent ID filter
+        workspace_id: Optional workspace ID filter
+        metric: Metric to trend (overall_score, pass_rate, intent_completion, etc.)
+        days: Number of days to include (1-90)
+    """
+    from app.services.qa.dashboard import get_trends
+
+    log = logger.bind(user_id=current_user.id)
+    log.info("getting_dashboard_trends", metric=metric, days=days)
+
+    agent_uuid = _parse_uuid(agent_id, "agent_id") if agent_id else None
+    workspace_uuid = _parse_uuid(workspace_id, "workspace_id") if workspace_id else None
+
+    trends = await get_trends(
+        db=db,
+        workspace_id=workspace_uuid,
+        agent_id=agent_uuid,
+        metric=metric,
+        days=days,
+    )
+
+    return TrendDataResponse(**trends)
+
+
+@router.get("/dashboard/failure-reasons", response_model=list[FailureReasonResponse])
+async def get_dashboard_failure_reasons(
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+    agent_id: str | None = Query(default=None, description="Filter by agent ID"),
+    workspace_id: str | None = Query(default=None, description="Filter by workspace ID"),
+    days: int = Query(default=7, ge=1, le=90, description="Number of days to include"),
+    limit: int = Query(default=10, ge=1, le=50, description="Max results"),
+) -> list[FailureReasonResponse]:
+    """Get top failure reasons.
+
+    Args:
+        current_user: Authenticated user
+        db: Database session
+        agent_id: Optional agent ID filter
+        workspace_id: Optional workspace ID filter
+        days: Number of days to include (1-90)
+        limit: Maximum number of results (1-50)
+    """
+    from app.services.qa.dashboard import get_top_failure_reasons
+
+    log = logger.bind(user_id=current_user.id)
+    log.info("getting_failure_reasons", days=days, limit=limit)
+
+    agent_uuid = _parse_uuid(agent_id, "agent_id") if agent_id else None
+    workspace_uuid = _parse_uuid(workspace_id, "workspace_id") if workspace_id else None
+
+    reasons = await get_top_failure_reasons(
+        db=db,
+        workspace_id=workspace_uuid,
+        agent_id=agent_uuid,
+        days=days,
+        limit=limit,
+    )
+
+    return [FailureReasonResponse(**r) for r in reasons]
+
+
+@router.get("/dashboard/agent-comparison", response_model=list[AgentComparisonResponse])
+async def get_dashboard_agent_comparison(
+    workspace_id: str,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+    days: int = Query(default=7, ge=1, le=90, description="Number of days to include"),
+) -> list[AgentComparisonResponse]:
+    """Compare agents within a workspace.
+
+    Args:
+        workspace_id: Workspace ID to compare agents in
+        current_user: Authenticated user
+        db: Database session
+        days: Number of days to include (1-90)
+    """
+    from app.services.qa.dashboard import get_agent_comparison
+
+    log = logger.bind(user_id=current_user.id, workspace_id=workspace_id)
+    log.info("getting_agent_comparison", days=days)
+
+    workspace_uuid = _parse_uuid(workspace_id, "workspace_id")
+
+    agents = await get_agent_comparison(
+        db=db,
+        workspace_id=workspace_uuid,
+        days=days,
+    )
+
+    return [AgentComparisonResponse(**a) for a in agents]
+
+
+# =============================================================================
+# Alert Schemas
+# =============================================================================
+
+
+class AlertResponse(BaseModel):
+    """QA Alert response."""
+
+    id: str
+    type: str
+    severity: str
+    agent_id: str | None
+    message: str
+    metadata: dict[str, Any] | None
+    acknowledged: bool
+    acknowledged_at: str | None
+    acknowledged_by: int | None
+    created_at: str
+
+
+class AcknowledgeAlertRequest(BaseModel):
+    """Request to acknowledge an alert."""
+
+
+
+# =============================================================================
+# Alert Endpoints
+# =============================================================================
+
+
+@router.get("/alerts", response_model=list[AlertResponse])
+async def get_qa_alerts(
+    workspace_id: str,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+    acknowledged: bool | None = Query(default=None, description="Filter by acknowledged status"),
+    limit: int = Query(default=50, ge=1, le=100, description="Max alerts to return"),
+) -> list[AlertResponse]:
+    """Get QA alerts for a workspace.
+
+    Args:
+        workspace_id: Workspace ID
+        current_user: Authenticated user
+        db: Database session
+        acknowledged: Filter by acknowledged status (None = all)
+        limit: Maximum number of alerts to return
+    """
+    from app.services.qa.alerts import get_alerts
+
+    log = logger.bind(user_id=current_user.id, workspace_id=workspace_id)
+    log.info("getting_qa_alerts")
+
+    workspace_uuid = _parse_uuid(workspace_id, "workspace_id")
+
+    alerts = await get_alerts(
+        db=db,
+        workspace_id=workspace_uuid,
+        acknowledged=acknowledged,
+        limit=limit,
+    )
+
+    return [AlertResponse(**a) for a in alerts]
+
+
+@router.post("/alerts/{alert_id}/acknowledge", response_model=AlertResponse)
+async def acknowledge_qa_alert(
+    alert_id: str,
+    workspace_id: str,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+) -> AlertResponse:
+    """Acknowledge a QA alert.
+
+    Args:
+        alert_id: Alert ID to acknowledge
+        workspace_id: Workspace ID
+        current_user: Authenticated user
+        db: Database session
+    """
+    from app.services.qa.alerts import acknowledge_alert
+
+    log = logger.bind(user_id=current_user.id, alert_id=alert_id)
+    log.info("acknowledging_alert")
+
+    workspace_uuid = _parse_uuid(workspace_id, "workspace_id")
+
+    alert = await acknowledge_alert(
+        db=db,
+        workspace_id=workspace_uuid,
+        alert_id=alert_id,
+        user_id=current_user.id,
+    )
+
+    if not alert:
+        raise HTTPException(status_code=404, detail="Alert not found")
+
+    return AlertResponse(**alert)

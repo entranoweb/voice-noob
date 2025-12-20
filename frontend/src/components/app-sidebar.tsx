@@ -30,6 +30,7 @@ import {
   PanelLeft,
   LogOut,
   Key,
+  Shield,
 } from "lucide-react";
 import { useSidebarStore } from "@/lib/sidebar-store";
 import { useAuth } from "@/hooks/use-auth";
@@ -88,6 +89,12 @@ const navigation = [
     href: "/dashboard/calls",
     icon: History,
     color: "text-orange-400",
+  },
+  {
+    name: "QA Dashboard",
+    href: "/dashboard/qa",
+    icon: Shield,
+    color: "text-teal-400",
   },
   {
     name: "Test Agent",
