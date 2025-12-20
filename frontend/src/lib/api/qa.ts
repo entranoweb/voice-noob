@@ -432,7 +432,7 @@ export async function listScenarios(params: {
   }
 
   const response = await fetch(
-    `${API_BASE}/api/v1/qa/testing/scenarios?${searchParams.toString()}`,
+    `${API_BASE}/api/v1/testing/scenarios?${searchParams.toString()}`,
     {
       headers: getAuthHeaders(),
     }
@@ -443,14 +443,16 @@ export async function listScenarios(params: {
     throw new Error(error.detail ?? "Failed to fetch scenarios");
   }
 
-  return response.json();
+  // Backend returns { scenarios: [...], total, page, ... } - extract scenarios array
+  const data = await response.json();
+  return data.scenarios ?? data;
 }
 
 /**
  * Get a specific test scenario
  */
 export async function getScenario(scenarioId: string): Promise<TestScenario> {
-  const response = await fetch(`${API_BASE}/api/v1/qa/testing/scenarios/${scenarioId}`, {
+  const response = await fetch(`${API_BASE}/api/v1/testing/scenarios/${scenarioId}`, {
     headers: getAuthHeaders(),
   });
 
@@ -470,7 +472,7 @@ export async function getScenario(scenarioId: string): Promise<TestScenario> {
  * Start a new test run
  */
 export async function startTestRun(params: StartTestRunParams): Promise<TestRun> {
-  const response = await fetch(`${API_BASE}/api/v1/qa/testing/runs`, {
+  const response = await fetch(`${API_BASE}/api/v1/testing/runs`, {
     method: "POST",
     headers: {
       ...getAuthHeaders(),
@@ -499,7 +501,7 @@ export async function listTestRuns(params: {
   if (params.status) searchParams.set("status", params.status);
 
   const response = await fetch(
-    `${API_BASE}/api/v1/qa/testing/runs?${searchParams.toString()}`,
+    `${API_BASE}/api/v1/testing/runs?${searchParams.toString()}`,
     {
       headers: getAuthHeaders(),
     }
@@ -510,14 +512,16 @@ export async function listTestRuns(params: {
     throw new Error(error.detail ?? "Failed to fetch test runs");
   }
 
-  return response.json();
+  // Backend returns { runs: [...], total, page, ... } - extract runs array
+  const data = await response.json();
+  return data.runs ?? data;
 }
 
 /**
  * Get a specific test run
  */
 export async function getTestRun(runId: string): Promise<TestRun> {
-  const response = await fetch(`${API_BASE}/api/v1/qa/testing/runs/${runId}`, {
+  const response = await fetch(`${API_BASE}/api/v1/testing/runs/${runId}`, {
     headers: getAuthHeaders(),
   });
 

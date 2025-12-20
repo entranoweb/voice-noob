@@ -22,12 +22,16 @@ from app.db.base import Base
 from app.db.redis import get_redis
 from app.db.session import get_db
 from app.main import app
+from app.models.agent import Agent
 from app.models.appointment import Appointment
+from app.models.call_evaluation import CallEvaluation
 from app.models.call_interaction import CallInteraction
+from app.models.call_record import CallRecord
 from app.models.contact import Contact
 
 # Import all models to ensure they're registered with Base.metadata
 from app.models.user import User
+from app.models.workspace import Workspace
 
 logger = logging.getLogger(__name__)
 
@@ -377,3 +381,187 @@ async def create_test_call_interaction(test_session: AsyncSession) -> Any:
         return call
 
     return _create_call
+
+
+# =============================================================================
+# QA Testing Fixtures (Task 8.5)
+# =============================================================================
+
+
+@pytest.fixture
+def sample_call_record_data() -> dict[str, Any]:
+    """Sample call record data for QA testing."""
+    from datetime import UTC, datetime
+
+    return {
+        "provider": "twilio",
+        "provider_call_id": "CA" + "1" * 32,
+        "direction": "inbound",
+        "status": "completed",
+        "from_number": "+14155551234",
+        "to_number": "+14155555678",
+        "duration_seconds": 180,
+        "transcript": "[User]: I need to schedule an appointment\n[Assistant]: I'd be happy to help you schedule an appointment.",
+        "started_at": datetime.now(UTC),
+        "ended_at": datetime.now(UTC),
+    }
+
+
+@pytest_asyncio.fixture
+async def create_test_workspace(test_session: AsyncSession) -> Any:
+    """Factory fixture to create test workspaces."""
+    import uuid
+
+    async def _create_workspace(user_id: int, **kwargs: Any) -> Workspace:
+        workspace_data = {
+            "id": uuid.uuid4(),
+            "name": "Test Workspace",
+            "owner_id": user_id,
+            "settings": {"qa_enabled": True, "qa_auto_evaluate": True},
+        }
+        workspace_data.update(kwargs)
+        workspace = Workspace(**workspace_data)
+        test_session.add(workspace)
+        await test_session.commit()
+        await test_session.refresh(workspace)
+        return workspace
+
+    return _create_workspace
+
+
+@pytest_asyncio.fixture
+async def create_test_agent(test_session: AsyncSession) -> Any:
+    """Factory fixture to create test agents."""
+    import uuid
+
+    async def _create_agent(user_id: int, **kwargs: Any) -> Agent:
+        agent_data = {
+            "id": uuid.uuid4(),
+            "user_id": user_id,
+            "name": "Test Agent",
+            "system_prompt": "You are a helpful assistant.",
+            "pricing_tier": "balanced",
+        }
+        agent_data.update(kwargs)
+        agent = Agent(**agent_data)
+        test_session.add(agent)
+        await test_session.commit()
+        await test_session.refresh(agent)
+        return agent
+
+    return _create_agent
+
+
+@pytest_asyncio.fixture
+async def create_test_call_record(test_session: AsyncSession) -> Any:
+    """Factory fixture to create test call records."""
+    import uuid
+    from datetime import UTC, datetime
+
+    async def _create_call_record(
+        agent_id: uuid.UUID | None = None,
+        workspace_id: uuid.UUID | None = None,
+        **kwargs: Any,
+    ) -> CallRecord:
+        call_data = {
+            "id": uuid.uuid4(),
+            "provider": "twilio",
+            "provider_call_id": "CA" + str(uuid.uuid4()).replace("-", "")[:32],
+            "direction": "inbound",
+            "status": "completed",
+            "from_number": "+14155551234",
+            "to_number": "+14155555678",
+            "duration_seconds": 180,
+            "transcript": "[User]: I need help\n[Assistant]: I'm here to help!",
+            "started_at": datetime.now(UTC),
+            "ended_at": datetime.now(UTC),
+            "agent_id": agent_id,
+            "workspace_id": workspace_id,
+        }
+        call_data.update(kwargs)
+        record = CallRecord(**call_data)
+        test_session.add(record)
+        await test_session.commit()
+        await test_session.refresh(record)
+        return record
+
+    return _create_call_record
+
+
+@pytest_asyncio.fixture
+async def create_test_evaluation(test_session: AsyncSession) -> Any:
+    """Factory fixture to create test evaluations."""
+    import uuid
+
+    async def _create_evaluation(
+        call_id: uuid.UUID,
+        agent_id: uuid.UUID | None = None,
+        workspace_id: uuid.UUID | None = None,
+        **kwargs: Any,
+    ) -> CallEvaluation:
+        eval_data = {
+            "id": uuid.uuid4(),
+            "call_id": call_id,
+            "agent_id": agent_id,
+            "workspace_id": workspace_id,
+            "overall_score": 85,
+            "intent_completion": 90,
+            "tool_usage": 80,
+            "compliance": 95,
+            "response_quality": 75,
+            "passed": True,
+            "coherence": 88,
+            "relevance": 85,
+            "groundedness": 90,
+            "fluency": 82,
+            "overall_sentiment": "positive",
+            "sentiment_score": 0.7,
+            "escalation_risk": 0.1,
+            "objectives_detected": ["schedule appointment"],
+            "objectives_completed": ["schedule appointment"],
+            "failure_reasons": None,
+            "recommendations": [],
+            "evaluation_model": "claude-sonnet-4-20250514",
+            "evaluation_latency_ms": 1500,
+            "evaluation_cost_cents": 0.3,
+        }
+        eval_data.update(kwargs)
+        evaluation = CallEvaluation(**eval_data)
+        test_session.add(evaluation)
+        await test_session.commit()
+        await test_session.refresh(evaluation)
+        return evaluation
+
+    return _create_evaluation
+
+
+@pytest.fixture
+def mock_anthropic_response() -> Any:
+    """Mock Claude API response for evaluation."""
+    from unittest.mock import MagicMock
+
+    return MagicMock(
+        content=[
+            MagicMock(
+                text="""{
+                "overall_score": 85,
+                "intent_completion": 90,
+                "tool_usage": 80,
+                "compliance": 95,
+                "response_quality": 75,
+                "coherence": 88,
+                "relevance": 85,
+                "groundedness": 90,
+                "fluency": 82,
+                "overall_sentiment": "positive",
+                "sentiment_score": 0.7,
+                "escalation_risk": 0.1,
+                "objectives_detected": ["schedule appointment"],
+                "objectives_completed": ["schedule appointment"],
+                "failure_reasons": [],
+                "recommendations": []
+            }"""
+            )
+        ],
+        usage=MagicMock(input_tokens=500, output_tokens=200),
+    )

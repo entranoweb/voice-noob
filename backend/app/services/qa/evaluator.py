@@ -258,6 +258,10 @@ class QAEvaluator:
                 cost_cents=round(cost_cents, 4),
             )
 
+            # Send failure alerts if evaluation failed
+            if not passed:
+                await self._send_failure_alerts(evaluation)
+
             return evaluation
 
         except Exception:
@@ -277,11 +281,35 @@ class QAEvaluator:
         import re
         from typing import cast
 
+        def coerce_numeric_fields(data: dict[str, Any]) -> dict[str, Any]:
+            """Coerce string numbers to proper types for numeric fields."""
+            numeric_int_fields = [
+                "overall_score", "intent_completion", "tool_usage", "compliance",
+                "response_quality", "coherence", "relevance", "groundedness", "fluency",
+            ]
+            numeric_float_fields = ["sentiment_score", "escalation_risk"]
+
+            for field in numeric_int_fields:
+                if field in data and data[field] is not None:
+                    try:
+                        data[field] = int(float(str(data[field])))
+                    except (ValueError, TypeError):
+                        data[field] = None
+
+            for field in numeric_float_fields:
+                if field in data and data[field] is not None:
+                    try:
+                        data[field] = float(str(data[field]))
+                    except (ValueError, TypeError):
+                        data[field] = None
+
+            return data
+
         # Try to parse as-is first
         try:
             result = json.loads(response_text)
             if isinstance(result, dict):
-                return cast("dict[str, Any]", result)
+                return coerce_numeric_fields(cast("dict[str, Any]", result))
         except json.JSONDecodeError:
             pass
 
@@ -291,21 +319,71 @@ class QAEvaluator:
             try:
                 result = json.loads(json_match.group(1))
                 if isinstance(result, dict):
-                    return cast("dict[str, Any]", result)
+                    return coerce_numeric_fields(cast("dict[str, Any]", result))
             except json.JSONDecodeError:
                 pass
 
-        # Try to find JSON object in response
-        json_match = re.search(r"\{[\s\S]*\}", response_text)
+        # Try to find JSON object in response (non-greedy to get first complete object)
+        json_match = re.search(r"\{[\s\S]*?\}", response_text)
         if json_match:
-            try:
-                result = json.loads(json_match.group(0))
-                if isinstance(result, dict):
-                    return cast("dict[str, Any]", result)
-            except json.JSONDecodeError:
-                pass
+            # Try progressively larger matches until we get valid JSON
+            start_idx = json_match.start()
+            for end_idx in range(json_match.end(), len(response_text) + 1):
+                candidate = response_text[start_idx:end_idx]
+                if candidate.count("{") == candidate.count("}"):
+                    try:
+                        result = json.loads(candidate)
+                        if isinstance(result, dict):
+                            return coerce_numeric_fields(cast("dict[str, Any]", result))
+                    except json.JSONDecodeError:
+                        continue
 
         return None
+
+    async def _send_failure_alerts(self, evaluation: CallEvaluation) -> None:
+        """Send failure alerts when an evaluation fails.
+
+        Args:
+            evaluation: The failed CallEvaluation
+        """
+        from app.services.qa.alerts import create_alert, send_failure_alert
+
+        log = self.logger.bind(
+            evaluation_id=str(evaluation.id),
+            call_id=str(evaluation.call_id),
+        )
+
+        try:
+            # Send webhook/Slack alerts
+            await send_failure_alert(self.db, evaluation)
+
+            # Create an alert record in the workspace
+            if evaluation.workspace_id:
+                severity = "high" if evaluation.overall_score < 50 else "medium"  # noqa: PLR2004
+                failure_reasons = evaluation.failure_reasons or []
+                message = f"Call evaluation failed with score {evaluation.overall_score}/100"
+                if failure_reasons:
+                    message += f": {', '.join(failure_reasons[:3])}"
+
+                await create_alert(
+                    db=self.db,
+                    alert_type="qa_failure",
+                    severity=severity,
+                    workspace_id=evaluation.workspace_id,
+                    agent_id=evaluation.agent_id,
+                    message=message,
+                    metadata={
+                        "evaluation_id": str(evaluation.id),
+                        "call_id": str(evaluation.call_id),
+                        "overall_score": evaluation.overall_score,
+                        "failure_reasons": failure_reasons,
+                    },
+                )
+
+            log.info("failure_alerts_sent")
+
+        except Exception:
+            log.exception("failed_to_send_failure_alerts")
 
 
 async def trigger_qa_evaluation(call_id: uuid.UUID) -> None:

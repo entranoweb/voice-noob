@@ -45,7 +45,7 @@ export function TestRunner({ onTestComplete }: TestRunnerProps) {
     onSuccess: (run) => {
       setCurrentRun(run);
       // Poll for completion
-      pollForCompletion(run.id);
+      void pollForCompletion(run.id);
     },
   });
 
@@ -61,13 +61,13 @@ export function TestRunner({ onTestComplete }: TestRunnerProps) {
         }
 
         // Continue polling
-        setTimeout(checkStatus, 2000);
+        setTimeout(() => void checkStatus(), 2000);
       } catch {
         // Polling error, stop
       }
     };
 
-    checkStatus();
+    await checkStatus();
   };
 
   const handleScenarioToggle = (scenarioId: string) => {
@@ -100,10 +100,8 @@ export function TestRunner({ onTestComplete }: TestRunnerProps) {
   // Group scenarios by category
   const scenariosByCategory = scenarios.reduce(
     (acc, scenario) => {
-      const category = scenario.category || "other";
-      if (!acc[category]) {
-        acc[category] = [];
-      }
+      const category = scenario.category ?? "other";
+      acc[category] ??= [];
       acc[category].push(scenario);
       return acc;
     },
@@ -196,7 +194,7 @@ export function TestRunner({ onTestComplete }: TestRunnerProps) {
         </Button>
 
         {/* Results */}
-        {currentRun && currentRun.status === "completed" && (
+        {currentRun?.status === "completed" && (
           <div className="border rounded-md p-3 space-y-2">
             <div className="flex items-center justify-between">
               <span className="text-sm font-medium">Test Results</span>

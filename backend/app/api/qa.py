@@ -18,7 +18,40 @@ from app.core.config import settings
 from app.db.session import get_db
 from app.models.call_evaluation import CallEvaluation
 from app.models.call_record import CallRecord
+from app.models.workspace import Workspace
 from app.services.qa.evaluator import QAEvaluator
+
+
+async def _verify_workspace_ownership(
+    db: AsyncSession,
+    workspace_id: uuid.UUID,
+    user_id: int,
+) -> Workspace:
+    """Verify that a workspace belongs to the current user.
+
+    Args:
+        db: Database session
+        workspace_id: Workspace ID to verify
+        user_id: User ID to check ownership against
+
+    Returns:
+        The workspace if ownership verified
+
+    Raises:
+        HTTPException: If workspace not found or not owned by user
+    """
+    result = await db.execute(
+        select(Workspace).where(Workspace.id == workspace_id)
+    )
+    workspace = result.scalar_one_or_none()
+
+    if not workspace:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+
+    if workspace.user_id != user_id:
+        raise HTTPException(status_code=403, detail="Not authorized to access this workspace")
+
+    return workspace
 
 router = APIRouter(prefix="/api/v1/qa", tags=["qa"])
 logger = structlog.get_logger()
@@ -593,7 +626,7 @@ async def get_dashboard_metrics_endpoint(
         current_user: Authenticated user
         db: Database session
         agent_id: Optional agent ID filter
-        workspace_id: Optional workspace ID filter
+        workspace_id: Optional workspace ID filter (must belong to current user)
         days: Number of days to include (1-90)
     """
     from app.services.qa.dashboard import get_dashboard_metrics
@@ -602,7 +635,11 @@ async def get_dashboard_metrics_endpoint(
     log.info("getting_dashboard_metrics", days=days)
 
     agent_uuid = _parse_uuid(agent_id, "agent_id") if agent_id else None
-    workspace_uuid = _parse_uuid(workspace_id, "workspace_id") if workspace_id else None
+    workspace_uuid = None
+    if workspace_id:
+        workspace_uuid = _parse_uuid(workspace_id, "workspace_id")
+        # Verify user owns this workspace
+        await _verify_workspace_ownership(db, workspace_uuid, current_user.id)
 
     metrics = await get_dashboard_metrics(
         db=db,
@@ -629,7 +666,7 @@ async def get_dashboard_trends(
         current_user: Authenticated user
         db: Database session
         agent_id: Optional agent ID filter
-        workspace_id: Optional workspace ID filter
+        workspace_id: Optional workspace ID filter (must belong to current user)
         metric: Metric to trend (overall_score, pass_rate, intent_completion, etc.)
         days: Number of days to include (1-90)
     """
@@ -639,7 +676,11 @@ async def get_dashboard_trends(
     log.info("getting_dashboard_trends", metric=metric, days=days)
 
     agent_uuid = _parse_uuid(agent_id, "agent_id") if agent_id else None
-    workspace_uuid = _parse_uuid(workspace_id, "workspace_id") if workspace_id else None
+    workspace_uuid = None
+    if workspace_id:
+        workspace_uuid = _parse_uuid(workspace_id, "workspace_id")
+        # Verify user owns this workspace
+        await _verify_workspace_ownership(db, workspace_uuid, current_user.id)
 
     trends = await get_trends(
         db=db,
@@ -667,7 +708,7 @@ async def get_dashboard_failure_reasons(
         current_user: Authenticated user
         db: Database session
         agent_id: Optional agent ID filter
-        workspace_id: Optional workspace ID filter
+        workspace_id: Optional workspace ID filter (must belong to current user)
         days: Number of days to include (1-90)
         limit: Maximum number of results (1-50)
     """
@@ -677,7 +718,11 @@ async def get_dashboard_failure_reasons(
     log.info("getting_failure_reasons", days=days, limit=limit)
 
     agent_uuid = _parse_uuid(agent_id, "agent_id") if agent_id else None
-    workspace_uuid = _parse_uuid(workspace_id, "workspace_id") if workspace_id else None
+    workspace_uuid = None
+    if workspace_id:
+        workspace_uuid = _parse_uuid(workspace_id, "workspace_id")
+        # Verify user owns this workspace
+        await _verify_workspace_ownership(db, workspace_uuid, current_user.id)
 
     reasons = await get_top_failure_reasons(
         db=db,
@@ -700,7 +745,7 @@ async def get_dashboard_agent_comparison(
     """Compare agents within a workspace.
 
     Args:
-        workspace_id: Workspace ID to compare agents in
+        workspace_id: Workspace ID to compare agents in (must belong to current user)
         current_user: Authenticated user
         db: Database session
         days: Number of days to include (1-90)
@@ -711,6 +756,8 @@ async def get_dashboard_agent_comparison(
     log.info("getting_agent_comparison", days=days)
 
     workspace_uuid = _parse_uuid(workspace_id, "workspace_id")
+    # Verify user owns this workspace
+    await _verify_workspace_ownership(db, workspace_uuid, current_user.id)
 
     agents = await get_agent_comparison(
         db=db,
@@ -762,7 +809,7 @@ async def get_qa_alerts(
     """Get QA alerts for a workspace.
 
     Args:
-        workspace_id: Workspace ID
+        workspace_id: Workspace ID (must belong to current user)
         current_user: Authenticated user
         db: Database session
         acknowledged: Filter by acknowledged status (None = all)
@@ -774,6 +821,8 @@ async def get_qa_alerts(
     log.info("getting_qa_alerts")
 
     workspace_uuid = _parse_uuid(workspace_id, "workspace_id")
+    # Verify user owns this workspace
+    await _verify_workspace_ownership(db, workspace_uuid, current_user.id)
 
     alerts = await get_alerts(
         db=db,
@@ -796,7 +845,7 @@ async def acknowledge_qa_alert(
 
     Args:
         alert_id: Alert ID to acknowledge
-        workspace_id: Workspace ID
+        workspace_id: Workspace ID (must belong to current user)
         current_user: Authenticated user
         db: Database session
     """
@@ -806,6 +855,8 @@ async def acknowledge_qa_alert(
     log.info("acknowledging_alert")
 
     workspace_uuid = _parse_uuid(workspace_id, "workspace_id")
+    # Verify user owns this workspace
+    await _verify_workspace_ownership(db, workspace_uuid, current_user.id)
 
     alert = await acknowledge_alert(
         db=db,

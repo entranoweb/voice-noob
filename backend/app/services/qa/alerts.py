@@ -234,6 +234,7 @@ async def check_score_drop_alert(
     # Recent week average
     recent_result = await db.execute(
         select(func.avg(CallEvaluation.overall_score)).where(
+            CallEvaluation.workspace_id == workspace_id,
             CallEvaluation.agent_id == agent_id,
             CallEvaluation.created_at >= week_ago,
         )
@@ -243,6 +244,7 @@ async def check_score_drop_alert(
     # Previous week average
     prev_result = await db.execute(
         select(func.avg(CallEvaluation.overall_score)).where(
+            CallEvaluation.workspace_id == workspace_id,
             CallEvaluation.agent_id == agent_id,
             CallEvaluation.created_at >= two_weeks_ago,
             CallEvaluation.created_at < week_ago,
@@ -293,6 +295,7 @@ async def check_failure_spike_alert(
 
     total_result = await db.execute(
         select(func.count(CallEvaluation.id)).where(
+            CallEvaluation.workspace_id == workspace_id,
             CallEvaluation.agent_id == agent_id,
             CallEvaluation.created_at >= day_ago,
         )
@@ -304,6 +307,7 @@ async def check_failure_spike_alert(
 
     failed_result = await db.execute(
         select(func.count(CallEvaluation.id)).where(
+            CallEvaluation.workspace_id == workspace_id,
             CallEvaluation.agent_id == agent_id,
             CallEvaluation.created_at >= day_ago,
             CallEvaluation.passed == False,  # noqa: E712

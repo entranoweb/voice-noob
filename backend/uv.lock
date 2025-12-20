@@ -3259,6 +3259,7 @@ dev = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "aiosqlite" },
     { name = "fakeredis" },
     { name = "hypothesis" },
     { name = "mypy" },
@@ -3321,6 +3322,7 @@ provides-extras = ["dev"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "aiosqlite", specifier = ">=0.21.0" },
     { name = "fakeredis", specifier = ">=2.32.1" },
     { name = "hypothesis", specifier = ">=6.148.3" },
     { name = "mypy", specifier = ">=1.18.2" },

@@ -95,7 +95,7 @@ export const handlers = [
   http.post(`${API_URL}/api/v1/qa/evaluate`, () => {
     return HttpResponse.json({
       message: "Evaluation completed successfully",
-      evaluation_id: mockEvaluations[0].id,
+      evaluation_id: mockEvaluations[0]?.id ?? "eval-1",
       queued: false,
     });
   }),

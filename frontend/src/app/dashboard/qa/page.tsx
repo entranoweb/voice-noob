@@ -130,7 +130,7 @@ export default function QADashboardPage() {
             </SelectContent>
           </Select>
           <Select
-            value={agentId || "all"}
+            value={agentId ?? "all"}
             onValueChange={(v) => setAgentId(v === "all" ? undefined : v)}
           >
             <SelectTrigger className="w-[180px]">

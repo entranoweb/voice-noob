@@ -122,7 +122,7 @@ export default function PhoneNumbersPage() {
     return defaultWs?.id ?? workspaces[0]?.id ?? null;
   };
 
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
     setIsLoading(true);
     try {
       // First load workspaces and agents
@@ -232,15 +232,6 @@ export default function PhoneNumbersPage() {
       return;
     }
     
-    const workspaceId = selectedWorkspaceId !== "all" 
-      ? selectedWorkspaceId 
-      : workspaces[0]?.id;
-      
-    if (!workspaceId) {
-      toast.error("Please select a workspace first");
-      return;
-    }
-
     const workspaceId = getActiveWorkspaceId();
     if (!workspaceId) {
       toast.error("No workspace available. Please create a workspace first.");
@@ -282,15 +273,6 @@ export default function PhoneNumbersPage() {
       return;
     }
     
-    const workspaceId = selectedWorkspaceId !== "all" 
-      ? selectedWorkspaceId 
-      : workspaces[0]?.id;
-      
-    if (!workspaceId) {
-      toast.error("Please select a workspace first");
-      return;
-    }
-
     const workspaceId = getActiveWorkspaceId();
     if (!workspaceId) {
       toast.error("No workspace available. Please create a workspace first.");
@@ -358,10 +340,6 @@ export default function PhoneNumbersPage() {
   const confirmReleaseNumber = async () => {
     if (!numberToRelease) return;
     
-    const workspaceId = selectedWorkspaceId !== "all" 
-      ? selectedWorkspaceId 
-      : workspaces[0]?.id;
-
     const workspaceId = getActiveWorkspaceId();
     if (!workspaceId) {
       toast.error("No workspace available.");
