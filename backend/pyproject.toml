@@ -32,6 +32,7 @@ dependencies = [
     "deepgram-sdk>=3.8.3",
     "elevenlabs>=1.11.0",
     "openai>=1.55.3",
+    "anthropic>=0.40.0",  # QA Testing Framework - Claude API for call evaluation
     # Telephony
     "telnyx>=2.1.3",
     "twilio>=9.3.7",
@@ -194,6 +195,7 @@ module = [
     "elevenlabs.*",
     "telnyx.*",
     "twilio.*",
+    "anthropic.*",
 ]
 ignore_missing_imports = true
 

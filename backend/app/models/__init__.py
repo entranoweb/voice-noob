@@ -2,6 +2,7 @@
 
 from app.models.agent import Agent
 from app.models.appointment import Appointment
+from app.models.call_evaluation import CallEvaluation
 from app.models.call_interaction import CallInteraction
 from app.models.call_record import CallRecord
 from app.models.campaign import Campaign, CampaignContact
@@ -16,6 +17,7 @@ __all__ = [
     "Agent",
     "AgentWorkspace",
     "Appointment",
+    "CallEvaluation",
     "CallInteraction",
     "CallRecord",
     "Campaign",
