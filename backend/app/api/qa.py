@@ -8,13 +8,14 @@ from datetime import datetime
 from typing import Any
 
 import structlog
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
-from pydantic import BaseModel
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
+from pydantic import BaseModel, Field
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import CurrentUser, user_id_to_uuid
 from app.core.config import settings
+from app.core.limiter import limiter
 from app.db.session import get_db
 from app.models.call_evaluation import CallEvaluation
 from app.models.call_record import CallRecord
@@ -40,9 +41,7 @@ async def _verify_workspace_ownership(
     Raises:
         HTTPException: If workspace not found or not owned by user
     """
-    result = await db.execute(
-        select(Workspace).where(Workspace.id == workspace_id)
-    )
+    result = await db.execute(select(Workspace).where(Workspace.id == workspace_id))
     workspace = result.scalar_one_or_none()
 
     if not workspace:
@@ -52,6 +51,7 @@ async def _verify_workspace_ownership(
         raise HTTPException(status_code=403, detail="Not authorized to access this workspace")
 
     return workspace
+
 
 router = APIRouter(prefix="/api/v1/qa", tags=["qa"])
 logger = structlog.get_logger()
@@ -156,6 +156,21 @@ class EvaluateCallResponse(BaseModel):
     queued: bool = False
 
 
+class BatchEvaluateRequest(BaseModel):
+    """Batch evaluation request."""
+
+    call_ids: list[str]
+    max_concurrent: int = Field(default=5, ge=1, le=10)
+
+
+class BatchEvaluateResponse(BaseModel):
+    """Batch evaluation response."""
+
+    queued: int
+    message: str
+    task_id: str | None = None
+
+
 class QAStatusResponse(BaseModel):
     """QA system status response."""
 
@@ -166,13 +181,32 @@ class QAStatusResponse(BaseModel):
     api_key_configured: bool
 
 
+class CircuitBreakerStatus(BaseModel):
+    """Circuit breaker status."""
+
+    state: str
+    fail_count: int
+    fail_max: int
+
+
+class QAHealthResponse(BaseModel):
+    """QA service health response."""
+
+    status: str  # "healthy", "degraded", "unavailable"
+    qa_enabled: bool
+    api_key_configured: bool
+    circuit_breaker: CircuitBreakerStatus
+
+
 # =============================================================================
 # QA Status Endpoint
 # =============================================================================
 
 
 @router.get("/status", response_model=QAStatusResponse)
+@limiter.limit("30/minute")
 async def get_qa_status(
+    http_request: Request,
     current_user: CurrentUser,
 ) -> QAStatusResponse:
     """Get QA system status and configuration.
@@ -188,13 +222,48 @@ async def get_qa_status(
     )
 
 
+@router.get("/health", response_model=QAHealthResponse)
+async def get_qa_health() -> QAHealthResponse:
+    """Check QA service health including circuit breaker state.
+
+    Returns service health status and circuit breaker information.
+    Does not require authentication for monitoring/health checks.
+    """
+    from app.services.qa.resilience import get_circuit_state
+
+    circuit = get_circuit_state()
+
+    # Determine overall health status
+    if not settings.QA_ENABLED:
+        status = "unavailable"
+    elif circuit["state"] == "open":
+        status = "degraded"
+    elif not settings.ANTHROPIC_API_KEY:
+        status = "unavailable"
+    else:
+        status = "healthy"
+
+    return QAHealthResponse(
+        status=status,
+        qa_enabled=settings.QA_ENABLED,
+        api_key_configured=bool(settings.ANTHROPIC_API_KEY),
+        circuit_breaker=CircuitBreakerStatus(
+            state=circuit["state"],
+            fail_count=circuit["fail_count"],
+            fail_max=circuit["fail_max"],
+        ),
+    )
+
+
 # =============================================================================
 # Evaluation Endpoints
 # =============================================================================
 
 
 @router.get("/evaluations", response_model=CallEvaluationListResponse)
+@limiter.limit("30/minute")
 async def list_evaluations(
+    http_request: Request,
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
     page: int = Query(default=1, ge=1),
@@ -289,8 +358,10 @@ async def list_evaluations(
 
 
 @router.get("/evaluations/{evaluation_id}", response_model=CallEvaluationResponse)
+@limiter.limit("30/minute")
 async def get_evaluation(
     evaluation_id: str,
+    http_request: Request,
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> CallEvaluationResponse:
@@ -350,8 +421,10 @@ async def get_evaluation(
 
 
 @router.get("/calls/{call_id}/evaluation", response_model=CallEvaluationResponse)
+@limiter.limit("30/minute")
 async def get_call_evaluation(
     call_id: str,
+    http_request: Request,
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> CallEvaluationResponse:
@@ -416,8 +489,10 @@ async def get_call_evaluation(
 
 
 @router.post("/evaluate", response_model=EvaluateCallResponse)
+@limiter.limit("10/minute")
 async def evaluate_call(
     request: EvaluateCallRequest,
+    http_request: Request,
     background_tasks: BackgroundTasks,
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
@@ -476,13 +551,110 @@ async def evaluate_call(
     raise HTTPException(status_code=500, detail="Evaluation failed")
 
 
+async def _batch_evaluate_background(
+    call_ids: list[uuid.UUID],
+    max_concurrent: int,
+) -> None:
+    """Background task to run batch evaluations.
+
+    Creates its own database session to avoid issues with session lifecycle.
+    """
+    from app.db.session import AsyncSessionLocal
+
+    log = logger.bind(batch_size=len(call_ids), component="batch_evaluate_background")
+    log.info("starting_background_batch_evaluation")
+
+    try:
+        async with AsyncSessionLocal() as db:
+            evaluator = QAEvaluator(db)
+            results = await evaluator.batch_evaluate_calls(call_ids, max_concurrent)
+            successful = sum(1 for v in results.values() if v is not None)
+            log.info(
+                "background_batch_evaluation_completed",
+                total=len(call_ids),
+                successful=successful,
+            )
+    except Exception:
+        log.exception("background_batch_evaluation_failed")
+
+
+@router.post("/evaluate/batch", response_model=BatchEvaluateResponse)
+@limiter.limit("5/minute")
+async def batch_evaluate_calls(
+    request: BatchEvaluateRequest,
+    http_request: Request,
+    background_tasks: BackgroundTasks,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+) -> BatchEvaluateResponse:
+    """Queue batch evaluation of multiple calls.
+
+    Args:
+        request: Batch evaluation request with call_ids
+        background_tasks: FastAPI background tasks
+        current_user: Authenticated user
+        db: Database session
+    """
+    log = logger.bind(user_id=current_user.id, batch_size=len(request.call_ids))
+    log.info("batch_evaluation_requested")
+
+    if not settings.QA_ENABLED:
+        raise HTTPException(status_code=400, detail="QA evaluation is disabled")
+
+    if not settings.ANTHROPIC_API_KEY:
+        raise HTTPException(status_code=400, detail="Anthropic API key not configured")
+
+    if not request.call_ids:
+        raise HTTPException(status_code=400, detail="No call IDs provided")
+
+    if len(request.call_ids) > 100:
+        raise HTTPException(status_code=400, detail="Maximum 100 calls per batch")
+
+    user_uuid = user_id_to_uuid(current_user.id)
+
+    # Parse and validate all call IDs
+    call_uuids: list[uuid.UUID] = []
+    for call_id in request.call_ids:
+        call_uuids.append(_parse_uuid(call_id, "call_id"))
+
+    # Verify all calls belong to the current user
+    result = await db.execute(
+        select(CallRecord.id).where(
+            CallRecord.id.in_(call_uuids),
+            CallRecord.user_id == user_uuid,
+        )
+    )
+    owned_call_ids = {row[0] for row in result.all()}
+
+    # Filter to only owned calls
+    valid_call_ids = [cid for cid in call_uuids if cid in owned_call_ids]
+
+    if not valid_call_ids:
+        raise HTTPException(status_code=404, detail="No valid calls found for evaluation")
+
+    # Queue background task
+    background_tasks.add_task(
+        _batch_evaluate_background,
+        call_ids=valid_call_ids,
+        max_concurrent=request.max_concurrent,
+    )
+
+    return BatchEvaluateResponse(
+        queued=len(valid_call_ids),
+        message=f"Batch evaluation queued for {len(valid_call_ids)} calls",
+        task_id=None,  # Could add task tracking in future
+    )
+
+
 # =============================================================================
 # Metrics Endpoints
 # =============================================================================
 
 
 @router.get("/metrics", response_model=QAMetricsResponse)
+@limiter.limit("30/minute")
 async def get_qa_metrics(
+    http_request: Request,
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
     agent_id: str | None = Query(default=None, description="Filter by agent ID"),
@@ -613,7 +785,9 @@ class AgentComparisonResponse(BaseModel):
 
 
 @router.get("/dashboard/metrics", response_model=DashboardMetricsResponse)
+@limiter.limit("30/minute")
 async def get_dashboard_metrics_endpoint(
+    http_request: Request,
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
     agent_id: str | None = Query(default=None, description="Filter by agent ID"),
@@ -652,7 +826,9 @@ async def get_dashboard_metrics_endpoint(
 
 
 @router.get("/dashboard/trends", response_model=TrendDataResponse)
+@limiter.limit("30/minute")
 async def get_dashboard_trends(
+    http_request: Request,
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
     agent_id: str | None = Query(default=None, description="Filter by agent ID"),
@@ -694,7 +870,9 @@ async def get_dashboard_trends(
 
 
 @router.get("/dashboard/failure-reasons", response_model=list[FailureReasonResponse])
+@limiter.limit("30/minute")
 async def get_dashboard_failure_reasons(
+    http_request: Request,
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
     agent_id: str | None = Query(default=None, description="Filter by agent ID"),
@@ -736,8 +914,10 @@ async def get_dashboard_failure_reasons(
 
 
 @router.get("/dashboard/agent-comparison", response_model=list[AgentComparisonResponse])
+@limiter.limit("30/minute")
 async def get_dashboard_agent_comparison(
     workspace_id: str,
+    http_request: Request,
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
     days: int = Query(default=7, ge=1, le=90, description="Number of days to include"),
@@ -792,15 +972,16 @@ class AcknowledgeAlertRequest(BaseModel):
     """Request to acknowledge an alert."""
 
 
-
 # =============================================================================
 # Alert Endpoints
 # =============================================================================
 
 
 @router.get("/alerts", response_model=list[AlertResponse])
+@limiter.limit("30/minute")
 async def get_qa_alerts(
     workspace_id: str,
+    http_request: Request,
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
     acknowledged: bool | None = Query(default=None, description="Filter by acknowledged status"),
@@ -835,9 +1016,11 @@ async def get_qa_alerts(
 
 
 @router.post("/alerts/{alert_id}/acknowledge", response_model=AlertResponse)
+@limiter.limit("30/minute")
 async def acknowledge_qa_alert(
     alert_id: str,
     workspace_id: str,
+    http_request: Request,
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> AlertResponse:
