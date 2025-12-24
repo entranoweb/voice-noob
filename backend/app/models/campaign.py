@@ -6,7 +6,7 @@ from enum import Enum
 from typing import TYPE_CHECKING
 
 from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, String, Text, Time, Uuid
-from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy.dialects.postgresql import JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -136,9 +136,9 @@ class Campaign(Base):
         Time, nullable=True, comment="End of daily calling window (e.g., 17:00)"
     )
     calling_days: Mapped[list[int] | None] = mapped_column(
-        ARRAY(Integer),
+        JSON,
         nullable=True,
-        comment="Days of week to call (0=Mon, 6=Sun). Null means all days.",
+        comment="Days of week to call (0=Mon, 6=Sun). Null means all days. (stored as JSON array)",
     )
     timezone: Mapped[str | None] = mapped_column(
         String(50), nullable=True, default="UTC", comment="Timezone for calling hours"

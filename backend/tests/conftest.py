@@ -416,7 +416,7 @@ async def create_test_workspace(test_session: AsyncSession) -> Any:
         workspace_data = {
             "id": uuid.uuid4(),
             "name": "Test Workspace",
-            "owner_id": user_id,
+            "user_id": user_id,  # Fixed: should be user_id not owner_id
             "settings": {"qa_enabled": True, "qa_auto_evaluate": True},
         }
         workspace_data.update(kwargs)

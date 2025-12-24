@@ -255,11 +255,11 @@ class TestMetricsBuckets:
 
     def test_duration_histogram_buckets(self) -> None:
         """Test that duration histogram has expected buckets."""
-        # Check the configured buckets
-        expected_buckets = (5, 15, 30, 60, 120, 300, 600, 1800)
+        # Check the configured buckets (as floats since prometheus stores them as floats)
+        expected_buckets = [5.0, 15.0, 30.0, 60.0, 120.0, 300.0, 600.0, 1800.0, float("inf")]
 
-        # Verify buckets are configured (checking the histogram description)
-        assert CALLS_DURATION._upper_bounds == (*expected_buckets, float("inf"))
+        # Verify buckets are configured (prometheus stores as list)
+        assert list(CALLS_DURATION._upper_bounds) == expected_buckets
 
 
 class TestMetricsRegistry:

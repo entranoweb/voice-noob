@@ -43,9 +43,7 @@ async def get_dashboard_metrics(
         filters.append(CallEvaluation.agent_id == agent_id)
 
     # Total evaluations
-    total_result = await db.execute(
-        select(func.count(CallEvaluation.id)).where(*filters)
-    )
+    total_result = await db.execute(select(func.count(CallEvaluation.id)).where(*filters))
     total_evaluations = total_result.scalar() or 0
 
     if total_evaluations == 0:
@@ -276,9 +274,7 @@ async def get_top_failure_reasons(
         filters.append(CallEvaluation.agent_id == agent_id)
 
     # Get failed evaluations with failure reasons
-    result = await db.execute(
-        select(CallEvaluation.failure_reasons).where(*filters)
-    )
+    result = await db.execute(select(CallEvaluation.failure_reasons).where(*filters))
     rows = result.all()
 
     # Aggregate failure reasons
@@ -336,11 +332,13 @@ async def get_agent_comparison(
     agents = []
     for row in rows:
         pass_rate = (row.passed or 0) / row.total if row.total > 0 else 0
-        agents.append({
-            "agent_id": str(row.agent_id),
-            "total_evaluations": row.total,
-            "average_score": round(row.avg_score or 0, 2),
-            "pass_rate": round(pass_rate, 4),
-        })
+        agents.append(
+            {
+                "agent_id": str(row.agent_id),
+                "total_evaluations": row.total,
+                "average_score": round(row.avg_score or 0, 2),
+                "pass_rate": round(pass_rate, 4),
+            }
+        )
 
     return agents

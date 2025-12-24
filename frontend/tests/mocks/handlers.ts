@@ -117,4 +117,12 @@ export const handlers = [
   http.get(`${API_URL}/api/v1/qa/alerts`, () => {
     return HttpResponse.json([]);
   }),
+
+  // Agents
+  http.get(`${API_URL}/api/v1/agents`, () => {
+    return HttpResponse.json([
+      { id: "agent-1", name: "Test Agent 1" },
+      { id: "agent-2", name: "Test Agent 2" },
+    ]);
+  }),
 ];

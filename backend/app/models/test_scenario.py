@@ -9,7 +9,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text
-from sqlalchemy.dialects.postgresql import ARRAY, JSON
+from sqlalchemy.dialects.postgresql import JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import Uuid
 
@@ -33,6 +33,8 @@ class ScenarioCategory(str, Enum):
     EDGE_CASE = "edge_case"
     TRANSFER = "transfer"
     INFORMATION = "information"
+    HAPPY_PATH = "happy_path"
+    STRESS = "stress"
 
 
 class ScenarioDifficulty(str, Enum):
@@ -128,7 +130,7 @@ class TestScenario(Base):
         comment="Whether this is a built-in scenario",
     )
     tags: Mapped[list[str] | None] = mapped_column(
-        ARRAY(String(50)), nullable=True, comment="Tags for filtering scenarios"
+        JSON, nullable=True, comment="Tags for filtering scenarios (stored as JSON array)"
     )
 
     # Timestamps

@@ -8,11 +8,16 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+import anthropic
 import structlog
 
 from app.core.config import settings
 from app.models.agent import Agent
 from app.models.test_scenario import TestScenario
+from app.services.qa.resilience import (
+    call_claude_with_resilience,
+    get_anthropic_client,
+)
 
 logger = structlog.get_logger()
 
@@ -117,21 +122,18 @@ class AITestCaller:
         )
         self._client: Any = None
 
-    async def _get_client(self) -> Any:
-        """Get or create Anthropic client."""
-        if self._client is None:
-            try:
-                import anthropic
+    async def _get_client(self) -> anthropic.AsyncAnthropic:
+        """Get or create Anthropic client with timeout configured.
 
-                api_key = settings.ANTHROPIC_API_KEY
-                if not api_key:
-                    msg = "ANTHROPIC_API_KEY not configured"
-                    raise ValueError(msg)
-                self._client = anthropic.AsyncAnthropic(api_key=api_key)
-            except ImportError as e:
-                msg = "anthropic package not installed"
-                raise ImportError(msg) from e
-        return self._client
+        Returns:
+            Anthropic async client with resilience settings.
+
+        Raises:
+            ValueError: If ANTHROPIC_API_KEY not configured.
+        """
+        if self._client is None:
+            self._client = get_anthropic_client()
+        return self._client  # type: ignore[no-any-return]
 
     async def execute_scenario(self) -> TestResult:
         """Execute the full test scenario.
@@ -231,11 +233,12 @@ class AITestCaller:
             role = "user" if turn.speaker == "user" else "assistant"
             messages.append({"role": role, "content": turn.message})
 
-        response = await client.messages.create(
+        response = await call_claude_with_resilience(
+            client=client,
             model=settings.QA_EVALUATION_MODEL,
             max_tokens=500,
-            system=self.agent.system_prompt,
             messages=messages,
+            system=self.agent.system_prompt,
         )
 
         return str(response.content[0].text)
@@ -270,7 +273,8 @@ class AITestCaller:
             conversation_history=history,
         )
 
-        response = await client.messages.create(
+        response = await call_claude_with_resilience(
+            client=client,
             model=settings.QA_EVALUATION_MODEL,
             max_tokens=200,
             messages=[{"role": "user", "content": prompt}],
@@ -303,7 +307,8 @@ class AITestCaller:
             turn_count=self.turn_count,
         )
 
-        response = await client.messages.create(
+        response = await call_claude_with_resilience(
+            client=client,
             model=settings.QA_EVALUATION_MODEL,
             max_tokens=500,
             messages=[{"role": "user", "content": prompt}],

@@ -8,6 +8,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
+import anthropic
 import structlog
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,6 +17,10 @@ from app.core.config import settings
 from app.db.session import AsyncSessionLocal
 from app.models.agent import Agent
 from app.models.test_scenario import TestRun, TestRunStatus, TestScenario
+from app.services.qa.resilience import (
+    call_claude_with_resilience,
+    get_anthropic_client,
+)
 from app.services.qa.scenarios import get_built_in_scenarios
 
 logger = structlog.get_logger()
@@ -81,25 +86,18 @@ class TestRunner:
         self.logger = logger.bind(component="test_runner")
         self._client: Any = None
 
-    async def _get_client(self) -> Any:
-        """Get or create Anthropic client.
+    async def _get_client(self) -> anthropic.AsyncAnthropic:
+        """Get or create Anthropic client with timeout configured.
 
         Returns:
-            Anthropic async client
+            Anthropic async client with resilience settings.
+
+        Raises:
+            ValueError: If ANTHROPIC_API_KEY not configured.
         """
         if self._client is None:
-            try:
-                import anthropic
-
-                api_key = settings.ANTHROPIC_API_KEY
-                if not api_key:
-                    msg = "ANTHROPIC_API_KEY not configured"
-                    raise ValueError(msg)
-                self._client = anthropic.AsyncAnthropic(api_key=api_key)
-            except ImportError as e:
-                msg = "anthropic package not installed"
-                raise ImportError(msg) from e
-        return self._client
+            self._client = get_anthropic_client()
+        return self._client  # type: ignore[no-any-return]
 
     async def seed_built_in_scenarios(self) -> int:
         """Seed built-in test scenarios to database.
@@ -288,12 +286,13 @@ class TestRunner:
                     }
                 )
 
-                # Get agent response
-                response = await client.messages.create(
+                # Get agent response with resilience (retry + circuit breaker)
+                response = await call_claude_with_resilience(
+                    client=client,
                     model=settings.QA_EVALUATION_MODEL,
                     max_tokens=500,
-                    system=agent.system_prompt,
                     messages=messages,
+                    system=agent.system_prompt,
                 )
 
                 agent_response = response.content[0].text
@@ -349,7 +348,8 @@ class TestRunner:
             conversation=conv_text,
         )
 
-        response = await client.messages.create(
+        response = await call_claude_with_resilience(
+            client=client,
             model=settings.QA_EVALUATION_MODEL,
             max_tokens=1000,
             messages=[{"role": "user", "content": prompt}],
