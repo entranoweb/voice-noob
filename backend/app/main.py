@@ -32,9 +32,11 @@ from app.api import (
     health,
     integrations,
     phone_numbers,
+    qa,
     realtime,
     telephony,
     telephony_ws,
+    testing,
     tools,
     workspaces,
 )
@@ -210,6 +212,8 @@ app.include_router(compliance.router)  # Compliance API (GDPR/CCPA)
 app.include_router(integrations.router)  # Integrations API (external tools)
 app.include_router(embed.router)  # Public embed API (unauthenticated)
 app.include_router(embed.ws_router)  # Public embed WebSocket
+app.include_router(qa.router)  # QA Testing Framework API
+app.include_router(testing.router)  # Pre-deployment Testing API
 
 
 @app.get("/")

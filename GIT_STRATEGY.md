@@ -1,0 +1,128 @@
+# Git Branch Strategy
+
+## Branch Overview
+
+| Branch | Purpose | Updates From |
+|--------|---------|--------------|
+| `main` | Upstream sync | KenKaiii/voice-noob (auto via GitHub Actions) |
+| `synthiqvoice` | Development & testing MVP | Auto-synced from `main` via GitHub Actions |
+| `voice-prod` | Production hardening | Manual merges from `synthiqvoice` |
+| `deploy` | Production deployment | Manual merges from `voice-prod` |
+| `backup/*` | Auto-created backups | Created before each sync attempt |
+
+## Branch Purpose Details
+
+- **synthiqvoice**: Testing infrastructure, MVP features, experimental work
+- **voice-prod**: Production hardening - stability, security, performance optimizations
+- **deploy**: What actually runs in production (Coolify deployment)
+
+## Remotes
+
+- **origin**: `https://github.com/entranoweb/voice-noob.git` (our fork)
+- **upstream**: `https://github.com/KenKaiii/voice-noob.git` (original repo)
+
+## Automated Sync Workflow
+
+### How It Works
+The GitHub Actions workflow (`sync-upstream.yml`) runs **daily at 00:00 UTC** and:
+
+1. **Syncs `main` branch**:
+   - Fetches from `upstream/main`
+   - Creates backup branch (`backup/main-YYYYMMDD-HHMMSS`)
+   - Attempts merge → pushes if clean, creates PR if conflicts
+
+2. **Syncs `synthiqvoice` branch** (if main was updated):
+   - Creates backup branch (`backup/synthiqvoice-YYYYMMDD-HHMMSS`)
+   - Merges `main` into `synthiqvoice`
+   - Pushes if clean, creates PR if conflicts
+
+### Flow Diagram
+```
+upstream/main
+      │
+      ▼ (daily auto-sync)
+    main ──────────────────► backup/main-*
+      │
+      ▼ (auto-sync after main updates)
+synthiqvoice ──────────────► backup/synthiqvoice-*
+      │  (testing MVP, experimental)
+      │
+      ▼ (manual merge when stable)
+  voice-prod
+      │  (production hardening)
+      │
+      ▼ (manual deploy when ready)
+    deploy
+      │  (Coolify production)
+```
+
+### Manual Trigger
+You can manually trigger the sync from GitHub Actions:
+- Go to Actions → "Sync from Upstream" → Run workflow
+- Options: sync dev branch (default: true), create backups (default: true)
+
+## Conflict Resolution
+
+When conflicts occur, the workflow creates a PR instead of force-merging:
+
+1. **Check the PR** - Lists conflicting files
+2. **Checkout locally**:
+   ```bash
+   git fetch origin
+   git checkout sync-main-to-dev-XXXXXX
+   ```
+3. **Resolve conflicts** - Keep our Azure OpenAI customizations
+4. **Push and merge the PR**
+
+### Restoring from Backup
+If something goes wrong:
+```bash
+# List backup branches
+git fetch origin
+git branch -r | grep backup/
+
+# Restore synthiqvoice from backup
+git checkout synthiqvoice
+git reset --hard origin/backup/synthiqvoice-YYYYMMDD-HHMMSS
+git push origin synthiqvoice --force
+```
+
+## Manual Operations
+
+### Promoting to Production Hardening
+When features are tested and stable in synthiqvoice:
+```bash
+git checkout voice-prod
+git merge synthiqvoice
+git push origin voice-prod
+```
+
+### Deploying to Production
+When voice-prod is hardened and ready:
+```bash
+git checkout deploy
+git merge voice-prod
+git push origin deploy
+# Coolify auto-deploys from deploy branch
+```
+
+### Force Sync Dev Branch (if needed)
+```bash
+git checkout synthiqvoice
+git fetch origin main
+git merge origin/main
+# Resolve conflicts if any
+git push origin synthiqvoice
+```
+
+## Custom Files (Watch for Conflicts)
+These files contain our customizations and may conflict with upstream:
+- `backend/app/models/user_settings.py`
+- `backend/app/api/settings.py`
+- `backend/app/services/gpt_realtime.py`
+- `frontend/src/app/dashboard/settings/page.tsx`
+- `frontend/src/lib/api/settings.ts`
+- `backend/migrations/versions/015_add_azure_openai_fields.py`
+
+## Security
+- Next.js patched to 15.5.9 (CVE fix for DoS + source-leak) - Dec 2024

@@ -1,5 +1,13 @@
 import { http, HttpResponse } from "msw";
-import { mockContacts, mockCRMStats } from "./data";
+import {
+  mockContacts,
+  mockCRMStats,
+  mockEvaluations,
+  mockDashboardMetrics,
+  mockQAStatus,
+  mockFailureReasons,
+  mockTrendData,
+} from "./data";
 
 const API_URL = "http://localhost:8000";
 
@@ -58,5 +66,55 @@ export const handlers = [
       { detail: "Not authenticated" },
       { status: 401 }
     );
+  }),
+
+  // QA Status
+  http.get(`${API_URL}/api/v1/qa/status`, () => {
+    return HttpResponse.json(mockQAStatus);
+  }),
+
+  // QA Evaluations
+  http.get(`${API_URL}/api/v1/qa/evaluations`, () => {
+    return HttpResponse.json({
+      evaluations: mockEvaluations,
+      total: mockEvaluations.length,
+      page: 1,
+      page_size: 20,
+      total_pages: 1,
+    });
+  }),
+
+  http.get(`${API_URL}/api/v1/qa/evaluations/:id`, ({ params }) => {
+    const evaluation = mockEvaluations.find((e) => e.id === params.id);
+    if (!evaluation) {
+      return HttpResponse.json({ detail: "Evaluation not found" }, { status: 404 });
+    }
+    return HttpResponse.json(evaluation);
+  }),
+
+  http.post(`${API_URL}/api/v1/qa/evaluate`, () => {
+    return HttpResponse.json({
+      message: "Evaluation completed successfully",
+      evaluation_id: mockEvaluations[0]?.id ?? "eval-1",
+      queued: false,
+    });
+  }),
+
+  // QA Dashboard
+  http.get(`${API_URL}/api/v1/qa/dashboard/metrics`, () => {
+    return HttpResponse.json(mockDashboardMetrics);
+  }),
+
+  http.get(`${API_URL}/api/v1/qa/dashboard/trends`, () => {
+    return HttpResponse.json(mockTrendData);
+  }),
+
+  http.get(`${API_URL}/api/v1/qa/dashboard/failure-reasons`, () => {
+    return HttpResponse.json(mockFailureReasons);
+  }),
+
+  // QA Alerts
+  http.get(`${API_URL}/api/v1/qa/alerts`, () => {
+    return HttpResponse.json([]);
   }),
 ];

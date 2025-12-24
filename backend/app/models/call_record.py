@@ -12,6 +12,7 @@ from app.db.base import Base
 
 if TYPE_CHECKING:
     from app.models.agent import Agent
+    from app.models.call_evaluation import CallEvaluation
     from app.models.contact import Contact
     from app.models.workspace import Workspace
 
@@ -142,6 +143,9 @@ class CallRecord(Base):
     agent: Mapped["Agent | None"] = relationship("Agent", lazy="selectin")
     contact: Mapped["Contact | None"] = relationship("Contact", lazy="selectin")
     workspace: Mapped["Workspace | None"] = relationship("Workspace", lazy="selectin")
+    evaluation: Mapped["CallEvaluation | None"] = relationship(
+        "CallEvaluation", back_populates="call_record", uselist=False, lazy="selectin"
+    )
 
     def __repr__(self) -> str:
         return (

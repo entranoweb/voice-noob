@@ -133,5 +133,18 @@ class Settings(BaseSettings):
     OTEL_SERVICE_NAME: str = "voicenoob-api"
     OTEL_EXPORTER_OTLP_ENDPOINT: str | None = None
 
+    # QA Testing Framework
+    # Feature flags for post-call evaluation and testing
+    QA_ENABLED: bool = False  # Master switch for QA features
+    QA_AUTO_EVALUATE: bool = True  # Auto-evaluate calls on completion
+    QA_EVALUATION_MODEL: str = "claude-sonnet-4-20250514"  # Claude model for evaluation
+    QA_DEFAULT_THRESHOLD: int = 70  # Pass/fail score threshold (0-100)
+    QA_MAX_CONCURRENT_EVALUATIONS: int = 5  # Max parallel evaluations
+    QA_ALERT_ON_FAILURE: bool = True  # Send alerts on failed evaluations
+    QA_ENABLE_LATENCY_TRACKING: bool = True  # Track response latency metrics
+    QA_ENABLE_TURN_ANALYSIS: bool = True  # Analyze individual conversation turns
+    QA_ENABLE_QUALITY_METRICS: bool = True  # Track coherence, relevance, etc.
+    ANTHROPIC_API_KEY: str | None = None  # Claude API key for QA evaluation
+
 
 settings = Settings()

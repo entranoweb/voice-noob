@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import structlog
-from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -30,6 +30,7 @@ from app.models.agent import Agent
 from app.models.call_record import CallDirection, CallRecord, CallStatus
 from app.models.campaign import Campaign, CampaignContact, CampaignContactStatus
 from app.models.workspace import AgentWorkspace
+from app.services.qa import trigger_qa_evaluation
 from app.services.telephony.telnyx_service import TelnyxService
 from app.services.telephony.twilio_service import TwilioService
 
@@ -821,6 +822,7 @@ async def twilio_voice_webhook(
 @webhook_router.post("/twilio/status")
 async def twilio_status_callback(
     request: Request,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     call_sid: str = Form(default="", alias="CallSid"),
     call_status: str = Form(default="", alias="CallStatus"),
@@ -877,6 +879,11 @@ async def twilio_status_callback(
                 duration_seconds=call_record.duration_seconds or 0,
                 db=db,
             )
+
+            # Trigger QA evaluation for completed calls
+            if call_record.status == CallStatus.COMPLETED.value:
+                background_tasks.add_task(trigger_qa_evaluation, call_record.id)
+                log.info("qa_evaluation_triggered", call_id=str(call_record.id))
 
         await db.commit()
         log.info("call_record_updated", record_id=str(call_record.id), status=call_status)
@@ -1027,6 +1034,7 @@ async def telnyx_answer_webhook(
 @webhook_router.post("/telnyx/status")
 async def telnyx_status_callback(
     request: Request,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, str]:
     """Handle Telnyx call status callbacks.
@@ -1097,6 +1105,11 @@ async def telnyx_status_callback(
                 duration_seconds=call_record.duration_seconds or 0,
                 db=db,
             )
+
+            # Trigger QA evaluation for completed calls
+            if call_record.status == CallStatus.COMPLETED.value:
+                background_tasks.add_task(trigger_qa_evaluation, call_record.id)
+                log.info("qa_evaluation_triggered", call_id=str(call_record.id))
 
         await db.commit()
         log.info("call_record_updated", record_id=str(call_record.id), event=event_type)
