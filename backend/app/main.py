@@ -49,6 +49,7 @@ from app.db.session import AsyncSessionLocal, engine
 from app.middleware.request_tracing import RequestTracingMiddleware
 from app.middleware.security import SecurityHeadersMiddleware
 from app.models.user import User
+from app.monitoring import get_metrics_router
 from app.services.campaign_worker import start_campaign_worker, stop_campaign_worker
 
 # Configure structured logging with async processors
@@ -214,6 +215,10 @@ app.include_router(embed.router)  # Public embed API (unauthenticated)
 app.include_router(embed.ws_router)  # Public embed WebSocket
 app.include_router(qa.router)  # QA Testing Framework API
 app.include_router(testing.router)  # Pre-deployment Testing API
+
+# Include Prometheus metrics router (feature-flagged)
+if settings.ENABLE_PROMETHEUS_METRICS:
+    app.include_router(get_metrics_router(), tags=["monitoring"])
 
 
 @app.get("/")

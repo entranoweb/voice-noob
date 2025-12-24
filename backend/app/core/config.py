@@ -146,5 +146,22 @@ class Settings(BaseSettings):
     QA_ENABLE_QUALITY_METRICS: bool = True  # Track coherence, relevance, etc.
     ANTHROPIC_API_KEY: str | None = None  # Claude API key for QA evaluation
 
+    # Anthropic API Resilience Settings
+    ANTHROPIC_TIMEOUT: float = 30.0  # Claude API request timeout (seconds)
+    ANTHROPIC_MAX_RETRIES: int = 3  # Number of retry attempts
+    ANTHROPIC_CIRCUIT_FAILURE_THRESHOLD: int = 5  # Failures before circuit opens
+    ANTHROPIC_CIRCUIT_RECOVERY_TIMEOUT: int = 60  # Seconds before circuit recovery
+
+    # Production Hardening Feature Flags
+    ENABLE_CALL_REGISTRY: bool = True  # Track active calls in Redis
+    ENABLE_PROMETHEUS_METRICS: bool = True  # Expose /metrics endpoint
+    ENABLE_CONNECTION_DRAINING: bool = True  # Graceful shutdown support
+    ENABLE_CALL_QUEUE: bool = False  # Sprint 2: Call queuing
+
+    # Production Hardening Settings
+    SHUTDOWN_DRAIN_TIMEOUT: int = 120  # Seconds to wait for calls to drain
+    CALL_REGISTRY_TTL: int = 1800  # 30 minutes TTL for call entries
+    MAX_CALL_QUEUE_SIZE: int = 1000  # Max queued calls (Sprint 2)
+
 
 settings = Settings()
