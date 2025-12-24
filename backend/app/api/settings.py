@@ -130,7 +130,7 @@ async def get_settings(
 
 
 @router.post("", status_code=status.HTTP_200_OK)
-async def update_settings(
+async def update_settings(  # noqa: PLR0912
     request: UpdateSettingsRequest,
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),

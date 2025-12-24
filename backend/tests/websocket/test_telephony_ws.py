@@ -34,7 +34,7 @@ async def test_user_with_agent(test_engine: Any) -> Any:
         # Create user
         user = User(
             email="wstest@example.com",
-            hashed_password="test_hash",
+            hashed_password="test_hash",  # noqa: S106
             full_name="WS Test User",
             is_active=True,
         )
