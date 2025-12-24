@@ -50,6 +50,7 @@ from app.middleware.request_tracing import RequestTracingMiddleware
 from app.middleware.security import SecurityHeadersMiddleware
 from app.models.user import User
 from app.monitoring import get_metrics_router
+from app.services.call_registry import set_shutting_down, wait_for_calls_to_drain
 from app.services.campaign_worker import start_campaign_worker, stop_campaign_worker
 
 # Configure structured logging with async processors
@@ -74,7 +75,7 @@ logger = structlog.get_logger()
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:  # noqa: PLR0915
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:  # noqa: PLR0912, PLR0915
     """Lifespan context manager for startup and shutdown events."""
     # Startup
     logger.info("Starting application", app_name=settings.APP_NAME)
@@ -140,6 +141,25 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:  # noqa: PLR0915
 
     # Shutdown
     logger.info("Shutting down application")
+
+    # Connection draining - wait for active calls to complete
+    if settings.ENABLE_CONNECTION_DRAINING:
+        try:
+            logger.info(
+                "connection_draining_started",
+                timeout=settings.SHUTDOWN_DRAIN_TIMEOUT,
+            )
+            await set_shutting_down(True)
+            drained = await wait_for_calls_to_drain(settings.SHUTDOWN_DRAIN_TIMEOUT)
+            if drained:
+                logger.info("connection_draining_complete")
+            else:
+                logger.warning(
+                    "connection_draining_timeout",
+                    timeout=settings.SHUTDOWN_DRAIN_TIMEOUT,
+                )
+        except Exception:
+            logger.exception("connection_draining_error")
 
     # Stop campaign worker
     try:

@@ -1,6 +1,5 @@
 """Tests for QA Evaluator service (Task 8.5.4)."""
 
-
 from app.services.qa.evaluator import QAEvaluator
 
 
@@ -42,7 +41,9 @@ class TestParseEvaluationResponse:
     def test_parse_json_with_surrounding_text(self) -> None:
         """Test parsing JSON with surrounding text."""
         evaluator = QAEvaluator(db=None)  # type: ignore[arg-type]
-        response = 'Here is the evaluation:\n{"overall_score": 80, "passed": true}\nThat is my assessment.'
+        response = (
+            'Here is the evaluation:\n{"overall_score": 80, "passed": true}\nThat is my assessment.'
+        )
 
         result = evaluator._parse_evaluation_response(response)
 

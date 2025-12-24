@@ -206,7 +206,7 @@ class QAHealthResponse(BaseModel):
 @router.get("/status", response_model=QAStatusResponse)
 @limiter.limit("30/minute")
 async def get_qa_status(
-    http_request: Request,
+    request: Request,
     current_user: CurrentUser,
 ) -> QAStatusResponse:
     """Get QA system status and configuration.
@@ -263,7 +263,7 @@ async def get_qa_health() -> QAHealthResponse:
 @router.get("/evaluations", response_model=CallEvaluationListResponse)
 @limiter.limit("30/minute")
 async def list_evaluations(
-    http_request: Request,
+    request: Request,
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
     page: int = Query(default=1, ge=1),
@@ -361,7 +361,7 @@ async def list_evaluations(
 @limiter.limit("30/minute")
 async def get_evaluation(
     evaluation_id: str,
-    http_request: Request,
+    request: Request,
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> CallEvaluationResponse:
@@ -424,7 +424,7 @@ async def get_evaluation(
 @limiter.limit("30/minute")
 async def get_call_evaluation(
     call_id: str,
-    http_request: Request,
+    request: Request,
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> CallEvaluationResponse:
@@ -491,8 +491,8 @@ async def get_call_evaluation(
 @router.post("/evaluate", response_model=EvaluateCallResponse)
 @limiter.limit("10/minute")
 async def evaluate_call(
-    request: EvaluateCallRequest,
-    http_request: Request,
+    body: EvaluateCallRequest,
+    request: Request,
     background_tasks: BackgroundTasks,
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
@@ -500,12 +500,12 @@ async def evaluate_call(
     """Manually trigger evaluation for a specific call.
 
     Args:
-        request: Evaluation request with call_id
+        body: Evaluation request with call_id
         background_tasks: FastAPI background tasks
         current_user: Authenticated user
         db: Database session
     """
-    log = logger.bind(user_id=current_user.id, call_id=request.call_id)
+    log = logger.bind(user_id=current_user.id, call_id=body.call_id)
     log.info("manual_evaluation_requested")
 
     if not settings.QA_ENABLED:
@@ -514,7 +514,7 @@ async def evaluate_call(
     if not settings.ANTHROPIC_API_KEY:
         raise HTTPException(status_code=400, detail="Anthropic API key not configured")
 
-    call_uuid = _parse_uuid(request.call_id, "call_id")
+    call_uuid = _parse_uuid(body.call_id, "call_id")
     user_uuid = user_id_to_uuid(current_user.id)
 
     # Verify user owns the call
@@ -581,8 +581,8 @@ async def _batch_evaluate_background(
 @router.post("/evaluate/batch", response_model=BatchEvaluateResponse)
 @limiter.limit("5/minute")
 async def batch_evaluate_calls(
-    request: BatchEvaluateRequest,
-    http_request: Request,
+    body: BatchEvaluateRequest,
+    request: Request,
     background_tasks: BackgroundTasks,
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
@@ -590,12 +590,12 @@ async def batch_evaluate_calls(
     """Queue batch evaluation of multiple calls.
 
     Args:
-        request: Batch evaluation request with call_ids
+        body: Batch evaluation request with call_ids
         background_tasks: FastAPI background tasks
         current_user: Authenticated user
         db: Database session
     """
-    log = logger.bind(user_id=current_user.id, batch_size=len(request.call_ids))
+    log = logger.bind(user_id=current_user.id, batch_size=len(body.call_ids))
     log.info("batch_evaluation_requested")
 
     if not settings.QA_ENABLED:
@@ -604,17 +604,17 @@ async def batch_evaluate_calls(
     if not settings.ANTHROPIC_API_KEY:
         raise HTTPException(status_code=400, detail="Anthropic API key not configured")
 
-    if not request.call_ids:
+    if not body.call_ids:
         raise HTTPException(status_code=400, detail="No call IDs provided")
 
-    if len(request.call_ids) > 100:
+    if len(body.call_ids) > 100:
         raise HTTPException(status_code=400, detail="Maximum 100 calls per batch")
 
     user_uuid = user_id_to_uuid(current_user.id)
 
     # Parse and validate all call IDs
     call_uuids: list[uuid.UUID] = []
-    for call_id in request.call_ids:
+    for call_id in body.call_ids:
         call_uuids.append(_parse_uuid(call_id, "call_id"))
 
     # Verify all calls belong to the current user
@@ -654,7 +654,7 @@ async def batch_evaluate_calls(
 @router.get("/metrics", response_model=QAMetricsResponse)
 @limiter.limit("30/minute")
 async def get_qa_metrics(
-    http_request: Request,
+    request: Request,
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
     agent_id: str | None = Query(default=None, description="Filter by agent ID"),
@@ -787,7 +787,7 @@ class AgentComparisonResponse(BaseModel):
 @router.get("/dashboard/metrics", response_model=DashboardMetricsResponse)
 @limiter.limit("30/minute")
 async def get_dashboard_metrics_endpoint(
-    http_request: Request,
+    request: Request,
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
     agent_id: str | None = Query(default=None, description="Filter by agent ID"),
@@ -828,7 +828,7 @@ async def get_dashboard_metrics_endpoint(
 @router.get("/dashboard/trends", response_model=TrendDataResponse)
 @limiter.limit("30/minute")
 async def get_dashboard_trends(
-    http_request: Request,
+    request: Request,
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
     agent_id: str | None = Query(default=None, description="Filter by agent ID"),
@@ -872,7 +872,7 @@ async def get_dashboard_trends(
 @router.get("/dashboard/failure-reasons", response_model=list[FailureReasonResponse])
 @limiter.limit("30/minute")
 async def get_dashboard_failure_reasons(
-    http_request: Request,
+    request: Request,
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
     agent_id: str | None = Query(default=None, description="Filter by agent ID"),
@@ -917,7 +917,7 @@ async def get_dashboard_failure_reasons(
 @limiter.limit("30/minute")
 async def get_dashboard_agent_comparison(
     workspace_id: str,
-    http_request: Request,
+    request: Request,
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
     days: int = Query(default=7, ge=1, le=90, description="Number of days to include"),
@@ -981,7 +981,7 @@ class AcknowledgeAlertRequest(BaseModel):
 @limiter.limit("30/minute")
 async def get_qa_alerts(
     workspace_id: str,
-    http_request: Request,
+    request: Request,
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
     acknowledged: bool | None = Query(default=None, description="Filter by acknowledged status"),
@@ -1020,7 +1020,7 @@ async def get_qa_alerts(
 async def acknowledge_qa_alert(
     alert_id: str,
     workspace_id: str,
-    http_request: Request,
+    request: Request,
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> AlertResponse:

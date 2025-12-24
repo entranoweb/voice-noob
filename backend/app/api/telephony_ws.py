@@ -8,6 +8,7 @@ import asyncio
 import base64
 import contextlib
 import json
+import time
 import uuid
 from typing import Any
 
@@ -20,6 +21,12 @@ from app.db.session import get_db
 from app.models.agent import Agent
 from app.models.call_record import CallRecord
 from app.models.workspace import AgentWorkspace
+from app.monitoring.metrics import (
+    record_call_completed,
+    record_call_failed,
+    record_call_initiated,
+)
+from app.services.call_registry import register_call, unregister_call
 from app.services.gpt_realtime import GPTRealtimeSession
 
 router = APIRouter(prefix="/ws/telephony", tags=["telephony-ws"])
@@ -68,7 +75,7 @@ async def save_transcript_to_call_record(
 
 
 @router.websocket("/twilio/{agent_id}")
-async def twilio_media_stream(
+async def twilio_media_stream(  # noqa: PLR0915
     websocket: WebSocket,
     agent_id: str,
     db: AsyncSession = Depends(get_db),
@@ -96,6 +103,9 @@ async def twilio_media_stream(
 
     stream_sid: str = ""
     call_sid: str = ""
+    call_start_time: float = time.time()
+    call_registered: bool = False
+    call_failed: bool = False
 
     try:
         # Load agent configuration
@@ -130,6 +140,22 @@ async def twilio_media_stream(
             "initial_greeting": agent.initial_greeting,
         }
 
+        # Callback to register call when it starts
+        async def on_call_start(sid: str) -> None:
+            nonlocal call_sid, call_registered
+            call_sid = sid
+            try:
+                await register_call(
+                    call_id=sid,
+                    agent_id=agent_id,
+                    metadata={"provider": "twilio", "session_id": session_id},
+                )
+                record_call_initiated(agent_id)
+                call_registered = True
+                log.info("call_registered", call_sid=sid)
+            except Exception:
+                log.exception("call_registration_failed", call_sid=sid)
+
         # Initialize GPT Realtime session
         async with GPTRealtimeSession(
             db=db,
@@ -144,6 +170,7 @@ async def twilio_media_stream(
                 realtime_session=realtime_session,
                 log=log,
                 enable_transcript=agent.enable_transcript,
+                on_call_start=on_call_start,
             )
 
             # Save transcript to call record if enabled
@@ -154,8 +181,25 @@ async def twilio_media_stream(
     except WebSocketDisconnect:
         log.info("twilio_websocket_disconnected")
     except Exception as e:
+        call_failed = True
         log.exception("twilio_websocket_error", error=str(e))
     finally:
+        # Unregister call and record metrics
+        call_duration = time.time() - call_start_time
+        if call_registered and call_sid:
+            try:
+                await unregister_call(call_sid)
+                if call_failed:
+                    record_call_failed(agent_id, error_type="websocket_error")
+                else:
+                    record_call_completed(agent_id, duration_seconds=call_duration)
+                log.info(
+                    "call_unregistered",
+                    call_sid=call_sid,
+                    duration_seconds=round(call_duration, 2),
+                )
+            except Exception:
+                log.exception("call_unregistration_failed", call_sid=call_sid)
         log.info("twilio_websocket_closed", stream_sid=stream_sid, call_sid=call_sid)
 
 
@@ -164,6 +208,7 @@ async def _handle_twilio_stream(  # noqa: PLR0915
     realtime_session: GPTRealtimeSession,
     log: Any,
     enable_transcript: bool = False,
+    on_call_start: Any | None = None,
 ) -> str:
     """Handle Twilio Media Stream messages.
 
@@ -172,6 +217,7 @@ async def _handle_twilio_stream(  # noqa: PLR0915
         realtime_session: GPT Realtime session
         log: Logger instance
         enable_transcript: Whether to capture transcript
+        on_call_start: Optional callback when call starts (receives call_sid)
 
     Returns:
         The call_sid for transcript saving
@@ -202,6 +248,9 @@ async def _handle_twilio_stream(  # noqa: PLR0915
                         stream_sid=stream_sid,
                         call_sid=call_sid,
                     )
+                    # Notify that call has started (for registry/metrics)
+                    if on_call_start and call_sid:
+                        await on_call_start(call_sid)
 
                 elif event == "media":
                     # Decode base64 mulaw audio and forward to Realtime
@@ -377,7 +426,7 @@ async def _handle_twilio_stream(  # noqa: PLR0915
 
 
 @router.websocket("/telnyx/{agent_id}")
-async def telnyx_media_stream(
+async def telnyx_media_stream(  # noqa: PLR0915
     websocket: WebSocket,
     agent_id: str,
     db: AsyncSession = Depends(get_db),
@@ -404,6 +453,9 @@ async def telnyx_media_stream(
 
     stream_id: str = ""
     call_control_id: str = ""
+    call_start_time: float = time.time()
+    call_registered: bool = False
+    call_failed: bool = False
 
     try:
         # Load agent configuration
@@ -438,6 +490,22 @@ async def telnyx_media_stream(
             "initial_greeting": agent.initial_greeting,
         }
 
+        # Callback to register call when it starts
+        async def on_call_start(cid: str) -> None:
+            nonlocal call_control_id, call_registered
+            call_control_id = cid
+            try:
+                await register_call(
+                    call_id=cid,
+                    agent_id=agent_id,
+                    metadata={"provider": "telnyx", "session_id": session_id},
+                )
+                record_call_initiated(agent_id)
+                call_registered = True
+                log.info("call_registered", call_control_id=cid)
+            except Exception:
+                log.exception("call_registration_failed", call_control_id=cid)
+
         # Initialize GPT Realtime session
         async with GPTRealtimeSession(
             db=db,
@@ -452,6 +520,7 @@ async def telnyx_media_stream(
                 realtime_session=realtime_session,
                 log=log,
                 enable_transcript=agent.enable_transcript,
+                on_call_start=on_call_start,
             )
 
             # Save transcript to call record if enabled
@@ -462,8 +531,25 @@ async def telnyx_media_stream(
     except WebSocketDisconnect:
         log.info("telnyx_websocket_disconnected")
     except Exception as e:
+        call_failed = True
         log.exception("telnyx_websocket_error", error=str(e))
     finally:
+        # Unregister call and record metrics
+        call_duration = time.time() - call_start_time
+        if call_registered and call_control_id:
+            try:
+                await unregister_call(call_control_id)
+                if call_failed:
+                    record_call_failed(agent_id, error_type="websocket_error")
+                else:
+                    record_call_completed(agent_id, duration_seconds=call_duration)
+                log.info(
+                    "call_unregistered",
+                    call_control_id=call_control_id,
+                    duration_seconds=round(call_duration, 2),
+                )
+            except Exception:
+                log.exception("call_unregistration_failed", call_control_id=call_control_id)
         log.info("telnyx_websocket_closed", stream_id=stream_id, call_control_id=call_control_id)
 
 
@@ -472,6 +558,7 @@ async def _handle_telnyx_stream(  # noqa: PLR0915
     realtime_session: GPTRealtimeSession,
     log: Any,
     enable_transcript: bool = False,
+    on_call_start: Any | None = None,
 ) -> str:
     """Handle Telnyx Media Stream messages.
 
@@ -480,6 +567,7 @@ async def _handle_telnyx_stream(  # noqa: PLR0915
         realtime_session: GPT Realtime session
         log: Logger instance
         enable_transcript: Whether to capture transcript
+        on_call_start: Optional callback when call starts (receives call_control_id)
 
     Returns:
         The call_control_id for transcript saving
@@ -507,6 +595,9 @@ async def _handle_telnyx_stream(  # noqa: PLR0915
                         stream_id=stream_id,
                         call_control_id=call_control_id,
                     )
+                    # Notify that call has started (for registry/metrics)
+                    if on_call_start and call_control_id:
+                        await on_call_start(call_control_id)
 
                 elif event == "media":
                     # Decode base64 PCMU audio and forward to Realtime

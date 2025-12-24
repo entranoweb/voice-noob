@@ -8,7 +8,9 @@ import time
 import uuid
 from typing import Any
 
+import anthropic
 import structlog
+from aiobreaker import CircuitBreakerError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,6 +19,11 @@ from app.db.session import AsyncSessionLocal
 from app.models.agent import Agent
 from app.models.call_evaluation import CallEvaluation
 from app.models.call_record import CallRecord
+from app.services.qa.resilience import (
+    call_claude_with_resilience,
+    get_anthropic_client,
+    is_circuit_open,
+)
 
 logger = structlog.get_logger()
 
@@ -100,27 +107,20 @@ class QAEvaluator:
         self.logger = logger.bind(component="qa_evaluator")
         self._client: Any = None
 
-    async def _get_client(self) -> Any:
-        """Get or create Anthropic client.
+    async def _get_client(self) -> anthropic.AsyncAnthropic:
+        """Get or create Anthropic client with timeout configured.
 
         Returns:
-            Anthropic async client
+            Anthropic async client with resilience settings.
+
+        Raises:
+            ValueError: If ANTHROPIC_API_KEY not configured.
         """
         if self._client is None:
-            try:
-                import anthropic
+            self._client = get_anthropic_client()
+        return self._client  # type: ignore[no-any-return]
 
-                api_key = settings.ANTHROPIC_API_KEY
-                if not api_key:
-                    msg = "ANTHROPIC_API_KEY not configured"
-                    raise ValueError(msg)
-                self._client = anthropic.AsyncAnthropic(api_key=api_key)
-            except ImportError as e:
-                msg = "anthropic package not installed"
-                raise ImportError(msg) from e
-        return self._client
-
-    async def evaluate_call(  # noqa: PLR0911
+    async def evaluate_call(  # noqa: PLR0911, PLR0915
         self, call_id: uuid.UUID
     ) -> CallEvaluation | None:
         """Evaluate a completed call.
@@ -136,6 +136,11 @@ class QAEvaluator:
         # Check if QA is enabled
         if not settings.QA_ENABLED:
             log.debug("qa_disabled")
+            return None
+
+        # Check circuit breaker - skip if API is unavailable
+        if is_circuit_open():
+            log.warning("evaluation_skipped_circuit_open")
             return None
 
         # Get call record with agent
@@ -185,11 +190,12 @@ class QAEvaluator:
                 transcript=call_record.transcript,
             )
 
-            # Call Claude API
+            # Call Claude API with resilience (retry + circuit breaker)
             client = await self._get_client()
             model = settings.QA_EVALUATION_MODEL
 
-            response = await client.messages.create(
+            response = await call_claude_with_resilience(
+                client=client,
                 model=model,
                 max_tokens=2000,
                 messages=[{"role": "user", "content": prompt}],
@@ -264,6 +270,14 @@ class QAEvaluator:
 
             return evaluation
 
+        except CircuitBreakerError:
+            log.warning("evaluation_failed_circuit_open")
+            return None
+        except anthropic.APIError as e:
+            log.warning(
+                "evaluation_failed_api_error", error=str(e), status=getattr(e, "status_code", None)
+            )
+            return None
         except Exception:
             log.exception("evaluation_failed")
             return None
@@ -284,8 +298,15 @@ class QAEvaluator:
         def coerce_numeric_fields(data: dict[str, Any]) -> dict[str, Any]:
             """Coerce string numbers to proper types for numeric fields."""
             numeric_int_fields = [
-                "overall_score", "intent_completion", "tool_usage", "compliance",
-                "response_quality", "coherence", "relevance", "groundedness", "fluency",
+                "overall_score",
+                "intent_completion",
+                "tool_usage",
+                "compliance",
+                "response_quality",
+                "coherence",
+                "relevance",
+                "groundedness",
+                "fluency",
             ]
             numeric_float_fields = ["sentiment_score", "escalation_risk"]
 
@@ -384,6 +405,69 @@ class QAEvaluator:
 
         except Exception:
             log.exception("failed_to_send_failure_alerts")
+
+    async def batch_evaluate_calls(
+        self,
+        call_ids: list[uuid.UUID],
+        max_concurrent: int = 5,
+    ) -> dict[uuid.UUID, CallEvaluation | None]:
+        """Evaluate multiple calls concurrently.
+
+        Args:
+            call_ids: List of CallRecord IDs to evaluate
+            max_concurrent: Max concurrent evaluations (default 5)
+
+        Returns:
+            Dict mapping call_id → CallEvaluation (or None if skipped/failed)
+        """
+        import asyncio
+
+        log = self.logger.bind(
+            batch_size=len(call_ids),
+            max_concurrent=max_concurrent,
+        )
+        log.info("starting_batch_evaluation")
+
+        semaphore = asyncio.Semaphore(max_concurrent)
+
+        async def _evaluate_with_limit(
+            call_id: uuid.UUID,
+        ) -> tuple[uuid.UUID, CallEvaluation | None]:
+            async with semaphore:
+                try:
+                    result = await self.evaluate_call(call_id)
+                    return (call_id, result)
+                except Exception:
+                    self.logger.exception(
+                        "batch_evaluation_single_error",
+                        call_id=str(call_id),
+                    )
+                    return (call_id, None)
+
+        results = await asyncio.gather(
+            *[_evaluate_with_limit(cid) for cid in call_ids],
+            return_exceptions=True,
+        )
+
+        output: dict[uuid.UUID, CallEvaluation | None] = {}
+        for result in results:
+            if isinstance(result, BaseException):
+                self.logger.error("batch_evaluation_error", error=str(result))
+                continue
+            # Type narrowing: result is now tuple[UUID, CallEvaluation | None]
+            call_id_result, evaluation = result
+            output[call_id_result] = evaluation
+
+        # Log summary
+        successful = sum(1 for v in output.values() if v is not None)
+        log.info(
+            "batch_evaluation_completed",
+            total=len(call_ids),
+            successful=successful,
+            failed=len(call_ids) - successful,
+        )
+
+        return output
 
 
 async def trigger_qa_evaluation(call_id: uuid.UUID) -> None:

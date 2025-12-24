@@ -188,7 +188,9 @@ class GPTRealtimeSession:
         if provider == "azure":
             # Use Azure OpenAI
             if not user_settings.azure_openai_endpoint or not user_settings.azure_openai_api_key:
-                self.logger.warning("workspace_missing_azure_openai_key", workspace_id=str(self.workspace_id))
+                self.logger.warning(
+                    "workspace_missing_azure_openai_key", workspace_id=str(self.workspace_id)
+                )
                 raise ValueError(
                     "Azure OpenAI credentials not configured for this workspace. Please add them in Settings > Workspace API Keys."
                 )
@@ -197,12 +199,16 @@ class GPTRealtimeSession:
                 api_key=user_settings.azure_openai_api_key,
                 api_version="2024-10-01-preview",
             )
-            self._azure_deployment_name = user_settings.azure_openai_deployment_name or "gpt-realtime"
+            self._azure_deployment_name = (
+                user_settings.azure_openai_deployment_name or "gpt-realtime"
+            )
             self.logger.info("using_azure_openai", deployment=self._azure_deployment_name)
         else:
             # Use direct OpenAI
             if not user_settings.openai_api_key:
-                self.logger.warning("workspace_missing_openai_key", workspace_id=str(self.workspace_id))
+                self.logger.warning(
+                    "workspace_missing_openai_key", workspace_id=str(self.workspace_id)
+                )
                 raise ValueError(
                     "OpenAI API key not configured for this workspace. Please add it in Settings > Workspace API Keys."
                 )
