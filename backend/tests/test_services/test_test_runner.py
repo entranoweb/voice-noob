@@ -876,7 +876,7 @@ class TestRunAllScenarios:
             nonlocal call_count
             call_count += 1
             if call_count == 1:
-                raise Exception("First scenario failed")
+                raise Exception("First scenario failed")  # noqa: TRY002
             return TestRun(
                 scenario_id=uuid.uuid4(),
                 agent_id=agent.id,

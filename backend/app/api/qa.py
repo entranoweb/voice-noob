@@ -22,6 +22,9 @@ from app.models.call_record import CallRecord
 from app.models.workspace import Workspace
 from app.services.qa.evaluator import QAEvaluator
 
+# Constants
+MAX_BATCH_CALL_IDS = 100  # Maximum number of call IDs per batch evaluation
+
 
 async def _verify_workspace_ownership(
     db: AsyncSession,
@@ -607,8 +610,11 @@ async def batch_evaluate_calls(
     if not body.call_ids:
         raise HTTPException(status_code=400, detail="No call IDs provided")
 
-    if len(body.call_ids) > 100:
-        raise HTTPException(status_code=400, detail="Maximum 100 calls per batch")
+    if len(body.call_ids) > MAX_BATCH_CALL_IDS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Maximum {MAX_BATCH_CALL_IDS} calls per batch",
+        )
 
     user_uuid = user_id_to_uuid(current_user.id)
 
