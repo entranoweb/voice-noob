@@ -150,8 +150,8 @@ class TestQAEvaluateEndpoint:
                 json={"call_id": fake_call_id},
             )
 
-            # Should return queued message or not found
-            assert response.status_code in [200, 404]
+            # Should return queued message, not found, or bad request (invalid call_id)
+            assert response.status_code in [200, 400, 404]
 
 
 class TestQAWorkspaceSettings:
