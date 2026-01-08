@@ -201,7 +201,9 @@ async def set_shutting_down(shutting_down: bool = True) -> None:
     try:
         redis: Redis = await get_redis()
         if shutting_down:
-            await redis.set(SHUTDOWN_FLAG_KEY, "1", ex=settings.SHUTDOWN_DRAIN_TIMEOUT)
+            # TTL includes 60s buffer beyond drain timeout for crash recovery
+            # (documented in production hardening improvements)
+            await redis.set(SHUTDOWN_FLAG_KEY, "1", ex=settings.SHUTDOWN_DRAIN_TIMEOUT + 60)
             logger.info("shutdown_flag_set")
         else:
             await redis.delete(SHUTDOWN_FLAG_KEY)

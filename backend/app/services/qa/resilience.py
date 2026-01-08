@@ -10,7 +10,7 @@ from __future__ import annotations
 import anthropic
 import httpx
 import structlog
-from aiobreaker import CircuitBreaker, CircuitBreakerError
+from aiobreaker import CircuitBreaker, CircuitBreakerError  # type: ignore[import-untyped]
 from tenacity import (
     retry,
     retry_if_exception_type,

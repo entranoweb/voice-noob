@@ -118,7 +118,7 @@ describe("ScenarioForm", () => {
   it("pre-fills form with scenario name", async () => {
     renderWithProviders(<ScenarioForm open={true} onOpenChange={vi.fn()} scenario={mockScenario} mode="edit" />);
     await waitFor(() => {
-      const nameInput = screen.getByPlaceholderText(/vip client booking request/i) as HTMLInputElement;
+      const nameInput = screen.getByPlaceholderText<HTMLInputElement>(/vip client booking request/i);
       expect(nameInput.value).toBe("Test Scenario");
     });
   });
@@ -146,7 +146,7 @@ describe("ScenarioForm", () => {
   it("disables scenario name input in view mode", async () => {
     renderWithProviders(<ScenarioForm open={true} onOpenChange={vi.fn()} scenario={mockScenario} mode="view" />);
     await waitFor(() => {
-      const nameInput = screen.getByPlaceholderText(/vip client booking request/i) as HTMLInputElement;
+      const nameInput = screen.getByPlaceholderText<HTMLInputElement>(/vip client booking request/i);
       expect(nameInput).toBeDisabled();
     });
   });

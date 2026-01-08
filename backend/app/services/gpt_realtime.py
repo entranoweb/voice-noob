@@ -199,7 +199,7 @@ class GPTRealtimeSession:
                 api_key=user_settings.azure_openai_api_key,
                 api_version="2024-10-01-preview",
             )
-            self._azure_deployment_name = (
+            self._azure_deployment_name: str | None = (
                 user_settings.azure_openai_deployment_name or "gpt-realtime"
             )
             self.logger.info("using_azure_openai", deployment=self._azure_deployment_name)

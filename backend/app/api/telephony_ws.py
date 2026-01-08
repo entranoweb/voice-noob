@@ -26,7 +26,7 @@ from app.monitoring.metrics import (
     record_call_failed,
     record_call_initiated,
 )
-from app.services.call_registry import register_call, unregister_call
+from app.services.call_registry import is_shutting_down, register_call, unregister_call
 from app.services.gpt_realtime import GPTRealtimeSession
 
 router = APIRouter(prefix="/ws/telephony", tags=["telephony-ws"])
@@ -100,6 +100,12 @@ async def twilio_media_stream(  # noqa: PLR0915
 
     await websocket.accept()
     log.info("twilio_websocket_connected")
+
+    # Reject new connections during graceful shutdown
+    if is_shutting_down():
+        log.info("twilio_websocket_rejected_shutdown")
+        await websocket.close(code=1012, reason="Server is shutting down")
+        return
 
     stream_sid: str = ""
     call_sid: str = ""
@@ -450,6 +456,12 @@ async def telnyx_media_stream(  # noqa: PLR0915
 
     await websocket.accept()
     log.info("telnyx_websocket_connected")
+
+    # Reject new connections during graceful shutdown
+    if is_shutting_down():
+        log.info("telnyx_websocket_rejected_shutdown")
+        await websocket.close(code=1012, reason="Server is shutting down")
+        return
 
     stream_id: str = ""
     call_control_id: str = ""

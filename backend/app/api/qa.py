@@ -24,6 +24,7 @@ from app.services.qa.evaluator import QAEvaluator
 
 # Constants
 MAX_BATCH_CALL_IDS = 100  # Maximum number of call IDs per batch evaluation
+MAX_PASS_THRESHOLD = 100  # Maximum pass threshold percentage
 
 
 async def _verify_workspace_ownership(
@@ -401,10 +402,10 @@ async def update_workspace_qa_settings(
     # Validate pass_threshold range
     if "pass_threshold" in qa_settings:
         threshold = qa_settings["pass_threshold"]
-        if not (0 <= threshold <= 100):
+        if not (0 <= threshold <= MAX_PASS_THRESHOLD):
             raise HTTPException(
                 status_code=400,
-                detail="pass_threshold must be between 0 and 100",
+                detail=f"pass_threshold must be between 0 and {MAX_PASS_THRESHOLD}",
             )
 
     # Update workspace settings
@@ -847,7 +848,7 @@ async def batch_evaluate_calls(
     background_tasks.add_task(
         _batch_evaluate_background,
         call_ids=valid_call_ids,
-        max_concurrent=request.max_concurrent,
+        max_concurrent=body.max_concurrent,
     )
 
     return BatchEvaluateResponse(

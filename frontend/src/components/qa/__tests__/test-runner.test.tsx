@@ -108,8 +108,9 @@ describe("TestRunner", () => {
     
     const checkboxes = screen.getAllByRole("checkbox");
     expect(checkboxes.length).toBeGreaterThan(0);
-    
-    await user.click(checkboxes[0]);
+    const firstCheckbox = checkboxes[0];
+    if (!firstCheckbox) throw new Error("No checkbox found");
+    await user.click(firstCheckbox);
     
     await waitFor(() => {
       expect(screen.getByText(/1 scenario.*selected/i)).toBeInTheDocument();
@@ -125,8 +126,10 @@ describe("TestRunner", () => {
     });
     
     const checkboxes = screen.getAllByRole("checkbox");
-    await user.click(checkboxes[0]);
-    await user.click(checkboxes[1]);
+    const [firstCheckbox, secondCheckbox] = checkboxes;
+    if (!firstCheckbox || !secondCheckbox) throw new Error("Expected at least 2 checkboxes");
+    await user.click(firstCheckbox);
+    await user.click(secondCheckbox);
     
     await waitFor(() => {
       expect(screen.getByText(/2 scenarios selected/i)).toBeInTheDocument();

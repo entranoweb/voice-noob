@@ -84,6 +84,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:  # noqa: PLR0912
         # Initialize Redis (fatal if fails)
         await get_redis()
         logger.info("Redis connection established")
+
+        # Clear any stale shutdown flag from previous crash
+        await set_shutting_down(False)
+        logger.info("Startup: shutdown flag cleared")
     except Exception:
         logger.exception("Failed to initialize Redis - application cannot start")
         raise  # Re-raise to prevent app startup

@@ -11,7 +11,7 @@ from typing import Any
 
 import anthropic
 import structlog
-from aiobreaker import CircuitBreakerError
+from aiobreaker import CircuitBreakerError  # type: ignore[import-untyped]
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -81,6 +81,7 @@ def get_effective_qa_settings(workspace: Workspace | None) -> EffectiveQASetting
         evaluation_model=qa_settings.get("evaluation_model", "claude-sonnet-4-20250514"),
         source="workspace",
     )
+
 
 # Evaluation prompt template
 EVALUATION_PROMPT_V1 = """You are an expert QA evaluator for voice AI agents. Analyze this call transcript and provide a detailed evaluation.
@@ -573,9 +574,7 @@ async def trigger_qa_evaluation(
             # Get workspace for settings check
             workspace: Workspace | None = None
             if workspace_id:
-                ws_result = await db.execute(
-                    select(Workspace).where(Workspace.id == workspace_id)
-                )
+                ws_result = await db.execute(select(Workspace).where(Workspace.id == workspace_id))
                 workspace = ws_result.scalar_one_or_none()
 
             # Get effective settings

@@ -2,7 +2,7 @@
  * Tests for QASettingsPanel component (Task 5.1)
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { http, HttpResponse } from "msw";
@@ -197,7 +197,8 @@ describe("QASettingsPanel", () => {
     expect(inheritToggle).toBeDefined();
     
     // Click to enable workspace-specific settings
-    await user.click(inheritToggle!);
+    if (!inheritToggle) throw new Error("inheritToggle not found");
+    await user.click(inheritToggle);
 
     // Save button should now be enabled
     await waitFor(() => {
