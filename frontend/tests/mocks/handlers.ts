@@ -7,6 +7,9 @@ import {
   mockQAStatus,
   mockFailureReasons,
   mockTrendData,
+  mockWorkspaceQASettings,
+  mockTestScenarios,
+  mockTestRun,
 } from "./data";
 
 const API_URL = "http://localhost:8000";
@@ -124,5 +127,113 @@ export const handlers = [
       { id: "agent-1", name: "Test Agent 1" },
       { id: "agent-2", name: "Test Agent 2" },
     ]);
+  }),
+
+  // Workspaces
+  http.get(`${API_URL}/api/v1/workspaces`, () => {
+    return HttpResponse.json([
+      { id: "ws-1", name: "Default Workspace", description: null, is_default: true },
+    ]);
+  }),
+
+  // Workspace QA Settings
+  http.get(`${API_URL}/api/v1/qa/workspace/:workspaceId/settings`, () => {
+    return HttpResponse.json(mockWorkspaceQASettings);
+  }),
+
+  http.put(`${API_URL}/api/v1/qa/workspace/:workspaceId/settings`, async ({ request }) => {
+    const body = (await request.json()) as Record<string, unknown>;
+    return HttpResponse.json({
+      settings: {
+        ...mockWorkspaceQASettings.settings,
+        ...body,
+      },
+      effective_settings: {
+        ...mockWorkspaceQASettings.effective_settings,
+        ...body,
+      },
+    });
+  }),
+
+  // Test Scenarios
+  http.get(`${API_URL}/api/v1/testing/scenarios`, () => {
+    return HttpResponse.json(mockTestScenarios);
+  }),
+
+  http.post(`${API_URL}/api/v1/testing/scenarios`, async ({ request }) => {
+    const body = (await request.json()) as Record<string, unknown>;
+    return HttpResponse.json(
+      {
+        id: "scenario-new",
+        ...body,
+        is_built_in: false,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      },
+      { status: 201 }
+    );
+  }),
+
+  http.put(`${API_URL}/api/v1/testing/scenarios/:id`, async ({ request, params }) => {
+    const body = (await request.json()) as Record<string, unknown>;
+    const scenario = mockTestScenarios.find((s) => s.id === params.id);
+    if (!scenario) {
+      return HttpResponse.json({ detail: "Scenario not found" }, { status: 404 });
+    }
+    return HttpResponse.json({
+      ...scenario,
+      ...body,
+      updated_at: new Date().toISOString(),
+    });
+  }),
+
+  http.delete(`${API_URL}/api/v1/testing/scenarios/:id`, ({ params }) => {
+    const scenario = mockTestScenarios.find((s) => s.id === params.id);
+    if (!scenario) {
+      return HttpResponse.json({ detail: "Scenario not found" }, { status: 404 });
+    }
+    return HttpResponse.json({ message: "Scenario deleted" });
+  }),
+
+  http.post(`${API_URL}/api/v1/testing/scenarios/:id/duplicate`, ({ params }) => {
+    const scenario = mockTestScenarios.find((s) => s.id === params.id);
+    if (!scenario) {
+      return HttpResponse.json({ detail: "Scenario not found" }, { status: 404 });
+    }
+    return HttpResponse.json({
+      ...scenario,
+      id: `${scenario.id}-copy`,
+      name: `${scenario.name} (Copy)`,
+      is_built_in: false,
+    });
+  }),
+
+  http.post(`${API_URL}/api/v1/testing/scenarios/seed`, () => {
+    return HttpResponse.json({
+      message: "Scenarios seeded",
+      scenarios_created: 5,
+    });
+  }),
+
+  // Test Runs
+  http.post(`${API_URL}/api/v1/testing/runs`, async ({ request }) => {
+    const body = (await request.json()) as Record<string, unknown>;
+    return HttpResponse.json({
+      id: "run-new",
+      agent_id: body.agent_id,
+      status: "pending",
+      total_scenarios: (body.scenario_ids as string[])?.length ?? 0,
+      passed_scenarios: 0,
+      failed_scenarios: 0,
+      results: [],
+      created_at: new Date().toISOString(),
+    });
+  }),
+
+  http.get(`${API_URL}/api/v1/testing/runs/:id`, ({ params }) => {
+    if (params.id === "run-new") {
+      return HttpResponse.json(mockTestRun);
+    }
+    return HttpResponse.json(mockTestRun);
   }),
 ];

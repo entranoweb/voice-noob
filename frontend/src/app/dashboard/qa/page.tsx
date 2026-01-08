@@ -1,9 +1,10 @@
 "use client";
 
-import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useState, useCallback } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   Select,
   SelectContent,
@@ -11,6 +12,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   CheckCircle,
   XCircle,
@@ -20,6 +22,10 @@ import {
   Target,
   Shield,
   MessageSquare,
+  Settings,
+  FolderOpen,
+  FlaskConical,
+  Play,
 } from "lucide-react";
 import {
   getDashboardMetrics,
@@ -27,13 +33,67 @@ import {
   getFailureReasons,
   listEvaluations,
   getQAStatus,
+  type TestScenario,
+  type TestRun,
 } from "@/lib/api/qa";
 import { fetchAgents } from "@/lib/api/agents";
+import { api } from "@/lib/api";
 import { Skeleton } from "@/components/ui/skeleton";
+import { QASettingsPanel } from "@/components/qa/qa-settings-panel";
+import { ScenarioManager } from "@/components/qa/scenario-manager";
+import { ScenarioForm } from "@/components/qa/scenario-form";
+import { TestRunner } from "@/components/qa/test-runner";
+
+interface Workspace {
+  id: string;
+  name: string;
+  description: string | null;
+  is_default: boolean;
+}
 
 export default function QADashboardPage() {
+  const queryClient = useQueryClient();
   const [days, setDays] = useState<number>(7);
   const [agentId, setAgentId] = useState<string | undefined>(undefined);
+  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | undefined>(undefined);
+  
+  // Scenario form state
+  const [scenarioFormOpen, setScenarioFormOpen] = useState(false);
+  const [selectedScenario, setSelectedScenario] = useState<TestScenario | null>(null);
+  const [scenarioFormMode, setScenarioFormMode] = useState<"create" | "edit" | "view">("create");
+  
+  // Test runner state
+  const [testRunnerOpen, setTestRunnerOpen] = useState(false);
+  const [selectedScenarioIds, setSelectedScenarioIds] = useState<string[]>([]);
+
+  // Fetch workspaces
+  const { data: workspaces = [] } = useQuery<Workspace[]>({
+    queryKey: ["workspaces"],
+    queryFn: async () => {
+      const response = await api.get("/api/v1/workspaces");
+      return response.data;
+    },
+  });
+
+  // Set default workspace when workspaces load
+  const defaultWorkspace = workspaces.find((ws) => ws.is_default) ?? workspaces[0];
+  const activeWorkspaceId = selectedWorkspaceId ?? defaultWorkspace?.id;
+
+  // Handle test completion - refresh metrics
+  const handleTestComplete = useCallback((_run: TestRun) => {
+    // Invalidate queries to refresh dashboard data
+    void queryClient.invalidateQueries({ queryKey: ["qa-metrics"] });
+    void queryClient.invalidateQueries({ queryKey: ["qa-evaluations"] });
+    void queryClient.invalidateQueries({ queryKey: ["qa-trends"] });
+    void queryClient.invalidateQueries({ queryKey: ["qa-failure-reasons"] });
+  }, [queryClient]);
+
+  // Handle running tests from scenario selection
+  const handleRunSelectedTests = useCallback(() => {
+    if (selectedScenarioIds.length > 0) {
+      setTestRunnerOpen(true);
+    }
+  }, [selectedScenarioIds]);
 
   // Check QA status
   const { data: qaStatus } = useQuery({
@@ -118,29 +178,22 @@ export default function QADashboardPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <Select value={days.toString()} onValueChange={(v) => setDays(parseInt(v))}>
-            <SelectTrigger className="w-[120px]">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="7">Last 7 days</SelectItem>
-              <SelectItem value="14">Last 14 days</SelectItem>
-              <SelectItem value="30">Last 30 days</SelectItem>
-              <SelectItem value="90">Last 90 days</SelectItem>
-            </SelectContent>
-          </Select>
+          <Button onClick={() => setTestRunnerOpen(true)}>
+            <Play className="mr-2 h-4 w-4" />
+            Run Tests
+          </Button>
           <Select
-            value={agentId ?? "all"}
-            onValueChange={(v) => setAgentId(v === "all" ? undefined : v)}
+            value={activeWorkspaceId ?? ""}
+            onValueChange={(v) => setSelectedWorkspaceId(v)}
           >
             <SelectTrigger className="w-[180px]">
-              <SelectValue placeholder="All agents" />
+              <FolderOpen className="mr-2 h-4 w-4" />
+              <SelectValue placeholder="Select workspace" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">All agents</SelectItem>
-              {agents.map((agent) => (
-                <SelectItem key={agent.id} value={agent.id}>
-                  {agent.name}
+              {workspaces.map((ws) => (
+                <SelectItem key={ws.id} value={ws.id}>
+                  {ws.name}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -148,289 +201,473 @@ export default function QADashboardPage() {
         </div>
       </div>
 
-      {/* Stats Cards */}
-      <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-4">
-        <Card>
-          <CardContent className="p-4">
-            {metricsLoading ? (
-              <Skeleton className="h-16 w-full" />
-            ) : (
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-xs text-muted-foreground">Pass Rate</p>
-                  <p className={`text-2xl font-bold ${getScoreColor((metrics?.pass_rate ?? 0) * 100)}`}>
-                    {((metrics?.pass_rate ?? 0) * 100).toFixed(1)}%
-                  </p>
-                </div>
-                <CheckCircle className="h-8 w-8 text-green-500/20" />
-              </div>
-            )}
-          </CardContent>
-        </Card>
+      {/* Tabs */}
+      <Tabs defaultValue="overview" className="space-y-4">
+        <TabsList>
+          <TabsTrigger value="overview">
+            <Activity className="mr-2 h-4 w-4" />
+            Overview
+          </TabsTrigger>
+          <TabsTrigger value="scenarios">
+            <FlaskConical className="mr-2 h-4 w-4" />
+            Scenarios
+          </TabsTrigger>
+          <TabsTrigger value="settings">
+            <Settings className="mr-2 h-4 w-4" />
+            Settings
+          </TabsTrigger>
+        </TabsList>
 
-        <Card>
-          <CardContent className="p-4">
-            {metricsLoading ? (
-              <Skeleton className="h-16 w-full" />
-            ) : (
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-xs text-muted-foreground">Average Score</p>
-                  <p className={`text-2xl font-bold ${getScoreColor(metrics?.average_score ?? 0)}`}>
-                    {formatScore(metrics?.average_score)}
-                  </p>
-                </div>
-                <TrendingUp className="h-8 w-8 text-blue-500/20" />
-              </div>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardContent className="p-4">
-            {metricsLoading ? (
-              <Skeleton className="h-16 w-full" />
-            ) : (
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-xs text-muted-foreground">Total Evaluations</p>
-                  <p className="text-2xl font-bold">{metrics?.total_evaluations ?? 0}</p>
-                </div>
-                <Activity className="h-8 w-8 text-purple-500/20" />
-              </div>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardContent className="p-4">
-            {metricsLoading ? (
-              <Skeleton className="h-16 w-full" />
-            ) : (
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-xs text-muted-foreground">Failed Calls</p>
-                  <p className="text-2xl font-bold text-red-600">{metrics?.failed_count ?? 0}</p>
-                </div>
-                <XCircle className="h-8 w-8 text-red-500/20" />
-              </div>
-            )}
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* Score Breakdown */}
-      <div className="grid gap-4 lg:grid-cols-2">
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium">Score Breakdown</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {metricsLoading ? (
-              <div className="space-y-4">
-                <Skeleton className="h-8 w-full" />
-                <Skeleton className="h-8 w-full" />
-                <Skeleton className="h-8 w-full" />
-                <Skeleton className="h-8 w-full" />
-              </div>
-            ) : (
-              <div className="space-y-4">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <Target className="h-4 w-4 text-muted-foreground" />
-                    <span className="text-sm">Intent Completion</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <div className="h-2 w-24 overflow-hidden rounded-full bg-muted">
-                      <div
-                        className="h-full bg-blue-500"
-                        style={{
-                          width: `${metrics?.score_breakdown?.intent_completion ?? 0}%`,
-                        }}
-                      />
-                    </div>
-                    <span className="w-8 text-sm font-medium">
-                      {formatScore(metrics?.score_breakdown?.intent_completion)}
-                    </span>
-                  </div>
-                </div>
-
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <Activity className="h-4 w-4 text-muted-foreground" />
-                    <span className="text-sm">Tool Usage</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <div className="h-2 w-24 overflow-hidden rounded-full bg-muted">
-                      <div
-                        className="h-full bg-green-500"
-                        style={{
-                          width: `${metrics?.score_breakdown?.tool_usage ?? 0}%`,
-                        }}
-                      />
-                    </div>
-                    <span className="w-8 text-sm font-medium">
-                      {formatScore(metrics?.score_breakdown?.tool_usage)}
-                    </span>
-                  </div>
-                </div>
-
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <Shield className="h-4 w-4 text-muted-foreground" />
-                    <span className="text-sm">Compliance</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <div className="h-2 w-24 overflow-hidden rounded-full bg-muted">
-                      <div
-                        className="h-full bg-purple-500"
-                        style={{
-                          width: `${metrics?.score_breakdown?.compliance ?? 0}%`,
-                        }}
-                      />
-                    </div>
-                    <span className="w-8 text-sm font-medium">
-                      {formatScore(metrics?.score_breakdown?.compliance)}
-                    </span>
-                  </div>
-                </div>
-
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <MessageSquare className="h-4 w-4 text-muted-foreground" />
-                    <span className="text-sm">Response Quality</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <div className="h-2 w-24 overflow-hidden rounded-full bg-muted">
-                      <div
-                        className="h-full bg-orange-500"
-                        style={{
-                          width: `${metrics?.score_breakdown?.response_quality ?? 0}%`,
-                        }}
-                      />
-                    </div>
-                    <span className="w-8 text-sm font-medium">
-                      {formatScore(metrics?.score_breakdown?.response_quality)}
-                    </span>
-                  </div>
-                </div>
-              </div>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium flex items-center gap-2">
-              <AlertTriangle className="h-4 w-4" />
-              Top Failure Reasons
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            {failureReasons.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-8 text-center">
-                <CheckCircle className="mb-2 h-8 w-8 text-green-500/30" />
-                <p className="text-sm text-muted-foreground">No failures in this period</p>
-              </div>
-            ) : (
-              <div className="space-y-3">
-                {failureReasons.map((reason, index) => (
-                  <div key={index} className="flex items-center justify-between">
-                    <span className="text-sm truncate max-w-[200px]">{reason.reason}</span>
-                    <Badge variant="secondary" className="text-xs">
-                      {reason.count}
-                    </Badge>
-                  </div>
+        {/* Overview Tab */}
+        <TabsContent value="overview" className="space-y-4">
+          {/* Filters */}
+          <div className="flex items-center gap-2">
+            <Select value={days.toString()} onValueChange={(v) => setDays(parseInt(v))}>
+              <SelectTrigger className="w-[120px]">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="7">Last 7 days</SelectItem>
+                <SelectItem value="14">Last 14 days</SelectItem>
+                <SelectItem value="30">Last 30 days</SelectItem>
+                <SelectItem value="90">Last 90 days</SelectItem>
+              </SelectContent>
+            </Select>
+            <Select
+              value={agentId ?? "all"}
+              onValueChange={(v) => setAgentId(v === "all" ? undefined : v)}
+            >
+              <SelectTrigger className="w-[180px]">
+                <SelectValue placeholder="All agents" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All agents</SelectItem>
+                {agents.map((agent) => (
+                  <SelectItem key={agent.id} value={agent.id}>
+                    {agent.name}
+                  </SelectItem>
                 ))}
-              </div>
-            )}
-          </CardContent>
-        </Card>
-      </div>
+              </SelectContent>
+            </Select>
+          </div>
 
-      {/* Score Trend */}
-      {trends && trends.dates.length > 0 && (
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium">Score Trend</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="h-32 flex items-end gap-1">
-              {trends.values.map((value, index) => (
-                <div
-                  key={index}
-                  className="flex-1 bg-primary/20 hover:bg-primary/40 transition-colors rounded-t"
-                  style={{
-                    height: `${Math.max((value / 100) * 100, 5)}%`,
-                  }}
-                  title={`${trends.dates[index]}: ${value}`}
-                />
-              ))}
-            </div>
-            <div className="mt-2 flex justify-between text-xs text-muted-foreground">
-              <span>{trends.dates[0]}</span>
-              <span>{trends.dates[trends.dates.length - 1]}</span>
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Recent Evaluations */}
-      <Card>
-        <CardHeader className="pb-2">
-          <CardTitle className="text-sm font-medium">Recent Evaluations</CardTitle>
-        </CardHeader>
-        <CardContent>
-          {!evaluationsData?.evaluations || evaluationsData.evaluations.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-8 text-center">
-              <Activity className="mb-2 h-8 w-8 text-muted-foreground/30" />
-              <p className="text-sm text-muted-foreground">No evaluations yet</p>
-              <p className="text-xs text-muted-foreground">
-                Evaluations will appear here after calls are completed
-              </p>
-            </div>
-          ) : (
-            <div className="space-y-2">
-              {evaluationsData.evaluations.slice(0, 10).map((evaluation) => (
-                <div
-                  key={evaluation.id}
-                  className="flex items-center justify-between rounded-lg border p-3"
-                >
-                  <div className="flex items-center gap-3">
-                    <div
-                      className={`flex h-8 w-8 items-center justify-center rounded-md ${
-                        evaluation.passed ? "bg-green-100" : "bg-red-100"
-                      }`}
-                    >
-                      {evaluation.passed ? (
-                        <CheckCircle className="h-4 w-4 text-green-600" />
-                      ) : (
-                        <XCircle className="h-4 w-4 text-red-600" />
-                      )}
-                    </div>
+          {/* Stats Cards */}
+          <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-4">
+            <Card>
+              <CardContent className="p-4">
+                {metricsLoading ? (
+                  <Skeleton className="h-16 w-full" />
+                ) : (
+                  <div className="flex items-center justify-between">
                     <div>
-                      <p className="text-sm font-medium">
-                        Call {evaluation.call_id.slice(0, 8)}...
-                      </p>
-                      <p className="text-xs text-muted-foreground">
-                        {new Date(evaluation.created_at).toLocaleDateString()}
+                      <p className="text-xs text-muted-foreground">Pass Rate</p>
+                      <p className={`text-2xl font-bold ${getScoreColor((metrics?.pass_rate ?? 0) * 100)}`}>
+                        {((metrics?.pass_rate ?? 0) * 100).toFixed(1)}%
                       </p>
                     </div>
+                    <CheckCircle className="h-8 w-8 text-green-500/20" />
                   </div>
-                  <div className="flex items-center gap-2">
-                    <Badge className={getScoreBgColor(evaluation.overall_score)}>
-                      {evaluation.overall_score}
-                    </Badge>
-                    <Badge variant={evaluation.passed ? "default" : "destructive"}>
-                      {evaluation.passed ? "Pass" : "Fail"}
-                    </Badge>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardContent className="p-4">
+                {metricsLoading ? (
+                  <Skeleton className="h-16 w-full" />
+                ) : (
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-xs text-muted-foreground">Average Score</p>
+                      <p className={`text-2xl font-bold ${getScoreColor(metrics?.average_score ?? 0)}`}>
+                        {formatScore(metrics?.average_score)}
+                      </p>
+                    </div>
+                    <TrendingUp className="h-8 w-8 text-blue-500/20" />
                   </div>
-                </div>
-              ))}
+                )}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardContent className="p-4">
+                {metricsLoading ? (
+                  <Skeleton className="h-16 w-full" />
+                ) : (
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-xs text-muted-foreground">Total Evaluations</p>
+                      <p className="text-2xl font-bold">{metrics?.total_evaluations ?? 0}</p>
+                    </div>
+                    <Activity className="h-8 w-8 text-purple-500/20" />
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardContent className="p-4">
+                {metricsLoading ? (
+                  <Skeleton className="h-16 w-full" />
+                ) : (
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-xs text-muted-foreground">Failed Calls</p>
+                      <p className="text-2xl font-bold text-red-600">{metrics?.failed_count ?? 0}</p>
+                    </div>
+                    <XCircle className="h-8 w-8 text-red-500/20" />
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* Score Breakdown */}
+          <div className="grid gap-4 lg:grid-cols-2">
+            <ScoreBreakdownCard metrics={metrics} metricsLoading={metricsLoading} formatScore={formatScore} />
+            <FailureReasonsCard failureReasons={failureReasons} />
+          </div>
+
+          {/* Score Trend */}
+          {trends && trends.dates.length > 0 && (
+            <ScoreTrendCard trends={trends} />
+          )}
+
+          {/* Recent Evaluations */}
+          <RecentEvaluationsCard
+            evaluationsData={evaluationsData}
+            getScoreBgColor={getScoreBgColor}
+          />
+        </TabsContent>
+
+        {/* Scenarios Tab */}
+        <TabsContent value="scenarios">
+          <ScenarioManager
+            workspaceId={activeWorkspaceId}
+            onCreateScenario={() => {
+              setSelectedScenario(null);
+              setScenarioFormMode("create");
+              setScenarioFormOpen(true);
+            }}
+            onEditScenario={(scenario) => {
+              setSelectedScenario(scenario);
+              setScenarioFormMode("edit");
+              setScenarioFormOpen(true);
+            }}
+            onViewScenario={(scenario) => {
+              setSelectedScenario(scenario);
+              setScenarioFormMode("view");
+              setScenarioFormOpen(true);
+            }}
+            selectedScenarioIds={selectedScenarioIds}
+            onSelectionChange={setSelectedScenarioIds}
+          />
+          
+          {/* Run Selected Tests Button */}
+          {selectedScenarioIds.length > 0 && (
+            <div className="fixed bottom-4 right-4 z-50">
+              <Button onClick={handleRunSelectedTests} size="lg" className="shadow-lg">
+                <Play className="mr-2 h-4 w-4" />
+                Run {selectedScenarioIds.length} Selected Test{selectedScenarioIds.length !== 1 ? "s" : ""}
+              </Button>
             </div>
           )}
-        </CardContent>
-      </Card>
+          
+          {/* Scenario Form Dialog */}
+          <ScenarioForm
+            open={scenarioFormOpen}
+            onOpenChange={setScenarioFormOpen}
+            scenario={selectedScenario}
+            workspaceId={activeWorkspaceId}
+            mode={scenarioFormMode}
+          />
+        </TabsContent>
+
+        {/* Settings Tab */}
+        <TabsContent value="settings">
+          {activeWorkspaceId ? (
+            <QASettingsPanel workspaceId={activeWorkspaceId} />
+          ) : (
+            <Card>
+              <CardContent className="flex flex-col items-center justify-center py-8">
+                <FolderOpen className="mb-2 h-8 w-8 text-muted-foreground/50" />
+                <p className="text-sm text-muted-foreground">
+                  Select a workspace to configure QA settings
+                </p>
+              </CardContent>
+            </Card>
+          )}
+        </TabsContent>
+      </Tabs>
+
+      {/* Test Runner Sheet */}
+      <TestRunner
+        open={testRunnerOpen}
+        onOpenChange={setTestRunnerOpen}
+        initialSelectedScenarios={selectedScenarioIds}
+        onTestComplete={handleTestComplete}
+      />
     </div>
+  );
+}
+
+
+// =============================================================================
+// Sub-components
+// =============================================================================
+
+interface ScoreBreakdownCardProps {
+  metrics?: {
+    score_breakdown?: {
+      intent_completion: number;
+      tool_usage: number;
+      compliance: number;
+      response_quality: number;
+    };
+  };
+  metricsLoading: boolean;
+  formatScore: (score: number | undefined) => string | number;
+}
+
+function ScoreBreakdownCard({ metrics, metricsLoading, formatScore }: ScoreBreakdownCardProps) {
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm font-medium">Score Breakdown</CardTitle>
+      </CardHeader>
+      <CardContent>
+        {metricsLoading ? (
+          <div className="space-y-4">
+            <Skeleton className="h-8 w-full" />
+            <Skeleton className="h-8 w-full" />
+            <Skeleton className="h-8 w-full" />
+            <Skeleton className="h-8 w-full" />
+          </div>
+        ) : (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Target className="h-4 w-4 text-muted-foreground" />
+                <span className="text-sm">Intent Completion</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="h-2 w-24 overflow-hidden rounded-full bg-muted">
+                  <div
+                    className="h-full bg-blue-500"
+                    style={{
+                      width: `${metrics?.score_breakdown?.intent_completion ?? 0}%`,
+                    }}
+                  />
+                </div>
+                <span className="w-8 text-sm font-medium">
+                  {formatScore(metrics?.score_breakdown?.intent_completion)}
+                </span>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Activity className="h-4 w-4 text-muted-foreground" />
+                <span className="text-sm">Tool Usage</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="h-2 w-24 overflow-hidden rounded-full bg-muted">
+                  <div
+                    className="h-full bg-green-500"
+                    style={{
+                      width: `${metrics?.score_breakdown?.tool_usage ?? 0}%`,
+                    }}
+                  />
+                </div>
+                <span className="w-8 text-sm font-medium">
+                  {formatScore(metrics?.score_breakdown?.tool_usage)}
+                </span>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Shield className="h-4 w-4 text-muted-foreground" />
+                <span className="text-sm">Compliance</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="h-2 w-24 overflow-hidden rounded-full bg-muted">
+                  <div
+                    className="h-full bg-purple-500"
+                    style={{
+                      width: `${metrics?.score_breakdown?.compliance ?? 0}%`,
+                    }}
+                  />
+                </div>
+                <span className="w-8 text-sm font-medium">
+                  {formatScore(metrics?.score_breakdown?.compliance)}
+                </span>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <MessageSquare className="h-4 w-4 text-muted-foreground" />
+                <span className="text-sm">Response Quality</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="h-2 w-24 overflow-hidden rounded-full bg-muted">
+                  <div
+                    className="h-full bg-orange-500"
+                    style={{
+                      width: `${metrics?.score_breakdown?.response_quality ?? 0}%`,
+                    }}
+                  />
+                </div>
+                <span className="w-8 text-sm font-medium">
+                  {formatScore(metrics?.score_breakdown?.response_quality)}
+                </span>
+              </div>
+            </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+interface FailureReasonsCardProps {
+  failureReasons: { reason: string; count: number }[];
+}
+
+function FailureReasonsCard({ failureReasons }: FailureReasonsCardProps) {
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm font-medium flex items-center gap-2">
+          <AlertTriangle className="h-4 w-4" />
+          Top Failure Reasons
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        {failureReasons.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-8 text-center">
+            <CheckCircle className="mb-2 h-8 w-8 text-green-500/30" />
+            <p className="text-sm text-muted-foreground">No failures in this period</p>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {failureReasons.map((reason, index) => (
+              <div key={index} className="flex items-center justify-between">
+                <span className="text-sm truncate max-w-[200px]">{reason.reason}</span>
+                <Badge variant="secondary" className="text-xs">
+                  {reason.count}
+                </Badge>
+              </div>
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+interface ScoreTrendCardProps {
+  trends: { dates: string[]; values: number[] };
+}
+
+function ScoreTrendCard({ trends }: ScoreTrendCardProps) {
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm font-medium">Score Trend</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <div className="h-32 flex items-end gap-1">
+          {trends.values.map((value, index) => (
+            <div
+              key={index}
+              className="flex-1 bg-primary/20 hover:bg-primary/40 transition-colors rounded-t"
+              style={{
+                height: `${Math.max((value / 100) * 100, 5)}%`,
+              }}
+              title={`${trends.dates[index]}: ${value}`}
+            />
+          ))}
+        </div>
+        <div className="mt-2 flex justify-between text-xs text-muted-foreground">
+          <span>{trends.dates[0]}</span>
+          <span>{trends.dates[trends.dates.length - 1]}</span>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+interface RecentEvaluationsCardProps {
+  evaluationsData?: {
+    evaluations: Array<{
+      id: string;
+      call_id: string;
+      passed: boolean;
+      overall_score: number;
+      created_at: string;
+    }>;
+  };
+  getScoreBgColor: (score: number) => string;
+}
+
+function RecentEvaluationsCard({ evaluationsData, getScoreBgColor }: RecentEvaluationsCardProps) {
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm font-medium">Recent Evaluations</CardTitle>
+      </CardHeader>
+      <CardContent>
+        {!evaluationsData?.evaluations || evaluationsData.evaluations.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-8 text-center">
+            <Activity className="mb-2 h-8 w-8 text-muted-foreground/30" />
+            <p className="text-sm text-muted-foreground">No evaluations yet</p>
+            <p className="text-xs text-muted-foreground">
+              Evaluations will appear here after calls are completed
+            </p>
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {evaluationsData.evaluations.slice(0, 10).map((evaluation) => (
+              <div
+                key={evaluation.id}
+                className="flex items-center justify-between rounded-lg border p-3"
+              >
+                <div className="flex items-center gap-3">
+                  <div
+                    className={`flex h-8 w-8 items-center justify-center rounded-md ${
+                      evaluation.passed ? "bg-green-100" : "bg-red-100"
+                    }`}
+                  >
+                    {evaluation.passed ? (
+                      <CheckCircle className="h-4 w-4 text-green-600" />
+                    ) : (
+                      <XCircle className="h-4 w-4 text-red-600" />
+                    )}
+                  </div>
+                  <div>
+                    <p className="text-sm font-medium">
+                      Call {evaluation.call_id.slice(0, 8)}...
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      {new Date(evaluation.created_at).toLocaleDateString()}
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Badge className={getScoreBgColor(evaluation.overall_score)}>
+                    {evaluation.overall_score}
+                  </Badge>
+                  <Badge variant={evaluation.passed ? "default" : "destructive"}>
+                    {evaluation.passed ? "Pass" : "Fail"}
+                  </Badge>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }

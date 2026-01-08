@@ -1303,3 +1303,163 @@ class TestTestingSummaryEndpoint:
         assert response.status_code == 200
         data = response.json()
         assert data["errors"] >= 1
+
+
+# =============================================================================
+# Duplicate Scenario Tests
+# =============================================================================
+
+
+class TestDuplicateScenarioEndpoint:
+    """Test scenario duplication endpoint."""
+
+    @pytest.mark.asyncio
+    async def test_duplicate_own_scenario(
+        self,
+        authenticated_test_client: tuple[AsyncClient, User],
+        test_session: AsyncSession,
+        create_test_scenario: Any,
+    ) -> None:
+        """Test POST /testing/scenarios/{id}/duplicate duplicates user's own scenario."""
+        client, user = authenticated_test_client
+
+        # Create a user scenario
+        scenario = await create_test_scenario(
+            user_id=user.id,
+            name="My Custom Scenario",
+            description="Test description",
+            tags=["custom", "test"],
+        )
+
+        response = await client.post(f"/api/v1/testing/scenarios/{scenario.id}/duplicate")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["message"] == "Scenario duplicated successfully"
+        assert data["original_id"] == str(scenario.id)
+        assert "new_scenario" in data
+
+        new_scenario = data["new_scenario"]
+        assert new_scenario["name"] == "My Custom Scenario (Copy)"
+        assert new_scenario["description"] == "Test description"
+        assert new_scenario["is_built_in"] is False
+        assert new_scenario["id"] != str(scenario.id)
+        assert new_scenario["tags"] == ["custom", "test"]
+
+    @pytest.mark.asyncio
+    async def test_duplicate_built_in_scenario(
+        self,
+        authenticated_test_client: tuple[AsyncClient, User],
+        test_session: AsyncSession,
+        create_test_scenario: Any,
+    ) -> None:
+        """Test POST /testing/scenarios/{id}/duplicate duplicates built-in scenario."""
+        client, user = authenticated_test_client
+
+        # Create a built-in scenario
+        scenario = await create_test_scenario(
+            is_built_in=True,
+            name="Built-in Greeting Test",
+            category=ScenarioCategory.GREETING.value,
+        )
+
+        response = await client.post(f"/api/v1/testing/scenarios/{scenario.id}/duplicate")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["message"] == "Scenario duplicated successfully"
+
+        new_scenario = data["new_scenario"]
+        assert new_scenario["name"] == "Built-in Greeting Test (Copy)"
+        assert new_scenario["is_built_in"] is False  # Duplicate is never built-in
+        assert new_scenario["category"] == "greeting"
+
+    @pytest.mark.asyncio
+    async def test_duplicate_scenario_not_found(
+        self,
+        authenticated_test_client: tuple[AsyncClient, User],
+    ) -> None:
+        """Test POST /testing/scenarios/{id}/duplicate returns 404 for non-existent scenario."""
+        client, _user = authenticated_test_client
+
+        fake_id = str(uuid.uuid4())
+        response = await client.post(f"/api/v1/testing/scenarios/{fake_id}/duplicate")
+
+        assert response.status_code == 404
+        data = response.json()
+        assert "detail" in data
+
+    @pytest.mark.asyncio
+    async def test_duplicate_other_user_scenario_not_accessible(
+        self,
+        authenticated_test_client: tuple[AsyncClient, User],
+        test_session: AsyncSession,
+        create_test_scenario: Any,
+        create_test_user: Any,
+    ) -> None:
+        """Test that users cannot duplicate other users' custom scenarios."""
+        client, _user = authenticated_test_client
+
+        # Create scenario for another user
+        other_user = await create_test_user(email="other@example.com")
+        scenario = await create_test_scenario(
+            user_id=other_user.id,
+            name="Other User Scenario",
+        )
+
+        response = await client.post(f"/api/v1/testing/scenarios/{scenario.id}/duplicate")
+
+        # Should return 404 (not found) due to multi-tenant isolation
+        assert response.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_duplicate_scenario_invalid_uuid(
+        self,
+        authenticated_test_client: tuple[AsyncClient, User],
+    ) -> None:
+        """Test POST /testing/scenarios/{id}/duplicate returns 400 for invalid UUID."""
+        client, _user = authenticated_test_client
+
+        response = await client.post("/api/v1/testing/scenarios/not-a-uuid/duplicate")
+
+        assert response.status_code == 400
+        data = response.json()
+        assert "detail" in data
+
+    @pytest.mark.asyncio
+    async def test_duplicate_preserves_all_fields(
+        self,
+        authenticated_test_client: tuple[AsyncClient, User],
+        test_session: AsyncSession,
+        create_test_scenario: Any,
+    ) -> None:
+        """Test that duplicate preserves all scenario fields."""
+        client, user = authenticated_test_client
+
+        # Create a scenario with all fields populated
+        scenario = await create_test_scenario(
+            user_id=user.id,
+            name="Full Scenario",
+            description="Full description",
+            category=ScenarioCategory.BOOKING.value,
+            difficulty=ScenarioDifficulty.HARD.value,
+            caller_persona={"name": "John", "mood": "frustrated", "goal": "book appointment"},
+            expected_behaviors=["Acknowledge frustration", "Offer solutions"],
+            success_criteria={"min_score": 80, "required_behaviors": ["Acknowledge frustration"]},
+            tags=["booking", "hard", "frustrated"],
+        )
+
+        response = await client.post(f"/api/v1/testing/scenarios/{scenario.id}/duplicate")
+
+        assert response.status_code == 200
+        new_scenario = response.json()["new_scenario"]
+
+        # Verify all fields are preserved
+        assert new_scenario["description"] == "Full description"
+        assert new_scenario["category"] == "booking"
+        assert new_scenario["difficulty"] == "hard"
+        assert new_scenario["caller_persona"]["name"] == "John"
+        assert new_scenario["caller_persona"]["mood"] == "frustrated"
+        assert "Acknowledge frustration" in new_scenario["expected_behaviors"]
+        assert new_scenario["success_criteria"]["min_score"] == 80
+        assert new_scenario["tags"] == ["booking", "hard", "frustrated"]

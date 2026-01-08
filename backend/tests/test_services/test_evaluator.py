@@ -1,6 +1,109 @@
 """Tests for QA Evaluator service (Task 8.5.4)."""
 
-from app.services.qa.evaluator import QAEvaluator
+from unittest.mock import MagicMock
+
+from app.models.workspace import Workspace
+from app.services.qa.evaluator import (
+    EffectiveQASettings,
+    QAEvaluator,
+    get_effective_qa_settings,
+)
+
+
+class TestGetEffectiveQASettings:
+    """Test get_effective_qa_settings helper function."""
+
+    def test_returns_global_settings_when_no_workspace(self) -> None:
+        """Test that global settings are returned when workspace is None."""
+        result = get_effective_qa_settings(None)
+
+        assert result.source == "global"
+        assert isinstance(result, EffectiveQASettings)
+
+    def test_returns_global_settings_when_inherit_global_true(self) -> None:
+        """Test that global settings are returned when inherit_global is True."""
+        workspace = MagicMock(spec=Workspace)
+        workspace.settings = {"qa": {"inherit_global": True, "pass_threshold": 90}}
+
+        result = get_effective_qa_settings(workspace)
+
+        assert result.source == "global"
+        # Should NOT use workspace's pass_threshold since inherit_global=True
+
+    def test_returns_workspace_settings_when_inherit_global_false(self) -> None:
+        """Test that workspace settings are returned when inherit_global is False."""
+        workspace = MagicMock(spec=Workspace)
+        workspace.settings = {
+            "qa": {
+                "inherit_global": False,
+                "qa_enabled": True,
+                "auto_evaluate": False,
+                "pass_threshold": 85,
+                "evaluation_model": "claude-3-haiku-20240307",
+            }
+        }
+
+        result = get_effective_qa_settings(workspace)
+
+        assert result.source == "workspace"
+        assert result.qa_enabled is True
+        assert result.auto_evaluate is False
+        assert result.pass_threshold == 85
+        assert result.evaluation_model == "claude-3-haiku-20240307"
+
+    def test_returns_defaults_when_workspace_has_empty_settings(self) -> None:
+        """Test that defaults are used when workspace has empty settings."""
+        workspace = MagicMock(spec=Workspace)
+        workspace.settings = {}
+
+        result = get_effective_qa_settings(workspace)
+
+        # Empty settings means inherit_global defaults to True
+        assert result.source == "global"
+
+    def test_returns_defaults_when_workspace_settings_is_none(self) -> None:
+        """Test that defaults are used when workspace.settings is None."""
+        workspace = MagicMock(spec=Workspace)
+        workspace.settings = None
+
+        result = get_effective_qa_settings(workspace)
+
+        assert result.source == "global"
+
+    def test_partial_workspace_settings_use_defaults(self) -> None:
+        """Test that partial workspace settings use defaults for missing fields."""
+        workspace = MagicMock(spec=Workspace)
+        workspace.settings = {
+            "qa": {
+                "inherit_global": False,
+                "pass_threshold": 90,
+                # Other fields not specified - should use defaults
+            }
+        }
+
+        result = get_effective_qa_settings(workspace)
+
+        assert result.source == "workspace"
+        assert result.pass_threshold == 90
+        # Defaults for unspecified fields
+        assert result.qa_enabled is True
+        assert result.auto_evaluate is True
+        assert result.evaluation_model == "claude-sonnet-4-20250514"
+
+    def test_workspace_qa_disabled(self) -> None:
+        """Test workspace with QA disabled."""
+        workspace = MagicMock(spec=Workspace)
+        workspace.settings = {
+            "qa": {
+                "inherit_global": False,
+                "qa_enabled": False,
+            }
+        }
+
+        result = get_effective_qa_settings(workspace)
+
+        assert result.source == "workspace"
+        assert result.qa_enabled is False
 
 
 class TestParseEvaluationResponse:

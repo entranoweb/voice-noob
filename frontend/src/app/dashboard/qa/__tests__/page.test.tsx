@@ -1,10 +1,20 @@
 /**
  * Tests for QA Dashboard Page (Task 20.5.5)
  */
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import QADashboardPage from "../page";
+import { http, HttpResponse } from "msw";
+import { server } from "@/test/test-utils";
+
+// Extend globalThis for mock router
+declare global {
+  var mockUseRouter: {
+    push: () => void;
+    replace: () => void;
+    prefetch: () => void;
+  };
+}
 
 // Mock next/navigation
 const mockPush = () => {};
@@ -18,16 +28,8 @@ globalThis.mockUseRouter = {
   prefetch: mockPrefetch,
 };
 
-// Import mocks
-import { http, HttpResponse } from "msw";
-import { server } from "@/test/test-utils";
-
 // Mock useAuth hook
 const mockUser = { id: 1, email: "test@example.com" };
-
-// Setup module mocks
-import * as useAuthModule from "@/hooks/use-auth";
-import * as navigationModule from "next/navigation";
 
 // Mock the modules
 vi.mock("@/hooks/use-auth", () => ({
@@ -41,6 +43,9 @@ vi.mock("next/navigation", () => ({
   useRouter: () => globalThis.mockUseRouter,
   useSearchParams: () => new URLSearchParams(),
 }));
+
+// Import component after mocks are set up
+import QADashboardPage from "../page";
 
 // Wrap with QueryClientProvider for tests
 const renderWithProviders = (component: React.ReactNode) => {

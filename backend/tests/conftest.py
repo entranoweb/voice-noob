@@ -565,3 +565,39 @@ def mock_anthropic_response() -> Any:
         ],
         usage=MagicMock(input_tokens=500, output_tokens=200),
     )
+
+
+@pytest_asyncio.fixture
+async def test_workspace(
+    authenticated_test_client: tuple[AsyncClient, User],
+    test_engine: Any,
+) -> AsyncGenerator[Workspace, None]:
+    """Create a test workspace owned by the authenticated user.
+
+    This fixture creates a workspace that belongs to the authenticated test user,
+    suitable for testing workspace-specific endpoints.
+    """
+    import uuid
+
+    _client, user = authenticated_test_client
+
+    # Create a fresh session for workspace creation
+    test_async_session = async_sessionmaker(
+        test_engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+        autocommit=False,
+        autoflush=False,
+    )
+
+    async with test_async_session() as session:
+        workspace = Workspace(
+            id=uuid.uuid4(),
+            name="Test Workspace",
+            user_id=user.id,
+            settings={},
+        )
+        session.add(workspace)
+        await session.commit()
+        await session.refresh(workspace)
+        yield workspace

@@ -208,6 +208,14 @@ class TestScenarioUpdate(BaseModel):
     tags: list[str] | None = None
 
 
+class DuplicateScenarioResponse(BaseModel):
+    """Response after duplicating a scenario."""
+
+    message: str
+    original_id: str
+    new_scenario: TestScenarioResponse
+
+
 # =============================================================================
 # Scenario Endpoints
 # =============================================================================
@@ -525,6 +533,85 @@ async def delete_scenario(
     await db.commit()
 
     log.info("scenario_deleted", scenario_id=str(scenario_uuid))
+
+
+@router.post("/scenarios/{scenario_id}/duplicate", response_model=DuplicateScenarioResponse)
+async def duplicate_scenario(
+    scenario_id: str,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+) -> DuplicateScenarioResponse:
+    """Duplicate a test scenario (built-in or user's own).
+
+    Creates a copy of the scenario owned by the current user.
+    Built-in scenarios can be duplicated to create custom versions.
+    """
+    log = logger.bind(user_id=current_user.id, scenario_id=scenario_id)
+    log.info("duplicating_scenario")
+
+    scenario_uuid = _parse_uuid(scenario_id, "scenario_id")
+
+    # Fetch the scenario - user can duplicate built-in OR their own scenarios
+    result = await db.execute(
+        select(TestScenario).where(
+            TestScenario.id == scenario_uuid,
+            or_(
+                TestScenario.is_built_in == True,  # noqa: E712
+                TestScenario.user_id == current_user.id,
+            ),
+        )
+    )
+    scenario = result.scalar_one_or_none()
+
+    if not scenario:
+        raise HTTPException(status_code=404, detail="Scenario not found")
+
+    # Create a duplicate with a new name
+    new_scenario = TestScenario(
+        user_id=current_user.id,
+        workspace_id=scenario.workspace_id,
+        name=f"{scenario.name} (Copy)",
+        description=scenario.description,
+        category=scenario.category,
+        difficulty=scenario.difficulty,
+        caller_persona=scenario.caller_persona,
+        conversation_flow=scenario.conversation_flow,
+        expected_behaviors=scenario.expected_behaviors,
+        expected_tool_calls=scenario.expected_tool_calls,
+        success_criteria=scenario.success_criteria,
+        is_active=True,
+        is_built_in=False,  # Duplicates are never built-in
+        tags=scenario.tags,
+    )
+
+    db.add(new_scenario)
+    await db.commit()
+    await db.refresh(new_scenario)
+
+    log.info(
+        "scenario_duplicated",
+        original_id=str(scenario_uuid),
+        new_id=str(new_scenario.id),
+    )
+
+    return DuplicateScenarioResponse(
+        message="Scenario duplicated successfully",
+        original_id=str(scenario_uuid),
+        new_scenario=TestScenarioResponse(
+            id=str(new_scenario.id),
+            name=new_scenario.name,
+            description=new_scenario.description,
+            category=new_scenario.category,
+            difficulty=new_scenario.difficulty,
+            caller_persona=new_scenario.caller_persona,
+            expected_behaviors=new_scenario.expected_behaviors,
+            success_criteria=new_scenario.success_criteria,
+            is_active=new_scenario.is_active,
+            is_built_in=new_scenario.is_built_in,
+            tags=new_scenario.tags,
+            created_at=new_scenario.created_at,
+        ),
+    )
 
 
 # =============================================================================

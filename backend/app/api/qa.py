@@ -184,6 +184,40 @@ class QAStatusResponse(BaseModel):
     api_key_configured: bool
 
 
+# =============================================================================
+# Workspace QA Settings Schemas
+# =============================================================================
+
+
+class WorkspaceQASettings(BaseModel):
+    """Workspace-specific QA settings."""
+
+    qa_enabled: bool = True
+    auto_evaluate: bool = True
+    pass_threshold: int = 70
+    evaluation_model: str = "claude-sonnet-4-20250514"
+    inherit_global: bool = True  # If true, use global settings
+
+
+class WorkspaceQASettingsUpdate(BaseModel):
+    """Update schema for workspace QA settings."""
+
+    qa_enabled: bool | None = None
+    auto_evaluate: bool | None = None
+    pass_threshold: int | None = None
+    evaluation_model: str | None = None
+    inherit_global: bool | None = None
+
+
+class WorkspaceQASettingsResponse(BaseModel):
+    """Response for workspace QA settings with metadata."""
+
+    workspace_id: str
+    settings: WorkspaceQASettings
+    global_settings: QAStatusResponse
+    effective_settings: WorkspaceQASettings  # What's actually used (after inheritance)
+
+
 class CircuitBreakerStatus(BaseModel):
     """Circuit breaker status."""
 
@@ -222,6 +256,177 @@ async def get_qa_status(
         evaluation_model=settings.QA_EVALUATION_MODEL,
         default_threshold=settings.QA_DEFAULT_THRESHOLD,
         api_key_configured=bool(settings.ANTHROPIC_API_KEY),
+    )
+
+
+# =============================================================================
+# Workspace QA Settings Endpoints
+# =============================================================================
+
+
+def _get_global_qa_settings() -> QAStatusResponse:
+    """Get global QA settings from environment configuration."""
+    return QAStatusResponse(
+        enabled=settings.QA_ENABLED,
+        auto_evaluate=settings.QA_AUTO_EVALUATE,
+        evaluation_model=settings.QA_EVALUATION_MODEL,
+        default_threshold=settings.QA_DEFAULT_THRESHOLD,
+        api_key_configured=bool(settings.ANTHROPIC_API_KEY),
+    )
+
+
+def _get_workspace_qa_settings(workspace: Workspace) -> WorkspaceQASettings:
+    """Extract QA settings from workspace settings JSON.
+
+    Args:
+        workspace: Workspace model instance
+
+    Returns:
+        WorkspaceQASettings with values from workspace or defaults
+    """
+    ws_settings = workspace.settings or {}
+    qa_settings = ws_settings.get("qa", {})
+
+    return WorkspaceQASettings(
+        qa_enabled=qa_settings.get("qa_enabled", True),
+        auto_evaluate=qa_settings.get("auto_evaluate", True),
+        pass_threshold=qa_settings.get("pass_threshold", 70),
+        evaluation_model=qa_settings.get("evaluation_model", "claude-sonnet-4-20250514"),
+        inherit_global=qa_settings.get("inherit_global", True),
+    )
+
+
+def _get_effective_qa_settings(
+    workspace_settings: WorkspaceQASettings,
+    global_settings: QAStatusResponse,
+) -> WorkspaceQASettings:
+    """Calculate effective QA settings after applying inheritance.
+
+    Args:
+        workspace_settings: Workspace-specific settings
+        global_settings: Global settings from environment
+
+    Returns:
+        Effective settings to use for this workspace
+    """
+    if workspace_settings.inherit_global:
+        # Use global settings
+        return WorkspaceQASettings(
+            qa_enabled=global_settings.enabled,
+            auto_evaluate=global_settings.auto_evaluate,
+            pass_threshold=global_settings.default_threshold,
+            evaluation_model=global_settings.evaluation_model,
+            inherit_global=True,
+        )
+    # Use workspace-specific settings
+    return workspace_settings
+
+
+@router.get("/workspace/{workspace_id}/settings", response_model=WorkspaceQASettingsResponse)
+@limiter.limit("30/minute")
+async def get_workspace_qa_settings(
+    workspace_id: str,
+    request: Request,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+) -> WorkspaceQASettingsResponse:
+    """Get QA settings for a specific workspace.
+
+    Returns workspace-specific settings, global settings, and effective settings
+    (what's actually used after applying inheritance rules).
+
+    Args:
+        workspace_id: Workspace ID
+        current_user: Authenticated user
+        db: Database session
+    """
+    log = logger.bind(user_id=current_user.id, workspace_id=workspace_id)
+    log.info("getting_workspace_qa_settings")
+
+    workspace_uuid = _parse_uuid(workspace_id, "workspace_id")
+
+    # Verify ownership
+    workspace = await _verify_workspace_ownership(db, workspace_uuid, current_user.id)
+
+    # Get settings
+    global_settings = _get_global_qa_settings()
+    workspace_settings = _get_workspace_qa_settings(workspace)
+    effective_settings = _get_effective_qa_settings(workspace_settings, global_settings)
+
+    return WorkspaceQASettingsResponse(
+        workspace_id=str(workspace.id),
+        settings=workspace_settings,
+        global_settings=global_settings,
+        effective_settings=effective_settings,
+    )
+
+
+@router.put("/workspace/{workspace_id}/settings", response_model=WorkspaceQASettingsResponse)
+@limiter.limit("30/minute")
+async def update_workspace_qa_settings(
+    workspace_id: str,
+    body: WorkspaceQASettingsUpdate,
+    request: Request,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+) -> WorkspaceQASettingsResponse:
+    """Update QA settings for a specific workspace.
+
+    Only workspace owners can update settings. Settings are stored in the
+    workspace.settings JSON column under the 'qa' key.
+
+    Args:
+        workspace_id: Workspace ID
+        body: Settings to update (partial update supported)
+        current_user: Authenticated user
+        db: Database session
+    """
+    log = logger.bind(user_id=current_user.id, workspace_id=workspace_id)
+    log.info("updating_workspace_qa_settings")
+
+    workspace_uuid = _parse_uuid(workspace_id, "workspace_id")
+
+    # Verify ownership
+    workspace = await _verify_workspace_ownership(db, workspace_uuid, current_user.id)
+
+    # Get current settings
+    current_settings = workspace.settings or {}
+    qa_settings = current_settings.get("qa", {})
+
+    # Apply updates (only non-None values)
+    update_data = body.model_dump(exclude_none=True)
+    for key, value in update_data.items():
+        qa_settings[key] = value
+
+    # Validate pass_threshold range
+    if "pass_threshold" in qa_settings:
+        threshold = qa_settings["pass_threshold"]
+        if not (0 <= threshold <= 100):
+            raise HTTPException(
+                status_code=400,
+                detail="pass_threshold must be between 0 and 100",
+            )
+
+    # Update workspace settings
+    current_settings["qa"] = qa_settings
+    workspace.settings = current_settings
+
+    # Commit changes
+    await db.commit()
+    await db.refresh(workspace)
+
+    log.info("workspace_qa_settings_updated", settings=qa_settings)
+
+    # Return updated settings
+    global_settings = _get_global_qa_settings()
+    workspace_settings = _get_workspace_qa_settings(workspace)
+    effective_settings = _get_effective_qa_settings(workspace_settings, global_settings)
+
+    return WorkspaceQASettingsResponse(
+        workspace_id=str(workspace.id),
+        settings=workspace_settings,
+        global_settings=global_settings,
+        effective_settings=effective_settings,
     )
 
 

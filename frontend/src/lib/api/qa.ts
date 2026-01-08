@@ -186,6 +186,75 @@ export async function getQAStatus(): Promise<QAStatus> {
 }
 
 // =============================================================================
+// Workspace QA Settings
+// =============================================================================
+
+export interface WorkspaceQASettings {
+  qa_enabled: boolean;
+  auto_evaluate: boolean;
+  pass_threshold: number;
+  evaluation_model: string;
+  inherit_global: boolean;
+}
+
+export interface WorkspaceQASettingsUpdate {
+  qa_enabled?: boolean;
+  auto_evaluate?: boolean;
+  pass_threshold?: number;
+  evaluation_model?: string;
+  inherit_global?: boolean;
+}
+
+export interface WorkspaceQASettingsResponse {
+  workspace_id: string;
+  settings: WorkspaceQASettings;
+  global_settings: QAStatus;
+  effective_settings: WorkspaceQASettings;
+}
+
+/**
+ * Get QA settings for a specific workspace
+ */
+export async function getWorkspaceQASettings(
+  workspaceId: string
+): Promise<WorkspaceQASettingsResponse> {
+  const response = await fetch(`${API_BASE}/api/v1/qa/workspace/${workspaceId}/settings`, {
+    headers: getAuthHeaders(),
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: response.statusText }));
+    throw new Error(error.detail ?? "Failed to fetch workspace QA settings");
+  }
+
+  return response.json();
+}
+
+/**
+ * Update QA settings for a specific workspace
+ */
+export async function updateWorkspaceQASettings(
+  workspaceId: string,
+  settings: WorkspaceQASettingsUpdate
+): Promise<WorkspaceQASettingsResponse> {
+  const response = await fetch(`${API_BASE}/api/v1/qa/workspace/${workspaceId}/settings`, {
+    method: "PUT",
+    headers: {
+      ...getAuthHeaders(),
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(settings),
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: response.statusText }));
+    throw new Error(error.detail ?? "Failed to update workspace QA settings");
+  }
+
+  return response.json();
+}
+
+// =============================================================================
 // Evaluations
 // =============================================================================
 
@@ -418,6 +487,45 @@ export async function getAgentComparison(params: {
 // Test Scenarios
 // =============================================================================
 
+export interface TestScenarioCreate {
+  name: string;
+  description?: string | null;
+  category: string;
+  difficulty: string;
+  caller_persona: Record<string, unknown>;
+  conversation_flow: Array<Record<string, unknown>>;
+  expected_behaviors: string[];
+  expected_tool_calls?: Array<Record<string, unknown>> | null;
+  success_criteria: Record<string, unknown>;
+  workspace_id?: string | null;
+  tags?: string[] | null;
+}
+
+export interface TestScenarioUpdate {
+  name?: string;
+  description?: string | null;
+  category?: string;
+  difficulty?: string;
+  caller_persona?: Record<string, unknown>;
+  conversation_flow?: Array<Record<string, unknown>>;
+  expected_behaviors?: string[];
+  expected_tool_calls?: Array<Record<string, unknown>> | null;
+  success_criteria?: Record<string, unknown>;
+  is_active?: boolean;
+  tags?: string[] | null;
+}
+
+export interface SeedScenariosResponse {
+  message: string;
+  scenarios_created: number;
+}
+
+export interface DuplicateScenarioResponse {
+  message: string;
+  original_id: string;
+  new_scenario: TestScenario;
+}
+
 /**
  * List test scenarios
  */
@@ -459,6 +567,100 @@ export async function getScenario(scenarioId: string): Promise<TestScenario> {
   if (!response.ok) {
     const error = await response.json().catch(() => ({ detail: response.statusText }));
     throw new Error(error.detail ?? "Failed to fetch scenario");
+  }
+
+  return response.json();
+}
+
+/**
+ * Create a new test scenario
+ */
+export async function createScenario(data: TestScenarioCreate): Promise<TestScenario> {
+  const response = await fetch(`${API_BASE}/api/v1/testing/scenarios`, {
+    method: "POST",
+    headers: {
+      ...getAuthHeaders(),
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(data),
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: response.statusText }));
+    throw new Error(error.detail ?? "Failed to create scenario");
+  }
+
+  return response.json();
+}
+
+/**
+ * Update an existing test scenario
+ */
+export async function updateScenario(
+  scenarioId: string,
+  data: TestScenarioUpdate
+): Promise<TestScenario> {
+  const response = await fetch(`${API_BASE}/api/v1/testing/scenarios/${scenarioId}`, {
+    method: "PUT",
+    headers: {
+      ...getAuthHeaders(),
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(data),
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: response.statusText }));
+    throw new Error(error.detail ?? "Failed to update scenario");
+  }
+
+  return response.json();
+}
+
+/**
+ * Delete a test scenario
+ */
+export async function deleteScenario(scenarioId: string): Promise<void> {
+  const response = await fetch(`${API_BASE}/api/v1/testing/scenarios/${scenarioId}`, {
+    method: "DELETE",
+    headers: getAuthHeaders(),
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: response.statusText }));
+    throw new Error(error.detail ?? "Failed to delete scenario");
+  }
+}
+
+/**
+ * Duplicate a test scenario
+ */
+export async function duplicateScenario(scenarioId: string): Promise<DuplicateScenarioResponse> {
+  const response = await fetch(`${API_BASE}/api/v1/testing/scenarios/${scenarioId}/duplicate`, {
+    method: "POST",
+    headers: getAuthHeaders(),
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: response.statusText }));
+    throw new Error(error.detail ?? "Failed to duplicate scenario");
+  }
+
+  return response.json();
+}
+
+/**
+ * Seed built-in test scenarios
+ */
+export async function seedScenarios(): Promise<SeedScenariosResponse> {
+  const response = await fetch(`${API_BASE}/api/v1/testing/scenarios/seed`, {
+    method: "POST",
+    headers: getAuthHeaders(),
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: response.statusText }));
+    throw new Error(error.detail ?? "Failed to seed scenarios");
   }
 
   return response.json();
