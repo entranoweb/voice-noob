@@ -49,7 +49,7 @@ from app.db.session import AsyncSessionLocal, engine
 from app.middleware.request_tracing import RequestTracingMiddleware
 from app.middleware.security import SecurityHeadersMiddleware
 from app.models.user import User
-from app.monitoring import get_metrics_router
+from app.monitoring import get_metrics_router, loop_lag
 from app.services.call_registry import set_shutting_down, wait_for_calls_to_drain
 from app.services.campaign_worker import start_campaign_worker, stop_campaign_worker
 
@@ -141,10 +141,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:  # noqa: PLR0912
     except Exception:
         logger.exception("Failed to start campaign worker - campaigns will not process")
 
+    # Event-loop lag gauge: the saturation signal for real-time audio.
+    # Cheap (one 100ms-interval task) and safe to run everywhere.
+    loop_lag.start()
+    logger.info("Event-loop lag monitor started")
+
     yield
 
     # Shutdown
     logger.info("Shutting down application")
+
+    await loop_lag.stop()
 
     # Connection draining - wait for active calls to complete
     if settings.ENABLE_CONNECTION_DRAINING:

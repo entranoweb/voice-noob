@@ -85,10 +85,10 @@ async def enqueue_call(
         return False
 
     try:
-        redis: Redis = await get_redis()
+        redis: Redis[str] = await get_redis()
 
         # Check queue size limit
-        queue_size: int = await redis.llen(CALL_QUEUE_KEY)  # type: ignore[misc]
+        queue_size: int = await redis.llen(CALL_QUEUE_KEY)
         if queue_size >= settings.MAX_CALL_QUEUE_SIZE:
             logger.warning(
                 "queue_full",
@@ -109,10 +109,10 @@ async def enqueue_call(
 
         async with _queue_lock:
             # Add to queue (priority-based insertion not implemented for simplicity)
-            await redis.rpush(CALL_QUEUE_KEY, json.dumps(queued_call.to_dict()))  # type: ignore[misc]
+            await redis.rpush(CALL_QUEUE_KEY, json.dumps(queued_call.to_dict()))
 
             # Update stats
-            await redis.hincrby(QUEUE_STATS_KEY, "total_queued", 1)  # type: ignore[misc]
+            await redis.hincrby(QUEUE_STATS_KEY, "total_queued", 1)
 
         logger.info(
             "call_queued",
@@ -138,10 +138,10 @@ async def dequeue_call() -> QueuedCall | None:
         return None
 
     try:
-        redis: Redis = await get_redis()
+        redis: Redis[str] = await get_redis()
 
         async with _queue_lock:
-            data: str | None = await redis.lpop(CALL_QUEUE_KEY)  # type: ignore[misc]
+            data: str | None = await redis.lpop(CALL_QUEUE_KEY)
 
         if not data:
             return None
@@ -150,7 +150,7 @@ async def dequeue_call() -> QueuedCall | None:
         queued_call = QueuedCall.from_dict(call_data)
 
         # Update stats
-        await redis.hincrby(QUEUE_STATS_KEY, "total_dequeued", 1)  # type: ignore[misc]
+        await redis.hincrby(QUEUE_STATS_KEY, "total_dequeued", 1)
 
         wait_time = time.time() - queued_call.queued_at
         logger.info(
@@ -180,8 +180,8 @@ async def peek_queue(count: int = 10) -> list[QueuedCall]:
         return []
 
     try:
-        redis: Redis = await get_redis()
-        items: list[str] = await redis.lrange(CALL_QUEUE_KEY, 0, count - 1)  # type: ignore[misc]
+        redis: Redis[str] = await get_redis()
+        items: list[str] = await redis.lrange(CALL_QUEUE_KEY, 0, count - 1)
 
         calls: list[QueuedCall] = []
         for item in items:
@@ -208,8 +208,8 @@ async def get_queue_depth() -> int:
         return 0
 
     try:
-        redis: Redis = await get_redis()
-        depth: int = await redis.llen(CALL_QUEUE_KEY)  # type: ignore[misc]
+        redis: Redis[str] = await get_redis()
+        depth: int = await redis.llen(CALL_QUEUE_KEY)
         return depth
 
     except Exception:
@@ -227,10 +227,10 @@ async def get_queue_stats() -> dict[str, int | float]:
         return {"enabled": 0, "depth": 0}
 
     try:
-        redis: Redis = await get_redis()
+        redis: Redis[str] = await get_redis()
 
-        depth: int = await redis.llen(CALL_QUEUE_KEY)  # type: ignore[misc]
-        stats: dict[str, str] = await redis.hgetall(QUEUE_STATS_KEY)  # type: ignore[misc]
+        depth: int = await redis.llen(CALL_QUEUE_KEY)
+        stats: dict[str, str] = await redis.hgetall(QUEUE_STATS_KEY)
 
         return {
             "enabled": 1,
@@ -258,17 +258,17 @@ async def remove_from_queue(call_id: str) -> bool:
         return False
 
     try:
-        redis: Redis = await get_redis()
+        redis: Redis[str] = await get_redis()
 
         # Get all items and find the one to remove
         async with _queue_lock:
-            items: list[str] = await redis.lrange(CALL_QUEUE_KEY, 0, -1)  # type: ignore[misc]
+            items: list[str] = await redis.lrange(CALL_QUEUE_KEY, 0, -1)
 
             for item in items:
                 try:
                     call_data = json.loads(item)
                     if call_data.get("call_id") == call_id:
-                        removed: int = await redis.lrem(CALL_QUEUE_KEY, 1, item)  # type: ignore[misc]
+                        removed: int = await redis.lrem(CALL_QUEUE_KEY, 1, item)
                         if removed:
                             logger.info("call_removed_from_queue", call_id=call_id)
                             return True
@@ -293,10 +293,10 @@ async def clear_queue() -> int:
         return 0
 
     try:
-        redis: Redis = await get_redis()
+        redis: Redis[str] = await get_redis()
 
         async with _queue_lock:
-            depth: int = await redis.llen(CALL_QUEUE_KEY)  # type: ignore[misc]
+            depth: int = await redis.llen(CALL_QUEUE_KEY)
             await redis.delete(CALL_QUEUE_KEY)
 
         logger.info("queue_cleared", cleared_count=depth)
