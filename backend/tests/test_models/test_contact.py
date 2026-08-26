@@ -286,8 +286,10 @@ class TestContactRelationships:
         appointment1 = await create_test_appointment(contact_id=contact.id)
         appointment2 = await create_test_appointment(contact_id=contact.id)
 
-        # Refresh to load relationships
-        await test_session.refresh(contact)
+        # Relationships are lazy: refresh() alone reloads columns but not
+        # collections, so the first access would attempt lazy IO and raise
+        # MissingGreenlet under asyncio. Name the relationship to load it here.
+        await test_session.refresh(contact, attribute_names=["appointments"])
 
         # Access appointments through relationship
         assert len(contact.appointments) == 2
@@ -311,8 +313,10 @@ class TestContactRelationships:
         call1 = await create_test_call_interaction(contact_id=contact.id)
         call2 = await create_test_call_interaction(contact_id=contact.id)
 
-        # Refresh to load relationships
-        await test_session.refresh(contact)
+        # Relationships are lazy: refresh() alone reloads columns but not
+        # collections, so the first access would attempt lazy IO and raise
+        # MissingGreenlet under asyncio. Name the relationship to load it here.
+        await test_session.refresh(contact, attribute_names=["call_interactions"])
 
         # Access call interactions through relationship
         assert len(contact.call_interactions) == 2

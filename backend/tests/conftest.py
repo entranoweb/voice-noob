@@ -6,6 +6,7 @@ import os
 
 # Test database URL (using temp file SQLite for tests)
 import tempfile
+import uuid as uuid_module
 from collections.abc import AsyncGenerator, Generator
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,7 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import event
+from sqlalchemy import text as sa_text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -46,8 +48,40 @@ def event_loop() -> Generator[asyncio.AbstractEventLoop, None, None]:
 
 @pytest_asyncio.fixture(scope="function")
 async def test_engine() -> AsyncGenerator[Any, None]:
-    """Create test database engine with fresh database for each test."""
-    # Create a unique temp file for each test to ensure complete isolation
+    """Create a test database engine with a fresh schema for each test.
+
+    Uses PostgreSQL when TEST_DATABASE_URL is set (CI, and locally against the
+    compose stack), and falls back to a per-test SQLite file otherwise.
+
+    Prefer Postgres: it is what production runs, and the differences are not
+    cosmetic. SQLite silently drops tzinfo from ``DateTime(timezone=True)`` and
+    cannot compile Postgres ARRAY columns, so a suite run only on SQLite both
+    fails tests that are correct and hides bugs that are real.
+    """
+    postgres_url = os.getenv("TEST_DATABASE_URL")
+
+    if postgres_url:
+        # One schema per test keeps isolation without the cost of a fresh
+        # database, and drops cleanly even if a test leaves rows behind.
+        schema = f"test_{uuid_module.uuid4().hex[:12]}"
+        engine = create_async_engine(
+            postgres_url,
+            echo=False,
+            poolclass=NullPool,
+            connect_args={"server_settings": {"search_path": schema}},
+        )
+        async with engine.begin() as conn:
+            await conn.execute(sa_text(f'CREATE SCHEMA IF NOT EXISTS "{schema}"'))
+            await conn.run_sync(Base.metadata.create_all)
+
+        yield engine
+
+        async with engine.begin() as conn:
+            await conn.execute(sa_text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
+        await engine.dispose()
+        return
+
+    # Unique temp file per test for complete isolation
     test_db_fd, test_db_path = tempfile.mkstemp(suffix=".db")
     os.close(test_db_fd)
     test_db_url = f"sqlite+aiosqlite:///{test_db_path}"
@@ -147,6 +181,7 @@ async def test_client(
 @pytest_asyncio.fixture(scope="function")
 async def authenticated_test_client(
     test_engine: Any,
+    test_redis: Any,
 ) -> AsyncGenerator[tuple[AsyncClient, User], None]:
     """Create test HTTP client with authentication.
 
@@ -162,8 +197,11 @@ async def authenticated_test_client(
     redis_module.redis_client = None
     redis_module.redis_pool = None
 
-    # Create a shared fakeredis instance for this test
-    shared_fake_redis = fakeredis.FakeAsyncRedis(decode_responses=True)
+    # Share the `test_redis` instance rather than making a second one, so a test
+    # can assert on what the application actually wrote. With two separate
+    # fakeredis instances the app writes to one and the test inspects the other,
+    # and every cache assertion sees None.
+    shared_fake_redis = test_redis
 
     # Create a fresh session for this test
     test_async_session = async_sessionmaker(
@@ -225,8 +263,29 @@ async def authenticated_test_client(
         # Restore original get_redis
         redis_module.get_redis = original_get_redis
 
-        # Close shared fakeredis
-        await shared_fake_redis.aclose()
+        # Owned by the test_redis fixture, which closes it.
+
+
+@pytest.fixture
+def refresh_full() -> Any:
+    """Refresh an ORM object including its deferred columns.
+
+    ``session.refresh(obj)`` reloads regular columns but leaves deferred ones
+    unloaded, so the first attribute access attempts lazy IO. Under asyncio that
+    raises MissingGreenlet rather than loading, which is why several model tests
+    failed on the first deferred attribute they touched.
+
+    Passing every mapped column explicitly loads them in the one awaited round
+    trip, which is the supported async pattern.
+    """
+    from sqlalchemy import inspect as sa_inspect
+
+    async def _refresh(session: AsyncSession, obj: Any) -> Any:
+        columns = [attr.key for attr in sa_inspect(type(obj)).column_attrs]
+        await session.refresh(obj, attribute_names=columns)
+        return obj
+
+    return _refresh
 
 
 @pytest.fixture
@@ -461,10 +520,15 @@ async def create_test_call_record(test_session: AsyncSession) -> Any:
     async def _create_call_record(
         agent_id: uuid.UUID | None = None,
         workspace_id: uuid.UUID | None = None,
+        user_id: uuid.UUID | None = None,
         **kwargs: Any,
     ) -> CallRecord:
         call_data = {
             "id": uuid.uuid4(),
+            # CallRecord.user_id is NOT NULL; the fixture omitted it, so every
+            # test using this factory failed on an integrity error before its
+            # body ran.
+            "user_id": user_id or uuid.uuid4(),
             "provider": "twilio",
             "provider_call_id": "CA" + str(uuid.uuid4()).replace("-", "")[:32],
             "direction": "inbound",

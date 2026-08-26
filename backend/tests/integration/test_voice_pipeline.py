@@ -61,7 +61,7 @@ class TestCallLifecycle:
     async def test_complete_call_lifecycle(
         self,
         mock_redis: Any,
-        enable_features: Any,  # noqa: ARG002
+        enable_features: Any,
     ) -> None:
         """Test a complete call lifecycle: register -> active -> unregister."""
         with patch.object(call_registry, "get_redis", AsyncMock(return_value=mock_redis)):
@@ -94,7 +94,7 @@ class TestCallLifecycle:
     async def test_multiple_concurrent_calls(
         self,
         mock_redis: Any,
-        enable_features: Any,  # noqa: ARG002
+        enable_features: Any,
     ) -> None:
         """Test handling multiple concurrent calls."""
         with patch.object(call_registry, "get_redis", AsyncMock(return_value=mock_redis)):
@@ -132,7 +132,7 @@ class TestCallLifecycle:
     async def test_call_metadata_persistence(
         self,
         mock_redis: Any,
-        enable_features: Any,  # noqa: ARG002
+        enable_features: Any,
     ) -> None:
         """Test that call metadata is properly stored and retrieved."""
         with patch.object(call_registry, "get_redis", AsyncMock(return_value=mock_redis)):
@@ -168,11 +168,11 @@ class TestConnectionDraining:
     async def test_graceful_drain_no_calls(
         self,
         mock_redis: Any,
-        enable_features: Any,  # noqa: ARG002
+        enable_features: Any,
     ) -> None:
         """Test graceful drain completes immediately with no active calls."""
         # Reset shutdown flag (accessing private for test setup)
-        call_registry._shutdown_flag = False  # noqa: SLF001
+        call_registry._shutdown_flag = False
 
         with patch.object(call_registry, "get_redis", AsyncMock(return_value=mock_redis)):
             # Set shutdown flag
@@ -190,10 +190,10 @@ class TestConnectionDraining:
     async def test_graceful_drain_waits_for_calls(
         self,
         mock_redis: Any,
-        enable_features: Any,  # noqa: ARG002
+        enable_features: Any,
     ) -> None:
         """Test graceful drain waits for active calls to complete."""
-        call_registry._shutdown_flag = False  # noqa: SLF001
+        call_registry._shutdown_flag = False
 
         with patch.object(call_registry, "get_redis", AsyncMock(return_value=mock_redis)):
             # Register active call
@@ -222,10 +222,10 @@ class TestConnectionDraining:
     async def test_drain_timeout_exceeded(
         self,
         mock_redis: Any,
-        enable_features: Any,  # noqa: ARG002
+        enable_features: Any,
     ) -> None:
         """Test drain timeout when calls don't complete."""
-        call_registry._shutdown_flag = False  # noqa: SLF001
+        call_registry._shutdown_flag = False
 
         with patch.object(call_registry, "get_redis", AsyncMock(return_value=mock_redis)):
             # Register call that won't complete

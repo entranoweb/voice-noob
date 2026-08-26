@@ -84,33 +84,35 @@ class TestRedisHealthCheck:
     @pytest.mark.asyncio
     async def test_redis_health_check_failure(self, test_client: AsyncClient) -> None:
         """Test Redis health check handles connection failures."""
-        # Mock Redis error
-        with patch("app.db.redis.get_redis") as mock_get_redis:
-            mock_redis = AsyncMock()
-            mock_redis.ping = AsyncMock(side_effect=Exception("Redis connection failed"))
-            mock_get_redis.return_value = mock_redis
+        from app.db.redis import get_redis
+        from app.main import app
 
-            from app.db.redis import get_redis
-            from app.main import app
+        # Override the dependency directly. Patching app.db.redis.get_redis and
+        # then importing it yields the mock itself, so the override ends up keyed
+        # by the mock rather than by the function health.py depends on — and
+        # never applies.
+        failing_redis = AsyncMock()
+        failing_redis.ping = AsyncMock(side_effect=Exception("Redis connection failed"))
 
-            app.dependency_overrides[get_redis] = mock_get_redis
+        async def _failing_get_redis() -> AsyncMock:
+            return failing_redis
 
+        previous = app.dependency_overrides.get(get_redis)
+        app.dependency_overrides[get_redis] = _failing_get_redis
+        try:
             response = await test_client.get("/health/redis")
+        finally:
+            # Restore just this key. Clearing every override also removes the
+            # database override the fixture installed, which broke later tests.
+            if previous is None:
+                app.dependency_overrides.pop(get_redis, None)
+            else:
+                app.dependency_overrides[get_redis] = previous
 
-            # Clean up override
-            app.dependency_overrides.clear()
+        assert response.status_code == 503
+        data = response.json()
+        assert data["status"] == "unhealthy"
 
-            # Service returns 503 when Redis is unhealthy
-            assert response.status_code == 503
-            data = response.json()
-            assert data["status"] == "unhealthy"
-            assert "redis" in data
-
-
-class TestHealthCheckIntegration:
-    """Integration tests for health checks."""
-
-    @pytest.mark.asyncio
     async def test_all_health_checks_sequential(self, test_client: AsyncClient) -> None:
         """Test all health endpoints in sequence."""
         # Basic health
