@@ -62,7 +62,7 @@ async def register_call(
         return True
 
     try:
-        redis: Redis = await get_redis()
+        redis: Redis[str] = await get_redis()
         key = f"{CALL_REGISTRY_PREFIX}{call_id}"
 
         call_data = {
@@ -77,7 +77,10 @@ async def register_call(
                 call_data[f"meta:{k}"] = v
 
         async with _registry_lock:
-            await redis.hset(key, mapping=call_data)  # type: ignore[misc]
+            # redis-py types `mapping` as Mapping[str|bytes, bytes|float|int|str];
+            # call_data is dict[str, str], which is compatible in practice but
+            # not assignable because Mapping value types are invariant here.
+            await redis.hset(key, mapping=call_data)  # type: ignore[arg-type]
             await redis.expire(key, settings.CALL_REGISTRY_TTL)
 
         logger.info(
@@ -106,7 +109,7 @@ async def unregister_call(call_id: str) -> bool:
         return True
 
     try:
-        redis: Redis = await get_redis()
+        redis: Redis[str] = await get_redis()
         key = f"{CALL_REGISTRY_PREFIX}{call_id}"
 
         async with _registry_lock:
@@ -134,12 +137,12 @@ async def get_active_calls() -> list[CallInfo]:
         return []
 
     try:
-        redis: Redis = await get_redis()
+        redis: Redis[str] = await get_redis()
         pattern = f"{CALL_REGISTRY_PREFIX}*"
 
         calls: list[CallInfo] = []
         async for key in redis.scan_iter(match=pattern):
-            data = await redis.hgetall(key)  # type: ignore[misc]
+            data = await redis.hgetall(key)
             if data:
                 metadata = {
                     k.replace("meta:", ""): v for k, v in data.items() if k.startswith("meta:")
@@ -172,7 +175,7 @@ async def get_call_count() -> int:
         return 0
 
     try:
-        redis: Redis = await get_redis()
+        redis: Redis[str] = await get_redis()
         pattern = f"{CALL_REGISTRY_PREFIX}*"
 
         count = 0
@@ -199,7 +202,7 @@ async def set_shutting_down(shutting_down: bool = True) -> None:
         return
 
     try:
-        redis: Redis = await get_redis()
+        redis: Redis[str] = await get_redis()
         if shutting_down:
             # TTL includes 60s buffer beyond drain timeout for crash recovery
             # (documented in production hardening improvements)

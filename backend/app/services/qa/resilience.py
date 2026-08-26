@@ -100,7 +100,7 @@ async def call_claude_with_resilience(
 
     Args:
         client: Anthropic async client (created with get_anthropic_client).
-        model: Model name (e.g., "claude-sonnet-4-20250514").
+        model: Model name (e.g., "claude-sonnet-4-6").
         max_tokens: Maximum tokens to generate.
         messages: List of message dicts with "role" and "content".
         system: Optional system prompt.
@@ -123,20 +123,28 @@ async def call_claude_with_resilience(
         )
         raise CircuitBreakerError(claude_circuit_breaker)
 
-    try:
-        async with claude_circuit_breaker:
-            if system:
-                return await client.messages.create(
-                    model=model,
-                    max_tokens=max_tokens,
-                    messages=messages,  # type: ignore[arg-type]
-                    system=system,
-                )
+    async def _call() -> anthropic.types.Message:
+        if system:
             return await client.messages.create(
                 model=model,
                 max_tokens=max_tokens,
                 messages=messages,  # type: ignore[arg-type]
+                system=system,
             )
+        return await client.messages.create(
+            model=model,
+            max_tokens=max_tokens,
+            messages=messages,  # type: ignore[arg-type]
+        )
+
+    try:
+        # aiobreaker's CircuitBreaker is not an async context manager; call_async
+        # is the supported entry point. `async with` raised TypeError at runtime,
+        # which meant the breaker never actually guarded a call.
+        # aiobreaker is untyped, so call_async returns Any; _call is annotated
+        # and this is the value it produced.
+        result: anthropic.types.Message = await claude_circuit_breaker.call_async(_call)
+        return result
 
     except anthropic.APIError as e:
         logger.warning(

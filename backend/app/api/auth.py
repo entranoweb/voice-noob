@@ -101,24 +101,26 @@ def create_access_token(subject: str | int, expires_delta: timedelta | None = No
 @router.post("/register", response_model=UserResponse)
 @limiter.limit("5/minute")  # Strict rate limit to prevent account spam
 async def register(
-    request: RegisterRequest,
-    http_request: Request,  # Required for rate limiter
+    request: Request,  # Must be named `request` and be a Starlette Request: slowapi
+    # resolves the rate-limit key from this parameter by name, then asserts its type.
+    payload: RegisterRequest,
     db: AsyncSession = Depends(get_db),
 ) -> UserResponse:
     """Register a new user.
 
     Args:
-        request: Registration request with email, username, password
+        request: Incoming HTTP request (used by the rate limiter)
+        payload: Registration payload with email, username, password
         db: Database session
 
     Returns:
         Created user
     """
-    log = logger.bind(email=request.email, username=request.username)
+    log = logger.bind(email=payload.email, username=payload.username)
     log.info("registering_user")
 
     # Check if email already exists
-    result = await db.execute(select(User).where(User.email == request.email))
+    result = await db.execute(select(User).where(User.email == payload.email))
     if result.scalar_one_or_none():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -127,9 +129,9 @@ async def register(
 
     # Create user (username is stored as full_name)
     user = User(
-        email=request.email,
-        full_name=request.username,
-        hashed_password=get_password_hash(request.password),
+        email=payload.email,
+        full_name=payload.username,
+        hashed_password=get_password_hash(payload.password),
     )
     db.add(user)
     await db.commit()
