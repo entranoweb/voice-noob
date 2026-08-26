@@ -21,6 +21,7 @@ from app.models.test_scenario import (
     TestRunStatus,
     TestScenario,
 )
+from app.services.qa.metrics import registry
 from app.services.qa.scenarios import BUILT_IN_SCENARIOS
 from app.services.qa.test_runner import TestRunner
 
@@ -311,8 +312,16 @@ class TestRunScenario:
             assert test_run.scenario_id == scenario.id
             assert test_run.agent_id == agent.id
             assert test_run.user_id == user.id
-            assert test_run.status == TestRunStatus.PASSED.value
-            assert test_run.passed is True
+            # The deterministic metrics decide, and this scenario declares no
+            # expected tools and no expected database state, so nothing about
+            # the agent's accuracy is measurable. That is reported as ERROR
+            # rather than silently passed - a suite that passes runs it could
+            # not measure is decorative.
+            assert test_run.status == TestRunStatus.ERROR.value
+            assert test_run.passed is None
+            assert test_run.criteria_results["outcome"] == "error"
+            # None, not False: an unmeasured run is not a failed one, and
+            # recording it as failed is how harness gaps became agent alerts.
             assert test_run.overall_score == 85
 
     @pytest.mark.asyncio
@@ -431,8 +440,10 @@ class TestRunScenario:
                     user_id=user.id,
                 )
 
-                assert test_run.status == TestRunStatus.FAILED.value
-                assert test_run.passed is False
+                # Not FAILED: the judge's own verdict no longer decides. This
+                # scenario has nothing deterministically measurable, so the run
+                # is an error rather than an agent failure.
+                assert test_run.status == TestRunStatus.ERROR.value
                 assert test_run.overall_score == 50
 
     @pytest.mark.asyncio
@@ -996,3 +1007,176 @@ class TestTestRunnerIntegration:
                 assert result.agent_id == agent.id
                 assert result.user_id == user.id
                 assert result.duration_ms is not None
+
+
+@pytest.mark.asyncio
+class TestDeterministicVerdict:
+    """The verdict comes from assertions, not from the judge's own opinion.
+
+    This is the behaviour the caught-regression demo rests on: a scenario that
+    requires a tool fails when that tool does not run, regardless of how well
+    the conversation reads.
+    """
+
+    async def _scenario(self, test_session: AsyncSession, **overrides: Any) -> TestScenario:
+        fields: dict[str, Any] = {
+            "name": "Booking",
+            "category": ScenarioCategory.BOOKING.value,
+            "difficulty": ScenarioDifficulty.MEDIUM.value,
+            "caller_persona": {"name": "Jennifer"},
+            "conversation_flow": [{"speaker": "user", "message": "book me in"}],
+            "expected_behaviors": ["Collect a time"],
+            "expected_tool_calls": [{"tool": "book_appointment"}],
+            "success_criteria": {"min_score": 75},
+            "is_built_in": False,
+        }
+        fields.update(overrides)
+        scenario = TestScenario(**fields)
+        test_session.add(scenario)
+        await test_session.commit()
+        await test_session.refresh(scenario)
+        return scenario
+
+    async def _run(
+        self,
+        test_session: AsyncSession,
+        scenario: TestScenario,
+        agent: Any,
+        user: Any,
+        conversation: list[dict[str, Any]],
+    ) -> Any:
+        runner = TestRunner(test_session)
+        with (
+            patch.object(runner, "_simulate_conversation", new_callable=AsyncMock) as mock_sim,
+            patch.object(runner, "_evaluate_conversation", new_callable=AsyncMock) as mock_eval,
+        ):
+            mock_sim.return_value = conversation
+            # The judge is enthusiastic and, on its own, would pass the run.
+            mock_eval.return_value = {
+                "overall_score": 95,
+                "passed": True,
+                "behavior_matches": {},
+                "criteria_results": {},
+                "issues_found": [],
+                "recommendations": [],
+            }
+            return await runner.run_scenario(
+                scenario_id=scenario.id,
+                agent_id=agent.id,
+                user_id=user.id,
+            )
+
+    async def test_a_required_tool_that_never_ran_fails_the_run(
+        self,
+        test_session: AsyncSession,
+        create_test_user: Any,
+        create_test_agent: Any,
+    ) -> None:
+        """The judge said 95 and passed. The assertion says the booking tool
+        never ran, and the assertion wins."""
+        user = await create_test_user()
+        agent = await create_test_agent(user_id=user.id)
+        scenario = await self._scenario(test_session)
+
+        test_run = await self._run(
+            test_session,
+            scenario,
+            agent,
+            user,
+            [
+                {"speaker": "user", "message": "book me in"},
+                {"speaker": "agent", "message": "Certainly, you are all booked!"},
+            ],
+        )
+
+        assert test_run.status == TestRunStatus.FAILED.value
+        assert test_run.passed is False
+
+        tools = test_run.criteria_results["metrics"]["expected_tools_invoked"]
+        assert tools["passed"] is False
+        assert tools["detail"]["missing"] == ["book_appointment"]
+
+    async def test_the_run_records_which_tools_actually_ran(
+        self,
+        test_session: AsyncSession,
+        create_test_user: Any,
+        create_test_agent: Any,
+    ) -> None:
+        """actual_tool_calls was a column nothing ever wrote to."""
+        user = await create_test_user()
+        agent = await create_test_agent(user_id=user.id)
+        scenario = await self._scenario(test_session)
+
+        test_run = await self._run(
+            test_session,
+            scenario,
+            agent,
+            user,
+            [
+                {"speaker": "user", "message": "book me in"},
+                {
+                    "speaker": "agent",
+                    "message": "Booked.",
+                    "tool_calls": [{"name": "book_appointment"}],
+                },
+            ],
+        )
+
+        assert test_run.actual_tool_calls == [{"name": "book_appointment"}]
+        assert test_run.status == TestRunStatus.PASSED.value
+        assert test_run.passed is True
+
+    async def test_a_tool_that_errored_does_not_count_as_booked(
+        self,
+        test_session: AsyncSession,
+        create_test_user: Any,
+        create_test_agent: Any,
+    ) -> None:
+        user = await create_test_user()
+        agent = await create_test_agent(user_id=user.id)
+        scenario = await self._scenario(test_session)
+
+        test_run = await self._run(
+            test_session,
+            scenario,
+            agent,
+            user,
+            [
+                {"speaker": "user", "message": "book me in"},
+                {
+                    "speaker": "agent",
+                    "message": "All set!",
+                    "tool_calls": [{"name": "book_appointment", "error": "calendar 500"}],
+                },
+            ],
+        )
+
+        assert test_run.status == TestRunStatus.FAILED.value
+        detail = test_run.criteria_results["metrics"]["expected_tools_invoked"]["detail"]
+        assert detail["attempted_but_failed"] == ["book_appointment"]
+
+    async def test_every_metric_score_is_stored_for_diagnosis(
+        self,
+        test_session: AsyncSession,
+        create_test_user: Any,
+        create_test_agent: Any,
+    ) -> None:
+        """A bare pass/fail is not actionable; the per-metric detail is."""
+        user = await create_test_user()
+        agent = await create_test_agent(user_id=user.id)
+        scenario = await self._scenario(test_session)
+
+        test_run = await self._run(
+            test_session,
+            scenario,
+            agent,
+            user,
+            [
+                {"speaker": "user", "message": "hi"},
+                {"speaker": "agent", "message": "hello"},
+            ],
+        )
+
+        stored = test_run.criteria_results["metrics"]
+        assert set(stored) == set(registry.registered_names())
+        assert all("version" in m for m in stored.values())

@@ -17,6 +17,10 @@ from app.core.config import settings
 from app.db.session import AsyncSessionLocal
 from app.models.agent import Agent
 from app.models.test_scenario import TestRun, TestRunStatus, TestScenario
+from app.monitoring.call_trace import TerminationReason
+from app.services.qa.metrics.context import build_context
+from app.services.qa.metrics.runner import MetricResults, RunOutcome, evaluate
+from app.services.qa.metrics.snapshot import capture_crm_state
 from app.services.qa.resilience import (
     call_claude_with_resilience,
     get_anthropic_client,
@@ -71,6 +75,58 @@ Respond with JSON (no markdown):
     "recommendations": ["<recommendation1>", "<recommendation2>"]
 }}
 """
+
+
+# Metric outcome -> stored status. RunOutcome.ERROR maps to ERROR rather than
+# FAILED so a broken harness never shows up as a failing agent.
+_STATUS_BY_OUTCOME = {
+    RunOutcome.PASSED: TestRunStatus.PASSED.value,
+    RunOutcome.FAILED: TestRunStatus.FAILED.value,
+    RunOutcome.ERROR: TestRunStatus.ERROR.value,
+}
+
+
+def _serialise_scores(results: MetricResults) -> dict[str, Any]:
+    """Store every metric score, not just the verdict.
+
+    Keeping the per-metric detail makes a failure diagnosable after the fact -
+    which tool was missing, what the database diff was - instead of leaving a
+    bare pass/fail nobody can act on.
+    """
+    return {
+        "outcome": str(results.outcome),
+        "trustworthy": results.trustworthy,
+        "accuracy_score": results.accuracy_score(),
+        "metrics": {
+            score.metric: {
+                "version": score.version,
+                "category": str(score.category),
+                "kind": str(score.kind),
+                "value": score.value,
+                "passed": score.passed,
+                "unit": score.unit,
+                "detail": score.detail,
+            }
+            for score in results.scores
+        },
+    }
+
+
+def _tool_calls_from_conversation(
+    conversation: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Extract recorded tool invocations from a conversation.
+
+    The text-only simulation binds no tools, so this is empty today and the
+    tool metrics correctly report themselves unmeasurable rather than failing.
+    The plumbing lands now so that binding the agent's real tool registry in the
+    next phase is a change in one place.
+    """
+    calls: list[dict[str, Any]] = []
+    for entry in conversation:
+        if isinstance(entry, dict):
+            calls.extend(c for c in entry.get("tool_calls", []) if isinstance(c, dict))
+    return calls
 
 
 class TestRunner:
@@ -217,19 +273,48 @@ class TestRunner:
 
             duration_ms = int((time.monotonic() - start_time) * 1000)
 
-            # Update test run with results
-            test_run.status = (
-                TestRunStatus.PASSED.value if evaluation["passed"] else TestRunStatus.FAILED.value
+            # Snapshot the CRM so task completion is decided by state rather
+            # than by a model's reading of the transcript. Captured after the
+            # run and compared against what the scenario declares.
+            final_db_state = await capture_crm_state(self.db, user_id)
+
+            # Deterministic metrics decide the verdict. Previously the judge
+            # returned its own `passed` and the runner stored it unchallenged,
+            # so a scenario's min_score and must_invoke_tools were serialised
+            # into the prompt as prose and never actually enforced.
+            tool_calls = _tool_calls_from_conversation(conversation)
+            metric_results = evaluate(
+                build_context(
+                    run_id=str(test_run.id),
+                    conversation=conversation,
+                    tool_calls=tool_calls,
+                    expected_tool_calls=scenario.expected_tool_calls,
+                    success_criteria=scenario.success_criteria,
+                    termination_reason=TerminationReason.AGENT_ENDED,
+                    duration_ms=duration_ms,
+                    final_db_state=final_db_state,
+                ),
             )
+
+            # Update test run with results
+            test_run.status = _STATUS_BY_OUTCOME[metric_results.outcome]
             test_run.completed_at = datetime.now(UTC)
             test_run.duration_ms = duration_ms
             test_run.overall_score = evaluation.get("overall_score", 0)
-            test_run.passed = evaluation["passed"]
+            # None rather than False when the run could not be measured: an
+            # unmeasured run is not a failed one, and recording it as failed is
+            # how harness problems became agent failure alerts.
+            test_run.passed = (
+                metric_results.outcome is RunOutcome.PASSED if metric_results.trustworthy else None
+            )
             test_run.actual_transcript = conversation
+            test_run.actual_tool_calls = tool_calls
             test_run.behavior_matches = evaluation.get("behavior_matches")
-            test_run.criteria_results = evaluation.get("criteria_results")
+            test_run.criteria_results = _serialise_scores(metric_results)
             test_run.issues_found = evaluation.get("issues_found")
             test_run.recommendations = evaluation.get("recommendations")
+            if not metric_results.trustworthy:
+                test_run.error_message = "; ".join(metric_results.invalid_reasons)
 
             await self.db.commit()
             await self.db.refresh(test_run)
@@ -237,6 +322,7 @@ class TestRunner:
             log.info(
                 "test_run_completed",
                 test_run_id=str(test_run.id),
+                outcome=str(metric_results.outcome),
                 passed=test_run.passed,
                 score=test_run.overall_score,
                 duration_ms=duration_ms,
