@@ -1,0 +1,145 @@
+name: CI
+
+# Runs on every push and pull request. Nothing in this repository ran tests
+# before this workflow existed, which is how a branch that could not import
+# stayed broken for eight months.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Backend
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+
+    services:
+      # Tests run against the database they deploy against. SQLite silently
+      # drops tzinfo from timezone-aware columns and cannot compile Postgres
+      # ARRAY columns, so a SQLite-only run both fails correct tests and hides
+      # real bugs.
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: voicenoob_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      TEST_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/voicenoob_test
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/voicenoob_test
+      REDIS_HOST: localhost
+      REDIS_PORT: "6379"
+      SECRET_KEY: ci-secret-not-used-outside-ci
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+
+      - name: Install dependencies
+        run: uv sync --all-extras --frozen
+
+      # Cheapest possible guard against the class of failure that broke main:
+      # a decorator that raises at import time takes the whole app down, and no
+      # test can run to tell you.
+      - name: Import the application
+        run: uv run python -c "from app.main import app; print('import ok')"
+
+      - name: Lint
+        run: uv run ruff check app tests
+
+      - name: Format check
+        run: uv run ruff format --check app tests
+
+      - name: Type check
+        run: uv run mypy app
+
+      # Catches divergent migration heads and any migration that does not apply
+      # to an empty database — both of which block a fresh self-hosted install.
+      - name: Migrate a fresh database
+        run: |
+          heads=$(uv run alembic heads | grep -c '(head)')
+          if [ "$heads" -ne 1 ]; then
+            echo "::error::Expected exactly one migration head, found $heads"
+            uv run alembic heads
+            exit 1
+          fi
+          uv run alembic upgrade head
+
+      - name: Test
+        run: uv run pytest --cov=app --cov-report=term-missing --cov-report=xml
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-coverage
+          path: backend/coverage.xml
+          if-no-files-found: ignore
+
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Type check
+        run: npm run type-check
+
+      - name: Format check
+        run: npm run format:check
+
+      - name: Test
+        run: npm run test
+
+      # A production build catches what tsc alone does not, and it is the step
+      # that actually gates deployability.
+      - name: Build
+        run: npm run build
