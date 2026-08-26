@@ -156,7 +156,7 @@ class CallEvaluation(Base):
     evaluation_model: Mapped[str] = mapped_column(
         String(100),
         nullable=False,
-        comment="Model used for evaluation (e.g., claude-sonnet-4-20250514)",
+        comment="Model used for evaluation (e.g., claude-sonnet-4-6)",
     )
     evaluation_latency_ms: Mapped[int | None] = mapped_column(
         Integer, nullable=True, comment="Time taken for evaluation in ms"
