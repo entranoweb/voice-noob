@@ -22,15 +22,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import {
-  Eye,
-  Pencil,
-  Trash2,
-  Copy,
-  MoreHorizontal,
-  Lock,
-  Loader2,
-} from "lucide-react";
+import { Eye, Pencil, Trash2, Copy, MoreHorizontal, Lock, Loader2 } from "lucide-react";
 import { useState } from "react";
 import { deleteScenario, duplicateScenario, type TestScenario } from "@/lib/api/qa";
 
@@ -128,7 +120,7 @@ export function ScenarioCard({
           {/* Scenario info */}
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
-              <span className="font-medium truncate">{scenario.name}</span>
+              <span className="truncate font-medium">{scenario.name}</span>
               {scenario.is_built_in && (
                 <Badge variant="secondary" className="text-xs">
                   <Lock className="mr-1 h-3 w-3" />
@@ -137,7 +129,7 @@ export function ScenarioCard({
               )}
             </div>
             {scenario.description && (
-              <p className="text-xs text-muted-foreground truncate max-w-md">
+              <p className="max-w-md truncate text-xs text-muted-foreground">
                 {scenario.description}
               </p>
             )}

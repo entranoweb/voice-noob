@@ -104,7 +104,8 @@ const API_KEY_PROVIDERS: ApiKeyProvider[] = [
       "Use Azure OpenAI for GPT Realtime with your Microsoft credits. Alternative to direct OpenAI.",
     category: "voice-ai",
     icon: Brain,
-    documentationUrl: "https://portal.azure.com/#view/Microsoft_Azure_ProjectOxford/CognitiveServicesHub",
+    documentationUrl:
+      "https://portal.azure.com/#view/Microsoft_Azure_ProjectOxford/CognitiveServicesHub",
     fields: [
       {
         name: "azure_openai_endpoint",
@@ -233,11 +234,7 @@ const ProviderSelector = memo(function ProviderSelector({
       disabled={isUpdating}
     >
       <SelectTrigger className="w-[180px]">
-        {isUpdating ? (
-          <Loader2 className="h-4 w-4 animate-spin" />
-        ) : (
-          <SelectValue />
-        )}
+        {isUpdating ? <Loader2 className="h-4 w-4 animate-spin" /> : <SelectValue />}
       </SelectTrigger>
       <SelectContent>
         <SelectItem value="openai" disabled={!hasOpenAI}>

@@ -42,9 +42,7 @@ const renderWithProviders = (component: React.ReactNode) => {
       queries: { retry: false, gcTime: 0, staleTime: 0 },
     },
   });
-  return render(
-    <QueryClientProvider client={queryClient}>{component}</QueryClientProvider>
-  );
+  return render(<QueryClientProvider client={queryClient}>{component}</QueryClientProvider>);
 };
 
 describe("QA Dashboard Integration Tests", () => {
@@ -65,7 +63,7 @@ describe("QA Dashboard Integration Tests", () => {
   describe("Tab Navigation", () => {
     it("switches between Overview, Scenarios, and Settings tabs", async () => {
       const user = userEvent.setup();
-      
+
       // Add workspace handler for this test
       server.use(
         http.get(`${API_URL}/api/v1/workspaces`, () => {
@@ -74,29 +72,38 @@ describe("QA Dashboard Integration Tests", () => {
           ]);
         })
       );
-      
+
       renderWithProviders(<QADashboardPage />);
 
-      await waitFor(() => {
-        expect(screen.getByText("QA Dashboard")).toBeInTheDocument();
-      }, { timeout: 5000 });
+      await waitFor(
+        () => {
+          expect(screen.getByText("QA Dashboard")).toBeInTheDocument();
+        },
+        { timeout: 5000 }
+      );
 
       // Click Scenarios tab
       const scenariosTab = screen.getByRole("tab", { name: /scenarios/i });
       await user.click(scenariosTab);
 
-      await waitFor(() => {
-        expect(screen.getByText("Test Scenarios")).toBeInTheDocument();
-      }, { timeout: 5000 });
+      await waitFor(
+        () => {
+          expect(screen.getByText("Test Scenarios")).toBeInTheDocument();
+        },
+        { timeout: 5000 }
+      );
 
       // Click Settings tab
       const settingsTab = screen.getByRole("tab", { name: /settings/i });
       await user.click(settingsTab);
 
-      await waitFor(() => {
-        // Settings tab shows Workspace Override section
-        expect(screen.getByText("Workspace Override")).toBeInTheDocument();
-      }, { timeout: 5000 });
+      await waitFor(
+        () => {
+          // Settings tab shows Workspace Override section
+          expect(screen.getByText("Workspace Override")).toBeInTheDocument();
+        },
+        { timeout: 5000 }
+      );
     });
   });
 
@@ -105,33 +112,45 @@ describe("QA Dashboard Integration Tests", () => {
       const user = userEvent.setup();
       renderWithProviders(<QADashboardPage />);
 
-      await waitFor(() => {
-        expect(screen.getByText("QA Dashboard")).toBeInTheDocument();
-      }, { timeout: 5000 });
+      await waitFor(
+        () => {
+          expect(screen.getByText("QA Dashboard")).toBeInTheDocument();
+        },
+        { timeout: 5000 }
+      );
 
       const runTestsButton = screen.getByRole("button", { name: /run tests/i });
       await user.click(runTestsButton);
 
-      await waitFor(() => {
-        expect(screen.getByRole("dialog")).toBeInTheDocument();
-        expect(screen.getByText("Select Agent")).toBeInTheDocument();
-      }, { timeout: 5000 });
+      await waitFor(
+        () => {
+          expect(screen.getByRole("dialog")).toBeInTheDocument();
+          expect(screen.getByText("Select Agent")).toBeInTheDocument();
+        },
+        { timeout: 5000 }
+      );
     });
 
     it("displays scenarios in test runner", async () => {
       const user = userEvent.setup();
       renderWithProviders(<QADashboardPage />);
 
-      await waitFor(() => {
-        expect(screen.getByText("QA Dashboard")).toBeInTheDocument();
-      }, { timeout: 5000 });
+      await waitFor(
+        () => {
+          expect(screen.getByText("QA Dashboard")).toBeInTheDocument();
+        },
+        { timeout: 5000 }
+      );
 
       const runTestsButton = screen.getByRole("button", { name: /run tests/i });
       await user.click(runTestsButton);
 
-      await waitFor(() => {
-        expect(screen.getByText("Basic Greeting Test")).toBeInTheDocument();
-      }, { timeout: 5000 });
+      await waitFor(
+        () => {
+          expect(screen.getByText("Basic Greeting Test")).toBeInTheDocument();
+        },
+        { timeout: 5000 }
+      );
     });
   });
 
@@ -140,48 +159,63 @@ describe("QA Dashboard Integration Tests", () => {
       const user = userEvent.setup();
       renderWithProviders(<QADashboardPage />);
 
-      await waitFor(() => {
-        expect(screen.getByText("QA Dashboard")).toBeInTheDocument();
-      }, { timeout: 5000 });
+      await waitFor(
+        () => {
+          expect(screen.getByText("QA Dashboard")).toBeInTheDocument();
+        },
+        { timeout: 5000 }
+      );
 
       const scenariosTab = screen.getByRole("tab", { name: /scenarios/i });
       await user.click(scenariosTab);
 
-      await waitFor(() => {
-        expect(screen.getByText("Basic Greeting Test")).toBeInTheDocument();
-        expect(screen.getByText("Appointment Booking")).toBeInTheDocument();
-      }, { timeout: 5000 });
+      await waitFor(
+        () => {
+          expect(screen.getByText("Basic Greeting Test")).toBeInTheDocument();
+          expect(screen.getByText("Appointment Booking")).toBeInTheDocument();
+        },
+        { timeout: 5000 }
+      );
     });
 
     it("opens create scenario dialog", async () => {
       const user = userEvent.setup();
       renderWithProviders(<QADashboardPage />);
 
-      await waitFor(() => {
-        expect(screen.getByText("QA Dashboard")).toBeInTheDocument();
-      }, { timeout: 5000 });
+      await waitFor(
+        () => {
+          expect(screen.getByText("QA Dashboard")).toBeInTheDocument();
+        },
+        { timeout: 5000 }
+      );
 
       const scenariosTab = screen.getByRole("tab", { name: /scenarios/i });
       await user.click(scenariosTab);
 
-      await waitFor(() => {
-        expect(screen.getByRole("button", { name: /create scenario/i })).toBeInTheDocument();
-      }, { timeout: 5000 });
+      await waitFor(
+        () => {
+          expect(screen.getByRole("button", { name: /create scenario/i })).toBeInTheDocument();
+        },
+        { timeout: 5000 }
+      );
 
       const createButton = screen.getByRole("button", { name: /create scenario/i });
       await user.click(createButton);
 
-      await waitFor(() => {
-        const dialogs = screen.getAllByRole("dialog");
-        expect(dialogs.length).toBeGreaterThan(0);
-      }, { timeout: 5000 });
+      await waitFor(
+        () => {
+          const dialogs = screen.getAllByRole("dialog");
+          expect(dialogs.length).toBeGreaterThan(0);
+        },
+        { timeout: 5000 }
+      );
     });
   });
 
   describe("Workspace Settings Override", () => {
     it("displays workspace settings in Settings tab", async () => {
       const user = userEvent.setup();
-      
+
       // Add workspace handler
       server.use(
         http.get(`${API_URL}/api/v1/workspaces`, () => {
@@ -193,22 +227,28 @@ describe("QA Dashboard Integration Tests", () => {
 
       renderWithProviders(<QADashboardPage />);
 
-      await waitFor(() => {
-        expect(screen.getByText("QA Dashboard")).toBeInTheDocument();
-      }, { timeout: 5000 });
+      await waitFor(
+        () => {
+          expect(screen.getByText("QA Dashboard")).toBeInTheDocument();
+        },
+        { timeout: 5000 }
+      );
 
       const settingsTab = screen.getByRole("tab", { name: /settings/i });
       await user.click(settingsTab);
 
-      await waitFor(() => {
-        // Settings panel shows "Evaluation Settings" card
-        expect(screen.getByText("Evaluation Settings")).toBeInTheDocument();
-      }, { timeout: 5000 });
+      await waitFor(
+        () => {
+          // Settings panel shows "Evaluation Settings" card
+          expect(screen.getByText("Evaluation Settings")).toBeInTheDocument();
+        },
+        { timeout: 5000 }
+      );
     });
 
     it("shows workspace override section", async () => {
       const user = userEvent.setup();
-      
+
       server.use(
         http.get(`${API_URL}/api/v1/workspaces`, () => {
           return HttpResponse.json([
@@ -219,17 +259,23 @@ describe("QA Dashboard Integration Tests", () => {
 
       renderWithProviders(<QADashboardPage />);
 
-      await waitFor(() => {
-        expect(screen.getByText("QA Dashboard")).toBeInTheDocument();
-      }, { timeout: 5000 });
+      await waitFor(
+        () => {
+          expect(screen.getByText("QA Dashboard")).toBeInTheDocument();
+        },
+        { timeout: 5000 }
+      );
 
       const settingsTab = screen.getByRole("tab", { name: /settings/i });
       await user.click(settingsTab);
 
-      await waitFor(() => {
-        // The actual text is "Use workspace-specific settings"
-        expect(screen.getByText("Use workspace-specific settings")).toBeInTheDocument();
-      }, { timeout: 5000 });
+      await waitFor(
+        () => {
+          // The actual text is "Use workspace-specific settings"
+          expect(screen.getByText("Use workspace-specific settings")).toBeInTheDocument();
+        },
+        { timeout: 5000 }
+      );
     });
   });
 
@@ -249,9 +295,12 @@ describe("QA Dashboard Integration Tests", () => {
 
       renderWithProviders(<QADashboardPage />);
 
-      await waitFor(() => {
-        expect(screen.getByText("QA Testing Disabled")).toBeInTheDocument();
-      }, { timeout: 5000 });
+      await waitFor(
+        () => {
+          expect(screen.getByText("QA Testing Disabled")).toBeInTheDocument();
+        },
+        { timeout: 5000 }
+      );
     });
 
     it("handles API error gracefully for metrics", async () => {
@@ -264,14 +313,17 @@ describe("QA Dashboard Integration Tests", () => {
       renderWithProviders(<QADashboardPage />);
 
       // Should still render the page structure
-      await waitFor(() => {
-        expect(screen.getByText("QA Dashboard")).toBeInTheDocument();
-      }, { timeout: 5000 });
+      await waitFor(
+        () => {
+          expect(screen.getByText("QA Dashboard")).toBeInTheDocument();
+        },
+        { timeout: 5000 }
+      );
     });
 
     it("handles empty scenarios list", async () => {
       const user = userEvent.setup();
-      
+
       server.use(
         http.get(`${API_URL}/api/v1/testing/scenarios`, () => {
           return HttpResponse.json([]);
@@ -280,17 +332,23 @@ describe("QA Dashboard Integration Tests", () => {
 
       renderWithProviders(<QADashboardPage />);
 
-      await waitFor(() => {
-        expect(screen.getByText("QA Dashboard")).toBeInTheDocument();
-      }, { timeout: 5000 });
+      await waitFor(
+        () => {
+          expect(screen.getByText("QA Dashboard")).toBeInTheDocument();
+        },
+        { timeout: 5000 }
+      );
 
       const scenariosTab = screen.getByRole("tab", { name: /scenarios/i });
       await user.click(scenariosTab);
 
-      await waitFor(() => {
-        // The actual text is "No test scenarios yet"
-        expect(screen.getByText("No test scenarios yet")).toBeInTheDocument();
-      }, { timeout: 5000 });
+      await waitFor(
+        () => {
+          // The actual text is "No test scenarios yet"
+          expect(screen.getByText("No test scenarios yet")).toBeInTheDocument();
+        },
+        { timeout: 5000 }
+      );
     });
 
     it("handles empty evaluations list", async () => {
@@ -308,9 +366,12 @@ describe("QA Dashboard Integration Tests", () => {
 
       renderWithProviders(<QADashboardPage />);
 
-      await waitFor(() => {
-        expect(screen.getByText("No evaluations yet")).toBeInTheDocument();
-      }, { timeout: 5000 });
+      await waitFor(
+        () => {
+          expect(screen.getByText("No evaluations yet")).toBeInTheDocument();
+        },
+        { timeout: 5000 }
+      );
     });
   });
 
@@ -318,9 +379,12 @@ describe("QA Dashboard Integration Tests", () => {
     it("displays time range filter", async () => {
       renderWithProviders(<QADashboardPage />);
 
-      await waitFor(() => {
-        expect(screen.getByText("QA Dashboard")).toBeInTheDocument();
-      }, { timeout: 5000 });
+      await waitFor(
+        () => {
+          expect(screen.getByText("QA Dashboard")).toBeInTheDocument();
+        },
+        { timeout: 5000 }
+      );
 
       expect(screen.getByText("Last 7 days")).toBeInTheDocument();
     });
@@ -328,9 +392,12 @@ describe("QA Dashboard Integration Tests", () => {
     it("displays agent filter", async () => {
       renderWithProviders(<QADashboardPage />);
 
-      await waitFor(() => {
-        expect(screen.getByText("QA Dashboard")).toBeInTheDocument();
-      }, { timeout: 5000 });
+      await waitFor(
+        () => {
+          expect(screen.getByText("QA Dashboard")).toBeInTheDocument();
+        },
+        { timeout: 5000 }
+      );
 
       expect(screen.getByText("All agents")).toBeInTheDocument();
     });

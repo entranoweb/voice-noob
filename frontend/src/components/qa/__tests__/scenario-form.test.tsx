@@ -17,9 +17,7 @@ const renderWithProviders = (component: React.ReactNode) => {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: 0, staleTime: 0 } },
   });
-  return render(
-    <QueryClientProvider client={queryClient}>{component}</QueryClientProvider>
-  );
+  return render(<QueryClientProvider client={queryClient}>{component}</QueryClientProvider>);
 };
 
 const mockScenario: TestScenario = {
@@ -30,7 +28,12 @@ const mockScenario: TestScenario = {
   difficulty: "medium",
   is_built_in: false,
   is_active: true,
-  caller_persona: { name: "John Doe", mood: "friendly", goal: "Book an appointment", context: "Regular customer" },
+  caller_persona: {
+    name: "John Doe",
+    mood: "friendly",
+    goal: "Book an appointment",
+    context: "Regular customer",
+  },
   initial_message: null,
   expected_behaviors: ["Greet customer", "Ask for date"],
   failure_conditions: null,
@@ -40,8 +43,12 @@ const mockScenario: TestScenario = {
 };
 
 describe("ScenarioForm", () => {
-  beforeEach(() => { server.resetHandlers(); });
-  afterEach(() => { vi.clearAllMocks(); });
+  beforeEach(() => {
+    server.resetHandlers();
+  });
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
 
   it("does not render dialog when open is false", () => {
     renderWithProviders(<ScenarioForm open={false} onOpenChange={vi.fn()} mode="create" />);
@@ -50,29 +57,39 @@ describe("ScenarioForm", () => {
 
   it("renders dialog when open is true", async () => {
     renderWithProviders(<ScenarioForm open={true} onOpenChange={vi.fn()} mode="create" />);
-    await waitFor(() => { expect(screen.getByRole("dialog")).toBeInTheDocument(); });
+    await waitFor(() => {
+      expect(screen.getByRole("dialog")).toBeInTheDocument();
+    });
   });
 
   it("renders create dialog with correct title", async () => {
     renderWithProviders(<ScenarioForm open={true} onOpenChange={vi.fn()} mode="create" />);
-    await waitFor(() => { expect(screen.getByText("Create Test Scenario")).toBeInTheDocument(); });
+    await waitFor(() => {
+      expect(screen.getByText("Create Test Scenario")).toBeInTheDocument();
+    });
   });
 
   it("displays Create Scenario button", async () => {
     renderWithProviders(<ScenarioForm open={true} onOpenChange={vi.fn()} mode="create" />);
-    await waitFor(() => { expect(screen.getByRole("button", { name: /create scenario/i })).toBeInTheDocument(); });
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /create scenario/i })).toBeInTheDocument();
+    });
   });
 
   it("displays Cancel button", async () => {
     renderWithProviders(<ScenarioForm open={true} onOpenChange={vi.fn()} mode="create" />);
-    await waitFor(() => { expect(screen.getByRole("button", { name: /cancel/i })).toBeInTheDocument(); });
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /cancel/i })).toBeInTheDocument();
+    });
   });
 
   it("calls onOpenChange when Cancel is clicked", async () => {
     const user = userEvent.setup();
     const onOpenChange = vi.fn();
     renderWithProviders(<ScenarioForm open={true} onOpenChange={onOpenChange} mode="create" />);
-    await waitFor(() => { expect(screen.getByRole("button", { name: /cancel/i })).toBeInTheDocument(); });
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /cancel/i })).toBeInTheDocument();
+    });
     await user.click(screen.getByRole("button", { name: /cancel/i }));
     expect(onOpenChange).toHaveBeenCalledWith(false);
   });
@@ -89,47 +106,69 @@ describe("ScenarioForm", () => {
 
   it("displays scenario name input field", async () => {
     renderWithProviders(<ScenarioForm open={true} onOpenChange={vi.fn()} mode="create" />);
-    await waitFor(() => { 
+    await waitFor(() => {
       const nameInput = screen.getByPlaceholderText(/vip client booking request/i);
-      expect(nameInput).toBeInTheDocument(); 
+      expect(nameInput).toBeInTheDocument();
     });
   });
 
   it("displays Add Turn button", async () => {
     renderWithProviders(<ScenarioForm open={true} onOpenChange={vi.fn()} mode="create" />);
-    await waitFor(() => { expect(screen.getByRole("button", { name: /add turn/i })).toBeInTheDocument(); });
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /add turn/i })).toBeInTheDocument();
+    });
   });
 
   it("displays Add Criterion button", async () => {
     renderWithProviders(<ScenarioForm open={true} onOpenChange={vi.fn()} mode="create" />);
-    await waitFor(() => { expect(screen.getByRole("button", { name: /add criterion/i })).toBeInTheDocument(); });
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /add criterion/i })).toBeInTheDocument();
+    });
   });
 
   it("renders edit dialog with correct title", async () => {
-    renderWithProviders(<ScenarioForm open={true} onOpenChange={vi.fn()} scenario={mockScenario} mode="edit" />);
-    await waitFor(() => { expect(screen.getByText("Edit Scenario")).toBeInTheDocument(); });
+    renderWithProviders(
+      <ScenarioForm open={true} onOpenChange={vi.fn()} scenario={mockScenario} mode="edit" />
+    );
+    await waitFor(() => {
+      expect(screen.getByText("Edit Scenario")).toBeInTheDocument();
+    });
   });
 
   it("displays Update Scenario button", async () => {
-    renderWithProviders(<ScenarioForm open={true} onOpenChange={vi.fn()} scenario={mockScenario} mode="edit" />);
-    await waitFor(() => { expect(screen.getByRole("button", { name: /update scenario/i })).toBeInTheDocument(); });
+    renderWithProviders(
+      <ScenarioForm open={true} onOpenChange={vi.fn()} scenario={mockScenario} mode="edit" />
+    );
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /update scenario/i })).toBeInTheDocument();
+    });
   });
 
   it("pre-fills form with scenario name", async () => {
-    renderWithProviders(<ScenarioForm open={true} onOpenChange={vi.fn()} scenario={mockScenario} mode="edit" />);
+    renderWithProviders(
+      <ScenarioForm open={true} onOpenChange={vi.fn()} scenario={mockScenario} mode="edit" />
+    );
     await waitFor(() => {
-      const nameInput = screen.getByPlaceholderText<HTMLInputElement>(/vip client booking request/i);
+      const nameInput = screen.getByPlaceholderText<HTMLInputElement>(
+        /vip client booking request/i
+      );
       expect(nameInput.value).toBe("Test Scenario");
     });
   });
 
   it("renders view dialog with correct title", async () => {
-    renderWithProviders(<ScenarioForm open={true} onOpenChange={vi.fn()} scenario={mockScenario} mode="view" />);
-    await waitFor(() => { expect(screen.getByText("View Scenario")).toBeInTheDocument(); });
+    renderWithProviders(
+      <ScenarioForm open={true} onOpenChange={vi.fn()} scenario={mockScenario} mode="view" />
+    );
+    await waitFor(() => {
+      expect(screen.getByText("View Scenario")).toBeInTheDocument();
+    });
   });
 
   it("displays Close button in view mode", async () => {
-    renderWithProviders(<ScenarioForm open={true} onOpenChange={vi.fn()} scenario={mockScenario} mode="view" />);
+    renderWithProviders(
+      <ScenarioForm open={true} onOpenChange={vi.fn()} scenario={mockScenario} mode="view" />
+    );
     await waitFor(() => {
       const closeButtons = screen.getAllByRole("button", { name: /close/i });
       expect(closeButtons.length).toBeGreaterThan(0);
@@ -137,16 +176,24 @@ describe("ScenarioForm", () => {
   });
 
   it("does not display Create/Update button in view mode", async () => {
-    renderWithProviders(<ScenarioForm open={true} onOpenChange={vi.fn()} scenario={mockScenario} mode="view" />);
-    await waitFor(() => { expect(screen.getByRole("dialog")).toBeInTheDocument(); });
+    renderWithProviders(
+      <ScenarioForm open={true} onOpenChange={vi.fn()} scenario={mockScenario} mode="view" />
+    );
+    await waitFor(() => {
+      expect(screen.getByRole("dialog")).toBeInTheDocument();
+    });
     expect(screen.queryByRole("button", { name: /create scenario/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /update scenario/i })).not.toBeInTheDocument();
   });
 
   it("disables scenario name input in view mode", async () => {
-    renderWithProviders(<ScenarioForm open={true} onOpenChange={vi.fn()} scenario={mockScenario} mode="view" />);
+    renderWithProviders(
+      <ScenarioForm open={true} onOpenChange={vi.fn()} scenario={mockScenario} mode="view" />
+    );
     await waitFor(() => {
-      const nameInput = screen.getByPlaceholderText<HTMLInputElement>(/vip client booking request/i);
+      const nameInput = screen.getByPlaceholderText<HTMLInputElement>(
+        /vip client booking request/i
+      );
       expect(nameInput).toBeDisabled();
     });
   });

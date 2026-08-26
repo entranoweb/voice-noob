@@ -15,15 +15,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import {
-  Plus,
-  Search,
-  Loader2,
-  Database,
-  Filter,
-  FolderOpen,
-  AlertTriangle,
-} from "lucide-react";
+import { Plus, Search, Loader2, Database, Filter, FolderOpen, AlertTriangle } from "lucide-react";
 import { listScenarios, seedScenarios, type TestScenario } from "@/lib/api/qa";
 import { ScenarioCard } from "./scenario-card";
 import { InfoTooltip } from "@/components/ui/info-tooltip";
@@ -202,7 +194,7 @@ export function ScenarioManager({
         <div>
           <div className="flex items-center gap-2">
             <h2 className="text-lg font-semibold">Test Scenarios</h2>
-            <InfoTooltip 
+            <InfoTooltip
               content="Test scenarios simulate different caller situations to verify your voice agent handles them correctly. Each scenario defines a caller persona, conversation flow, and success criteria."
               side="right"
             />
@@ -226,9 +218,7 @@ export function ScenarioManager({
             )}
             Seed Built-in
           </Button>
-          <InfoTooltip 
-            content="Seed Built-in: Loads pre-configured test scenarios covering common use cases like greetings, bookings, and objection handling. Great for getting started quickly!"
-          />
+          <InfoTooltip content="Seed Built-in: Loads pre-configured test scenarios covering common use cases like greetings, bookings, and objection handling. Great for getting started quickly!" />
           {onCreateScenario && (
             <Button size="sm" onClick={onCreateScenario}>
               <Plus className="mr-2 h-4 w-4" />
@@ -267,10 +257,7 @@ export function ScenarioManager({
             </Select>
 
             {/* Filter by category */}
-            <Select
-              value={categoryFilter}
-              onValueChange={setCategoryFilter}
-            >
+            <Select value={categoryFilter} onValueChange={setCategoryFilter}>
               <SelectTrigger className="w-[160px]">
                 <SelectValue />
               </SelectTrigger>
@@ -321,7 +308,9 @@ export function ScenarioManager({
               scenarios={categoryScenarios}
               selectedIds={selectedScenarioIds}
               onToggleSelection={onSelectionChange ? handleToggleSelection : undefined}
-              onSelectCategory={onSelectionChange ? () => handleSelectCategory(categoryScenarios) : undefined}
+              onSelectCategory={
+                onSelectionChange ? () => handleSelectCategory(categoryScenarios) : undefined
+              }
               onView={onViewScenario}
               onEdit={onEditScenario}
             />
@@ -336,12 +325,7 @@ export function ScenarioManager({
             <strong>{selectedScenarioIds.length}</strong> scenario
             {selectedScenarioIds.length !== 1 ? "s" : ""} selected
           </span>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="ml-2"
-            onClick={() => onSelectionChange([])}
-          >
+          <Button variant="ghost" size="sm" className="ml-2" onClick={() => onSelectionChange([])}>
             Clear
           </Button>
         </div>
@@ -349,7 +333,6 @@ export function ScenarioManager({
     </div>
   );
 }
-
 
 // =============================================================================
 // Sub-components
@@ -389,12 +372,7 @@ function CategoryGroup({
             </Badge>
           </CardTitle>
           {onSelectCategory && (
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-7 text-xs"
-              onClick={onSelectCategory}
-            >
+            <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={onSelectCategory}>
               {allSelected ? "Deselect All" : someSelected ? "Select All" : "Select All"}
             </Button>
           )}

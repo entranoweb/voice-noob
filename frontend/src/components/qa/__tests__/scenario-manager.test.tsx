@@ -21,10 +21,7 @@ vi.mock("sonner", () => ({
 }));
 
 // Wrap with QueryClientProvider for tests
-const renderWithProviders = (
-  component: React.ReactNode,
-  queryClient?: QueryClient
-) => {
+const renderWithProviders = (component: React.ReactNode, queryClient?: QueryClient) => {
   const client =
     queryClient ??
     new QueryClient({
@@ -36,9 +33,7 @@ const renderWithProviders = (
         },
       },
     });
-  return render(
-    <QueryClientProvider client={client}>{component}</QueryClientProvider>
-  );
+  return render(<QueryClientProvider client={client}>{component}</QueryClientProvider>);
 };
 
 describe("ScenarioManager", () => {
@@ -73,9 +68,7 @@ describe("ScenarioManager", () => {
     renderWithProviders(<ScenarioManager />);
 
     await waitFor(() => {
-      expect(
-        screen.getByRole("button", { name: /seed built-in/i })
-      ).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /seed built-in/i })).toBeInTheDocument();
     });
   });
 
@@ -83,9 +76,7 @@ describe("ScenarioManager", () => {
     renderWithProviders(<ScenarioManager />);
 
     await waitFor(() => {
-      expect(
-        screen.getByPlaceholderText("Search scenarios...")
-      ).toBeInTheDocument();
+      expect(screen.getByPlaceholderText("Search scenarios...")).toBeInTheDocument();
     });
   });
 
@@ -151,19 +142,14 @@ describe("ScenarioManager", () => {
 
     await waitFor(() => {
       expect(screen.getByText("No test scenarios yet")).toBeInTheDocument();
-      expect(
-        screen.getByText("Seed built-in scenarios or create your own")
-      ).toBeInTheDocument();
+      expect(screen.getByText("Seed built-in scenarios or create your own")).toBeInTheDocument();
     });
   });
 
   it("shows error state when scenarios fail to load", async () => {
     server.use(
       http.get(`${API_URL}/api/v1/testing/scenarios`, () => {
-        return HttpResponse.json(
-          { detail: "Failed to load scenarios" },
-          { status: 500 }
-        );
+        return HttpResponse.json({ detail: "Failed to load scenarios" }, { status: 500 });
       })
     );
 
@@ -219,9 +205,7 @@ describe("ScenarioManager", () => {
     renderWithProviders(<ScenarioManager onCreateScenario={onCreateScenario} />);
 
     await waitFor(() => {
-      expect(
-        screen.getByRole("button", { name: /create scenario/i })
-      ).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /create scenario/i })).toBeInTheDocument();
     });
 
     await user.click(screen.getByRole("button", { name: /create scenario/i }));
@@ -249,10 +233,7 @@ describe("ScenarioManager", () => {
     const onSelectionChange = vi.fn();
 
     renderWithProviders(
-      <ScenarioManager
-        selectedScenarioIds={[]}
-        onSelectionChange={onSelectionChange}
-      />
+      <ScenarioManager selectedScenarioIds={[]} onSelectionChange={onSelectionChange} />
     );
 
     await waitFor(() => {
@@ -291,10 +272,7 @@ describe("ScenarioManager", () => {
 
   it("shows clear button when scenarios are selected", async () => {
     renderWithProviders(
-      <ScenarioManager
-        selectedScenarioIds={["scenario-1"]}
-        onSelectionChange={vi.fn()}
-      />
+      <ScenarioManager selectedScenarioIds={["scenario-1"]} onSelectionChange={vi.fn()} />
     );
 
     await waitFor(() => {
