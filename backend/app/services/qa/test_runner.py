@@ -3,6 +3,7 @@
 Simulates conversations and evaluates agent responses against expected behaviors.
 """
 
+import json
 import time
 import uuid
 from datetime import UTC, datetime
@@ -26,6 +27,7 @@ from app.services.qa.resilience import (
     get_anthropic_client,
 )
 from app.services.qa.scenarios import get_built_in_scenarios
+from app.services.qa.tool_binding import BoundTools, bind_agent_tools
 
 logger = structlog.get_logger()
 
@@ -112,21 +114,77 @@ def _serialise_scores(results: MetricResults) -> dict[str, Any]:
     }
 
 
+# How many times an agent turn may go round the tool loop before we stop it. A
+# model that keeps calling tools without ever answering would otherwise run
+# until the token budget or the API bill did it for us.
+MAX_TOOL_ITERATIONS = 6
+
+# Tool results can be large. Truncated before going back to the model because a
+# single verbose listing should not crowd out the conversation; the untruncated
+# result is still recorded for the metrics.
+MAX_TOOL_RESULT_CHARS = 2000
+
+
+def _tool_result_text(result: Any) -> str:
+    """Render a tool result for the model.
+
+    Truncated, and never allowed to raise: a result the runtime cannot serialise
+    would otherwise abort a run that had already done real work.
+    """
+    try:
+        rendered = json.dumps(result, default=str)
+    except (TypeError, ValueError):
+        rendered = str(result)
+    if len(rendered) > MAX_TOOL_RESULT_CHARS:
+        return rendered[:MAX_TOOL_RESULT_CHARS] + "... (truncated)"
+    return rendered
+
+
 def _tool_calls_from_conversation(
     conversation: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     """Extract recorded tool invocations from a conversation.
 
-    The text-only simulation binds no tools, so this is empty today and the
-    tool metrics correctly report themselves unmeasurable rather than failing.
-    The plumbing lands now so that binding the agent's real tool registry in the
-    next phase is a change in one place.
+    Populated by the simulation, which executes the agent's real tools against
+    the real database rather than mocking their responses. Asserting on what a
+    mocked tool was asked to do only tests the model; asserting on what the
+    database looks like afterwards tests the thing the customer cares about.
     """
     calls: list[dict[str, Any]] = []
     for entry in conversation:
         if isinstance(entry, dict):
             calls.extend(c for c in entry.get("tool_calls", []) if isinstance(c, dict))
     return calls
+
+
+def _store_results(
+    test_run: TestRun,
+    *,
+    conversation: list[dict[str, Any]],
+    tool_calls: list[dict[str, Any]],
+    evaluation: dict[str, Any],
+    metric_results: MetricResults,
+    duration_ms: int,
+) -> None:
+    """Write one run's outcome onto its TestRun record."""
+    test_run.status = _STATUS_BY_OUTCOME[metric_results.outcome]
+    test_run.completed_at = datetime.now(UTC)
+    test_run.duration_ms = duration_ms
+    test_run.overall_score = evaluation.get("overall_score", 0)
+    # None rather than False when the run could not be measured: an unmeasured
+    # run is not a failed one, and recording it as failed is how harness
+    # problems became agent failure alerts.
+    test_run.passed = (
+        metric_results.outcome is RunOutcome.PASSED if metric_results.trustworthy else None
+    )
+    test_run.actual_transcript = conversation
+    test_run.actual_tool_calls = tool_calls
+    test_run.behavior_matches = evaluation.get("behavior_matches")
+    test_run.criteria_results = _serialise_scores(metric_results)
+    test_run.issues_found = evaluation.get("issues_found")
+    test_run.recommendations = evaluation.get("recommendations")
+    if not metric_results.trustworthy:
+        test_run.error_message = "; ".join(metric_results.invalid_reasons)
 
 
 class TestRunner:
@@ -258,11 +316,25 @@ class TestRunner:
         try:
             start_time = time.monotonic()
 
-            # Simulate conversation and get agent responses
-            conversation = await self._simulate_conversation(
+            # The agent's real tools, executed against this run's own data. No
+            # mocked tool responses: a scenario that says an appointment should
+            # exist is checked against the database, not against a transcript.
+            bound_tools = await bind_agent_tools(
+                db=self.db,
                 agent=agent,
-                scenario=scenario,
+                user_id=user_id,
+                workspace_id=workspace_id,
             )
+
+            # Simulate conversation and get agent responses
+            try:
+                conversation = await self._simulate_conversation(
+                    agent=agent,
+                    scenario=scenario,
+                    bound_tools=bound_tools,
+                )
+            finally:
+                await bound_tools.close()
 
             # Evaluate the conversation
             evaluation = await self._evaluate_conversation(
@@ -296,25 +368,14 @@ class TestRunner:
                 ),
             )
 
-            # Update test run with results
-            test_run.status = _STATUS_BY_OUTCOME[metric_results.outcome]
-            test_run.completed_at = datetime.now(UTC)
-            test_run.duration_ms = duration_ms
-            test_run.overall_score = evaluation.get("overall_score", 0)
-            # None rather than False when the run could not be measured: an
-            # unmeasured run is not a failed one, and recording it as failed is
-            # how harness problems became agent failure alerts.
-            test_run.passed = (
-                metric_results.outcome is RunOutcome.PASSED if metric_results.trustworthy else None
+            _store_results(
+                test_run,
+                conversation=conversation,
+                tool_calls=tool_calls,
+                evaluation=evaluation,
+                metric_results=metric_results,
+                duration_ms=duration_ms,
             )
-            test_run.actual_transcript = conversation
-            test_run.actual_tool_calls = tool_calls
-            test_run.behavior_matches = evaluation.get("behavior_matches")
-            test_run.criteria_results = _serialise_scores(metric_results)
-            test_run.issues_found = evaluation.get("issues_found")
-            test_run.recommendations = evaluation.get("recommendations")
-            if not metric_results.trustworthy:
-                test_run.error_message = "; ".join(metric_results.invalid_reasons)
 
             await self.db.commit()
             await self.db.refresh(test_run)
@@ -341,57 +402,124 @@ class TestRunner:
         self,
         agent: Agent,
         scenario: TestScenario,
+        bound_tools: BoundTools | None = None,
     ) -> list[dict[str, Any]]:
         """Simulate a conversation using the scenario's conversation flow.
 
-        Uses Claude to generate agent responses based on the agent's system prompt.
+        Uses Claude to generate agent responses from the agent's system prompt,
+        with the agent's real tools bound. When the model calls a tool it is
+        executed for real against the test's own database, so the state left
+        behind is the agent's, not a fixture's.
 
         Args:
             agent: The agent being tested
             scenario: The test scenario
+            bound_tools: The agent's executable tools. None runs text-only,
+                which is still valid - the tool metrics then report themselves
+                unmeasurable rather than failing.
 
         Returns:
             List of conversation turns with actual agent responses
         """
         client = await self._get_client()
         conversation: list[dict[str, Any]] = []
-
-        # Build conversation history for context
-        messages: list[dict[str, str]] = []
+        messages: list[dict[str, Any]] = []
 
         for turn in scenario.conversation_flow:
-            if turn["speaker"] == "user":
-                # Add user message
-                user_message = turn["message"]
-                messages.append({"role": "user", "content": user_message})
-                conversation.append(
-                    {
-                        "speaker": "user",
-                        "message": user_message,
-                        "timestamp": datetime.now(UTC).isoformat(),
-                    }
-                )
+            if turn.get("speaker") != "user":
+                continue
 
-                # Get agent response with resilience (retry + circuit breaker)
-                response = await call_claude_with_resilience(
-                    client=client,
-                    model=settings.QA_EVALUATION_MODEL,
-                    max_tokens=500,
-                    messages=messages,
-                    system=agent.system_prompt,
-                )
+            user_message = turn["message"]
+            messages.append({"role": "user", "content": user_message})
+            conversation.append(
+                {
+                    "speaker": "user",
+                    "message": user_message,
+                    "timestamp": datetime.now(UTC).isoformat(),
+                }
+            )
 
-                agent_response = response.content[0].text
-                messages.append({"role": "assistant", "content": agent_response})
-                conversation.append(
-                    {
-                        "speaker": "agent",
-                        "message": agent_response,
-                        "timestamp": datetime.now(UTC).isoformat(),
-                    }
-                )
+            started = time.monotonic()
+            text, tool_calls = await self._agent_turn(
+                client=client,
+                agent=agent,
+                messages=messages,
+                bound_tools=bound_tools,
+            )
+            conversation.append(
+                {
+                    "speaker": "agent",
+                    "message": text,
+                    "tool_calls": tool_calls,
+                    # Wall clock for the whole turn, tool execution included,
+                    # because that is what a caller actually waits through.
+                    "response_ms": (time.monotonic() - started) * 1000.0,
+                    "timestamp": datetime.now(UTC).isoformat(),
+                }
+            )
 
         return conversation
+
+    async def _agent_turn(
+        self,
+        client: Any,
+        agent: Agent,
+        messages: list[dict[str, Any]],
+        bound_tools: BoundTools | None,
+    ) -> tuple[str, list[dict[str, Any]]]:
+        """Run one agent turn to completion, executing any tools it calls.
+
+        Appends everything it produces to ``messages`` so the next caller turn
+        sees the same history the agent did, tool results included.
+
+        Returns:
+            The agent's spoken text and a record of every tool it invoked.
+        """
+        tools = bound_tools.tools if bound_tools else []
+        spoken: list[str] = []
+        invocations: list[dict[str, Any]] = []
+
+        for _ in range(MAX_TOOL_ITERATIONS):
+            response = await call_claude_with_resilience(
+                client=client,
+                model=settings.QA_EVALUATION_MODEL,
+                max_tokens=1000,
+                messages=messages,
+                system=agent.system_prompt,
+                tools=tools or None,
+            )
+
+            blocks = list(response.content)
+            spoken.extend(
+                str(block.text) for block in blocks if getattr(block, "type", "text") == "text"
+            )
+
+            tool_uses = [block for block in blocks if getattr(block, "type", None) == "tool_use"]
+            if not tool_uses or bound_tools is None:
+                break
+
+            messages.append({"role": "assistant", "content": blocks})
+            results: list[dict[str, Any]] = []
+            for use in tool_uses:
+                record = await bound_tools.execute(use.name, dict(use.input or {}))
+                invocations.append(record)
+                results.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": use.id,
+                        "content": _tool_result_text(record["result"]),
+                        "is_error": record["outcome"] != "ok",
+                    }
+                )
+            # Tool results go back as a user turn: that is where the Messages
+            # API expects them, not as a third role.
+            messages.append({"role": "user", "content": results})
+        else:
+            self.logger.warning("tool_loop_exhausted", agent_id=str(agent.id))
+
+        text = " ".join(part for part in spoken if part).strip()
+        messages.append({"role": "assistant", "content": text or "(no response)"})
+        return text, invocations
 
     async def _evaluate_conversation(
         self,
@@ -409,7 +537,6 @@ class TestRunner:
         Returns:
             Evaluation results
         """
-        import json
         import re
         from typing import cast
 
