@@ -248,8 +248,12 @@ class GPTRealtimeSession:
             self.logger.info("connecting_to_openai_realtime", model=model)
 
         try:
-            # Use official SDK's realtime.connect() method
-            self.connection = await self.client.beta.realtime.connect(model=model).__aenter__()
+            # GA realtime namespace (client.realtime), not client.beta.realtime.
+            # The two namespaces emit different event names for the same events:
+            # beta sends response.audio.delta, GA sends response.output_audio.delta.
+            # Event handlers across gpt_realtime/telephony_ws/embed are on the GA
+            # names, so this must stay on the GA namespace or nothing will match.
+            self.connection = await self.client.realtime.connect(model=model).__aenter__()
 
             self.logger.info("realtime_connection_established")
 
@@ -395,7 +399,7 @@ class GPTRealtimeSession:
                         await self.handle_function_call_event(event)
 
                     # Handle audio output
-                    elif event_type == "response.audio.delta":
+                    elif event_type == "response.output_audio.delta":
                         # Audio data available in event.delta
                         pass
 

@@ -28,7 +28,6 @@ dependencies = [
     # HTTP Client
     "httpx>=0.28.0",
     # Voice & AI
-    "pipecat-ai>=0.0.67",
     "deepgram-sdk>=3.8.3",
     "elevenlabs>=1.11.0",
     "openai>=1.55.3",
@@ -152,7 +151,9 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401", "D104"]
-"tests/**/*.py" = ["S101", "PLR2004", "ARG001"]
+# Tests legitimately assert, use magic numbers, take unused fixture args, and
+# reach into private members of the unit under test.
+"tests/**/*.py" = ["S101", "PLR2004", "ARG001", "ARG002", "SLF001"]
 "migrations/**/*.py" = ["ALL"]
 
 [tool.ruff.format]
@@ -193,7 +194,6 @@ disable_error_code = ["type-arg"]
 module = [
     "asyncpg.*",
     "redis.*",
-    "pipecat.*",
     "deepgram.*",
     "elevenlabs.*",
     "telnyx.*",
