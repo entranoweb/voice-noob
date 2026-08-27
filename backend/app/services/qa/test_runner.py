@@ -20,6 +20,7 @@ from app.db.session import engine as default_engine
 from app.models.agent import Agent
 from app.models.test_scenario import TestRun, TestRunStatus, TestScenario
 from app.monitoring.call_trace import TerminationReason
+from app.services.qa.caller import AdaptiveCaller, Persona
 from app.services.qa.fixtures import FixtureLedger, fixture_scope
 from app.services.qa.metrics.context import build_context
 from app.services.qa.metrics.runner import MetricResults, RunOutcome, evaluate
@@ -157,6 +158,25 @@ def _tool_calls_from_conversation(
         if isinstance(entry, dict):
             calls.extend(c for c in entry.get("tool_calls", []) if isinstance(c, dict))
     return calls
+
+
+def _persona_from(raw: dict[str, Any]) -> Persona:
+    """Build a caller persona from a scenario's stored persona dict.
+
+    Unknown keys are ignored rather than raising: caller_persona is a free-form
+    JSON column that predates this, and existing scenarios carry fields the
+    caller has no use for.
+    """
+    facts = raw.get("facts")
+    traits = raw.get("traits")
+    return Persona(
+        goal=str(raw.get("goal", "")),
+        identity=str(raw.get("identity") or raw.get("name") or "An ordinary customer."),
+        facts={str(k): str(v) for k, v in facts.items()} if isinstance(facts, dict) else {},
+        traits=tuple(str(t) for t in traits) if isinstance(traits, list) else (),
+        max_turns=int(raw.get("max_turns", 8)),
+        opening=str(raw["opening"]) if raw.get("opening") else None,
+    )
 
 
 def _store_results(
@@ -497,24 +517,76 @@ class TestRunner:
         scenario: TestScenario,
         bound_tools: BoundTools | None = None,
     ) -> list[dict[str, Any]]:
-        """Simulate a conversation using the scenario's conversation flow.
+        """Simulate a conversation, scripted or adaptive.
 
-        Uses Claude to generate agent responses from the agent's system prompt,
-        with the agent's real tools bound. When the model calls a tool it is
-        executed for real against the test's own database, so the state left
-        behind is the agent's, not a fixture's.
+        A scenario with a ``conversation_flow`` replays it. A scenario whose
+        persona declares a ``goal`` instead gets an adaptive caller that reacts
+        to what the agent said — which finds failures a script cannot, because a
+        script hands over the next line whether or not the agent earned it.
 
-        Args:
-            agent: The agent being tested
-            scenario: The test scenario
-            bound_tools: The agent's executable tools. None runs text-only,
-                which is still valid - the tool metrics then report themselves
-                unmeasurable rather than failing.
-
-        Returns:
-            List of conversation turns with actual agent responses
+        Either way the agent's real tools are bound, and a tool the model calls
+        executes against this run's own database.
         """
         client = await self._get_client()
+        persona = scenario.caller_persona or {}
+
+        if not scenario.conversation_flow and persona.get("goal"):
+            return await self._simulate_adaptive(
+                client=client,
+                agent=agent,
+                persona=_persona_from(persona),
+                bound_tools=bound_tools,
+            )
+
+        return await self._simulate_scripted(
+            client=client,
+            agent=agent,
+            scenario=scenario,
+            bound_tools=bound_tools,
+        )
+
+    async def _simulate_adaptive(
+        self,
+        *,
+        client: Any,
+        agent: Agent,
+        persona: Persona,
+        bound_tools: BoundTools | None,
+    ) -> list[dict[str, Any]]:
+        """Let a persona-driven caller and the agent talk until one stops."""
+        conversation: list[dict[str, Any]] = []
+        messages: list[dict[str, Any]] = []
+        caller = AdaptiveCaller(persona, client, settings.QA_EVALUATION_MODEL)
+
+        while True:
+            utterance = await caller.speak()
+            if utterance is None:
+                break
+
+            self._record_caller_turn(conversation, messages, utterance)
+            text = await self._agent_reply(
+                client=client,
+                agent=agent,
+                conversation=conversation,
+                messages=messages,
+                bound_tools=bound_tools,
+            )
+            caller.hear(text)
+
+            if caller.finished:
+                break
+
+        return conversation
+
+    async def _simulate_scripted(
+        self,
+        *,
+        client: Any,
+        agent: Agent,
+        scenario: TestScenario,
+        bound_tools: BoundTools | None,
+    ) -> list[dict[str, Any]]:
+        """Replay the scenario's fixed conversation flow."""
         conversation: list[dict[str, Any]] = []
         messages: list[dict[str, Any]] = []
 
@@ -522,36 +594,67 @@ class TestRunner:
             if turn.get("speaker") != "user":
                 continue
 
-            user_message = turn["message"]
-            messages.append({"role": "user", "content": user_message})
-            conversation.append(
-                {
-                    "speaker": "user",
-                    "message": user_message,
-                    "timestamp": datetime.now(UTC).isoformat(),
-                }
-            )
-
-            started = time.monotonic()
-            text, tool_calls = await self._agent_turn(
+            self._record_caller_turn(conversation, messages, turn["message"])
+            await self._agent_reply(
                 client=client,
                 agent=agent,
+                conversation=conversation,
                 messages=messages,
                 bound_tools=bound_tools,
             )
-            conversation.append(
-                {
-                    "speaker": "agent",
-                    "message": text,
-                    "tool_calls": tool_calls,
-                    # Wall clock for the whole turn, tool execution included,
-                    # because that is what a caller actually waits through.
-                    "response_ms": (time.monotonic() - started) * 1000.0,
-                    "timestamp": datetime.now(UTC).isoformat(),
-                }
-            )
 
         return conversation
+
+    @staticmethod
+    def _record_caller_turn(
+        conversation: list[dict[str, Any]],
+        messages: list[dict[str, Any]],
+        utterance: str,
+    ) -> None:
+        """Append one caller turn to both the transcript and the model history."""
+        messages.append({"role": "user", "content": utterance})
+        conversation.append(
+            {
+                "speaker": "user",
+                "message": utterance,
+                "timestamp": datetime.now(UTC).isoformat(),
+            }
+        )
+
+    async def _agent_reply(
+        self,
+        *,
+        client: Any,
+        agent: Agent,
+        conversation: list[dict[str, Any]],
+        messages: list[dict[str, Any]],
+        bound_tools: BoundTools | None,
+    ) -> str:
+        """Run one agent turn, record it, and return what was said.
+
+        Shared by both simulation modes so the transcript has one shape - the
+        metrics read it, and a second recording path would eventually drift from
+        the first in some field nobody notices until a metric goes quiet.
+        """
+        started = time.monotonic()
+        text, tool_calls = await self._agent_turn(
+            client=client,
+            agent=agent,
+            messages=messages,
+            bound_tools=bound_tools,
+        )
+        conversation.append(
+            {
+                "speaker": "agent",
+                "message": text,
+                "tool_calls": tool_calls,
+                # Wall clock for the whole turn, tool execution included,
+                # because that is what a caller actually waits through.
+                "response_ms": (time.monotonic() - started) * 1000.0,
+                "timestamp": datetime.now(UTC).isoformat(),
+            }
+        )
+        return text
 
     async def _agent_turn(
         self,

@@ -57,13 +57,18 @@ _DEFAULT_PERSONA: dict[str, Any] = {"name": "Test caller"}
 class ScenarioSpec:
     """A scenario as an argument rather than a database row."""
 
-    says: tuple[str, ...]
+    says: tuple[str, ...] = ()
+    wants: str | None = None
     invokes: tuple[str, ...] = ()
     leaves: dict[str, Any] | None = None
     given: dict[str, Any] | None = None
     persona: dict[str, Any] = field(default_factory=lambda: dict(_DEFAULT_PERSONA))
     name: str = "inline scenario"
     max_response_ms: float | None = None
+
+    def __post_init__(self) -> None:
+        if not self.says and not self.wants:
+            raise ValueError("a scenario needs either `says` (a script) or `wants` (a goal)")
 
     def to_scenario(self) -> TestScenario:
         """A transient TestScenario the runner can execute.
@@ -79,13 +84,20 @@ class ScenarioSpec:
         if self.max_response_ms is not None:
             criteria["max_response_ms"] = self.max_response_ms
 
+        # A goal makes the caller adaptive; a script keeps it reproducible.
+        # Declaring both is not an error - the script wins, and the goal stays
+        # on the persona as documentation of what the script is meant to achieve.
+        persona = dict(self.persona)
+        if self.wants:
+            persona.setdefault("goal", self.wants)
+
         return TestScenario(
             id=uuid.uuid4(),
             name=self.name,
             description="Defined inline by a test",
             category="inline",
             difficulty="medium",
-            caller_persona=dict(self.persona),
+            caller_persona=persona,
             conversation_flow=[{"speaker": "user", "message": text} for text in self.says],
             expected_behaviors=[],
             expected_tool_calls=[{"tool": name} for name in self.invokes] or None,
@@ -274,7 +286,8 @@ class ScenarioChecker:
         *,
         agent: Agent,
         user_id: int,
-        says: list[str] | tuple[str, ...],
+        says: list[str] | tuple[str, ...] = (),
+        wants: str | None = None,
         invokes: list[str] | tuple[str, ...] = (),
         leaves: dict[str, Any] | None = None,
         given: dict[str, Any] | None = None,
@@ -284,9 +297,14 @@ class ScenarioChecker:
         isolated: bool = True,
         judge: bool = False,
     ) -> RunResult:
-        """Define and run a scenario in one call — the common case."""
+        """Define and run a scenario in one call — the common case.
+
+        Give ``says`` for a fixed script, or ``wants`` for an adaptive caller
+        that pursues a goal and reacts to what the agent actually said.
+        """
         spec = ScenarioSpec(
             says=tuple(says),
+            wants=wants,
             invokes=tuple(invokes),
             leaves=leaves,
             given=given,

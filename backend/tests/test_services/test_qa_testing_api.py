@@ -19,6 +19,7 @@ from sqlalchemy import select
 from app.models.appointment import Appointment
 from app.models.contact import Contact
 from app.models.test_scenario import TestScenario
+from app.services.qa.caller import DONE
 from app.services.qa.metrics.runner import RunOutcome
 from app.services.qa.mutations import Mutation
 from app.services.qa.test_runner import TestRunner
@@ -356,3 +357,65 @@ class TestCompare:
         )
 
         assert (await test_session.execute(select(Contact))).scalars().all() == []
+
+
+@pytest.mark.asyncio
+class TestAdaptiveScenarios:
+    """`wants` instead of `says`: the caller pursues a goal and reacts."""
+
+    async def test_a_goal_drives_the_conversation(
+        self,
+        test_session: AsyncSession,
+        create_test_user: Any,
+        create_test_agent: Any,
+    ) -> None:
+        user = await create_test_user()
+        agent = await create_test_agent(user_id=user.id, enabled_tools=["crm"])
+
+        # The scripted client answers both the caller and the agent, in the
+        # order the runner asks: caller first, then agent, alternating.
+        result = await _checker(
+            test_session,
+            [_text("Hi, I'd like to book for tomorrow.")],
+            [_text("Sure - what number can I reach you on?")],
+            [_text("It's 5551234567.")],
+            [_tool_use("create_contact", first_name="Jane", phone_number="5551234567")],
+            [_text("Thanks Jane, you're all set.")],
+            [_text(f"Great, thanks! {DONE}")],
+        ).check(
+            agent=agent,
+            user_id=user.id,
+            wants="Book an appointment for tomorrow",
+            persona={"facts": {"phone": "5551234567"}, "max_turns": 4},
+        )
+
+        speakers = [turn["speaker"] for turn in result.transcript]
+        assert speakers.count("user") >= 2
+        assert speakers.count("agent") >= 2
+
+    async def test_a_scenario_needs_a_script_or_a_goal(self) -> None:
+        """Neither one means there is no conversation to have, and an empty run
+        would report itself unmeasurable for a reason nobody could act on."""
+        with pytest.raises(ValueError, match=r"`says`.*`wants`"):
+            ScenarioSpec()
+
+    async def test_a_script_still_takes_precedence(
+        self,
+        test_session: AsyncSession,
+        create_test_user: Any,
+        create_test_agent: Any,
+    ) -> None:
+        """Declaring both is not an error - the script wins and stays
+        reproducible, and the goal documents what it is meant to achieve."""
+        user = await create_test_user()
+        agent = await create_test_agent(user_id=user.id, enabled_tools=["crm"])
+
+        result = await _checker(test_session, [_text("Certainly.")]).check(
+            agent=agent,
+            user_id=user.id,
+            says=["exactly this"],
+            wants="book something",
+        )
+
+        caller_turns = [t["message"] for t in result.transcript if t["speaker"] == "user"]
+        assert caller_turns == ["exactly this"]
