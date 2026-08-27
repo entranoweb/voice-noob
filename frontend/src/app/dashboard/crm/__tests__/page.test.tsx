@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@/test/test-utils";
+import { render, screen, waitFor, fireEvent } from "@/test/test-utils";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import CRMPage from "../page";
 import { api } from "@/lib/api";
@@ -50,6 +50,14 @@ const mockContacts = [
   },
 ];
 
+/** Read the number rendered under a stat card's label. */
+function statValue(container: HTMLElement, label: string): string | undefined {
+  const heading = Array.from(container.querySelectorAll("p")).find(
+    (node) => node.textContent === label
+  );
+  return heading?.nextElementSibling?.textContent ?? undefined;
+}
+
 describe("CRMPage", () => {
   let queryClient: QueryClient;
 
@@ -73,9 +81,7 @@ describe("CRMPage", () => {
     renderWithClient(<CRMPage />);
 
     expect(screen.getByText("CRM")).toBeInTheDocument();
-    expect(
-      screen.getByText("Manage your contacts, appointments, and call interactions")
-    ).toBeInTheDocument();
+    expect(screen.getByText("Manage your contacts and interactions")).toBeInTheDocument();
   });
 
   it("renders Add Contact button", () => {
@@ -182,21 +188,21 @@ describe("CRMPage", () => {
     });
   });
 
-  it("displays correct contact count message", async () => {
+  it("counts the loaded contacts in the stats card", async () => {
     vi.mocked(api.get).mockResolvedValue({ data: mockContacts });
-    renderWithClient(<CRMPage />);
+    const { container } = renderWithClient(<CRMPage />);
 
     await waitFor(() => {
-      expect(screen.getByText("Showing 3 contacts")).toBeInTheDocument();
+      expect(statValue(container, "Total Contacts")).toBe("3");
     });
   });
 
-  it("displays singular contact message when only one contact", async () => {
+  it("counts a single contact correctly", async () => {
     vi.mocked(api.get).mockResolvedValue({ data: [mockContacts[0]] });
-    renderWithClient(<CRMPage />);
+    const { container } = renderWithClient(<CRMPage />);
 
     await waitFor(() => {
-      expect(screen.getByText("Showing 1 contact")).toBeInTheDocument();
+      expect(statValue(container, "Total Contacts")).toBe("1");
     });
   });
 
@@ -220,14 +226,19 @@ describe("CRMPage", () => {
     });
   });
 
-  it("renders View Details buttons for each contact", async () => {
+  it("opens the details dialog when a contact card is clicked", async () => {
+    // The card itself is the control now; there is no separate View Details
+    // button. What matters is that a contact is still one click from its detail.
     vi.mocked(api.get).mockResolvedValue({ data: mockContacts });
     renderWithClient(<CRMPage />);
 
     await waitFor(() => {
-      const viewDetailsButtons = screen.getAllByRole("button", { name: /View Details/i });
-      expect(viewDetailsButtons).toHaveLength(3);
+      expect(screen.getByText("John Doe")).toBeInTheDocument();
     });
+
+    fireEvent.click(screen.getByText("John Doe"));
+
+    expect(await screen.findByText("Contact Details")).toBeInTheDocument();
   });
 
   it("handles contacts with null fields gracefully", async () => {
@@ -285,26 +296,27 @@ describe("CRMPage", () => {
       expect(screen.getByText("John Doe")).toBeInTheDocument();
     });
 
-    // Verify query cache
-    const cachedData = queryClient.getQueryData(["contacts"]);
-    expect(cachedData).toEqual(mockContacts);
+    // The key is scoped by workspace, so match on its prefix rather than
+    // pinning the test to whichever workspace happens to be selected.
+    const cached = queryClient.getQueriesData({ queryKey: ["contacts"] });
+    expect(cached.map(([, data]) => data)).toContainEqual(mockContacts);
   });
 
   it("displays appointments count (currently 0)", async () => {
     vi.mocked(api.get).mockResolvedValue({ data: mockContacts });
-    renderWithClient(<CRMPage />);
+    const { container } = renderWithClient(<CRMPage />);
 
     await waitFor(() => {
-      expect(screen.getByText("Scheduled this month")).toBeInTheDocument();
+      expect(statValue(container, "Appointments")).toBe("0");
     });
   });
 
   it("displays call interactions count (currently 0)", async () => {
     vi.mocked(api.get).mockResolvedValue({ data: mockContacts });
-    renderWithClient(<CRMPage />);
+    const { container } = renderWithClient(<CRMPage />);
 
     await waitFor(() => {
-      expect(screen.getByText("Total interactions logged")).toBeInTheDocument();
+      expect(statValue(container, "Call Interactions")).toBe("0");
     });
   });
 
@@ -313,7 +325,7 @@ describe("CRMPage", () => {
     const { container } = renderWithClient(<CRMPage />);
 
     await waitFor(() => {
-      const contactCards = container.querySelectorAll('[class*="hover:bg-accent"]');
+      const contactCards = container.querySelectorAll('[class*="hover:border-primary"]');
       expect(contactCards.length).toBeGreaterThan(0);
     });
   });

@@ -136,6 +136,22 @@ async def test_session(test_engine: Any) -> AsyncGenerator[AsyncSession, None]:
         await session.rollback()
 
 
+@pytest.fixture(autouse=True)
+def reset_rate_limiter() -> Generator[None, None, None]:
+    """Clear rate-limit windows between tests.
+
+    The limiter keys on remote address and every test client shares one, so a
+    test that deliberately exhausts a limit leaves every later test in the same
+    process getting 429s. That made failures depend on file order rather than on
+    the code under test.
+    """
+    from app.core.limiter import limiter
+
+    limiter.reset()
+    yield
+    limiter.reset()
+
+
 @pytest_asyncio.fixture
 async def test_redis() -> Any:
     """Create fake async Redis client for testing.
