@@ -27,6 +27,12 @@ from app.services.qa.metrics.diagnostic import response_speed as _response_speed
 from app.services.qa.metrics.diagnostic import (
     tool_call_validity as _tool_call_validity,
 )
+from app.services.qa.metrics.experience import (
+    transcription_accuracy as _transcription_accuracy,
+)
+from app.services.qa.metrics.experience import (
+    turn_taking as _turn_taking,
+)
 from app.services.qa.metrics.runner import (
     MetricResults,
     MetricRunner,

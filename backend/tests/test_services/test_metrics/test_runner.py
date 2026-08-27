@@ -55,10 +55,13 @@ class TestRegistry:
             "conversation_has_turns",
             "conversation_valid_end",
             "expected_tools_invoked",
+            "interruption_handling",
             "response_speed",
             "state_restored",
             "task_completion",
+            "time_to_first_audio",
             "tool_call_validity",
+            "transcription_accuracy",
         }
 
     def test_validation_metrics_come_first(self) -> None:
