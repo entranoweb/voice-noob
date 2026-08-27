@@ -113,6 +113,11 @@ class MetricContext:
     expected_db_state: dict[str, Any] | None = None
     final_db_state: dict[str, Any] | None = None
 
+    # What the fixture lifecycle did, if the run was scoped. None means the run
+    # was not isolated, which is a different statement from "isolated and left
+    # nothing behind" — the metric keeps those apart.
+    fixture_ledger: dict[str, Any] | None = None
+
     # Whether audio was in the loop. Metrics that require it check this rather
     # than inferring from empty fields, so "not measured" never reads as "zero".
     has_audio: bool = False

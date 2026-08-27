@@ -48,12 +48,15 @@ def working_context(**overrides: Any) -> MetricContext:
 
 
 class TestRegistry:
-    def test_every_phase_one_metric_is_registered(self) -> None:
+    def test_the_registered_set_is_exactly_what_we_expect(self) -> None:
+        """An exact set, not a subset: a metric that silently stops registering
+        drops out of every result with nothing to notice it by."""
         assert set(registry.registered_names()) == {
             "conversation_has_turns",
             "conversation_valid_end",
             "expected_tools_invoked",
             "response_speed",
+            "state_restored",
             "task_completion",
             "tool_call_validity",
         }

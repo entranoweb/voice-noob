@@ -134,6 +134,7 @@ def build_context(
     duration_ms: float | None = None,
     expected_db_state: dict[str, Any] | None = None,
     final_db_state: dict[str, Any] | None = None,
+    fixture_ledger: dict[str, Any] | None = None,
     has_audio: bool = False,
 ) -> MetricContext:
     """Assemble the capsule the metrics read."""
@@ -150,6 +151,7 @@ def build_context(
         # criteria, so no schema change is needed to start asserting on it.
         expected_db_state=expected_db_state or criteria.get("expected_db_state"),
         final_db_state=final_db_state,
+        fixture_ledger=fixture_ledger,
         has_audio=has_audio,
     )
 

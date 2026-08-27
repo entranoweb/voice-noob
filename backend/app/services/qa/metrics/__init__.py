@@ -36,6 +36,9 @@ from app.services.qa.metrics.runner import (
 from app.services.qa.metrics.validation import (
     conversation_valid_end as _conversation_valid_end,
 )
+from app.services.qa.metrics.validation import (
+    state_restored as _state_restored,
+)
 
 __all__ = [
     "BaseMetric",
