@@ -12,13 +12,15 @@ from typing import Any
 import anthropic
 import structlog
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from app.core.config import settings
 from app.db.session import AsyncSessionLocal
+from app.db.session import engine as default_engine
 from app.models.agent import Agent
 from app.models.test_scenario import TestRun, TestRunStatus, TestScenario
 from app.monitoring.call_trace import TerminationReason
+from app.services.qa.fixtures import FixtureLedger, fixture_scope
 from app.services.qa.metrics.context import build_context
 from app.services.qa.metrics.runner import MetricResults, RunOutcome, evaluate
 from app.services.qa.metrics.snapshot import capture_crm_state
@@ -187,16 +189,34 @@ def _store_results(
         test_run.error_message = "; ".join(metric_results.invalid_reasons)
 
 
+def _engine_of(session: AsyncSession) -> AsyncEngine:
+    """The engine a session is bound to, falling back to the application one.
+
+    Taken from the session rather than imported directly so that an isolated run
+    opens its connection on the same database the caller is already talking to.
+    Importing the module-level engine would have a test, or anything pointed at
+    a different database, quietly run its fixtures somewhere else.
+    """
+    bind = getattr(session, "bind", None)
+    if isinstance(bind, AsyncEngine):
+        return bind
+    return default_engine
+
+
 class TestRunner:
     """Executes test scenarios against voice agents."""
 
-    def __init__(self, db: AsyncSession):
+    def __init__(self, db: AsyncSession, engine: AsyncEngine | None = None):
         """Initialize the test runner.
 
         Args:
-            db: Database session
+            db: Database session, used for the run's own bookkeeping.
+            engine: Engine the isolated run opens its own connection on.
+                Defaults to whatever the session is bound to, so an isolated run
+                always reaches the same database the caller is already using.
         """
         self.db = db
+        self.engine = engine if engine is not None else _engine_of(db)
         self.logger = logger.bind(component="test_runner")
         self._client: Any = None
 
@@ -246,6 +266,7 @@ class TestRunner:
                 expected_behaviors=scenario_data["expected_behaviors"],
                 expected_tool_calls=scenario_data.get("expected_tool_calls"),
                 success_criteria=scenario_data["success_criteria"],
+                fixture=scenario_data.get("fixture"),
                 is_active=True,
                 is_built_in=True,
                 tags=scenario_data.get("tags"),
@@ -263,6 +284,7 @@ class TestRunner:
         agent_id: uuid.UUID,
         user_id: int,
         workspace_id: uuid.UUID | None = None,
+        isolated: bool = True,
     ) -> TestRun:
         """Execute a test scenario against an agent.
 
@@ -271,6 +293,10 @@ class TestRunner:
             agent_id: ID of the agent to test
             user_id: ID of the user running the test
             workspace_id: Optional workspace ID
+            isolated: Run inside a transaction that is rolled back afterwards,
+                so the agent's real tool calls leave nothing behind. On by
+                default: a test that quietly writes into someone's live CRM is
+                the surprising behaviour, not the safe one.
 
         Returns:
             TestRun with results
@@ -316,39 +342,15 @@ class TestRunner:
         try:
             start_time = time.monotonic()
 
-            # The agent's real tools, executed against this run's own data. No
-            # mocked tool responses: a scenario that says an appointment should
-            # exist is checked against the database, not against a transcript.
-            bound_tools = await bind_agent_tools(
-                db=self.db,
-                agent=agent,
-                user_id=user_id,
-                workspace_id=workspace_id,
-            )
-
-            # Simulate conversation and get agent responses
-            try:
-                conversation = await self._simulate_conversation(
-                    agent=agent,
-                    scenario=scenario,
-                    bound_tools=bound_tools,
-                )
-            finally:
-                await bound_tools.close()
-
-            # Evaluate the conversation
-            evaluation = await self._evaluate_conversation(
+            conversation, evaluation, final_db_state, ledger = await self._execute(
                 agent=agent,
                 scenario=scenario,
-                conversation=conversation,
+                user_id=user_id,
+                workspace_id=workspace_id,
+                isolated=isolated,
             )
 
             duration_ms = int((time.monotonic() - start_time) * 1000)
-
-            # Snapshot the CRM so task completion is decided by state rather
-            # than by a model's reading of the transcript. Captured after the
-            # run and compared against what the scenario declares.
-            final_db_state = await capture_crm_state(self.db, user_id)
 
             # Deterministic metrics decide the verdict. Previously the judge
             # returned its own `passed` and the runner stored it unchallenged,
@@ -365,6 +367,7 @@ class TestRunner:
                     termination_reason=TerminationReason.AGENT_ENDED,
                     duration_ms=duration_ms,
                     final_db_state=final_db_state,
+                    fixture_ledger=ledger.as_dict() if ledger else None,
                 ),
             )
 
@@ -397,6 +400,84 @@ class TestRunner:
             await self.db.commit()
 
         return test_run
+
+    async def _execute(
+        self,
+        *,
+        agent: Agent,
+        scenario: TestScenario,
+        user_id: int,
+        workspace_id: uuid.UUID | None,
+        isolated: bool,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any], FixtureLedger | None]:
+        """Run the conversation and capture the state it produced.
+
+        The snapshot has to be taken *inside* the scope, while the agent's
+        writes are still visible; the ledger is only complete once the scope has
+        exited and rollback has been verified. Hence the ordering here.
+        """
+        if not isolated:
+            # Unscoped: whatever the agent's tools did stays in the database.
+            # Callers opt into this deliberately.
+            conversation, evaluation = await self._converse(
+                agent=agent,
+                scenario=scenario,
+                session=self.db,
+                user_id=user_id,
+                workspace_id=workspace_id,
+            )
+            return conversation, evaluation, await capture_crm_state(self.db, user_id), None
+
+        async with fixture_scope(
+            self.engine,
+            user_id=user_id,
+            spec=scenario.fixture,
+        ) as scoped:
+            conversation, evaluation = await self._converse(
+                agent=agent,
+                scenario=scenario,
+                session=scoped.session,
+                user_id=user_id,
+                workspace_id=workspace_id,
+            )
+            final_db_state = await capture_crm_state(scoped.session, user_id)
+
+        return conversation, evaluation, final_db_state, scoped.ledger
+
+    async def _converse(
+        self,
+        *,
+        agent: Agent,
+        scenario: TestScenario,
+        session: AsyncSession,
+        user_id: int,
+        workspace_id: uuid.UUID | None,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        """Bind the agent's tools to one session, talk to it, then judge it."""
+        # The agent's real tools, executed against this run's own data. No
+        # mocked tool responses: a scenario that says an appointment should
+        # exist is checked against the database, not against a transcript.
+        bound_tools = await bind_agent_tools(
+            db=session,
+            agent=agent,
+            user_id=user_id,
+            workspace_id=workspace_id,
+        )
+        try:
+            conversation = await self._simulate_conversation(
+                agent=agent,
+                scenario=scenario,
+                bound_tools=bound_tools,
+            )
+        finally:
+            await bound_tools.close()
+
+        evaluation = await self._evaluate_conversation(
+            agent=agent,
+            scenario=scenario,
+            conversation=conversation,
+        )
+        return conversation, evaluation
 
     async def _simulate_conversation(
         self,

@@ -8,6 +8,7 @@ exists. These tests assert the second thing.
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -18,6 +19,7 @@ import pytest
 from sqlalchemy import select
 
 from app.models.appointment import Appointment
+from app.models.contact import Contact
 from app.models.test_scenario import TestRunStatus, TestScenario
 from app.services.qa.test_runner import TestRunner
 
@@ -120,10 +122,13 @@ class TestToolsExecuteForReal:
                 user_id=user.id,
             )
 
-        # The appointment is real, not a mocked tool response.
-        appointments = (await test_session.execute(select(Appointment))).scalars().all()
-        assert len(appointments) == 1
-        assert appointments[0].status == "scheduled"
+        # The appointment was real while the run was happening - the metric saw
+        # it in the database, not in a transcript - and is gone afterwards,
+        # because the run rolled itself back.
+        metrics = test_run.criteria_results["metrics"]
+        assert metrics["task_completion"]["passed"] is True
+        assert (await test_session.execute(select(Appointment))).scalars().all() == []
+        assert metrics["state_restored"]["passed"] is True
 
         assert test_run.status == TestRunStatus.PASSED.value
         assert test_run.passed is True
@@ -271,3 +276,135 @@ class TestToolsExecuteForReal:
 
         offered = {tool["name"] for tool in client.requests[0]["tools"]}
         assert "book_appointment" in offered
+
+
+@pytest.mark.asyncio
+class TestIsolation:
+    """A run must not leave the caller's CRM different from how it found it."""
+
+    async def test_a_seeded_fixture_is_visible_to_the_agent(
+        self,
+        test_session: AsyncSession,
+        create_test_user: Any,
+        create_test_agent: Any,
+    ) -> None:
+        """The caller claims to be someone. The fixture is what makes that true
+        for the length of the run."""
+        user = await create_test_user()
+        agent = await create_test_agent(user_id=user.id, enabled_tools=["crm"])
+        scenario = await _scenario(
+            test_session,
+            fixture={"contacts": [{"first_name": "Jane", "phone_number": "5551234567"}]},
+        )
+
+        client = _ScriptedClient(
+            [_tool_use("search_customer", query="5551234567")],
+            [_text("Welcome back, Jane.")],
+        )
+        runner = TestRunner(test_session)
+        runner._client = client
+        with patch.object(
+            runner,
+            "_evaluate_conversation",
+            new=AsyncMock(return_value={"overall_score": 80}),
+        ):
+            test_run = await runner.run_scenario(
+                scenario_id=scenario.id,
+                agent_id=agent.id,
+                user_id=user.id,
+            )
+
+        found = test_run.actual_tool_calls[0]["result"]
+        assert "Jane" in json.dumps(found)
+
+    async def test_the_fixture_does_not_outlive_the_run(
+        self,
+        test_session: AsyncSession,
+        create_test_user: Any,
+        create_test_agent: Any,
+    ) -> None:
+        user = await create_test_user()
+        agent = await create_test_agent(user_id=user.id, enabled_tools=["crm"])
+        scenario = await _scenario(
+            test_session,
+            fixture={"contacts": [{"first_name": "Jane", "phone_number": "5551234567"}]},
+        )
+
+        runner = TestRunner(test_session)
+        runner._client = _ScriptedClient([_text("Hello!")])
+        with patch.object(
+            runner,
+            "_evaluate_conversation",
+            new=AsyncMock(return_value={"overall_score": 50}),
+        ):
+            await runner.run_scenario(
+                scenario_id=scenario.id,
+                agent_id=agent.id,
+                user_id=user.id,
+            )
+
+        assert (await test_session.execute(select(Contact))).scalars().all() == []
+
+    async def test_the_ledger_is_recorded_on_the_run(
+        self,
+        test_session: AsyncSession,
+        create_test_user: Any,
+        create_test_agent: Any,
+    ) -> None:
+        """The audit trail is the deliverable, not a side effect."""
+        user = await create_test_user()
+        agent = await create_test_agent(user_id=user.id, enabled_tools=["crm"])
+        scenario = await _scenario(
+            test_session,
+            fixture={"contacts": [{"first_name": "Jane", "phone_number": "5551234567"}]},
+        )
+
+        runner = TestRunner(test_session)
+        runner._client = _ScriptedClient([_text("Hello!")])
+        with patch.object(
+            runner,
+            "_evaluate_conversation",
+            new=AsyncMock(return_value={"overall_score": 50}),
+        ):
+            test_run = await runner.run_scenario(
+                scenario_id=scenario.id,
+                agent_id=agent.id,
+                user_id=user.id,
+            )
+
+        restored = test_run.criteria_results["metrics"]["state_restored"]
+        assert restored["passed"] is True
+        assert restored["detail"]["seeded_count"] == 1
+
+    async def test_opting_out_leaves_the_writes_in_place(
+        self,
+        test_session: AsyncSession,
+        create_test_user: Any,
+        create_test_agent: Any,
+    ) -> None:
+        """Isolation is the default, not the only option - but an unscoped run
+        reports state_restored as unmeasurable rather than clean."""
+        user = await create_test_user()
+        agent = await create_test_agent(user_id=user.id, enabled_tools=["crm"])
+        scenario = await _scenario(test_session)
+
+        client = _ScriptedClient(
+            [_tool_use("create_contact", first_name="Jane", phone_number="5551234567")],
+            [_text("Thanks Jane.")],
+        )
+        runner = TestRunner(test_session)
+        runner._client = client
+        with patch.object(
+            runner,
+            "_evaluate_conversation",
+            new=AsyncMock(return_value={"overall_score": 70}),
+        ):
+            test_run = await runner.run_scenario(
+                scenario_id=scenario.id,
+                agent_id=agent.id,
+                user_id=user.id,
+                isolated=False,
+            )
+
+        assert len((await test_session.execute(select(Contact))).scalars().all()) == 1
+        assert test_run.criteria_results["metrics"]["state_restored"]["value"] is None
