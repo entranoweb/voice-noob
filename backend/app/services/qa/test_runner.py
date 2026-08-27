@@ -556,7 +556,7 @@ class TestRunner:
         """Let a persona-driven caller and the agent talk until one stops."""
         conversation: list[dict[str, Any]] = []
         messages: list[dict[str, Any]] = []
-        caller = AdaptiveCaller(persona, client, settings.QA_EVALUATION_MODEL)
+        caller = AdaptiveCaller(persona, client, settings.QA_CALLER_MODEL)
 
         while True:
             utterance = await caller.speak()
@@ -678,7 +678,10 @@ class TestRunner:
         for _ in range(MAX_TOOL_ITERATIONS):
             response = await call_claude_with_resilience(
                 client=client,
-                model=settings.QA_EVALUATION_MODEL,
+                # The agent under test. This one is the measurement, so it does
+                # not get economised: a weaker model here reports the agent as
+                # worse than it is.
+                model=settings.QA_AGENT_MODEL,
                 max_tokens=1000,
                 messages=messages,
                 system=agent.system_prompt,
@@ -759,7 +762,7 @@ class TestRunner:
 
         response = await call_claude_with_resilience(
             client=client,
-            model=settings.QA_EVALUATION_MODEL,
+            model=settings.QA_JUDGE_MODEL,
             max_tokens=1000,
             messages=[{"role": "user", "content": prompt}],
         )

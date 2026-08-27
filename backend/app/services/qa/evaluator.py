@@ -145,12 +145,18 @@ Respond with a JSON object (no markdown code blocks):
 # Token costs in cents per 1K tokens, from Anthropic published pricing.
 # Only currently-active models belong here: requests to retired models fail,
 # and a stale entry silently misreports cost. Verified 2026-08-26.
+# Cents per 1K tokens. An open-weight model served on your own hardware has no
+# per-token price, so it is recorded as zero here: the cost is the machine, and
+# attributing a made-up per-token rate to it would misreport both numbers.
 MODEL_COSTS = {
     "claude-opus-5": {"input": 0.5, "output": 2.5},
     "claude-sonnet-5": {"input": 0.2, "output": 1.0},
     "claude-sonnet-4-6": {"input": 0.3, "output": 1.5},
     "claude-haiku-4-5": {"input": 0.1, "output": 0.5},
 }
+
+# Prefix for models served from a self-hosted OpenAI-compatible endpoint.
+SELF_HOSTED_PREFIX = "self-hosted/"
 
 
 class UnknownEvaluationModelError(ValueError):
@@ -168,7 +174,15 @@ class UnknownEvaluationModelError(ValueError):
 
 
 def evaluation_cost_cents(model: str, input_tokens: int, output_tokens: int) -> float:
-    """Cost of one evaluation call, in cents."""
+    """Cost of one evaluation call, in cents.
+
+    A self-hosted model costs nothing per token — the cost is the machine it
+    runs on, and inventing a per-token rate for it would misreport the API bill
+    and the infrastructure bill at the same time.
+    """
+    if model.startswith(SELF_HOSTED_PREFIX):
+        return 0.0
+
     rates = MODEL_COSTS.get(model)
     if rates is None:
         raise UnknownEvaluationModelError(model)
