@@ -409,6 +409,7 @@ class TestRunner:
         user_id: int,
         workspace_id: uuid.UUID | None,
         isolated: bool,
+        judge: bool = True,
     ) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any], FixtureLedger | None]:
         """Run the conversation and capture the state it produced.
 
@@ -425,6 +426,7 @@ class TestRunner:
                 session=self.db,
                 user_id=user_id,
                 workspace_id=workspace_id,
+                judge=judge,
             )
             return conversation, evaluation, await capture_crm_state(self.db, user_id), None
 
@@ -439,6 +441,7 @@ class TestRunner:
                 session=scoped.session,
                 user_id=user_id,
                 workspace_id=workspace_id,
+                judge=judge,
             )
             final_db_state = await capture_crm_state(scoped.session, user_id)
 
@@ -452,8 +455,14 @@ class TestRunner:
         session: AsyncSession,
         user_id: int,
         workspace_id: uuid.UUID | None,
+        judge: bool = True,
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        """Bind the agent's tools to one session, talk to it, then judge it."""
+        """Bind the agent's tools to one session, talk to it, then judge it.
+
+        The judge is skippable. Deterministic metrics decide the verdict, so a
+        CI run that only needs pass or fail should not pay for a model call to
+        narrate a conclusion the assertions already reached.
+        """
         # The agent's real tools, executed against this run's own data. No
         # mocked tool responses: a scenario that says an appointment should
         # exist is checked against the database, not against a transcript.
@@ -471,6 +480,9 @@ class TestRunner:
             )
         finally:
             await bound_tools.close()
+
+        if not judge:
+            return conversation, {}
 
         evaluation = await self._evaluate_conversation(
             agent=agent,
