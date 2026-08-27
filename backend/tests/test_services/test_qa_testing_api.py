@@ -20,6 +20,7 @@ from app.models.appointment import Appointment
 from app.models.contact import Contact
 from app.models.test_scenario import TestScenario
 from app.services.qa.metrics.runner import RunOutcome
+from app.services.qa.mutations import Mutation
 from app.services.qa.test_runner import TestRunner
 from app.services.qa.testing import RunResult, ScenarioSpec, checker
 
@@ -241,3 +242,117 @@ class TestFailureMessages:
         assert not result
         assert result.errored is True
         assert "not an agent failure" in result.explain()
+
+
+@pytest.mark.asyncio
+class TestCompare:
+    """A/B one configuration against another, through the real runner."""
+
+    async def test_runs_every_variant_the_requested_number_of_times(
+        self,
+        test_session: AsyncSession,
+        create_test_user: Any,
+        create_test_agent: Any,
+    ) -> None:
+        user = await create_test_user()
+        agent = await create_test_agent(user_id=user.id, enabled_tools=["crm"])
+
+        comparison = await _checker(test_session).compare(
+            agent=agent,
+            user_id=user.id,
+            spec=ScenarioSpec(says=["hello"]),
+            variants={"terse": {"system_prompt": "Be brief."}},
+            repeats=3,
+        )
+
+        assert len(comparison.base.runs) == 3
+        assert len(comparison.variants) == 1
+        assert len(comparison.variants[0].runs) == 3
+        assert comparison.variants[0].name == "terse"
+
+    async def test_the_variant_actually_reaches_the_model(
+        self,
+        test_session: AsyncSession,
+        create_test_user: Any,
+        create_test_agent: Any,
+    ) -> None:
+        """Without this the comparison would run the same prompt twice and
+        report the difference between two samples of the same thing."""
+        user = await create_test_user()
+        agent = await create_test_agent(
+            user_id=user.id,
+            enabled_tools=["crm"],
+            system_prompt="Original prompt.",
+        )
+
+        runner = TestRunner(test_session)
+        client = _ScriptedClient()
+        runner._client = client
+        seen: list[str] = []
+        original_create = client.messages.create
+
+        async def recording_create(**kwargs: Any) -> Any:
+            seen.append(str(kwargs.get("system")))
+            return await original_create(**kwargs)
+
+        client.messages.create = recording_create  # type: ignore[method-assign]
+
+        await checker(runner).compare(
+            agent=agent,
+            user_id=user.id,
+            spec=ScenarioSpec(says=["hello"]),
+            variants=[Mutation(name="terse", overrides={"system_prompt": "Be brief."})],
+            repeats=1,
+        )
+
+        assert "Original prompt." in seen
+        assert "Be brief." in seen
+
+    async def test_a_tiny_sample_is_reported_as_inconclusive(
+        self,
+        test_session: AsyncSession,
+        create_test_user: Any,
+        create_test_agent: Any,
+    ) -> None:
+        """Two runs cannot separate two configurations, and the comparison has
+        to say so rather than point at whichever number is higher."""
+        user = await create_test_user()
+        agent = await create_test_agent(user_id=user.id, enabled_tools=["crm"])
+
+        comparison = await _checker(test_session).compare(
+            agent=agent,
+            user_id=user.id,
+            spec=ScenarioSpec(says=["hello"]),
+            variants={"terse": {"system_prompt": "Be brief."}},
+            repeats=2,
+        )
+
+        assert comparison.winner() is None
+        assert "inconclusive" in comparison.explain()
+
+    async def test_nothing_leaks_between_variants(
+        self,
+        test_session: AsyncSession,
+        create_test_user: Any,
+        create_test_agent: Any,
+    ) -> None:
+        """Every run rolls back, so a variant never starts from state an
+        earlier one left behind - which would bias whichever ran second."""
+        user = await create_test_user()
+        agent = await create_test_agent(user_id=user.id, enabled_tools=["crm"])
+
+        runner = TestRunner(test_session)
+        runner._client = _ScriptedClient(
+            [_tool_use("create_contact", first_name="Jane", phone_number="5551234567")],
+            [_text("Done.")],
+        )
+
+        await checker(runner).compare(
+            agent=agent,
+            user_id=user.id,
+            spec=ScenarioSpec(says=["hello"]),
+            variants={"terse": {"system_prompt": "Be brief."}},
+            repeats=2,
+        )
+
+        assert (await test_session.execute(select(Contact))).scalars().all() == []

@@ -36,6 +36,13 @@ from app.models.test_scenario import TestScenario
 from app.monitoring.call_trace import TerminationReason
 from app.services.qa.metrics.context import build_context
 from app.services.qa.metrics.runner import MetricResults, RunOutcome, evaluate
+from app.services.qa.mutations import (
+    Comparison,
+    Mutation,
+    VariantResult,
+    apply_mutation,
+    named_variants,
+)
 from app.services.qa.test_runner import TestRunner, _tool_calls_from_conversation
 
 if TYPE_CHECKING:
@@ -207,6 +214,60 @@ class ScenarioChecker:
             ledger=ledger.as_dict() if ledger else None,
             judgement=judgement,
         )
+
+    async def compare(
+        self,
+        *,
+        agent: Agent,
+        user_id: int,
+        spec: ScenarioSpec,
+        variants: dict[str, dict[str, Any]] | list[Mutation],
+        repeats: int = 5,
+        workspace_id: uuid.UUID | None = None,
+        judge: bool = False,
+    ) -> Comparison:
+        """Run one scenario against the agent and each variant, several times.
+
+        ``repeats`` defaults to 5 rather than 1 because a single run per variant
+        measures the model's variance and reports it as a difference between
+        configurations. Five is not many - the comparison will often come back
+        inconclusive - but an inconclusive answer is the true one at that sample
+        size, and saying so is the point.
+
+        Errored runs still count toward ``repeats`` but not toward the pass rate:
+        a broken harness says nothing about the configuration either way.
+        """
+        mutations = variants if isinstance(variants, list) else named_variants(variants)
+
+        base = VariantResult(name="base")
+        for _ in range(repeats):
+            base.runs.append(
+                await self.run(
+                    agent=agent,
+                    user_id=user_id,
+                    spec=spec,
+                    workspace_id=workspace_id,
+                    judge=judge,
+                ),
+            )
+
+        results: list[VariantResult] = []
+        for mutation in mutations:
+            mutated = apply_mutation(agent, mutation)
+            variant = VariantResult(name=mutation.name)
+            for _ in range(repeats):
+                variant.runs.append(
+                    await self.run(
+                        agent=mutated,
+                        user_id=user_id,
+                        spec=spec,
+                        workspace_id=workspace_id,
+                        judge=judge,
+                    ),
+                )
+            results.append(variant)
+
+        return Comparison(base=base, variants=results)
 
     async def check(
         self,
