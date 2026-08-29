@@ -196,7 +196,7 @@ class WorkspaceQASettings(BaseModel):
     qa_enabled: bool = True
     auto_evaluate: bool = True
     pass_threshold: int = 70
-    evaluation_model: str = "claude-sonnet-4-20250514"
+    evaluation_model: str = Field(default_factory=lambda: settings.QA_EVALUATION_MODEL)
     inherit_global: bool = True  # If true, use global settings
 
 
@@ -292,7 +292,7 @@ def _get_workspace_qa_settings(workspace: Workspace) -> WorkspaceQASettings:
         qa_enabled=qa_settings.get("qa_enabled", True),
         auto_evaluate=qa_settings.get("auto_evaluate", True),
         pass_threshold=qa_settings.get("pass_threshold", 70),
-        evaluation_model=qa_settings.get("evaluation_model", "claude-sonnet-4-20250514"),
+        evaluation_model=qa_settings.get("evaluation_model", settings.QA_EVALUATION_MODEL),
         inherit_global=qa_settings.get("inherit_global", True),
     )
 

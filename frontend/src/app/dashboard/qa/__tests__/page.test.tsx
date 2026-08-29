@@ -157,11 +157,7 @@ describe("QA Dashboard Page", () => {
     renderWithProviders(<QADashboardPage />);
 
     // Should show the disabled message
-    const disabledMessage = await screen.findByText(
-      "QA Testing Disabled",
-      {},
-      { timeout: 5000 }
-    );
+    const disabledMessage = await screen.findByText("QA Testing Disabled", {}, { timeout: 5000 });
     expect(disabledMessage).toBeInTheDocument();
   });
 

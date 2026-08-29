@@ -21,6 +21,8 @@ from app.models.test_scenario import (
     TestRunStatus,
     TestScenario,
 )
+from app.services.qa.metrics import registry
+from app.services.qa.scenarios import BUILT_IN_SCENARIOS
 from app.services.qa.test_runner import TestRunner
 
 
@@ -44,50 +46,54 @@ class TestTestRunnerInit:
 
 
 class TestGetClient:
-    """Test _get_client method."""
+    """Test _get_client method.
+
+    _get_client delegates to resilience.get_anthropic_client(), which is where
+    the API key is read and the timeout configured. These patch that module —
+    the previous versions patched app.services.qa.test_runner.settings, which
+    stopped being the code path when the client construction moved.
+    """
 
     @pytest.mark.asyncio
     async def test_get_client_creates_anthropic_client(
         self,
         test_session: AsyncSession,
     ) -> None:
-        """Test _get_client creates Anthropic client on first call."""
+        """Test _get_client creates an Anthropic client on first call."""
         runner = TestRunner(test_session)
 
-        with patch("anthropic.AsyncAnthropic") as mock_anthropic:
+        with patch("app.services.qa.resilience.anthropic.AsyncAnthropic") as mock_anthropic:
             mock_client = MagicMock()
             mock_anthropic.return_value = mock_client
 
-            with patch("app.services.qa.test_runner.settings") as mock_settings:
+            with patch("app.services.qa.resilience.settings") as mock_settings:
                 mock_settings.ANTHROPIC_API_KEY = "test-key"
+                mock_settings.ANTHROPIC_TIMEOUT = 30.0
 
                 client = await runner._get_client()
 
                 assert client == mock_client
-                mock_anthropic.assert_called_once_with(api_key="test-key")
+                assert mock_anthropic.call_args.kwargs["api_key"] == "test-key"
 
     @pytest.mark.asyncio
     async def test_get_client_caches_client(
         self,
         test_session: AsyncSession,
     ) -> None:
-        """Test _get_client caches client after first call."""
+        """Test _get_client caches the client after the first call."""
         runner = TestRunner(test_session)
 
-        with patch("anthropic.AsyncAnthropic") as mock_anthropic:
-            mock_client = MagicMock()
-            mock_anthropic.return_value = mock_client
+        with patch("app.services.qa.resilience.anthropic.AsyncAnthropic") as mock_anthropic:
+            mock_anthropic.return_value = MagicMock()
 
-            with patch("app.services.qa.test_runner.settings") as mock_settings:
+            with patch("app.services.qa.resilience.settings") as mock_settings:
                 mock_settings.ANTHROPIC_API_KEY = "test-key"
+                mock_settings.ANTHROPIC_TIMEOUT = 30.0
 
-                # First call
                 client1 = await runner._get_client()
-                # Second call
                 client2 = await runner._get_client()
 
                 assert client1 == client2
-                # Should only create client once
                 assert mock_anthropic.call_count == 1
 
     @pytest.mark.asyncio
@@ -95,25 +101,13 @@ class TestGetClient:
         self,
         test_session: AsyncSession,
     ) -> None:
-        """Test _get_client raises error when API key not configured."""
+        """Test _get_client raises when the API key is not configured."""
         runner = TestRunner(test_session)
 
-        with patch("app.services.qa.test_runner.settings") as mock_settings:
+        with patch("app.services.qa.resilience.settings") as mock_settings:
             mock_settings.ANTHROPIC_API_KEY = None
 
             with pytest.raises(ValueError, match="ANTHROPIC_API_KEY not configured"):
-                await runner._get_client()
-
-    @pytest.mark.asyncio
-    async def test_get_client_raises_error_without_anthropic_package(
-        self,
-        test_session: AsyncSession,
-    ) -> None:
-        """Test _get_client raises error when anthropic package not installed."""
-        runner = TestRunner(test_session)
-
-        with patch("builtins.__import__", side_effect=ImportError("No module named 'anthropic'")):
-            with pytest.raises(ImportError, match="anthropic package not installed"):
                 await runner._get_client()
 
 
@@ -131,7 +125,7 @@ class TestSeedBuiltInScenarios:
         count = await runner.seed_built_in_scenarios()
 
         # Should create 12 built-in scenarios
-        assert count == 12
+        assert count == len(BUILT_IN_SCENARIOS)
 
     @pytest.mark.asyncio
     async def test_seed_is_idempotent(
@@ -143,7 +137,7 @@ class TestSeedBuiltInScenarios:
 
         # First seed
         count1 = await runner.seed_built_in_scenarios()
-        assert count1 == 12
+        assert count1 == len(BUILT_IN_SCENARIOS)
 
         # Second seed should create 0
         count2 = await runner.seed_built_in_scenarios()
@@ -211,7 +205,7 @@ class TestRunScenario:
 
         runner = TestRunner(test_session)
 
-        with pytest.raises(ValueError, match="Scenario .* not found"):
+        with pytest.raises(ValueError, match=r"Scenario .* not found"):
             await runner.run_scenario(
                 scenario_id=uuid.uuid4(),
                 agent_id=agent.id,
@@ -244,7 +238,7 @@ class TestRunScenario:
 
         runner = TestRunner(test_session)
 
-        with pytest.raises(ValueError, match="Agent .* not found"):
+        with pytest.raises(ValueError, match=r"Agent .* not found"):
             await runner.run_scenario(
                 scenario_id=scenario.id,
                 agent_id=uuid.uuid4(),
@@ -301,11 +295,10 @@ class TestRunScenario:
             "recommendations": ["Great job!"],
         }
 
-        with patch.object(
-            runner, "_simulate_conversation", new_callable=AsyncMock
-        ) as mock_simulate, patch.object(
-            runner, "_evaluate_conversation", new_callable=AsyncMock
-        ) as mock_evaluate:
+        with (
+            patch.object(runner, "_simulate_conversation", new_callable=AsyncMock) as mock_simulate,
+            patch.object(runner, "_evaluate_conversation", new_callable=AsyncMock) as mock_evaluate,
+        ):
             mock_simulate.return_value = mock_conversation
             mock_evaluate.return_value = mock_evaluation
 
@@ -319,8 +312,16 @@ class TestRunScenario:
             assert test_run.scenario_id == scenario.id
             assert test_run.agent_id == agent.id
             assert test_run.user_id == user.id
-            assert test_run.status == TestRunStatus.PASSED.value
-            assert test_run.passed is True
+            # The deterministic metrics decide, and this scenario declares no
+            # expected tools and no expected database state, so nothing about
+            # the agent's accuracy is measurable. That is reported as ERROR
+            # rather than silently passed - a suite that passes runs it could
+            # not measure is decorative.
+            assert test_run.status == TestRunStatus.ERROR.value
+            assert test_run.passed is None
+            assert test_run.criteria_results["outcome"] == "error"
+            # None, not False: an unmeasured run is not a failed one, and
+            # recording it as failed is how harness gaps became agent alerts.
             assert test_run.overall_score == 85
 
     @pytest.mark.asyncio
@@ -329,11 +330,15 @@ class TestRunScenario:
         test_session: AsyncSession,
         create_test_user: Any,
         create_test_agent: Any,
+        create_test_workspace: Any,
     ) -> None:
         """Test run_scenario includes workspace_id when provided."""
         user = await create_test_user()
         agent = await create_test_agent(user_id=user.id)
-        workspace_id = uuid.uuid4()
+        # Must be a real workspace: test_runs.workspace_id is a foreign key, and
+        # a fabricated UUID fails the constraint.
+        workspace = await create_test_workspace(user_id=user.id)
+        workspace_id = workspace.id
 
         scenario = TestScenario(
             name="Test Scenario",
@@ -351,7 +356,14 @@ class TestRunScenario:
 
         runner = TestRunner(test_session)
 
-        with patch.object(runner, "_simulate_conversation", new_callable=AsyncMock):
+        with patch.object(runner, "_simulate_conversation", new_callable=AsyncMock) as _mock_sim:
+            # Must return a real conversation: the value lands in the
+            # actual_transcript JSON column, and a bare AsyncMock is not
+            # JSON-serialisable.
+            _mock_sim.return_value = [
+                {"speaker": "user", "message": "Hi", "timestamp": "2026-01-01T00:00:00Z"},
+                {"speaker": "agent", "message": "Hello!", "timestamp": "2026-01-01T00:00:01Z"},
+            ]
             with patch.object(
                 runner, "_evaluate_conversation", new_callable=AsyncMock
             ) as mock_eval:
@@ -409,7 +421,14 @@ class TestRunScenario:
             "recommendations": ["Improve greeting"],
         }
 
-        with patch.object(runner, "_simulate_conversation", new_callable=AsyncMock):
+        with patch.object(runner, "_simulate_conversation", new_callable=AsyncMock) as _mock_sim:
+            # Must return a real conversation: the value lands in the
+            # actual_transcript JSON column, and a bare AsyncMock is not
+            # JSON-serialisable.
+            _mock_sim.return_value = [
+                {"speaker": "user", "message": "Hi", "timestamp": "2026-01-01T00:00:00Z"},
+                {"speaker": "agent", "message": "Hello!", "timestamp": "2026-01-01T00:00:01Z"},
+            ]
             with patch.object(
                 runner, "_evaluate_conversation", new_callable=AsyncMock
             ) as mock_eval:
@@ -421,8 +440,10 @@ class TestRunScenario:
                     user_id=user.id,
                 )
 
-                assert test_run.status == TestRunStatus.FAILED.value
-                assert test_run.passed is False
+                # Not FAILED: the judge's own verdict no longer decides. This
+                # scenario has nothing deterministically measurable, so the run
+                # is an error rather than an agent failure.
+                assert test_run.status == TestRunStatus.ERROR.value
                 assert test_run.overall_score == 50
 
     @pytest.mark.asyncio
@@ -771,7 +792,7 @@ class TestRunAllScenarios:
                 status=TestRunStatus.PASSED.value,
             )
 
-            results = await runner.run_all_scenarios(
+            await runner.run_all_scenarios(
                 agent_id=agent.id,
                 user_id=user.id,
             )
@@ -946,7 +967,7 @@ class TestTestRunnerIntegration:
 
         # Seed scenarios
         count = await runner.seed_built_in_scenarios()
-        assert count == 12
+        assert count == len(BUILT_IN_SCENARIOS)
 
         # Mock conversation and evaluation
         mock_conversation = [
@@ -962,27 +983,200 @@ class TestTestRunnerIntegration:
             "recommendations": ["Great job!"],
         }
 
-        with patch.object(runner, "_simulate_conversation", new_callable=AsyncMock) as mock_sim:
-            with patch.object(
-                runner, "_evaluate_conversation", new_callable=AsyncMock
-            ) as mock_eval:
-                mock_sim.return_value = mock_conversation
-                mock_eval.return_value = mock_evaluation
+        with (
+            patch.object(runner, "_simulate_conversation", new_callable=AsyncMock) as mock_sim,
+            patch.object(runner, "_evaluate_conversation", new_callable=AsyncMock) as mock_eval,
+        ):
+            mock_sim.return_value = mock_conversation
+            mock_eval.return_value = mock_evaluation
 
-                # Run all scenarios
-                results = await runner.run_all_scenarios(
-                    agent_id=agent.id,
-                    user_id=user.id,
-                )
+            # Run all scenarios
+            results = await runner.run_all_scenarios(
+                agent_id=agent.id,
+                user_id=user.id,
+            )
 
-                # Verify results
-                assert len(results) == 12
-                for result in results:
-                    assert result.status in [
-                        TestRunStatus.PASSED.value,
-                        TestRunStatus.FAILED.value,
-                        TestRunStatus.ERROR.value,
-                    ]
-                    assert result.agent_id == agent.id
-                    assert result.user_id == user.id
-                    assert result.duration_ms is not None
+            # Verify results
+            assert len(results) == len(BUILT_IN_SCENARIOS)
+            for result in results:
+                assert result.status in [
+                    TestRunStatus.PASSED.value,
+                    TestRunStatus.FAILED.value,
+                    TestRunStatus.ERROR.value,
+                ]
+                assert result.agent_id == agent.id
+                assert result.user_id == user.id
+                assert result.duration_ms is not None
+
+
+@pytest.mark.asyncio
+class TestDeterministicVerdict:
+    """The verdict comes from assertions, not from the judge's own opinion.
+
+    This is the behaviour the caught-regression demo rests on: a scenario that
+    requires a tool fails when that tool does not run, regardless of how well
+    the conversation reads.
+    """
+
+    async def _scenario(self, test_session: AsyncSession, **overrides: Any) -> TestScenario:
+        fields: dict[str, Any] = {
+            "name": "Booking",
+            "category": ScenarioCategory.BOOKING.value,
+            "difficulty": ScenarioDifficulty.MEDIUM.value,
+            "caller_persona": {"name": "Jennifer"},
+            "conversation_flow": [{"speaker": "user", "message": "book me in"}],
+            "expected_behaviors": ["Collect a time"],
+            "expected_tool_calls": [{"tool": "book_appointment"}],
+            "success_criteria": {"min_score": 75},
+            "is_built_in": False,
+        }
+        fields.update(overrides)
+        scenario = TestScenario(**fields)
+        test_session.add(scenario)
+        await test_session.commit()
+        await test_session.refresh(scenario)
+        return scenario
+
+    async def _run(
+        self,
+        test_session: AsyncSession,
+        scenario: TestScenario,
+        agent: Any,
+        user: Any,
+        conversation: list[dict[str, Any]],
+    ) -> Any:
+        runner = TestRunner(test_session)
+        with (
+            patch.object(runner, "_simulate_conversation", new_callable=AsyncMock) as mock_sim,
+            patch.object(runner, "_evaluate_conversation", new_callable=AsyncMock) as mock_eval,
+        ):
+            mock_sim.return_value = conversation
+            # The judge is enthusiastic and, on its own, would pass the run.
+            mock_eval.return_value = {
+                "overall_score": 95,
+                "passed": True,
+                "behavior_matches": {},
+                "criteria_results": {},
+                "issues_found": [],
+                "recommendations": [],
+            }
+            return await runner.run_scenario(
+                scenario_id=scenario.id,
+                agent_id=agent.id,
+                user_id=user.id,
+            )
+
+    async def test_a_required_tool_that_never_ran_fails_the_run(
+        self,
+        test_session: AsyncSession,
+        create_test_user: Any,
+        create_test_agent: Any,
+    ) -> None:
+        """The judge said 95 and passed. The assertion says the booking tool
+        never ran, and the assertion wins."""
+        user = await create_test_user()
+        agent = await create_test_agent(user_id=user.id)
+        scenario = await self._scenario(test_session)
+
+        test_run = await self._run(
+            test_session,
+            scenario,
+            agent,
+            user,
+            [
+                {"speaker": "user", "message": "book me in"},
+                {"speaker": "agent", "message": "Certainly, you are all booked!"},
+            ],
+        )
+
+        assert test_run.status == TestRunStatus.FAILED.value
+        assert test_run.passed is False
+
+        tools = test_run.criteria_results["metrics"]["expected_tools_invoked"]
+        assert tools["passed"] is False
+        assert tools["detail"]["missing"] == ["book_appointment"]
+
+    async def test_the_run_records_which_tools_actually_ran(
+        self,
+        test_session: AsyncSession,
+        create_test_user: Any,
+        create_test_agent: Any,
+    ) -> None:
+        """actual_tool_calls was a column nothing ever wrote to."""
+        user = await create_test_user()
+        agent = await create_test_agent(user_id=user.id)
+        scenario = await self._scenario(test_session)
+
+        test_run = await self._run(
+            test_session,
+            scenario,
+            agent,
+            user,
+            [
+                {"speaker": "user", "message": "book me in"},
+                {
+                    "speaker": "agent",
+                    "message": "Booked.",
+                    "tool_calls": [{"name": "book_appointment"}],
+                },
+            ],
+        )
+
+        assert test_run.actual_tool_calls == [{"name": "book_appointment"}]
+        assert test_run.status == TestRunStatus.PASSED.value
+        assert test_run.passed is True
+
+    async def test_a_tool_that_errored_does_not_count_as_booked(
+        self,
+        test_session: AsyncSession,
+        create_test_user: Any,
+        create_test_agent: Any,
+    ) -> None:
+        user = await create_test_user()
+        agent = await create_test_agent(user_id=user.id)
+        scenario = await self._scenario(test_session)
+
+        test_run = await self._run(
+            test_session,
+            scenario,
+            agent,
+            user,
+            [
+                {"speaker": "user", "message": "book me in"},
+                {
+                    "speaker": "agent",
+                    "message": "All set!",
+                    "tool_calls": [{"name": "book_appointment", "error": "calendar 500"}],
+                },
+            ],
+        )
+
+        assert test_run.status == TestRunStatus.FAILED.value
+        detail = test_run.criteria_results["metrics"]["expected_tools_invoked"]["detail"]
+        assert detail["attempted_but_failed"] == ["book_appointment"]
+
+    async def test_every_metric_score_is_stored_for_diagnosis(
+        self,
+        test_session: AsyncSession,
+        create_test_user: Any,
+        create_test_agent: Any,
+    ) -> None:
+        """A bare pass/fail is not actionable; the per-metric detail is."""
+        user = await create_test_user()
+        agent = await create_test_agent(user_id=user.id)
+        scenario = await self._scenario(test_session)
+
+        test_run = await self._run(
+            test_session,
+            scenario,
+            agent,
+            user,
+            [
+                {"speaker": "user", "message": "hi"},
+                {"speaker": "agent", "message": "hello"},
+            ],
+        )
+
+        stored = test_run.criteria_results["metrics"]
+        assert set(stored) == set(registry.registered_names())
+        assert all("version" in m for m in stored.values())

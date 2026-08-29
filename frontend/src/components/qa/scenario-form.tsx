@@ -77,10 +77,14 @@ const scenarioFormSchema = z.object({
   // Expected Behaviors
   expected_behaviors: z.array(z.string()).optional(),
   // Success Criteria
-  success_criteria_items: z.array(z.object({
-    criterion: z.string().min(1),
-    required: z.boolean(),
-  })).optional(),
+  success_criteria_items: z
+    .array(
+      z.object({
+        criterion: z.string().min(1),
+        required: z.boolean(),
+      })
+    )
+    .optional(),
 });
 
 type ScenarioFormValues = z.infer<typeof scenarioFormSchema>;
@@ -133,8 +137,11 @@ interface ScenarioFormProps {
 function scenarioToFormValues(scenario: TestScenario): ScenarioFormValues {
   const persona = scenario.caller_persona as Record<string, unknown> | undefined;
   const criteria = scenario.success_criteria as Record<string, unknown> | undefined;
-  const scenarioWithExtras = scenario as { tags?: string[]; conversation_flow?: Array<{ role: string; message: string; expected_response?: string }> };
-  
+  const scenarioWithExtras = scenario as {
+    tags?: string[];
+    conversation_flow?: Array<{ role: string; message: string; expected_response?: string }>;
+  };
+
   return {
     name: scenario.name,
     description: scenario.description ?? "",
@@ -151,11 +158,15 @@ function scenarioToFormValues(scenario: TestScenario): ScenarioFormValues {
       expected_response: turn.expected_response,
     })),
     expected_behaviors: scenario.expected_behaviors ?? [],
-    success_criteria_items: (criteria?.items as Array<{ criterion: string; required: boolean }>) ?? [],
+    success_criteria_items:
+      (criteria?.items as Array<{ criterion: string; required: boolean }>) ?? [],
   };
 }
 
-function formValuesToCreatePayload(values: ScenarioFormValues, workspaceId?: string): TestScenarioCreate {
+function formValuesToCreatePayload(
+  values: ScenarioFormValues,
+  workspaceId?: string
+): TestScenarioCreate {
   return {
     name: values.name,
     description: values.description ?? null,
@@ -309,10 +320,7 @@ export function ScenarioForm({
   };
 
   const handleRemoveTag = (tagToRemove: string) => {
-    form.setValue(
-      "tags",
-      form.getValues("tags")?.filter((t) => t !== tagToRemove) ?? []
-    );
+    form.setValue("tags", form.getValues("tags")?.filter((t) => t !== tagToRemove) ?? []);
   };
 
   const isLoading = createMutation.isPending || updateMutation.isPending;
@@ -328,14 +336,18 @@ export function ScenarioForm({
             {isViewMode
               ? "View the details of this test scenario"
               : isEditMode
-              ? "Update the test scenario configuration"
-              : "Create a new test scenario for your voice agent"}
+                ? "Update the test scenario configuration"
+                : "Create a new test scenario for your voice agent"}
           </DialogDescription>
         </DialogHeader>
 
         <Form {...form}>
           <form onSubmit={(e) => void form.handleSubmit(onSubmit)(e)} className="space-y-6">
-            <Accordion type="multiple" defaultValue={["basic", "persona", "flow", "criteria"]} className="w-full">
+            <Accordion
+              type="multiple"
+              defaultValue={["basic", "persona", "flow", "criteria"]}
+              className="w-full"
+            >
               {/* Basic Info Section */}
               <AccordionItem value="basic">
                 <AccordionTrigger>Basic Information</AccordionTrigger>
@@ -443,7 +455,7 @@ export function ScenarioForm({
                     render={({ field }) => (
                       <FormItem>
                         <FormLabel>Tags</FormLabel>
-                        <div className="flex flex-wrap gap-2 mb-2">
+                        <div className="mb-2 flex flex-wrap gap-2">
                           {field.value?.map((tag) => (
                             <Badge key={tag} variant="secondary" className="gap-1">
                               {tag}
@@ -487,16 +499,13 @@ export function ScenarioForm({
               {/* Caller Persona Section */}
               <AccordionItem value="persona">
                 <AccordionTrigger>
-                  <span className="flex items-center gap-2">
-                    Caller Persona
-                  </span>
+                  <span className="flex items-center gap-2">Caller Persona</span>
                 </AccordionTrigger>
                 <AccordionContent className="space-y-4 pt-4">
-                  <p className="text-[0.8rem] text-muted-foreground flex items-center gap-2">
-                    Define who the simulated caller is - their name, emotional state, goals, and background context.
-                    <InfoTooltip 
-                      content="The caller persona helps the AI understand how to behave during the test. A frustrated caller will be more demanding, while a friendly caller will be more patient."
-                    />
+                  <p className="flex items-center gap-2 text-[0.8rem] text-muted-foreground">
+                    Define who the simulated caller is - their name, emotional state, goals, and
+                    background context.
+                    <InfoTooltip content="The caller persona helps the AI understand how to behave during the test. A frustrated caller will be more demanding, while a friendly caller will be more patient." />
                   </p>
                   <div className="grid grid-cols-2 gap-4">
                     <FormField
@@ -590,23 +599,16 @@ export function ScenarioForm({
               {/* Conversation Flow Section */}
               <AccordionItem value="flow">
                 <AccordionTrigger>
-                  <span className="flex items-center gap-2">
-                    Conversation Flow
-                  </span>
+                  <span className="flex items-center gap-2">Conversation Flow</span>
                 </AccordionTrigger>
                 <AccordionContent className="space-y-4 pt-4">
-                  <p className="text-[0.8rem] text-muted-foreground flex items-center gap-2">
+                  <p className="flex items-center gap-2 text-[0.8rem] text-muted-foreground">
                     Define the expected conversation turns between caller and agent.
-                    <InfoTooltip 
-                      content="Script the expected conversation between the caller and your agent. Each turn alternates between what the caller says and how the agent should respond. This guides the test simulation."
-                    />
+                    <InfoTooltip content="Script the expected conversation between the caller and your agent. Each turn alternates between what the caller says and how the agent should respond. This guides the test simulation." />
                   </p>
 
                   {flowFields.map((field, index) => (
-                    <div
-                      key={field.id}
-                      className="flex items-start gap-2 rounded-lg border p-3"
-                    >
+                    <div key={field.id} className="flex items-start gap-2 rounded-lg border p-3">
                       <GripVertical className="mt-2 h-4 w-4 text-muted-foreground" />
                       <div className="flex-1 space-y-3">
                         <div className="flex items-center gap-2">
@@ -617,10 +619,13 @@ export function ScenarioForm({
                             <Select
                               value={form.watch(`conversation_flow.${index}.role`)}
                               onValueChange={(value) =>
-                                form.setValue(`conversation_flow.${index}.role`, value as "caller" | "agent")
+                                form.setValue(
+                                  `conversation_flow.${index}.role`,
+                                  value as "caller" | "agent"
+                                )
                               }
                             >
-                              <SelectTrigger className="w-[100px] h-7">
+                              <SelectTrigger className="h-7 w-[100px]">
                                 <SelectValue />
                               </SelectTrigger>
                               <SelectContent>
@@ -685,16 +690,13 @@ export function ScenarioForm({
               {/* Success Criteria Section */}
               <AccordionItem value="criteria">
                 <AccordionTrigger>
-                  <span className="flex items-center gap-2">
-                    Success Criteria
-                  </span>
+                  <span className="flex items-center gap-2">Success Criteria</span>
                 </AccordionTrigger>
                 <AccordionContent className="space-y-4 pt-4">
-                  <p className="text-[0.8rem] text-muted-foreground flex items-center gap-2">
-                    Define what the agent must do for this scenario to pass. Check the box to mark a criterion as required.
-                    <InfoTooltip 
-                      content="Required criteria must be met for the test to pass. Optional criteria are tracked but won't cause a failure if not met."
-                    />
+                  <p className="flex items-center gap-2 text-[0.8rem] text-muted-foreground">
+                    Define what the agent must do for this scenario to pass. Check the box to mark a
+                    criterion as required.
+                    <InfoTooltip content="Required criteria must be met for the test to pass. Optional criteria are tracked but won't cause a failure if not met." />
                   </p>
 
                   {criteriaFields.map((field, index) => (

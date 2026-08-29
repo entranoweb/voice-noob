@@ -56,12 +56,12 @@ export default function QADashboardPage() {
   const [days, setDays] = useState<number>(7);
   const [agentId, setAgentId] = useState<string | undefined>(undefined);
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | undefined>(undefined);
-  
+
   // Scenario form state
   const [scenarioFormOpen, setScenarioFormOpen] = useState(false);
   const [selectedScenario, setSelectedScenario] = useState<TestScenario | null>(null);
   const [scenarioFormMode, setScenarioFormMode] = useState<"create" | "edit" | "view">("create");
-  
+
   // Test runner state
   const [testRunnerOpen, setTestRunnerOpen] = useState(false);
   const [selectedScenarioIds, setSelectedScenarioIds] = useState<string[]>([]);
@@ -80,13 +80,16 @@ export default function QADashboardPage() {
   const activeWorkspaceId = selectedWorkspaceId ?? defaultWorkspace?.id;
 
   // Handle test completion - refresh metrics
-  const handleTestComplete = useCallback((_run: TestRun) => {
-    // Invalidate queries to refresh dashboard data
-    void queryClient.invalidateQueries({ queryKey: ["qa-metrics"] });
-    void queryClient.invalidateQueries({ queryKey: ["qa-evaluations"] });
-    void queryClient.invalidateQueries({ queryKey: ["qa-trends"] });
-    void queryClient.invalidateQueries({ queryKey: ["qa-failure-reasons"] });
-  }, [queryClient]);
+  const handleTestComplete = useCallback(
+    (_run: TestRun) => {
+      // Invalidate queries to refresh dashboard data
+      void queryClient.invalidateQueries({ queryKey: ["qa-metrics"] });
+      void queryClient.invalidateQueries({ queryKey: ["qa-evaluations"] });
+      void queryClient.invalidateQueries({ queryKey: ["qa-trends"] });
+      void queryClient.invalidateQueries({ queryKey: ["qa-failure-reasons"] });
+    },
+    [queryClient]
+  );
 
   // Handle running tests from scenario selection
   const handleRunSelectedTests = useCallback(() => {
@@ -182,10 +185,7 @@ export default function QADashboardPage() {
             <Play className="mr-2 h-4 w-4" />
             Run Tests
           </Button>
-          <Select
-            value={activeWorkspaceId ?? ""}
-            onValueChange={(v) => setSelectedWorkspaceId(v)}
-          >
+          <Select value={activeWorkspaceId ?? ""} onValueChange={(v) => setSelectedWorkspaceId(v)}>
             <SelectTrigger className="w-[180px]">
               <FolderOpen className="mr-2 h-4 w-4" />
               <SelectValue placeholder="Select workspace" />
@@ -261,7 +261,9 @@ export default function QADashboardPage() {
                   <div className="flex items-center justify-between">
                     <div>
                       <p className="text-xs text-muted-foreground">Pass Rate</p>
-                      <p className={`text-2xl font-bold ${getScoreColor((metrics?.pass_rate ?? 0) * 100)}`}>
+                      <p
+                        className={`text-2xl font-bold ${getScoreColor((metrics?.pass_rate ?? 0) * 100)}`}
+                      >
                         {((metrics?.pass_rate ?? 0) * 100).toFixed(1)}%
                       </p>
                     </div>
@@ -279,7 +281,9 @@ export default function QADashboardPage() {
                   <div className="flex items-center justify-between">
                     <div>
                       <p className="text-xs text-muted-foreground">Average Score</p>
-                      <p className={`text-2xl font-bold ${getScoreColor(metrics?.average_score ?? 0)}`}>
+                      <p
+                        className={`text-2xl font-bold ${getScoreColor(metrics?.average_score ?? 0)}`}
+                      >
                         {formatScore(metrics?.average_score)}
                       </p>
                     </div>
@@ -313,7 +317,9 @@ export default function QADashboardPage() {
                   <div className="flex items-center justify-between">
                     <div>
                       <p className="text-xs text-muted-foreground">Failed Calls</p>
-                      <p className="text-2xl font-bold text-red-600">{metrics?.failed_count ?? 0}</p>
+                      <p className="text-2xl font-bold text-red-600">
+                        {metrics?.failed_count ?? 0}
+                      </p>
                     </div>
                     <XCircle className="h-8 w-8 text-red-500/20" />
                   </div>
@@ -324,14 +330,16 @@ export default function QADashboardPage() {
 
           {/* Score Breakdown */}
           <div className="grid gap-4 lg:grid-cols-2">
-            <ScoreBreakdownCard metrics={metrics} metricsLoading={metricsLoading} formatScore={formatScore} />
+            <ScoreBreakdownCard
+              metrics={metrics}
+              metricsLoading={metricsLoading}
+              formatScore={formatScore}
+            />
             <FailureReasonsCard failureReasons={failureReasons} />
           </div>
 
           {/* Score Trend */}
-          {trends && trends.dates.length > 0 && (
-            <ScoreTrendCard trends={trends} />
-          )}
+          {trends && trends.dates.length > 0 && <ScoreTrendCard trends={trends} />}
 
           {/* Recent Evaluations */}
           <RecentEvaluationsCard
@@ -362,17 +370,18 @@ export default function QADashboardPage() {
             selectedScenarioIds={selectedScenarioIds}
             onSelectionChange={setSelectedScenarioIds}
           />
-          
+
           {/* Run Selected Tests Button */}
           {selectedScenarioIds.length > 0 && (
             <div className="fixed bottom-4 right-4 z-50">
               <Button onClick={handleRunSelectedTests} size="lg" className="shadow-lg">
                 <Play className="mr-2 h-4 w-4" />
-                Run {selectedScenarioIds.length} Selected Test{selectedScenarioIds.length !== 1 ? "s" : ""}
+                Run {selectedScenarioIds.length} Selected Test
+                {selectedScenarioIds.length !== 1 ? "s" : ""}
               </Button>
             </div>
           )}
-          
+
           {/* Scenario Form Dialog */}
           <ScenarioForm
             open={scenarioFormOpen}
@@ -410,7 +419,6 @@ export default function QADashboardPage() {
     </div>
   );
 }
-
 
 // =============================================================================
 // Sub-components
@@ -539,7 +547,7 @@ function FailureReasonsCard({ failureReasons }: FailureReasonsCardProps) {
   return (
     <Card>
       <CardHeader className="pb-2">
-        <CardTitle className="text-sm font-medium flex items-center gap-2">
+        <CardTitle className="flex items-center gap-2 text-sm font-medium">
           <AlertTriangle className="h-4 w-4" />
           Top Failure Reasons
         </CardTitle>
@@ -554,7 +562,7 @@ function FailureReasonsCard({ failureReasons }: FailureReasonsCardProps) {
           <div className="space-y-3">
             {failureReasons.map((reason, index) => (
               <div key={index} className="flex items-center justify-between">
-                <span className="text-sm truncate max-w-[200px]">{reason.reason}</span>
+                <span className="max-w-[200px] truncate text-sm">{reason.reason}</span>
                 <Badge variant="secondary" className="text-xs">
                   {reason.count}
                 </Badge>
@@ -578,11 +586,11 @@ function ScoreTrendCard({ trends }: ScoreTrendCardProps) {
         <CardTitle className="text-sm font-medium">Score Trend</CardTitle>
       </CardHeader>
       <CardContent>
-        <div className="h-32 flex items-end gap-1">
+        <div className="flex h-32 items-end gap-1">
           {trends.values.map((value, index) => (
             <div
               key={index}
-              className="flex-1 bg-primary/20 hover:bg-primary/40 transition-colors rounded-t"
+              className="flex-1 rounded-t bg-primary/20 transition-colors hover:bg-primary/40"
               style={{
                 height: `${Math.max((value / 100) * 100, 5)}%`,
               }}
@@ -647,9 +655,7 @@ function RecentEvaluationsCard({ evaluationsData, getScoreBgColor }: RecentEvalu
                     )}
                   </div>
                   <div>
-                    <p className="text-sm font-medium">
-                      Call {evaluation.call_id.slice(0, 8)}...
-                    </p>
+                    <p className="text-sm font-medium">Call {evaluation.call_id.slice(0, 8)}...</p>
                     <p className="text-xs text-muted-foreground">
                       {new Date(evaluation.created_at).toLocaleDateString()}
                     </p>

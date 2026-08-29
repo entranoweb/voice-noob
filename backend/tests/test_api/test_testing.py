@@ -636,7 +636,7 @@ class TestRunTestEndpoints:
         create_test_scenario: Any,
     ) -> None:
         """Test POST /testing/run returns 404 for non-existent agent."""
-        client, user = authenticated_test_client
+        client, _user = authenticated_test_client
 
         # Create a scenario
         scenario = await create_test_scenario(is_built_in=True)
@@ -675,7 +675,7 @@ class TestRunTestEndpoints:
             mock_settings.QA_ENABLED = True
             mock_settings.ANTHROPIC_API_KEY = "test-key"
 
-            with patch("app.api.testing.TestRunner") as MockRunner:
+            with patch("app.api.testing.TestRunner") as mock_runner_cls:
                 # Mock the test runner
                 mock_runner = AsyncMock()
                 mock_test_run = TestRun(
@@ -686,7 +686,7 @@ class TestRunTestEndpoints:
                     status=TestRunStatus.PASSED.value,
                 )
                 mock_runner.run_scenario = AsyncMock(return_value=mock_test_run)
-                MockRunner.return_value = mock_runner
+                mock_runner_cls.return_value = mock_runner
 
                 response = await client.post(
                     "/api/v1/testing/run",
@@ -1354,7 +1354,7 @@ class TestDuplicateScenarioEndpoint:
         create_test_scenario: Any,
     ) -> None:
         """Test POST /testing/scenarios/{id}/duplicate duplicates built-in scenario."""
-        client, user = authenticated_test_client
+        client, _user = authenticated_test_client
 
         # Create a built-in scenario
         scenario = await create_test_scenario(

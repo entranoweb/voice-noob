@@ -1,0 +1,45 @@
+# Grade a voice agent on what it did, not only on what it said.
+#
+#   export SYNTHIQ_API_KEY=...
+#   npx promptfoo@latest eval -c promptfooconfig.example.yaml
+#
+description: Booking agent — deterministic state assertions plus text checks
+
+providers:
+  - id: file://./synthiqProvider.mjs
+    label: synthiq
+    config:
+      apiBaseUrl: http://localhost:8000
+      agentId: REPLACE_WITH_AGENT_UUID
+      invokes: [book_appointment]
+      leaves:
+        appointments:
+          - status: scheduled
+
+prompts:
+  - "Hi, I'm Jane on 5551234567. Can I book an appointment for tomorrow?"
+  # A JSON array is a multi-turn conversation rather than one long utterance.
+  - '["Hi, do you have anything tomorrow?", "Jane, 5551234567. Morning please."]'
+
+defaultTest:
+  assert:
+    # Check measurability first. Asserting on `passed` alone would let a broken
+    # harness report as a failing agent.
+    - type: javascript
+      value: |
+        output.metadata?.trustworthy === true ||
+        `run was not measurable: ${output.metadata?.explanation}`
+
+    # The assertion no transcript-grading tool can make: the row exists.
+    - type: javascript
+      value: |
+        output.metadata?.metrics?.task_completion?.passed === true ||
+        `booking never happened. ${output.metadata?.explanation}`
+
+    # Real tools ran against real data, and the run put it back.
+    - type: javascript
+      value: output.metadata?.metrics?.state_restored?.passed === true
+
+    # promptfoo's own assertions work on the transcript unchanged.
+    - type: not-contains
+      value: "I'm not able to"

@@ -2,6 +2,9 @@
 
 from unittest.mock import MagicMock
 
+import pytest
+
+from app.core.config import settings
 from app.models.workspace import Workspace
 from app.services.qa.evaluator import (
     EffectiveQASettings,
@@ -88,7 +91,7 @@ class TestGetEffectiveQASettings:
         # Defaults for unspecified fields
         assert result.qa_enabled is True
         assert result.auto_evaluate is True
-        assert result.evaluation_model == "claude-sonnet-4-20250514"
+        assert result.evaluation_model == settings.QA_EVALUATION_MODEL
 
     def test_workspace_qa_disabled(self) -> None:
         """Test workspace with QA disabled."""
@@ -211,42 +214,51 @@ class TestParseEvaluationResponse:
 
 
 class TestCostCalculation:
-    """Test cost calculation logic."""
+    """Test cost calculation logic.
+
+    These call evaluation_cost_cents rather than reimplementing the formula, so a
+    change to the pricing code actually fails a test.
+    """
 
     def test_cost_calculation_sonnet(self) -> None:
-        """Test cost calculation for Sonnet model.
+        """Sonnet 4.6: 0.3c/1K input, 1.5c/1K output."""
+        from app.services.qa.evaluator import evaluation_cost_cents
 
-        Formula: (input_tokens * 0.3 + output_tokens * 1.5) / 1000 cents
+        # 500 * 0.3 / 1000 + 200 * 1.5 / 1000 = 0.15 + 0.3 = 0.45 cents
+        cost = evaluation_cost_cents("claude-sonnet-4-6", 500, 200)
+        assert abs(cost - 0.45) < 0.001
+
+    def test_cost_calculation_haiku(self) -> None:
+        """Haiku 4.5: 0.1c/1K input, 0.5c/1K output."""
+        from app.services.qa.evaluator import evaluation_cost_cents
+
+        # 500 * 0.1 / 1000 + 200 * 0.5 / 1000 = 0.05 + 0.1 = 0.15 cents
+        cost = evaluation_cost_cents("claude-haiku-4-5", 500, 200)
+        assert abs(cost - 0.15) < 0.001
+
+    def test_unknown_model_raises_rather_than_guessing(self) -> None:
+        """An unpriced model must fail loudly.
+
+        The previous behaviour fell back to another model's rate, which silently
+        misreported spend on every evaluation for that workspace.
+        """
+        from app.services.qa.evaluator import (
+            UnknownEvaluationModelError,
+            evaluation_cost_cents,
+        )
+
+        with pytest.raises(UnknownEvaluationModelError, match="no-such-model"):
+            evaluation_cost_cents("no-such-model", 500, 200)
+
+    def test_default_evaluation_model_is_priced(self) -> None:
+        """The configured default must have a cost entry.
+
+        Guards the pairing that broke before: a model swap without a matching
+        MODEL_COSTS entry now fails here instead of in production.
         """
         from app.services.qa.evaluator import MODEL_COSTS
 
-        model = "claude-sonnet-4-20250514"
-        input_tokens = 500
-        output_tokens = 200
-
-        cost_info = MODEL_COSTS.get(model, MODEL_COSTS["claude-sonnet-4-20250514"])
-        cost_cents = (input_tokens / 1000) * cost_info["input"] + (
-            output_tokens / 1000
-        ) * cost_info["output"]
-
-        # 500 * 0.3 / 1000 + 200 * 1.5 / 1000 = 0.15 + 0.3 = 0.45 cents
-        assert abs(cost_cents - 0.45) < 0.001
-
-    def test_cost_calculation_haiku(self) -> None:
-        """Test cost calculation for Haiku model."""
-        from app.services.qa.evaluator import MODEL_COSTS
-
-        model = "claude-3-haiku-20240307"
-        input_tokens = 500
-        output_tokens = 200
-
-        cost_info = MODEL_COSTS.get(model, MODEL_COSTS["claude-sonnet-4-20250514"])
-        cost_cents = (input_tokens / 1000) * cost_info["input"] + (
-            output_tokens / 1000
-        ) * cost_info["output"]
-
-        # 500 * 0.025 / 1000 + 200 * 0.125 / 1000 = 0.0125 + 0.025 = 0.0375 cents
-        assert abs(cost_cents - 0.0375) < 0.001
+        assert settings.QA_EVALUATION_MODEL in MODEL_COSTS
 
 
 class TestFormatTranscript:

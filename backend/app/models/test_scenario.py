@@ -117,6 +117,13 @@ class TestScenario(Base):
     success_criteria: Mapped[dict[str, Any]] = mapped_column(
         JSON, nullable=False, comment="Criteria for pass/fail determination"
     )
+    # State the scenario needs to exist before the call, e.g. a contact the
+    # caller claims to be. Kept out of success_criteria on purpose: this is
+    # setup, and confusing the world a test starts in with the world it must end
+    # in is how a scenario ends up asserting something it also created.
+    fixture: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON, nullable=True, comment="Rows to seed before the run, rolled back after"
+    )
 
     # Scenario flags
     is_active: Mapped[bool] = mapped_column(

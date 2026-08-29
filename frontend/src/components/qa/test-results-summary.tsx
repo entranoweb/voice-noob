@@ -5,14 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import {
-  CheckCircle,
-  XCircle,
-  Clock,
-  AlertCircle,
-  ExternalLink,
-  TrendingUp,
-} from "lucide-react";
+import { CheckCircle, XCircle, Clock, AlertCircle, ExternalLink, TrendingUp } from "lucide-react";
 import type { TestRun } from "@/lib/api/qa";
 import { cn } from "@/lib/utils";
 
@@ -40,28 +33,23 @@ interface ScenarioResultDetail {
 // Component
 // =============================================================================
 
-export function TestResultsSummary({
-  testRun,
-  onViewDetails,
-  className,
-}: TestResultsSummaryProps) {
+export function TestResultsSummary({ testRun, onViewDetails, className }: TestResultsSummaryProps) {
   const passRate = testRun.pass_rate ?? 0;
   const passRatePercent = passRate * 100;
-  
+
   // Parse results from test run
   const results: ScenarioResultDetail[] = (testRun.results ?? []).map((r) => ({
     scenario_id: r.scenario_id as string,
-    scenario_name: r.scenario_name as string ?? "Unknown Scenario",
+    scenario_name: (r.scenario_name as string) ?? "Unknown Scenario",
     passed: r.passed as boolean,
-    score: r.score as number ?? 0,
+    score: (r.score as number) ?? 0,
     failure_reason: r.failure_reason as string | undefined,
     duration_ms: r.duration_ms as number | undefined,
     evaluation_id: r.evaluation_id as string | undefined,
   }));
 
-  const avgScore = results.length > 0
-    ? results.reduce((sum, r) => sum + r.score, 0) / results.length
-    : 0;
+  const avgScore =
+    results.length > 0 ? results.reduce((sum, r) => sum + r.score, 0) / results.length : 0;
 
   const totalDuration = results.reduce((sum, r) => sum + (r.duration_ms ?? 0), 0);
 
@@ -119,9 +107,7 @@ export function TestResultsSummary({
           <div className="text-center">
             <div className="flex items-center justify-center gap-1">
               <Clock className="h-4 w-4 text-muted-foreground" />
-              <span className="text-2xl font-bold">
-                {(totalDuration / 1000).toFixed(1)}s
-              </span>
+              <span className="text-2xl font-bold">{(totalDuration / 1000).toFixed(1)}s</span>
             </div>
             <p className="text-xs text-muted-foreground">Duration</p>
           </div>
@@ -129,7 +115,7 @@ export function TestResultsSummary({
 
         {/* Pass Rate Progress */}
         <div>
-          <div className="flex items-center justify-between mb-2">
+          <div className="mb-2 flex items-center justify-between">
             <span className="text-sm font-medium">Pass Rate</span>
             <span className={cn("text-sm font-bold", getScoreColor(passRatePercent))}>
               {passRatePercent.toFixed(1)}%
@@ -149,7 +135,7 @@ export function TestResultsSummary({
         {/* Individual Results */}
         {results.length > 0 && (
           <div>
-            <h4 className="text-sm font-medium mb-2">Scenario Results</h4>
+            <h4 className="mb-2 text-sm font-medium">Scenario Results</h4>
             <ScrollArea className="max-h-64">
               <div className="space-y-2">
                 {results.map((result) => (
@@ -166,12 +152,13 @@ export function TestResultsSummary({
         )}
 
         {/* Timestamps */}
-        <div className="flex items-center justify-between text-xs text-muted-foreground pt-2 border-t">
+        <div className="flex items-center justify-between border-t pt-2 text-xs text-muted-foreground">
           <span>
             Started: {testRun.started_at ? new Date(testRun.started_at).toLocaleString() : "N/A"}
           </span>
           <span>
-            Completed: {testRun.completed_at ? new Date(testRun.completed_at).toLocaleString() : "N/A"}
+            Completed:{" "}
+            {testRun.completed_at ? new Date(testRun.completed_at).toLocaleString() : "N/A"}
           </span>
         </div>
       </CardContent>
@@ -189,35 +176,31 @@ interface ScenarioResultRowProps {
   onViewDetails?: (evaluationId: string) => void;
 }
 
-function ScenarioResultRow({
-  result,
-  getScoreBgColor,
-  onViewDetails,
-}: ScenarioResultRowProps) {
+function ScenarioResultRow({ result, getScoreBgColor, onViewDetails }: ScenarioResultRowProps) {
   return (
     <div
       className={cn(
-        "flex items-center gap-3 p-2 rounded-md border",
+        "flex items-center gap-3 rounded-md border p-2",
         result.passed ? "border-green-200 bg-green-50/50" : "border-red-200 bg-red-50/50"
       )}
     >
       {result.passed ? (
-        <CheckCircle className="h-4 w-4 text-green-600 shrink-0" />
+        <CheckCircle className="h-4 w-4 shrink-0 text-green-600" />
       ) : (
-        <XCircle className="h-4 w-4 text-red-600 shrink-0" />
+        <XCircle className="h-4 w-4 shrink-0 text-red-600" />
       )}
-      
-      <div className="flex-1 min-w-0">
-        <p className="text-sm font-medium truncate">{result.scenario_name}</p>
+
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-sm font-medium">{result.scenario_name}</p>
         {result.failure_reason && (
-          <p className="text-xs text-red-600 truncate flex items-center gap-1">
+          <p className="flex items-center gap-1 truncate text-xs text-red-600">
             <AlertCircle className="h-3 w-3" />
             {result.failure_reason}
           </p>
         )}
       </div>
 
-      <div className="flex items-center gap-2 shrink-0">
+      <div className="flex shrink-0 items-center gap-2">
         <Badge variant="secondary" className={getScoreBgColor(result.score)}>
           {result.score}
         </Badge>

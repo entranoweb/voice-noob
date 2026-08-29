@@ -184,9 +184,7 @@ export function TestRunner({
     onSuccess: (run) => {
       setCurrentRun(run);
       // Initialize scenario results
-      const selectedScenarioList = scenarios.filter((s) =>
-        selectedScenarios.includes(s.id)
-      );
+      const selectedScenarioList = scenarios.filter((s) => selectedScenarios.includes(s.id));
       const initialResults: ScenarioResult[] = selectedScenarioList.map((s, index) => ({
         scenario_id: s.id,
         scenario_name: s.name,
@@ -198,12 +196,9 @@ export function TestRunner({
     },
   });
 
-
   const handleScenarioToggle = (scenarioId: string) => {
     setSelectedScenarios((prev) =>
-      prev.includes(scenarioId)
-        ? prev.filter((id) => id !== scenarioId)
-        : [...prev, scenarioId]
+      prev.includes(scenarioId) ? prev.filter((id) => id !== scenarioId) : [...prev, scenarioId]
     );
   };
 
@@ -250,15 +245,12 @@ export function TestRunner({
   const isComplete = currentRun?.status === "completed" || currentRun?.status === "failed";
 
   // Group scenarios by category
-  const scenariosByCategory = scenarios.reduce<Record<string, TestScenario[]>>(
-    (acc, scenario) => {
-      const category = scenario.category ?? "other";
-      acc[category] ??= [];
-      acc[category].push(scenario);
-      return acc;
-    },
-    {}
-  );
+  const scenariosByCategory = scenarios.reduce<Record<string, TestScenario[]>>((acc, scenario) => {
+    const category = scenario.category ?? "other";
+    acc[category] ??= [];
+    acc[category].push(scenario);
+    return acc;
+  }, {});
 
   // Calculate progress
   const completedCount = scenarioResults.filter(
@@ -281,31 +273,23 @@ export function TestRunner({
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent side="right" className="w-full sm:max-w-lg flex flex-col p-0">
-        <SheetHeader className="px-6 pt-6 pb-4 border-b">
+      <SheetContent side="right" className="flex w-full flex-col p-0 sm:max-w-lg">
+        <SheetHeader className="border-b px-6 pb-4 pt-6">
           <SheetTitle className="flex items-center gap-2">
             <Play className="h-5 w-5" />
             Run Tests
           </SheetTitle>
-          <SheetDescription>
-            Select an agent and scenarios to run quality tests
-          </SheetDescription>
+          <SheetDescription>Select an agent and scenarios to run quality tests</SheetDescription>
         </SheetHeader>
 
-        <div className="flex-1 overflow-hidden flex flex-col">
+        <div className="flex flex-1 flex-col overflow-hidden">
           {/* Agent Selection */}
-          <div className="px-6 py-4 border-b">
-            <div className="flex items-center gap-2 mb-2">
+          <div className="border-b px-6 py-4">
+            <div className="mb-2 flex items-center gap-2">
               <label className="text-sm font-medium">Select Agent</label>
-              <InfoTooltip 
-                content="Choose which voice agent to test. The selected scenarios will be run against this agent to evaluate its responses and behavior."
-              />
+              <InfoTooltip content="Choose which voice agent to test. The selected scenarios will be run against this agent to evaluate its responses and behavior." />
             </div>
-            <Select
-              value={selectedAgentId}
-              onValueChange={setSelectedAgentId}
-              disabled={isRunning}
-            >
+            <Select value={selectedAgentId} onValueChange={setSelectedAgentId} disabled={isRunning}>
               <SelectTrigger>
                 <SelectValue placeholder="Choose an agent to test" />
               </SelectTrigger>
@@ -341,10 +325,10 @@ export function TestRunner({
           )}
 
           {/* Footer */}
-          <div className="px-6 py-4 border-t mt-auto">
+          <div className="mt-auto border-t px-6 py-4">
             {/* Summary Stats */}
             {(isRunning || isComplete) && (
-              <div className="mb-4 p-3 rounded-lg bg-muted/50">
+              <div className="mb-4 rounded-lg bg-muted/50 p-3">
                 <div className="flex items-center justify-between text-sm">
                   <div className="flex items-center gap-4">
                     <span className="flex items-center gap-1 text-green-600">
@@ -363,9 +347,7 @@ export function TestRunner({
                     )}
                   </div>
                   {avgScore !== null && (
-                    <Badge variant="secondary">
-                      Avg: {avgScore.toFixed(1)}
-                    </Badge>
+                    <Badge variant="secondary">Avg: {avgScore.toFixed(1)}</Badge>
                   )}
                 </div>
               </div>
@@ -409,7 +391,6 @@ export function TestRunner({
   );
 }
 
-
 // =============================================================================
 // Sub-components
 // =============================================================================
@@ -432,8 +413,8 @@ function ScenarioSelection({
   const totalScenarios = Object.values(scenariosByCategory).flat().length;
 
   return (
-    <div className="flex-1 overflow-hidden flex flex-col">
-      <div className="px-6 py-3 flex items-center justify-between border-b">
+    <div className="flex flex-1 flex-col overflow-hidden">
+      <div className="flex items-center justify-between border-b px-6 py-3">
         <label className="text-sm font-medium">Select Scenarios</label>
         <div className="flex items-center gap-2">
           <Button variant="ghost" size="sm" onClick={onSelectAll}>
@@ -448,10 +429,10 @@ function ScenarioSelection({
       </div>
 
       <ScrollArea className="flex-1">
-        <div className="px-6 py-3 space-y-4">
+        <div className="space-y-4 px-6 py-3">
           {Object.entries(scenariosByCategory).map(([category, categoryScenarios]) => (
             <div key={category}>
-              <h4 className="text-xs font-medium text-muted-foreground uppercase mb-2">
+              <h4 className="mb-2 text-xs font-medium uppercase text-muted-foreground">
                 {category.replace("_", " ")}
               </h4>
               <div className="space-y-1">
@@ -459,7 +440,7 @@ function ScenarioSelection({
                   <label
                     key={scenario.id}
                     className={cn(
-                      "flex items-center gap-3 p-2 rounded-md cursor-pointer transition-colors",
+                      "flex cursor-pointer items-center gap-3 rounded-md p-2 transition-colors",
                       "hover:bg-muted/50",
                       selectedScenarios.includes(scenario.id) && "bg-muted"
                     )}
@@ -468,17 +449,17 @@ function ScenarioSelection({
                       checked={selectedScenarios.includes(scenario.id)}
                       onCheckedChange={() => onToggle(scenario.id)}
                     />
-                    <div className="flex-1 min-w-0">
+                    <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2">
-                        <span className="text-sm truncate">{scenario.name}</span>
+                        <span className="truncate text-sm">{scenario.name}</span>
                         {scenario.is_built_in && (
-                          <Badge variant="secondary" className="text-[10px] shrink-0">
+                          <Badge variant="secondary" className="shrink-0 text-[10px]">
                             Built-in
                           </Badge>
                         )}
                       </div>
                     </div>
-                    <div className="flex items-center gap-2 shrink-0">
+                    <div className="flex shrink-0 items-center gap-2">
                       <DifficultyBadge difficulty={scenario.difficulty} />
                     </div>
                   </label>
@@ -489,7 +470,7 @@ function ScenarioSelection({
         </div>
       </ScrollArea>
 
-      <div className="px-6 py-2 border-t text-sm text-muted-foreground">
+      <div className="border-t px-6 py-2 text-sm text-muted-foreground">
         {selectedScenarios.length} scenario{selectedScenarios.length !== 1 ? "s" : ""} selected
       </div>
     </div>
@@ -516,10 +497,10 @@ function TestProgress({
   isRunning: _isRunning,
 }: TestProgressProps) {
   return (
-    <div className="flex-1 overflow-hidden flex flex-col">
+    <div className="flex flex-1 flex-col overflow-hidden">
       {/* Progress Bar */}
-      <div className="px-6 py-4 border-b">
-        <div className="flex items-center justify-between mb-2">
+      <div className="border-b px-6 py-4">
+        <div className="mb-2 flex items-center justify-between">
           <span className="text-sm font-medium">Test Progress</span>
           <span className="text-sm text-muted-foreground">
             {completedCount}/{totalCount} Complete
@@ -530,7 +511,7 @@ function TestProgress({
 
       {/* Results List */}
       <ScrollArea className="flex-1">
-        <div className="px-6 py-3 space-y-2">
+        <div className="space-y-2 px-6 py-3">
           {scenarioResults.map((result) => (
             <ScenarioResultItem
               key={result.scenario_id}
@@ -551,11 +532,7 @@ interface ScenarioResultItemProps {
   onToggleExpanded: () => void;
 }
 
-function ScenarioResultItem({
-  result,
-  isExpanded,
-  onToggleExpanded,
-}: ScenarioResultItemProps) {
+function ScenarioResultItem({ result, isExpanded, onToggleExpanded }: ScenarioResultItemProps) {
   const getStatusIcon = () => {
     switch (result.status) {
       case "passed":
@@ -563,7 +540,7 @@ function ScenarioResultItem({
       case "failed":
         return <XCircle className="h-4 w-4 text-red-600" />;
       case "running":
-        return <Loader2 className="h-4 w-4 text-blue-600 animate-spin" />;
+        return <Loader2 className="h-4 w-4 animate-spin text-blue-600" />;
       default:
         return <Clock className="h-4 w-4 text-muted-foreground" />;
     }
@@ -595,17 +572,15 @@ function ScenarioResultItem({
       )}
     >
       <button
-        className="w-full p-3 flex items-center gap-3 text-left"
+        className="flex w-full items-center gap-3 p-3 text-left"
         onClick={hasDetails ? onToggleExpanded : undefined}
         disabled={!hasDetails}
       >
         {getStatusIcon()}
-        <div className="flex-1 min-w-0">
-          <span className="text-sm font-medium truncate block">
-            {result.scenario_name}
-          </span>
+        <div className="min-w-0 flex-1">
+          <span className="block truncate text-sm font-medium">{result.scenario_name}</span>
         </div>
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex shrink-0 items-center gap-2">
           {result.score !== undefined && (
             <Badge
               variant="secondary"
@@ -630,13 +605,12 @@ function ScenarioResultItem({
           >
             {getStatusText()}
           </Badge>
-          {hasDetails && (
-            isExpanded ? (
+          {hasDetails &&
+            (isExpanded ? (
               <ChevronUp className="h-4 w-4 text-muted-foreground" />
             ) : (
               <ChevronDown className="h-4 w-4 text-muted-foreground" />
-            )
-          )}
+            ))}
         </div>
       </button>
 
@@ -647,10 +621,10 @@ function ScenarioResultItem({
           <div className="space-y-2 text-sm">
             {result.failure_reason && (
               <div className="flex items-start gap-2">
-                <AlertCircle className="h-4 w-4 text-red-500 mt-0.5 shrink-0" />
+                <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-500" />
                 <div>
                   <span className="font-medium text-red-700">Failure Reason:</span>
-                  <p className="text-muted-foreground mt-1">{result.failure_reason}</p>
+                  <p className="mt-1 text-muted-foreground">{result.failure_reason}</p>
                 </div>
               </div>
             )}

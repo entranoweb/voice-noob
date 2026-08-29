@@ -1,11 +1,15 @@
 /**
  * Tests for QA API Client (Task 20.5.3)
  */
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 
-// Mock fetch globally
+// This suite drives fetch directly rather than through MSW, so it needs to own
+// global.fetch. Installing it at module scope does not work: MSW's server.listen()
+// runs in a beforeAll from the shared setup file and replaces whatever is there,
+// so the mock never sees a call. Install it per test instead, and put the real
+// implementation back afterwards so other suites keep their interceptor.
 const mockFetch = vi.fn();
-global.fetch = mockFetch;
+const realFetch = global.fetch;
 
 // Mock data
 const mockEvaluations = [
@@ -57,8 +61,13 @@ const mockDashboardMetrics = {
 describe("QA API Client", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    global.fetch = mockFetch;
     localStorage.clear();
     localStorage.setItem("access_token", "test-token");
+  });
+
+  afterEach(() => {
+    global.fetch = realFetch;
   });
 
   describe("listEvaluations", () => {

@@ -22,7 +22,7 @@ def mock_redis(test_redis: Any) -> Any:
     async def get_redis_mock() -> Any:
         return test_redis
 
-    with patch("app.core.cache.get_redis", get_redis_mock):
+    with patch("app.db.redis.get_redis", get_redis_mock):
         yield test_redis
 
 
@@ -105,7 +105,7 @@ class TestCacheGetSet:
     async def test_cache_get_error_handling(self) -> None:
         """Test cache_get handles Redis errors gracefully."""
         # Mock Redis to raise exception
-        with patch("app.core.cache.get_redis") as mock_get_redis:
+        with patch("app.db.redis.get_redis") as mock_get_redis:
             mock_redis = AsyncMock()
             mock_redis.get = AsyncMock(side_effect=Exception("Redis error"))
             mock_get_redis.return_value = mock_redis
@@ -118,7 +118,7 @@ class TestCacheGetSet:
     async def test_cache_set_error_handling(self) -> None:
         """Test cache_set handles Redis errors gracefully."""
         # Mock Redis to raise exception
-        with patch("app.core.cache.get_redis") as mock_get_redis:
+        with patch("app.db.redis.get_redis") as mock_get_redis:
             mock_redis = AsyncMock()
             mock_redis.setex = AsyncMock(side_effect=Exception("Redis error"))
             mock_get_redis.return_value = mock_redis
@@ -156,7 +156,7 @@ class TestCacheDelete:
     @pytest.mark.asyncio
     async def test_cache_delete_error_handling(self) -> None:
         """Test cache_delete handles Redis errors gracefully."""
-        with patch("app.core.cache.get_redis") as mock_get_redis:
+        with patch("app.db.redis.get_redis") as mock_get_redis:
             mock_redis = AsyncMock()
             mock_redis.delete = AsyncMock(side_effect=Exception("Redis error"))
             mock_get_redis.return_value = mock_redis
@@ -217,7 +217,7 @@ class TestCacheInvalidate:
     @pytest.mark.asyncio
     async def test_cache_invalidate_error_handling(self) -> None:
         """Test cache_invalidate handles Redis errors gracefully."""
-        with patch("app.core.cache.get_redis") as mock_get_redis:
+        with patch("app.db.redis.get_redis") as mock_get_redis:
             mock_redis = AsyncMock()
             mock_redis.scan_iter = AsyncMock(side_effect=Exception("Redis error"))
             mock_get_redis.return_value = mock_redis
@@ -346,7 +346,7 @@ class TestCacheStats:
     @pytest.mark.asyncio
     async def test_cache_stats_error_handling(self) -> None:
         """Test cache_stats handles Redis errors gracefully."""
-        with patch("app.core.cache.get_redis") as mock_get_redis:
+        with patch("app.db.redis.get_redis") as mock_get_redis:
             mock_redis = AsyncMock()
             mock_redis.info = AsyncMock(side_effect=Exception("Redis error"))
             mock_get_redis.return_value = mock_redis

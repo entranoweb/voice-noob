@@ -154,7 +154,7 @@ export function QASettingsPanel({ workspaceId }: QASettingsPanelProps) {
         <CardHeader className="pb-3">
           <div className="flex items-center gap-2">
             <CardTitle className="text-base">Workspace Override</CardTitle>
-            <InfoTooltip 
+            <InfoTooltip
               content="Override global QA settings for this specific workspace. Useful when different projects need different evaluation criteria or thresholds."
               side="right"
             />
@@ -173,9 +173,7 @@ export function QASettingsPanel({ workspaceId }: QASettingsPanelProps) {
                   <Label htmlFor="inherit-global" className="text-sm font-medium">
                     Use workspace-specific settings
                   </Label>
-                  <InfoTooltip 
-                    content="When enabled, this workspace will use its own QA settings instead of inheriting from global defaults. This allows you to customize evaluation thresholds and models per project."
-                  />
+                  <InfoTooltip content="When enabled, this workspace will use its own QA settings instead of inheriting from global defaults. This allows you to customize evaluation thresholds and models per project." />
                 </div>
                 <p className="text-xs text-muted-foreground">
                   {isInheriting
@@ -228,9 +226,7 @@ export function QASettingsPanel({ workspaceId }: QASettingsPanelProps) {
               >
                 <Switch
                   checked={
-                    isInheriting
-                      ? effectiveSettings?.qa_enabled
-                      : (formState.qa_enabled ?? true)
+                    isInheriting ? effectiveSettings?.qa_enabled : (formState.qa_enabled ?? true)
                   }
                   onCheckedChange={(checked) => handleChange("qa_enabled", checked)}
                   disabled={isInheriting}
@@ -263,9 +259,7 @@ export function QASettingsPanel({ workspaceId }: QASettingsPanelProps) {
                       <Label className={isInheriting ? "text-muted-foreground" : ""}>
                         Pass Threshold
                       </Label>
-                      <InfoTooltip 
-                        content="The minimum overall score (0-100) a call must achieve to be marked as 'passed'. Lower values are more lenient, higher values are stricter. A score of 70 is recommended for most use cases."
-                      />
+                      <InfoTooltip content="The minimum overall score (0-100) a call must achieve to be marked as 'passed'. Lower values are more lenient, higher values are stricter. A score of 70 is recommended for most use cases." />
                     </div>
                     <p className="text-xs text-muted-foreground">
                       Minimum score to pass evaluation (0-100)
@@ -352,7 +346,6 @@ export function QASettingsPanel({ workspaceId }: QASettingsPanelProps) {
   );
 }
 
-
 // =============================================================================
 // Sub-components
 // =============================================================================
@@ -380,7 +373,9 @@ function StatusCard({ qaStatus, isLoading }: StatusCardProps) {
   }
 
   const isHealthy = qaStatus?.enabled && qaStatus?.api_key_configured;
-  const statusColor = isHealthy ? "border-green-500/20 bg-green-500/5" : "border-yellow-500/20 bg-yellow-500/5";
+  const statusColor = isHealthy
+    ? "border-green-500/20 bg-green-500/5"
+    : "border-yellow-500/20 bg-yellow-500/5";
   const statusIcon = isHealthy ? (
     <CheckCircle className="h-5 w-5 text-green-500" />
   ) : (
@@ -425,7 +420,9 @@ function StatusCard({ qaStatus, isLoading }: StatusCardProps) {
             </div>
             <div className="text-right">
               <p className="text-xs text-muted-foreground">Model</p>
-              <p className="font-mono text-xs">{qaStatus?.evaluation_model?.split("-").slice(0, 2).join("-") ?? "N/A"}</p>
+              <p className="font-mono text-xs">
+                {qaStatus?.evaluation_model?.split("-").slice(0, 2).join("-") ?? "N/A"}
+              </p>
             </div>
           </div>
         </div>

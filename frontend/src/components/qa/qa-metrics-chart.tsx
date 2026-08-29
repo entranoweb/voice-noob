@@ -36,11 +36,11 @@ export function QAMetricsChart({
             <CardTitle className="text-sm font-medium">{title}</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="h-32 flex items-end gap-1">
+            <div className="flex h-32 items-end gap-1">
               {trendData.values.map((value, index) => (
                 <div
                   key={index}
-                  className="flex-1 bg-primary/20 hover:bg-primary/40 transition-colors rounded-t cursor-pointer"
+                  className="flex-1 cursor-pointer rounded-t bg-primary/20 transition-colors hover:bg-primary/40"
                   style={{
                     height: `${Math.max((value / 100) * 100, 5)}%`,
                   }}
@@ -66,52 +66,52 @@ export function QAMetricsChart({
             <div className="space-y-3">
               <div className="flex items-center gap-2">
                 <span className="w-28 text-sm text-muted-foreground">Intent</span>
-                <div className="flex-1 h-4 bg-muted rounded-full overflow-hidden">
+                <div className="h-4 flex-1 overflow-hidden rounded-full bg-muted">
                   <div
                     className={`h-full ${getBarColor(scoreBreakdown.intent_completion)} transition-all`}
                     style={{ width: `${scoreBreakdown.intent_completion}%` }}
                   />
                 </div>
-                <span className="w-8 text-sm font-medium text-right">
+                <span className="w-8 text-right text-sm font-medium">
                   {Math.round(scoreBreakdown.intent_completion)}
                 </span>
               </div>
 
               <div className="flex items-center gap-2">
                 <span className="w-28 text-sm text-muted-foreground">Tool Usage</span>
-                <div className="flex-1 h-4 bg-muted rounded-full overflow-hidden">
+                <div className="h-4 flex-1 overflow-hidden rounded-full bg-muted">
                   <div
                     className={`h-full ${getBarColor(scoreBreakdown.tool_usage)} transition-all`}
                     style={{ width: `${scoreBreakdown.tool_usage}%` }}
                   />
                 </div>
-                <span className="w-8 text-sm font-medium text-right">
+                <span className="w-8 text-right text-sm font-medium">
                   {Math.round(scoreBreakdown.tool_usage)}
                 </span>
               </div>
 
               <div className="flex items-center gap-2">
                 <span className="w-28 text-sm text-muted-foreground">Compliance</span>
-                <div className="flex-1 h-4 bg-muted rounded-full overflow-hidden">
+                <div className="h-4 flex-1 overflow-hidden rounded-full bg-muted">
                   <div
                     className={`h-full ${getBarColor(scoreBreakdown.compliance)} transition-all`}
                     style={{ width: `${scoreBreakdown.compliance}%` }}
                   />
                 </div>
-                <span className="w-8 text-sm font-medium text-right">
+                <span className="w-8 text-right text-sm font-medium">
                   {Math.round(scoreBreakdown.compliance)}
                 </span>
               </div>
 
               <div className="flex items-center gap-2">
                 <span className="w-28 text-sm text-muted-foreground">Quality</span>
-                <div className="flex-1 h-4 bg-muted rounded-full overflow-hidden">
+                <div className="h-4 flex-1 overflow-hidden rounded-full bg-muted">
                   <div
                     className={`h-full ${getBarColor(scoreBreakdown.response_quality)} transition-all`}
                     style={{ width: `${scoreBreakdown.response_quality}%` }}
                   />
                 </div>
-                <span className="w-8 text-sm font-medium text-right">
+                <span className="w-8 text-right text-sm font-medium">
                   {Math.round(scoreBreakdown.response_quality)}
                 </span>
               </div>

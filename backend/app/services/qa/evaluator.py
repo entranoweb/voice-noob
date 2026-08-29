@@ -78,7 +78,7 @@ def get_effective_qa_settings(workspace: Workspace | None) -> EffectiveQASetting
         qa_enabled=qa_settings.get("qa_enabled", True),
         auto_evaluate=qa_settings.get("auto_evaluate", True),
         pass_threshold=qa_settings.get("pass_threshold", 70),
-        evaluation_model=qa_settings.get("evaluation_model", "claude-sonnet-4-20250514"),
+        evaluation_model=qa_settings.get("evaluation_model", settings.QA_EVALUATION_MODEL),
         source="workspace",
     )
 
@@ -142,12 +142,51 @@ Respond with a JSON object (no markdown code blocks):
 }}
 """
 
-# Token costs for Claude models (as of Dec 2024, in cents per 1K tokens)
+# Token costs in cents per 1K tokens, from Anthropic published pricing.
+# Only currently-active models belong here: requests to retired models fail,
+# and a stale entry silently misreports cost. Verified 2026-08-26.
+# Cents per 1K tokens. An open-weight model served on your own hardware has no
+# per-token price, so it is recorded as zero here: the cost is the machine, and
+# attributing a made-up per-token rate to it would misreport both numbers.
 MODEL_COSTS = {
-    "claude-sonnet-4-20250514": {"input": 0.3, "output": 1.5},
-    "claude-3-5-sonnet-20241022": {"input": 0.3, "output": 1.5},
-    "claude-3-haiku-20240307": {"input": 0.025, "output": 0.125},
+    "claude-opus-5": {"input": 0.5, "output": 2.5},
+    "claude-sonnet-5": {"input": 0.2, "output": 1.0},
+    "claude-sonnet-4-6": {"input": 0.3, "output": 1.5},
+    "claude-haiku-4-5": {"input": 0.1, "output": 0.5},
 }
+
+# Prefix for models served from a self-hosted OpenAI-compatible endpoint.
+SELF_HOSTED_PREFIX = "self-hosted/"
+
+
+class UnknownEvaluationModelError(ValueError):
+    """Raised when cost is requested for a model with no published rate.
+
+    Deliberately fatal rather than falling back to another model's pricing:
+    a silent fallback misreports spend on every evaluation and nobody notices.
+    """
+
+    def __init__(self, model: str) -> None:
+        super().__init__(
+            f"No cost entry for evaluation model {model!r}. "
+            f"Add it to MODEL_COSTS. Known: {sorted(MODEL_COSTS)}",
+        )
+
+
+def evaluation_cost_cents(model: str, input_tokens: int, output_tokens: int) -> float:
+    """Cost of one evaluation call, in cents.
+
+    A self-hosted model costs nothing per token — the cost is the machine it
+    runs on, and inventing a per-token rate for it would misreport the API bill
+    and the infrastructure bill at the same time.
+    """
+    if model.startswith(SELF_HOSTED_PREFIX):
+        return 0.0
+
+    rates = MODEL_COSTS.get(model)
+    if rates is None:
+        raise UnknownEvaluationModelError(model)
+    return (input_tokens / 1000) * rates["input"] + (output_tokens / 1000) * rates["output"]
 
 
 class QAEvaluator:
@@ -290,10 +329,7 @@ class QAEvaluator:
             # Calculate cost
             input_tokens = response.usage.input_tokens
             output_tokens = response.usage.output_tokens
-            cost_info = MODEL_COSTS.get(model, MODEL_COSTS["claude-sonnet-4-20250514"])
-            cost_cents = (input_tokens / 1000) * cost_info["input"] + (
-                output_tokens / 1000
-            ) * cost_info["output"]
+            cost_cents = evaluation_cost_cents(model, input_tokens, output_tokens)
 
             # Determine pass/fail using effective threshold
             overall_score = evaluation_data.get("overall_score", 0)

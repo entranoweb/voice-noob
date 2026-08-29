@@ -31,9 +31,7 @@ const renderWithProviders = (component: React.ReactNode) => {
       },
     },
   });
-  return render(
-    <QueryClientProvider client={queryClient}>{component}</QueryClientProvider>
-  );
+  return render(<QueryClientProvider client={queryClient}>{component}</QueryClientProvider>);
 };
 
 describe("QASettingsPanel", () => {
@@ -77,9 +75,7 @@ describe("QASettingsPanel", () => {
 
     await waitFor(() => {
       expect(screen.getByText("Workspace Override")).toBeInTheDocument();
-      expect(
-        screen.getByText("Use workspace-specific settings")
-      ).toBeInTheDocument();
+      expect(screen.getByText("Use workspace-specific settings")).toBeInTheDocument();
     });
   });
 
@@ -126,10 +122,7 @@ describe("QASettingsPanel", () => {
   it("shows error state when settings fail to load", async () => {
     server.use(
       http.get(`${API_URL}/api/v1/qa/workspace/:workspaceId/settings`, () => {
-        return HttpResponse.json(
-          { detail: "Failed to load settings" },
-          { status: 500 }
-        );
+        return HttpResponse.json({ detail: "Failed to load settings" }, { status: 500 });
       })
     );
 
@@ -191,11 +184,9 @@ describe("QASettingsPanel", () => {
 
     // Find the workspace override toggle by its id (first switch that's not disabled)
     const toggles = screen.getAllByRole("switch");
-    const inheritToggle = toggles.find(
-      (t) => t.id === "inherit-global"
-    );
+    const inheritToggle = toggles.find((t) => t.id === "inherit-global");
     expect(inheritToggle).toBeDefined();
-    
+
     // Click to enable workspace-specific settings
     if (!inheritToggle) throw new Error("inheritToggle not found");
     await user.click(inheritToggle);

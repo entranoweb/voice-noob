@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.db.redis import get_redis
 from app.db.session import get_db
+from app.monitoring import loop_lag
 from app.services.call_registry import get_call_count, is_shutting_down
 
 logger = logging.getLogger(__name__)
@@ -50,11 +51,19 @@ async def health_check_db(response: Response, db: AsyncSession = Depends(get_db)
 
 
 @router.get("/health/redis")
-async def health_check_redis(response: Response) -> dict[str, str]:
-    """Redis health check endpoint."""
+async def health_check_redis(
+    response: Response,
+    redis: Any = Depends(get_redis),
+) -> dict[str, str]:
+    """Redis health check endpoint.
+
+    Takes the client via Depends rather than calling get_redis() directly, so it
+    matches the database check and honours dependency overrides. Calling the
+    imported function directly bypassed every override, which is why this probe
+    always reached for a real Redis under test.
+    """
     try:
-        redis = await get_redis()
-        await redis.ping()  # type: ignore[misc]
+        await redis.ping()
         return {"status": "healthy", "redis": "connected"}
     except Exception as e:
         logger.exception("Redis health check failed")
@@ -91,7 +100,7 @@ async def readiness_probe(
     # Check Redis
     try:
         redis = await get_redis()
-        await redis.ping()  # type: ignore[misc]
+        await redis.ping()
     except Exception as e:
         logger.warning("Readiness check failed: redis", exc_info=True)
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
@@ -149,7 +158,7 @@ async def detailed_health(
     # Check Redis
     try:
         redis = await get_redis()
-        await redis.ping()  # type: ignore[misc]
+        await redis.ping()
         result["services"]["redis"] = "healthy"
     except Exception as e:
         logger.warning("Detailed health: redis unhealthy", exc_info=True)
@@ -172,3 +181,14 @@ async def detailed_health(
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
 
     return result
+
+
+@router.get("/health/loop-lag")
+async def health_loop_lag() -> dict[str, float | int | bool]:
+    """Event-loop lag percentiles for this process.
+
+    Use p95 to size concurrent calls per process: ramp load and find the knee
+    where p95 starts climbing. See app/monitoring/loop_lag.py for why this beats
+    CPU% and turn latency as a saturation signal.
+    """
+    return loop_lag.snapshot()

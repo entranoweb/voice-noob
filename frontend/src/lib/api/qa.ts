@@ -539,12 +539,9 @@ export async function listScenarios(params: {
     searchParams.set("built_in_only", params.built_in_only.toString());
   }
 
-  const response = await fetch(
-    `${API_BASE}/api/v1/testing/scenarios?${searchParams.toString()}`,
-    {
-      headers: getAuthHeaders(),
-    }
-  );
+  const response = await fetch(`${API_BASE}/api/v1/testing/scenarios?${searchParams.toString()}`, {
+    headers: getAuthHeaders(),
+  });
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ detail: response.statusText }));
@@ -702,12 +699,9 @@ export async function listTestRuns(params: {
   if (params.agent_id) searchParams.set("agent_id", params.agent_id);
   if (params.status) searchParams.set("status", params.status);
 
-  const response = await fetch(
-    `${API_BASE}/api/v1/testing/runs?${searchParams.toString()}`,
-    {
-      headers: getAuthHeaders(),
-    }
-  );
+  const response = await fetch(`${API_BASE}/api/v1/testing/runs?${searchParams.toString()}`, {
+    headers: getAuthHeaders(),
+  });
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ detail: response.statusText }));

@@ -137,7 +137,34 @@ class Settings(BaseSettings):
     # Feature flags for post-call evaluation and testing
     QA_ENABLED: bool = False  # Master switch for QA features
     QA_AUTO_EVALUATE: bool = True  # Auto-evaluate calls on completion
-    QA_EVALUATION_MODEL: str = "claude-sonnet-4-20250514"  # Claude model for evaluation
+    QA_EVALUATION_MODEL: str = "claude-sonnet-4-6"  # Post-call evaluation of real calls
+
+    # A simulated run uses three models in three different roles, and they do
+    # not need the same capability. Pointing all three at one frontier model was
+    # costing roughly three times what the work requires.
+    #
+    #   agent  — stands in for the agent under test. This one is the measurement,
+    #            so a weaker model here makes the agent look worse than it is.
+    #            Do not economise on it.
+    #   caller — plays a person on the phone with a goal. Needs to follow a
+    #            persona and answer questions, nothing more.
+    #   judge  — scores the qualitative dimensions deterministic metrics cannot.
+    #            Off by default in CI, and cheap when on.
+    #
+    # Before moving the caller or judge to a smaller model on a real workload,
+    # measure it: run both against the same labelled set and compare agreement.
+    # A judge that disagrees with a human is not cheaper, it is wrong.
+    QA_AGENT_MODEL: str = "claude-sonnet-4-6"
+    QA_CALLER_MODEL: str = "claude-haiku-4-5"
+    QA_JUDGE_MODEL: str = "claude-haiku-4-5"
+
+    # Base URL for an OpenAI-compatible endpoint serving open-weight models —
+    # vLLM, Ollama, Groq, Together, OpenRouter, or anything else speaking that
+    # API. Set it and the caller and judge run there instead of Anthropic.
+    # This is not only a cost lever: a harness that must run inside a bank's
+    # own network cannot depend on an external API for any part of a run.
+    QA_OPEN_MODEL_BASE_URL: str | None = None
+    QA_OPEN_MODEL_API_KEY: str | None = None
     QA_DEFAULT_THRESHOLD: int = 70  # Pass/fail score threshold (0-100)
     QA_MAX_CONCURRENT_EVALUATIONS: int = 5  # Max parallel evaluations
     QA_ALERT_ON_FAILURE: bool = True  # Send alerts on failed evaluations

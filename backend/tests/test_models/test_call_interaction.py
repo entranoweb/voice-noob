@@ -21,6 +21,7 @@ class TestCallInteractionModel:
         create_test_user: Any,
         create_test_contact: Any,
         sample_call_interaction_data: dict[str, Any],
+        refresh_full: Any,
     ) -> None:
         """Test creating a call interaction with all fields."""
         user = await create_test_user()
@@ -29,7 +30,7 @@ class TestCallInteractionModel:
         call = CallInteraction(contact_id=contact.id, **sample_call_interaction_data)
         test_session.add(call)
         await test_session.commit()
-        await test_session.refresh(call)
+        await refresh_full(test_session, call)
 
         assert call.id is not None
         assert call.contact_id == contact.id
@@ -53,6 +54,7 @@ class TestCallInteractionModel:
         test_session: AsyncSession,
         create_test_user: Any,
         create_test_contact: Any,
+        refresh_full: Any,
     ) -> None:
         """Test creating a call interaction with minimal required fields."""
         user = await create_test_user()
@@ -66,7 +68,7 @@ class TestCallInteractionModel:
         )
         test_session.add(call)
         await test_session.commit()
-        await test_session.refresh(call)
+        await refresh_full(test_session, call)
 
         assert call.id is not None
         assert call.contact_id == contact.id
@@ -159,6 +161,7 @@ class TestCallInteractionModel:
         test_session: AsyncSession,
         create_test_user: Any,
         create_test_contact: Any,
+        refresh_full: Any,
     ) -> None:
         """Test call interaction with long transcript."""
         user = await create_test_user()
@@ -173,7 +176,7 @@ class TestCallInteractionModel:
         )
         test_session.add(call)
         await test_session.commit()
-        await test_session.refresh(call)
+        await refresh_full(test_session, call)
 
         assert call.transcript == long_transcript
 

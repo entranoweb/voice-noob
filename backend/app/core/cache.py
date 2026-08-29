@@ -7,7 +7,10 @@ from collections.abc import Awaitable, Callable
 from functools import wraps
 from typing import Any, ParamSpec, TypeVar
 
-from app.db.redis import get_redis
+# Import the module rather than the function: a bound reference is fixed at
+# import time, so patching app.db.redis.get_redis (as the test fixtures do)
+# would never reach this module and the cache would hit a real Redis.
+from app.db import redis as redis_module
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +53,7 @@ async def cache_get(key: str) -> Any | None:
         Cached value or None if not found or error occurred
     """
     try:
-        redis = await get_redis()
+        redis = await redis_module.get_redis()
         value = await redis.get(key)
 
         if value is not None:
@@ -77,7 +80,7 @@ async def cache_set(key: str, value: Any, ttl: int = 300) -> bool:
         True if successful, False otherwise
     """
     try:
-        redis = await get_redis()
+        redis = await redis_module.get_redis()
         serialized = json.dumps(value, default=str)
         await redis.setex(key, ttl, serialized)
         logger.debug("Cache set: %s (TTL: %ss)", key, ttl)
@@ -98,7 +101,7 @@ async def cache_delete(key: str) -> bool:
         True if successful, False otherwise
     """
     try:
-        redis = await get_redis()
+        redis = await redis_module.get_redis()
         await redis.delete(key)
         logger.debug("Cache deleted: %s", key)
         return True
@@ -118,7 +121,7 @@ async def cache_invalidate(pattern: str) -> int:
         Number of keys deleted
     """
     try:
-        redis = await get_redis()
+        redis = await redis_module.get_redis()
         keys = []
 
         # Scan for keys matching pattern
@@ -188,7 +191,7 @@ async def cache_stats() -> dict[str, Any]:
         Dictionary with cache stats
     """
     try:
-        redis = await get_redis()
+        redis = await redis_module.get_redis()
         info = await redis.info("stats")
 
         return {

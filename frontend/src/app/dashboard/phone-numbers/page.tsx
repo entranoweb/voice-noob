@@ -231,7 +231,7 @@ export default function PhoneNumbersPage() {
       toast.error("Please enter at least 3 digits for area code");
       return;
     }
-    
+
     const workspaceId = getActiveWorkspaceId();
     if (!workspaceId) {
       toast.error("No workspace available. Please create a workspace first.");
@@ -272,7 +272,7 @@ export default function PhoneNumbersPage() {
       toast.error("Please select a number to purchase");
       return;
     }
-    
+
     const workspaceId = getActiveWorkspaceId();
     if (!workspaceId) {
       toast.error("No workspace available. Please create a workspace first.");
@@ -339,7 +339,7 @@ export default function PhoneNumbersPage() {
 
   const confirmReleaseNumber = async () => {
     if (!numberToRelease) return;
-    
+
     const workspaceId = getActiveWorkspaceId();
     if (!workspaceId) {
       toast.error("No workspace available.");

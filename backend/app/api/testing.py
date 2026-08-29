@@ -25,6 +25,7 @@ from app.models.test_scenario import (
     TestScenario,
 )
 from app.services.qa.test_runner import TestRunner
+from app.services.qa.testing import checker
 
 
 def _parse_uuid(value: str, field_name: str = "ID") -> uuid.UUID:
@@ -138,6 +139,55 @@ class RunTestResponse(BaseModel):
     message: str
     test_run_id: str
     status: str
+
+
+class InlineCheckRequest(BaseModel):
+    """A scenario defined in the request rather than stored first.
+
+    This is what an external harness - promptfoo, a CI script, someone's own
+    runner - posts. Requiring a persisted scenario first would mean every
+    integration had to manage our resources before it could ask a question.
+    """
+
+    agent_id: str
+    says: list[str] = Field(min_length=1, description="Caller turns, in order")
+    invokes: list[str] = Field(default_factory=list, description="Tools that must be called")
+    leaves: dict[str, Any] | None = Field(
+        default=None,
+        description="Database state the run must produce",
+    )
+    given: dict[str, Any] | None = Field(default=None, description="Rows to seed before the run")
+    persona: dict[str, Any] | None = None
+    max_response_ms: float | None = None
+    workspace_id: str | None = None
+    judge: bool = Field(default=False, description="Also run the qualitative judge")
+
+
+class MetricScoreResponse(BaseModel):
+    """One metric's result. `value` of null means not measurable, not zero."""
+
+    metric: str
+    category: str
+    value: float | None
+    passed: bool | None
+    unit: str | None = None
+    detail: dict[str, Any] = Field(default_factory=dict)
+
+
+class InlineCheckResponse(BaseModel):
+    """Everything a caller needs to decide, and to explain the decision."""
+
+    outcome: str
+    passed: bool
+    trustworthy: bool
+    accuracy_score: float | None
+    explanation: str
+    transcript: list[dict[str, Any]]
+    tool_calls: list[dict[str, Any]]
+    final_state: dict[str, Any]
+    fixture_ledger: dict[str, Any] | None
+    metrics: list[MetricScoreResponse]
+    judgement: dict[str, Any] = Field(default_factory=dict)
 
 
 class RunAllTestsRequest(BaseModel):
@@ -716,6 +766,79 @@ async def _run_all_scenarios_background(
             )
     except Exception:
         log.exception("background_test_run_failed")
+
+
+@router.post("/check", response_model=InlineCheckResponse)
+async def check_inline(
+    request: InlineCheckRequest,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+) -> InlineCheckResponse:
+    """Run a scenario defined in the request and return the full result.
+
+    The entry point for anything outside this codebase: a promptfoo provider, a
+    CI script, someone's own harness. Nothing is persisted - no scenario, no run
+    record - and the agent's real tools execute inside a transaction that is
+    rolled back and verified, so calling this repeatedly leaves the caller's
+    data exactly as it found it.
+    """
+    log = logger.bind(user_id=current_user.id, agent_id=request.agent_id)
+    log.info("inline_check")
+
+    if not settings.QA_ENABLED:
+        raise HTTPException(status_code=400, detail="QA testing is disabled")
+
+    if not settings.ANTHROPIC_API_KEY:
+        raise HTTPException(status_code=400, detail="Anthropic API key not configured")
+
+    agent_uuid = _parse_uuid(request.agent_id, "agent_id")
+    workspace_uuid = (
+        _parse_uuid(request.workspace_id, "workspace_id") if request.workspace_id else None
+    )
+
+    agent_result = await db.execute(
+        select(Agent).where(Agent.id == agent_uuid, Agent.user_id == current_user.id)
+    )
+    agent = agent_result.scalar_one_or_none()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    result = await checker(TestRunner(db)).check(
+        agent=agent,
+        user_id=current_user.id,
+        says=request.says,
+        invokes=request.invokes,
+        leaves=request.leaves,
+        given=request.given,
+        persona=request.persona,
+        max_response_ms=request.max_response_ms,
+        workspace_id=workspace_uuid,
+        judge=request.judge,
+    )
+
+    return InlineCheckResponse(
+        outcome=str(result.outcome),
+        passed=result.passed,
+        trustworthy=result.metrics.trustworthy,
+        accuracy_score=result.metrics.accuracy_score(),
+        explanation=result.explain(),
+        transcript=result.transcript,
+        tool_calls=result.tool_calls,
+        final_state=result.final_state,
+        fixture_ledger=result.ledger,
+        metrics=[
+            MetricScoreResponse(
+                metric=score.metric,
+                category=str(score.category),
+                value=score.value,
+                passed=score.passed,
+                unit=score.unit,
+                detail=score.detail or {},
+            )
+            for score in result.metrics.scores
+        ],
+        judgement=result.judgement,
+    )
 
 
 @router.post("/run-all", response_model=RunAllTestsResponse)
