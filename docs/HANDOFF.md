@@ -60,9 +60,9 @@ State these before any claim built on the harness.
   exercised end to end against the real application — signed webhook, TeXML
   document, websocket, µ-law frames both ways, a row in Postgres, spans out —
   with only the model stubbed (`backend/tests/websocket/test_telnyx_inbound_call.py`).
-  That is not the same as a carrier and a handset. Four defects that would each
+  That is not the same as a carrier and a handset. Five defects that would each
   have dropped or silenced a real call were found and fixed *because* nothing
-  had ever tried; see §6. Nothing proves there is not a fifth.
+  had ever tried; see §6. Nothing proves there is not a sixth.
 - **The audio metrics now have a producer, and it is only exercised by a
   stubbed model.** `time_to_first_audio` and `interruption_handling` are
   measured off the bridge and land on the call record.
@@ -114,7 +114,7 @@ put through it is scaffolding, not progress.
 
 None of these were visible to any test, and each one alone was enough to lose a
 real call. They are listed because they are the argument for §7: the next
-unverified thing is the next four bugs.
+unverified thing is the next five bugs.
 
 | Defect | Effect on a real call |
 | --- | --- |
@@ -123,6 +123,15 @@ unverified thing is the next four bugs.
 | `<Stream>` set no `bidirectionalMode` | Telnyx defaults it to `mp3`; this bridge sends G.711 µ-law. The caller would have heard silence while the logs showed audio being written. Now `rtp` / `PCMU` / `8000`, with a `<Pause>` so the document does not end under the stream |
 | Nothing sent `{"event": "clear"}` on barge-in | Server VAD cancels the response upstream, but Telnyx keeps playing what it has already buffered. The agent talked over the caller. This is also what `interruption_handling` measures |
 | `log.info(..., event=...)` in the status callback | `event` is structlog's own key for the message. The call raised inside the logger *after* the commit, so the status webhook returned 500 to Telnyx on every hangup |
+
+One thing this pass did **not** fix, and a new session should know about: the
+telephony websockets are unauthenticated. Anyone who learns an agent's UUID can
+open `/ws/telephony/{provider}/{agent_id}` and hold a conversation with that
+agent, tools included. That predates this work and is architectural — a signed,
+short-lived token minted by the answering webhook and checked at the socket is
+the shape of the fix — but it is the largest known hole in the inbound path.
+The database writes the bridge makes are now scoped to the serving agent, which
+narrows the blast radius without closing the hole.
 
 Also new, and previously absent entirely: **nothing emitted the OTel span tree**.
 `monitoring/call_trace.py` defined `voice.call` / `voice.turn` / `voice.tool_call`

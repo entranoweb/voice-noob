@@ -45,6 +45,28 @@ class TestTimeToFirstAudio:
         assert turns[1]["ttfb_ms"] == pytest.approx(200.0)
         assert "ttfb_ms" not in turns[2]
 
+    def test_measured_when_the_transcript_arrives_before_the_audio(self) -> None:
+        """The transcript fragment opens the turn, and the latency still lands.
+
+        The provider does not guarantee that audio precedes text. Timing from
+        the turn's creation rather than from its first audio chunk silently
+        dropped the measurement on every call that happened to arrive this way.
+        """
+        recorder = AudioTurnRecorder()
+        recorder.caller_speech_stopped(at=1.0)
+        recorder.agent_transcript_delta("Sure, ", at=1.2)
+        recorder.agent_audio_delta(byte_count=160, at=1.4)
+
+        assert recorder.conversation()[-1]["ttfb_ms"] == pytest.approx(400.0)
+
+    def test_only_the_first_audio_chunk_sets_the_latency(self) -> None:
+        recorder = AudioTurnRecorder()
+        recorder.caller_speech_stopped(at=1.0)
+        recorder.agent_audio_delta(byte_count=160, at=1.4)
+        recorder.agent_audio_delta(byte_count=160, at=1.9)
+
+        assert recorder.conversation()[-1]["ttfb_ms"] == pytest.approx(400.0)
+
     def test_response_ms_reports_the_same_gap(self) -> None:
         """One observation point, so the two names carry one number."""
         recorder = AudioTurnRecorder()
@@ -176,6 +198,55 @@ class TestTranscriptionGroundTruth:
         turn = recorder.conversation()[0]
         assert turn["text_intended"] == "Sure, Tuesday works."
         assert turn["text_transcribed"] is None
+
+
+class TestTranscriptsSwitchedOff:
+    """An agent whose owner declined to store speech.
+
+    The decision covers the metrics and the trace, not only the transcript
+    column. The turns are still recorded and still timed — that is telemetry
+    about the call, not its content.
+    """
+
+    def test_no_recognised_speech_is_kept(self) -> None:
+        recorder = AudioTurnRecorder(retain_text=False)
+        recorder.caller_speech_started(at=0.0)
+        recorder.caller_speech_stopped(at=1.0)
+        recorder.caller_transcript("my card number is 4111 1111 1111 1111", at=1.1)
+        recorder.agent_audio_delta(byte_count=160, at=1.4)
+        recorder.agent_transcript_delta("Thanks, got it.", at=1.5)
+
+        for turn in recorder.conversation():
+            assert turn["text_transcribed"] is None
+            assert turn["text_intended"] is None
+
+    def test_the_timings_survive(self) -> None:
+        recorder = AudioTurnRecorder(retain_text=False)
+        recorder.caller_speech_started(at=0.0)
+        recorder.caller_speech_stopped(at=1.0)
+        recorder.agent_audio_delta(byte_count=160, at=1.4)
+
+        assert recorder.conversation()[-1]["ttfb_ms"] == pytest.approx(400.0)
+        assert recorder.has_audio is True
+
+    def test_word_error_rate_becomes_unmeasurable(self) -> None:
+        """The correct consequence of having chosen not to keep the words."""
+        recorder = AudioTurnRecorder(
+            retain_text=False,
+            intended_caller_script=["book me for Tuesday"],
+        )
+        recorder.caller_speech_started(at=0.0)
+        recorder.caller_speech_stopped(at=1.0)
+        recorder.caller_transcript("book me for tuna day", at=1.1)
+
+        scores = evaluate(
+            build_context(
+                run_id="r",
+                conversation=recorder.conversation(),
+                has_audio=recorder.has_audio,
+            ),
+        ).by_name()
+        assert scores["transcription_accuracy"].value is None
 
 
 class TestNoAudio:

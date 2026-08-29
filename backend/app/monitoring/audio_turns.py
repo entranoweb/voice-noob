@@ -35,7 +35,7 @@ What each field is measured from, and what it means when it is absent:
     that cancels the response and flushes the provider's playback buffer — so it
     is reported explicitly rather than inferred from timing.
 
-``text_intended`` / ``text_transcribed``
+``text_intended`` / ``text_transcribed`` (only when ``retain_text``)
     For the agent, ``intended`` is the text handed to speech synthesis. Nothing
     transcribes the agent's own audio back off the line, so ``transcribed`` stays
     ``None``. For the caller it is the reverse: ``transcribed`` is what STT heard,
@@ -48,6 +48,12 @@ What each field is measured from, and what it means when it is absent:
 ``audio_duration_ms``
     Derived from the bytes actually sent. G.711 is one byte per sample, so at
     8 kHz a byte is an eighth of a millisecond regardless of codec details.
+
+An agent configured not to store transcripts sets ``retain_text=False``. Turns
+are still recorded and still timed — that is telemetry about the call, not its
+content — but no recognised speech is kept, so none reaches the metrics, the
+database, or the trace. Word error rate is then unmeasurable, which is the
+correct consequence of having chosen not to keep the words.
 """
 
 from __future__ import annotations
@@ -99,6 +105,11 @@ class AudioTurnRecorder:
     # What the caller was scripted to say, in order, when the run is simulated.
     # Empty on a real call, which is what keeps WER honest there.
     intended_caller_script: list[str] = field(default_factory=list)
+    # Whether recognised speech may be kept. An agent with transcripts switched
+    # off has had its owner decline to store what was said, and that decision
+    # covers the metrics and the trace as much as the transcript column: the
+    # turns are still recorded and still timed, they just carry no words.
+    retain_text: bool = True
 
     _turns: list[_Turn] = field(default_factory=list, init=False)
     _caller_speech_ended_at: float | None = field(default=None, init=False)
@@ -147,11 +158,12 @@ class AudioTurnRecorder:
             self._turns.append(turn)
             self._audio_observed = True
 
-        turn.text_transcribed = text
-        # Only a scripted caller has an intention distinct from what was heard.
-        if self._scripted_index < len(self.intended_caller_script):
-            turn.text_intended = self.intended_caller_script[self._scripted_index]
-            self._scripted_index += 1
+        if self.retain_text:
+            turn.text_transcribed = text
+            # Only a scripted caller has an intention distinct from what was heard.
+            if self._scripted_index < len(self.intended_caller_script):
+                turn.text_intended = self.intended_caller_script[self._scripted_index]
+                self._scripted_index += 1
 
     # -- agent side -------------------------------------------------------
 
@@ -168,12 +180,17 @@ class AudioTurnRecorder:
         turn = self._open_turn(Speaker.AGENT)
         if turn is None:
             turn = _Turn(speaker=Speaker.AGENT, started_at=moment)
-            # An opening greeting answers no caller turn, so it has no wait to
-            # measure. None, not zero: the caller never waited.
-            if self._caller_speech_ended_at is not None:
-                turn.ttfb_ms = (moment - self._caller_speech_ended_at) * 1000.0
-                self._caller_speech_ended_at = None
             self._turns.append(turn)
+
+        # Measured on the first audio chunk of the turn, not on the turn's
+        # creation: a transcript fragment can arrive before any audio and open
+        # the turn itself, and timing from there would credit the agent with
+        # bytes the caller could not yet hear. An opening greeting answers no
+        # caller turn, so there is nothing to measure from and this stays None —
+        # not zero: the caller never waited.
+        if turn.audio_bytes == 0 and self._caller_speech_ended_at is not None:
+            turn.ttfb_ms = (moment - self._caller_speech_ended_at) * 1000.0
+            self._caller_speech_ended_at = None
 
         turn.audio_bytes += max(byte_count, 0)
 
@@ -185,7 +202,8 @@ class AudioTurnRecorder:
             # turn without setting ttfb: no audio has reached the caller yet.
             turn = _Turn(speaker=Speaker.AGENT, started_at=_now() if at is None else at)
             self._turns.append(turn)
-        turn.text_intended = (turn.text_intended or "") + delta
+        if self.retain_text:
+            turn.text_intended = (turn.text_intended or "") + delta
 
     def agent_turn_ended(self, *, interrupted: bool = False, at: float | None = None) -> None:
         """The agent's turn finished, either naturally or because it was cut off."""

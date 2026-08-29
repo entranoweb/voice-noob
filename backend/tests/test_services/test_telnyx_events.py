@@ -148,6 +148,32 @@ class TestHangupCause:
         assert event.resolved_status() is CallStatus.IN_PROGRESS
 
 
+class TestSipResponseCode:
+    @pytest.mark.asyncio
+    async def test_a_successful_sip_code_does_not_fail_the_call(self) -> None:
+        """A completed TeXML call carries SipResponseCode=200.
+
+        Reading that as a hangup cause made it an unmapped abnormal value, and
+        every healthy call was stored as FAILED.
+        """
+        body = b"CallSid=v3%3Aabc&CallStatus=completed&SipResponseCode=200"
+        event = await parse_telnyx_webhook(
+            _request(body, "application/x-www-form-urlencoded"),
+        )
+
+        assert event.hangup_cause == ""
+        assert event.resolved_status() is CallStatus.COMPLETED
+
+    @pytest.mark.asyncio
+    async def test_an_explicit_hangup_cause_still_decides(self) -> None:
+        body = b"CallSid=v3%3Aabc&CallStatus=completed&HangupCause=USER_BUSY&SipResponseCode=486"
+        event = await parse_telnyx_webhook(
+            _request(body, "application/x-www-form-urlencoded"),
+        )
+
+        assert event.resolved_status() is CallStatus.BUSY
+
+
 class TestUnknownEvents:
     @pytest.mark.asyncio
     async def test_an_unmapped_event_leaves_the_status_alone(self) -> None:

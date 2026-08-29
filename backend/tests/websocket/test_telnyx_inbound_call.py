@@ -432,6 +432,75 @@ class TestInboundCallEndToEnd:
         assert any(t.attributes and t.attributes[schema.TURN_BARGE_IN] for t in turn_spans)
 
     @pytest.mark.asyncio
+    async def test_a_rejected_connection_emits_no_completed_call(
+        self,
+        inbound_call_env: dict[str, Any],
+        captured_spans: InMemorySpanExporter,
+    ) -> None:
+        """An unknown agent is not a call that happened.
+
+        The rejection returns through the same `finally` as a real call, and a
+        completed voice.call span for it would put calls that never occurred
+        into every dashboard that counts them.
+        """
+        await _place_webhook(inbound_call_env)
+
+        async with ASGIWebSocketClient(
+            app,
+            f"/ws/telephony/telnyx/{uuid.uuid4()}",
+            query_string=f"call_id={CALL_SID}",
+        ) as ws:
+            await ws.drain(deadline_s=1.0)
+
+        assert [s for s in captured_spans.get_finished_spans() if s.name == schema.SPAN_CALL] == []
+
+    @pytest.mark.asyncio
+    async def test_turns_are_not_written_to_another_agents_call(
+        self,
+        inbound_call_env: dict[str, Any],
+    ) -> None:
+        """The call identifier arrives on the connection, not from anything this
+        process authenticated. Without the agent predicate it is a write
+        primitive against any row in the table."""
+        await _place_webhook(inbound_call_env)
+
+        maker = inbound_call_env["session_maker"]
+        async with maker() as session:
+            victim = CallRecord(
+                id=uuid.uuid4(),
+                user_id=uuid.uuid4(),
+                provider="telnyx",
+                provider_call_id="v3:someone-elses-call",
+                direction="inbound",
+                status=CallStatus.COMPLETED.value,
+                from_number="+1",
+                to_number="+2",
+                duration_seconds=1,
+            )
+            session.add(victim)
+            await session.commit()
+            victim_id = victim.id
+
+        # The connection names a call belonging to nobody it serves.
+        agent_id = str(inbound_call_env["agent"].id)
+        async with ASGIWebSocketClient(
+            app,
+            f"/ws/telephony/telnyx/{agent_id}",
+            query_string="call_id=v3:someone-elses-call",
+        ) as ws:
+            await ws.send_json(
+                {"event": "start", "stream_id": "s", "start": {"call_control_id": "x"}},
+            )
+            await ws.send_json({"event": "media", "media": {"payload": ULAW_FRAME}})
+            await ws.drain(deadline_s=1.0)
+            await ws.send_json({"event": "stop"})
+
+        async with maker() as session:
+            row = await session.get(CallRecord, victim_id)
+            assert row is not None
+            assert row.turns is None, "the bridge wrote turns onto another agent's call"
+
+    @pytest.mark.asyncio
     async def test_the_status_callback_completes_the_row(
         self,
         inbound_call_env: dict[str, Any],

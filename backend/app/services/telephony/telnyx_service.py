@@ -14,12 +14,15 @@ from app.services.telephony.base import (
 
 logger = structlog.get_logger()
 
-# How long the TeXML document waits after handing the call to the stream. The
-# document ending is what tears the call down, so this is an upper bound on call
-# length, not a delay anyone experiences. An hour is longer than any call this
-# platform is built for and shorter than an accidental open line costing money
-# forever.
-STREAM_PAUSE_SECONDS = 3600
+# A guard against the document running off its end while the stream is still
+# being established. `<Connect>` blocks for the life of the stream, so this is
+# not the call-length bound an earlier comment here claimed it was — it only
+# matters if Connect returns early.
+#
+# Telnyx accepts 1-180 for `<Pause length>`; a value outside that range risks
+# the whole document being rejected, which drops the call. 40 seconds matches
+# the reference implementations and stays well inside the range.
+STREAM_PAUSE_SECONDS = 40
 
 
 class TelnyxService(TelephonyProvider):

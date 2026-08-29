@@ -150,18 +150,29 @@ async def save_turns_to_call_record(
     recorder: AudioTurnRecorder,
     db: AsyncSession,
     log: Any,
+    agent_id: uuid.UUID,
 ) -> None:
     """Store the recorded turns on the call record.
 
     Written only when audio actually moved. A call that connected and carried
     nothing leaves the column null, and null is what makes the audio metrics
     report ``not_measurable`` rather than a score of zero.
+
+    Scoped to the agent serving this websocket. The call identifier arrives from
+    the connection rather than from anything this process authenticated, so
+    without the agent predicate a connection could name any call in the database
+    and overwrite its turns.
     """
     if not recorder.has_audio:
         log.info("no_audio_recorded_turns_not_saved")
         return
 
-    result = await db.execute(select(CallRecord).where(CallRecord.provider_call_id == call_sid))
+    result = await db.execute(
+        select(CallRecord).where(
+            CallRecord.provider_call_id == call_sid,
+            CallRecord.agent_id == agent_id,
+        )
+    )
     call_record = result.scalar_one_or_none()
 
     if call_record is None:
@@ -173,11 +184,38 @@ async def save_turns_to_call_record(
     log.info("turns_saved", record_id=str(call_record.id), turns=recorder.turn_count())
 
 
+async def _persist_call_artifacts(
+    *,
+    record_key: str,
+    agent: Agent,
+    realtime_session: GPTRealtimeSession,
+    recorder: AudioTurnRecorder,
+    db: AsyncSession,
+    log: Any,
+) -> None:
+    """Write what the call produced onto its record.
+
+    The transcript only when the agent stores transcripts; the turn timings
+    always, because they are telemetry about the call rather than its content
+    and are what the audio metrics read once the websocket has closed.
+    """
+    if not record_key:
+        log.warning("no_call_reference_nothing_persisted")
+        return
+
+    if agent.enable_transcript:
+        transcript = realtime_session.get_transcript()
+        await save_transcript_to_call_record(record_key, transcript, db, log, agent_id=agent.id)
+
+    await save_turns_to_call_record(record_key, recorder, db, log, agent_id=agent.id)
+
+
 async def save_transcript_to_call_record(
     call_sid: str,
     transcript: str,
     db: AsyncSession,
     log: Any,
+    agent_id: uuid.UUID | None = None,
 ) -> None:
     """Save transcript to the call record.
 
@@ -186,12 +224,19 @@ async def save_transcript_to_call_record(
         transcript: Formatted transcript text
         db: Database session
         log: Logger instance
+        agent_id: When given, restricts the write to this agent's call records.
+            The call identifier comes off the connection, not from anything this
+            process authenticated, so without it a connection could name any
+            call in the database and overwrite its transcript.
     """
     if not transcript.strip():
         log.debug("empty_transcript_skipped")
         return
 
-    result = await db.execute(select(CallRecord).where(CallRecord.provider_call_id == call_sid))
+    conditions = [CallRecord.provider_call_id == call_sid]
+    if agent_id is not None:
+        conditions.append(CallRecord.agent_id == agent_id)
+    result = await db.execute(select(CallRecord).where(*conditions))
     call_record = result.scalar_one_or_none()
 
     if call_record:
@@ -603,6 +648,11 @@ async def telnyx_media_stream(  # noqa: PLR0915
     call_registered: bool = False
     call_failed: bool = False
     recorder = AudioTurnRecorder()
+    # False until the agent checks pass and the bridge is actually running. A
+    # connection rejected for an unknown or inactive agent returns through the
+    # same `finally`, and emitting a completed voice.call span for it would put
+    # calls that never happened into every dashboard that counts them.
+    call_started: bool = False
     # Stays UNKNOWN unless the bridge sees something that says why the call
     # ended. Guessing here would put an invented reason into the trace that a
     # dashboard would then group and count.
@@ -624,6 +674,12 @@ async def telnyx_media_stream(  # noqa: PLR0915
             return
 
         log.info("agent_loaded", agent_name=agent.name)
+        call_started = True
+
+        # An agent with transcripts switched off has had its owner decline to
+        # store what was said. That covers the metrics and the trace too, so the
+        # recorder keeps the timings and drops the words.
+        recorder.retain_text = agent.enable_transcript
 
         # agent.user_id is now directly the integer user ID
         user_id_int = agent.user_id
@@ -675,18 +731,14 @@ async def telnyx_media_stream(  # noqa: PLR0915
                 recorder=recorder,
             )
 
-            record_key = webhook_call_id or call_control_id
-
-            # Save transcript to call record if enabled
-            if agent.enable_transcript and record_key:
-                transcript = realtime_session.get_transcript()
-                await save_transcript_to_call_record(record_key, transcript, db, log)
-
-            # Persist the turn timings. Without this the audio metrics have
-            # nothing to read after the websocket closes, and every real call
-            # would still report not_measurable.
-            if record_key:
-                await save_turns_to_call_record(record_key, recorder, db, log)
+            await _persist_call_artifacts(
+                record_key=webhook_call_id or call_control_id,
+                agent=agent,
+                realtime_session=realtime_session,
+                recorder=recorder,
+                db=db,
+                log=log,
+            )
 
     except WebSocketDisconnect:
         log.info("telnyx_websocket_disconnected")
@@ -711,17 +763,18 @@ async def telnyx_media_stream(  # noqa: PLR0915
             except Exception:
                 log.exception("call_unregistration_failed", call_control_id=call_control_id)
 
-        _emit_call_trace(
-            provider="telnyx",
-            call_id=webhook_call_id or call_control_id or session_id,
-            provider_call_id=call_control_id or webhook_call_id,
-            agent_id=agent_id,
-            recorder=recorder,
-            call_start_time=call_start_time,
-            call_duration_s=call_duration,
-            failed=call_failed,
-            termination=termination,
-        )
+        if call_started:
+            _emit_call_trace(
+                provider="telnyx",
+                call_id=webhook_call_id or call_control_id or session_id,
+                provider_call_id=call_control_id or webhook_call_id,
+                agent_id=agent_id,
+                recorder=recorder,
+                call_start_time=call_start_time,
+                call_duration_s=call_duration,
+                failed=call_failed,
+                termination=termination,
+            )
         log.info("telnyx_websocket_closed", stream_id=stream_id, call_control_id=call_control_id)
 
 

@@ -48,25 +48,29 @@ _TERMINATION_BY_STATUS = {
 def context_for_call(call_record: CallRecord) -> Any:
     """Build the metric context for one real call.
 
-    ``has_audio`` follows whether turns were actually recorded. A call whose
-    websocket never carried audio stores nothing, and the audio metrics then
-    report ``not_measurable`` — which is true — instead of scoring a zero, which
-    would be a claim that the call was measured and was terrible.
+    ``has_audio`` follows whether turns were actually recorded — ``is not None``
+    rather than truthiness, because a null column means the websocket carried no
+    audio while an empty list means it carried audio that produced no turns.
+    Only the first makes the audio metrics ``not_measurable``; the second leaves
+    them measurable and finding nothing, which is a different fact.
+
+    Either way they never score a zero, which would be a claim that the call was
+    measured and was terrible.
     """
-    turns = call_record.turns or []
+    turns = call_record.turns
     duration_ms = (
         float(call_record.duration_seconds) * 1000.0 if call_record.duration_seconds else None
     )
 
     return build_context(
         run_id=str(call_record.id),
-        conversation=list(turns),
+        conversation=list(turns or []),
         termination_reason=_TERMINATION_BY_STATUS.get(
             call_record.status,
             TerminationReason.UNKNOWN,
         ),
         duration_ms=duration_ms,
-        has_audio=bool(turns),
+        has_audio=turns is not None,
     )
 
 

@@ -88,6 +88,19 @@ class TestACallWithNoAudio:
         assert context_for_call(_record(turns=None)).has_audio is False
         assert context_for_call(_record(turns=_recorded_call())).has_audio is True
 
+    def test_an_empty_turn_list_is_not_the_same_as_no_audio(self) -> None:
+        """Null means the websocket carried no audio. An empty list means it
+        carried audio that produced no turns. Those are different facts, and
+        `bool()` reports both as false."""
+        assert context_for_call(_record(turns=[])).has_audio is True
+
+        scores = metrics_for_call(_record(turns=[])).by_name()
+        # Still no number, but for the honest reason: audio was in the loop and
+        # no turn recorded a latency, rather than there being no audio at all.
+        ttfb = scores["time_to_first_audio"]
+        assert ttfb.value is None
+        assert "no audio" not in str(ttfb.detail)
+
 
 class TestTermination:
     def test_a_completed_call_reads_as_a_caller_hangup(self) -> None:

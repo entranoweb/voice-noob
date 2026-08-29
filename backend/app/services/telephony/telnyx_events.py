@@ -187,9 +187,12 @@ def _from_texml(form: dict[str, str]) -> TelnyxCallEvent:
         to_number=form.get("To", ""),
         event_type=call_status,
         status=_TEXML_STATUS.get(call_status),
-        # TeXML reports the SIP-level cause under Twilio's name for it when it
-        # has one; a plain completed call carries nothing here.
-        hangup_cause=form.get("HangupCause", "") or form.get("SipResponseCode", ""),
+        # `HangupCause` only. `SipResponseCode` is not a hangup cause: a normal
+        # completed call carries `200` there, which `resolved_status` would read
+        # as an unmapped abnormal cause and store as FAILED. Reading a field for
+        # a meaning it does not have is how a healthy call gets reported as a
+        # broken one.
+        hangup_cause=form.get("HangupCause", ""),
         duration_seconds=_as_int(form.get("CallDuration")),
         raw=dict(form),
     )

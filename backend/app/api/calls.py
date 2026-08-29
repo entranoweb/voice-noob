@@ -285,7 +285,7 @@ async def get_call(
 
 @router.get("/{call_id}/metrics", response_model=CallMetricsResponse)
 async def get_call_metrics(
-    call_id: str,
+    call_id: uuid.UUID,
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> CallMetricsResponse:
@@ -302,7 +302,7 @@ async def get_call_metrics(
     user_uuid = user_id_to_uuid(current_user.id)
     result = await db.execute(
         select(CallRecord).where(
-            CallRecord.id == uuid.UUID(call_id),
+            CallRecord.id == call_id,
             CallRecord.user_id == user_uuid,
         )
     )
@@ -318,7 +318,11 @@ async def get_call_metrics(
         call_id=str(record.id),
         outcome=results.outcome.value,
         trustworthy=results.trustworthy,
-        has_audio=bool(record.turns),
+        # `is not None`, not truthiness: a null column means no audio was
+        # recorded, while an empty list means audio was recorded and produced no
+        # turns. Collapsing them is the same mistake as reporting an unmeasured
+        # metric as zero.
+        has_audio=record.turns is not None,
         scores=[
             MetricScoreResponse(
                 metric=score.metric,

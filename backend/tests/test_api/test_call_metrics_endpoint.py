@@ -117,6 +117,32 @@ class TestCallMetricsEndpoint:
             assert scores[name]["value"] is None
 
     @pytest.mark.asyncio
+    async def test_a_malformed_call_id_is_rejected_not_a_server_error(
+        self,
+        authenticated_test_client: tuple[AsyncClient, User],
+    ) -> None:
+        """Parsing happens at the route boundary, so a bad id is the caller's
+        fault and says so, rather than raising out of the handler as a 500."""
+        client, _ = authenticated_test_client
+
+        response = await client.get("/api/v1/calls/not-a-uuid/metrics")
+
+        assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_an_empty_turn_list_still_counts_as_audio(
+        self,
+        authenticated_test_client: tuple[AsyncClient, User],
+        test_engine: Any,
+    ) -> None:
+        client, user = authenticated_test_client
+        call_id = await _store_call(test_engine, user, turns=[])
+
+        response = await client.get(f"/api/v1/calls/{call_id}/metrics")
+
+        assert response.json()["has_audio"] is True
+
+    @pytest.mark.asyncio
     async def test_another_users_call_is_not_readable(
         self,
         authenticated_test_client: tuple[AsyncClient, User],
