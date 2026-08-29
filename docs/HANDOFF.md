@@ -42,10 +42,16 @@ The harness lives in `backend/app/services/qa/`.
 
 Metrics currently registered — ten, asserted as an exact set in
 `tests/test_services/test_metrics/test_runner.py`: `conversation_has_turns`,
-`conversation_valid_end`, `state_restored` (validation); `task_completion`
-(accuracy); `transcription_accuracy`, `time_to_first_audio`,
-`interruption_handling` (experience); `tool_call_validity`,
-`expected_tools_invoked`, `response_speed` (diagnostic).
+`conversation_valid_end`, `state_restored` (validation); `task_completion`,
+`expected_tools_invoked` (accuracy); `transcription_accuracy`,
+`time_to_first_audio`, `interruption_handling` (experience);
+`tool_call_validity`, `response_speed` (diagnostic).
+
+Read the category off the class, not the directory: `expected_tools_invoked`
+lives in `metrics/diagnostic/tool_call_validity.py` beside the metric it shares
+a parser with, and is registered `ACCURACY`. The distinction decides whether it
+decides — accuracy sets the verdict, diagnostic only reports (§3 of
+[`DECISIONS.md`](DECISIONS.md)).
 
 Outside the package: `POST /api/v1/testing/check` in `backend/app/api/testing.py`,
 the promptfoo provider in `integrations/promptfoo/`, and the `fixture` JSON
