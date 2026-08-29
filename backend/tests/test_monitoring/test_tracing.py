@@ -59,17 +59,48 @@ class TestTracesEndpoint:
         assert _traces_endpoint(configured, "v1/traces") == expected
 
 
-class TestCleartextWarning:
-    """A call trace carries transcripts and tool arguments built from them."""
+class TestCleartextTransport:
+    """A call trace carries transcripts and tool arguments built from them.
 
-    def test_plain_http_to_a_remote_host_is_reported(self) -> None:
+    Plain HTTP to another machine puts caller speech on the wire in the clear, so
+    it is refused rather than warned about: a warning on a data-exposure path
+    reports the exposure, it does not stop it.
+    """
+
+    def test_plain_http_to_a_remote_host_is_refused(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
         from structlog.testing import capture_logs
 
-        from app.monitoring.tracing import _warn_if_cleartext
+        from app.core.config import settings
+        from app.monitoring.tracing import _transport_is_permitted
+
+        monkeypatch.setattr(settings, "OTEL_ALLOW_INSECURE_EXPORT", False)
 
         with capture_logs() as logs:
-            _warn_if_cleartext("http://otel.example.com/v1/traces")
+            permitted = _transport_is_permitted("http://otel.example.com/v1/traces")
 
+        assert permitted is False
+        assert [entry for entry in logs if entry["event"] == "tracing_refused_cleartext_endpoint"]
+
+    def test_the_operator_can_permit_a_trusted_network_and_is_told(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An in-cluster collector is a real deployment and a real exposure at the
+        same time, and only the operator knows whether that network is trusted."""
+        from structlog.testing import capture_logs
+
+        from app.core.config import settings
+        from app.monitoring.tracing import _transport_is_permitted
+
+        monkeypatch.setattr(settings, "OTEL_ALLOW_INSECURE_EXPORT", True)
+
+        with capture_logs() as logs:
+            permitted = _transport_is_permitted("http://collector.observability.svc:4318/v1/traces")
+
+        assert permitted is True
         assert [entry for entry in logs if entry["event"] == "tracing_endpoint_is_cleartext"]
 
     @pytest.mark.parametrize(
@@ -77,20 +108,34 @@ class TestCleartextWarning:
         [
             "http://localhost:4318/v1/traces",
             "http://127.0.0.1:4318/v1/traces",
+            "http://[::1]:4318/v1/traces",
             "https://otel.example.com/v1/traces",
         ],
     )
-    def test_a_local_collector_or_tls_is_not_worth_warning_about(self, endpoint: str) -> None:
-        """The ordinary deployment is a sidecar over HTTP. Warning about it would
-        train the operator to ignore the warning that matters."""
+    def test_a_local_collector_or_tls_passes_without_ceremony(
+        self,
+        endpoint: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The ordinary deployment is a sidecar over loopback HTTP. Refusing it,
+        or warning about it, would break or desensitise the common case."""
         from structlog.testing import capture_logs
 
-        from app.monitoring.tracing import _warn_if_cleartext
+        from app.core.config import settings
+        from app.monitoring.tracing import _transport_is_permitted
+
+        monkeypatch.setattr(settings, "OTEL_ALLOW_INSECURE_EXPORT", False)
 
         with capture_logs() as logs:
-            _warn_if_cleartext(endpoint)
+            permitted = _transport_is_permitted(endpoint)
 
-        assert not [entry for entry in logs if entry["event"] == "tracing_endpoint_is_cleartext"]
+        assert permitted is True
+        assert not [
+            entry
+            for entry in logs
+            if entry["event"]
+            in {"tracing_endpoint_is_cleartext", "tracing_refused_cleartext_endpoint"}
+        ]
 
 
 class TestConfigureTracing:
@@ -115,3 +160,38 @@ class TestConfigureTracing:
         from app.monitoring.tracing import configure_tracing
 
         assert configure_tracing() is False
+
+    def test_a_remote_cleartext_endpoint_installs_no_exporter(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The refusal has to happen before the exporter exists. An exporter
+        attached to a provider is already a delivery path; returning False while
+        one is installed would refuse on paper and export in fact."""
+        from opentelemetry.exporter.otlp.proto.http import trace_exporter
+
+        from app.core.config import settings
+
+        monkeypatch.setattr(settings, "OTEL_ENABLED", True)
+        monkeypatch.setattr(settings, "OTEL_ALLOW_INSECURE_EXPORT", False)
+        monkeypatch.setattr(
+            settings,
+            "OTEL_EXPORTER_OTLP_ENDPOINT",
+            "http://otel.example.com:4318",
+        )
+
+        constructed: list[object] = []
+
+        class _Recording(trace_exporter.OTLPSpanExporter):  # type: ignore[misc]
+            def __init__(self, *args: object, **kwargs: object) -> None:
+                constructed.append(self)
+
+        monkeypatch.setattr(trace_exporter, "OTLPSpanExporter", _Recording)
+
+        from app.monitoring import tracing
+
+        monkeypatch.setattr(tracing, "_provider_installed", False)
+
+        assert tracing.configure_tracing() is False
+        assert constructed == []
+        assert tracing._provider_installed is False

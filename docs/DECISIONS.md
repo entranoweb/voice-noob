@@ -316,3 +316,26 @@ site kept the unscoped signature, and with it the same cross-agent write.
 
 The parameter is required now. A scoping predicate that can be omitted will be
 omitted, by the next call site or the next author.
+
+## 30. Refuse cleartext trace export, don't warn about it
+
+The first version of `tracing.py` logged `tracing_endpoint_is_cleartext` when
+`OTEL_EXPORTER_OTLP_ENDPOINT` was plain `http://` to a remote host, then built
+the exporter and reported success. A call trace carries transcripts and the tool
+arguments built from them, so that log line announced that caller speech was
+going onto the wire in the clear and did nothing about it. A warning on a
+data-exposure path is a note that the exposure is happening, not a control.
+
+`_transport_is_permitted` decides before the exporter exists. HTTPS passes.
+Plain HTTP to loopback passes — the sidecar-on-localhost collector is the
+ordinary OpenTelemetry deployment and never leaves the host. Plain HTTP anywhere
+else is refused: `configure_tracing` logs
+`tracing_refused_cleartext_endpoint` and returns false, so the operator gets
+no tracing rather than silent exposure.
+
+The case that needed a decision rather than a rule is a collector reached over
+HTTP across a private network — `collector.observability.svc:4318` is a real
+deployment and a real exposure at once, and only the operator knows whether that
+network is trusted. `OTEL_ALLOW_INSECURE_EXPORT` is how they say so; it still
+logs the cleartext warning, because now the warning is accurate about what was
+chosen.

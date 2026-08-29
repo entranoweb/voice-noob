@@ -132,6 +132,12 @@ class Settings(BaseSettings):
     OTEL_ENABLED: bool = False
     OTEL_SERVICE_NAME: str = "voicenoob-api"
     OTEL_EXPORTER_OTLP_ENDPOINT: str | None = None
+    # Allow spans to leave the host over plain HTTP. Off by default: a call trace
+    # carries transcripts and the tool arguments built from them, so an
+    # unencrypted hop to another machine puts caller speech on the wire. A
+    # loopback collector needs no opt-in; an in-cluster one over HTTP does, and
+    # setting this is the operator saying that network is trusted.
+    OTEL_ALLOW_INSECURE_EXPORT: bool = False
 
     # QA Testing Framework
     # Feature flags for post-call evaluation and testing

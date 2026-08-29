@@ -172,8 +172,13 @@ Everything below the carrier is covered. This is what is not.
    - a `voice.call` span with `voice.turn` (and `voice.tool_call`) children.
      Set `OTEL_ENABLED=true` and `OTEL_EXPORTER_OTLP_ENDPOINT` to an OTLP/HTTP
      collector; `app/monitoring/tracing.py` installs the provider at startup and
-     logs `tracing_configured` when it takes. With `OTEL_ENABLED` false the
-     emitter is a no-op by design and the log says so.
+     logs `tracing_provider_installed` when it takes — that line means the
+     provider is installed and spans are addressed there, not that anything
+     arrived. With `OTEL_ENABLED` false the emitter is a no-op by design and the
+     log says so. A trace carries transcripts, so plain `http://` to a host that
+     is not loopback is refused (`tracing_refused_cleartext_endpoint`, and
+     `configure_tracing` returns false); use `https://`, a loopback collector, or
+     set `OTEL_ALLOW_INSECURE_EXPORT=true` to state that the network is trusted.
 5. Write down what actually happened, including the parts that did not work.
 
 Standing constraint for any agent session: never claim a capability the code

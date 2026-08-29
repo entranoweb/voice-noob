@@ -14,6 +14,11 @@ spans and drops them at a limit, which looks like tracing and is not, so a
 missing endpoint is reported at startup rather than discovered later from an
 empty dashboard.
 
+Spans are refused rather than sent over plain HTTP to a remote host, because a
+call trace carries transcripts. HTTPS and a loopback collector both go through
+untouched; anything else needs ``OTEL_ALLOW_INSECURE_EXPORT``, which is the
+operator stating that the network in question is trusted.
+
 What this does *not* do is promise delivery. Constructing an exporter opens no
 connection, so a collector that is unreachable, wrongly addressed, or refusing
 the payload is indistinguishable here from one that is working. The startup log
@@ -77,7 +82,8 @@ def configure_tracing() -> bool:
             settings.OTEL_EXPORTER_OTLP_ENDPOINT,
             DEFAULT_TRACES_EXPORT_PATH,
         )
-        _warn_if_cleartext(endpoint)
+        if not _transport_is_permitted(endpoint):
+            return False
         processor = BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint))
 
         # A provider may already be installed — auto-instrumentation does this,
@@ -131,39 +137,62 @@ def _traces_endpoint(configured: str, traces_path: str) -> str:
     return urlunsplit((parsed.scheme, parsed.netloc, path, parsed.query, parsed.fragment))
 
 
-# Hosts whose traffic never leaves the machine. Everything else is a network.
+# Hosts whose traffic never leaves the machine. Everything else is a network,
+# private or not.
 _LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "[::1]"})
 
 
-def _warn_if_cleartext(endpoint: str) -> None:
-    """Say so when spans will cross a network unencrypted.
+def _transport_is_permitted(endpoint: str) -> bool:
+    """Whether spans may be sent to this endpoint over this transport.
 
-    A call trace carries what was said: transcripts, and tool arguments built
-    from them. Shipping that over plain HTTP to another host puts it on the wire
-    in the clear.
+    A call trace carries what was said: transcripts, and the tool arguments built
+    from them. Sending that over plain HTTP to another machine puts caller speech
+    on the wire in the clear, so it is refused by default rather than warned
+    about — a warning on a data-exposure path is a note that the exposure is
+    happening, not a control that stops it.
 
-    This warns rather than refuses. The ordinary OpenTelemetry deployment is a
-    collector on localhost or a sidecar in the same pod, reached over HTTP by
-    design, and refusing to start telemetry for it would break the common case to
-    protect against the uncommon one. A collector somewhere else over plain HTTP
-    is the operator's decision to make — but not one to make unknowingly.
+    Two things are still allowed. HTTPS anywhere, obviously. And plain HTTP to a
+    loopback address, which never leaves the host: the sidecar-on-localhost
+    deployment is the ordinary OpenTelemetry setup and needs no ceremony.
+
+    What that leaves is the case worth a decision: a collector reached over HTTP
+    across a network, private or otherwise — an in-cluster service address, say.
+    That is a real deployment and a real exposure at the same time, and only the
+    operator knows whether that network is trusted. ``OTEL_ALLOW_INSECURE_EXPORT``
+    is how they say so, and the refusal names the setting so it is one log line
+    from being resolved either way.
     """
     parsed = urlsplit(endpoint)
     if parsed.scheme != "http":
-        return
+        return True
 
     host = (parsed.hostname or "").lower()
     if host in _LOCAL_HOSTS:
-        return
+        return True
 
-    logger.warning(
-        "tracing_endpoint_is_cleartext",
+    if settings.OTEL_ALLOW_INSECURE_EXPORT:
+        logger.warning(
+            "tracing_endpoint_is_cleartext",
+            endpoint=endpoint,
+            detail=(
+                "call traces carry transcripts and tool arguments, and this "
+                "endpoint is plain HTTP to a remote host; permitted because "
+                "OTEL_ALLOW_INSECURE_EXPORT is set"
+            ),
+        )
+        return True
+
+    logger.error(
+        "tracing_refused_cleartext_endpoint",
         endpoint=endpoint,
         detail=(
-            "call traces carry transcripts and tool arguments; this endpoint is "
-            "plain HTTP to a remote host, so they cross the network unencrypted"
+            "call traces carry transcripts and tool arguments; refusing to send "
+            "them over plain HTTP to a remote host. Use https, point at a "
+            "loopback collector, or set OTEL_ALLOW_INSECURE_EXPORT if that "
+            "network is trusted"
         ),
     )
+    return False
 
 
 def shutdown_tracing() -> None:
