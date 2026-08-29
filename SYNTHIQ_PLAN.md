@@ -1,8 +1,9 @@
 # Synthiq — the test layer
 
-**Updated:** 27 August 2026
-**Branch:** `claude/repo-robustness-analysis-6mru4e` → PR #8 against `voice-prod`
-**Status:** four phases done, audio not started
+**Updated:** 29 August 2026
+**Merged:** PR #8 landed on `voice-prod` as `081cc1c`
+**Status:** four phases done, audio metrics written but unfed; no real call yet
+**Handoff:** [`docs/HANDOFF.md`](docs/HANDOFF.md)
 
 This supersedes `VOICENOOB_QA_IMPLEMENTATION_PLAN.md` (December 2025) as the
 working plan. That document is kept for history, but read it with a caveat: it
