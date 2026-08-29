@@ -202,13 +202,14 @@ class AudioTurnRecorder:
             turn = _Turn(speaker=Speaker.AGENT, started_at=moment)
             self._turns.append(turn)
 
-        # Measured on the first audio chunk of the turn, not on the turn's
-        # creation: a transcript fragment can arrive before any audio and open
+        # Measured on the first chunk that actually carries audio, not on the
+        # turn's creation: a transcript fragment can arrive before any audio and open
         # the turn itself, and timing from there would credit the agent with
-        # bytes the caller could not yet hear. An opening greeting answers no
-        # caller turn, so there is nothing to measure from and this stays None —
-        # not zero: the caller never waited.
-        if turn.audio_bytes == 0 and self._caller_speech_ended_at is not None:
+        # bytes the caller could not yet hear — and an empty chunk is not audio
+        # either. An opening greeting answers no caller turn, so there is nothing
+        # to measure from and this stays None — not zero: the caller never
+        # waited.
+        if byte_count > 0 and turn.audio_bytes == 0 and self._caller_speech_ended_at is not None:
             turn.ttfb_ms = (moment - self._caller_speech_ended_at) * 1000.0
             self._caller_speech_ended_at = None
 

@@ -460,6 +460,32 @@ class TestInboundCallEndToEnd:
         assert [s for s in captured_spans.get_finished_spans() if s.name == schema.SPAN_CALL] == []
 
     @pytest.mark.asyncio
+    async def test_a_connection_that_says_nothing_emits_no_call(
+        self,
+        inbound_call_env: dict[str, Any],
+        captured_spans: InMemorySpanExporter,
+    ) -> None:
+        """Accepted is not the same as answered.
+
+        A socket that opens against a real agent and then closes without a start
+        frame or any audio carried no call, and a completed span for it would be
+        counted by every dashboard that counts calls.
+        """
+        _FakeRealtimeSession.script = [_Event("session.updated")]
+        await _place_webhook(inbound_call_env)
+        agent_id = str(inbound_call_env["agent"].id)
+
+        async with ASGIWebSocketClient(
+            app,
+            f"/ws/telephony/telnyx/{agent_id}",
+            query_string=f"call_id={CALL_SID}",
+        ) as ws:
+            assert ws.accepted
+            await ws.drain(deadline_s=0.5)
+
+        assert [s for s in captured_spans.get_finished_spans() if s.name == schema.SPAN_CALL] == []
+
+    @pytest.mark.asyncio
     async def test_turns_are_not_written_to_another_agents_call(
         self,
         inbound_call_env: dict[str, Any],

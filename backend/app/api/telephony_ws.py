@@ -325,7 +325,7 @@ async def save_transcript_to_call_record(
     transcript: str,
     db: AsyncSession,
     log: Any,
-    agent_id: uuid.UUID | None = None,
+    agent_id: uuid.UUID,
 ) -> None:
     """Save transcript to the call record.
 
@@ -334,19 +334,24 @@ async def save_transcript_to_call_record(
         transcript: Formatted transcript text
         db: Database session
         log: Logger instance
-        agent_id: When given, restricts the write to this agent's call records.
-            The call identifier comes off the connection, not from anything this
-            process authenticated, so without it a connection could name any
-            call in the database and overwrite its transcript.
+        agent_id: Restricts the write to this agent's call records. Required,
+            not optional: the call identifier comes off the connection rather
+            than from anything this process authenticated, so an unscoped write
+            lets a connection name any call in the database and overwrite its
+            transcript. A default here would have left that door open on every
+            call site that forgot to pass it — which is how the Twilio path kept
+            the hole after the Telnyx one was closed.
     """
     if not transcript.strip():
         log.debug("empty_transcript_skipped")
         return
 
-    conditions = [CallRecord.provider_call_id == call_sid]
-    if agent_id is not None:
-        conditions.append(CallRecord.agent_id == agent_id)
-    result = await db.execute(select(CallRecord).where(*conditions))
+    result = await db.execute(
+        select(CallRecord).where(
+            CallRecord.provider_call_id == call_sid,
+            CallRecord.agent_id == agent_id,
+        )
+    )
     call_record = result.scalar_one_or_none()
 
     if call_record:
@@ -465,7 +470,9 @@ async def twilio_media_stream(  # noqa: PLR0915
             # Save transcript to call record if enabled
             if agent.enable_transcript and call_sid:
                 transcript = realtime_session.get_transcript()
-                await save_transcript_to_call_record(call_sid, transcript, db, log)
+                await save_transcript_to_call_record(
+                    call_sid, transcript, db, log, agent_id=agent.id
+                )
 
     except WebSocketDisconnect:
         log.info("twilio_websocket_disconnected")
@@ -767,11 +774,6 @@ async def telnyx_media_stream(  # noqa: PLR0915
     call_registered: bool = False
     call_failed: bool = False
     recorder = AudioTurnRecorder()
-    # False until the agent checks pass and the bridge is actually running. A
-    # connection rejected for an unknown or inactive agent returns through the
-    # same `finally`, and emitting a completed voice.call span for it would put
-    # calls that never happened into every dashboard that counts them.
-    call_started: bool = False
     # Stays UNKNOWN unless the bridge sees something that says why the call
     # ended. Guessing here would put an invented reason into the trace that a
     # dashboard would then group and count.
@@ -793,7 +795,6 @@ async def telnyx_media_stream(  # noqa: PLR0915
             return
 
         log.info("agent_loaded", agent_name=agent.name)
-        call_started = True
 
         # An agent with transcripts switched off has had its owner decline to
         # store what was said. That covers the metrics and the trace too, so the
@@ -883,7 +884,13 @@ async def telnyx_media_stream(  # noqa: PLR0915
             except Exception:
                 log.exception("call_unregistration_failed", call_control_id=call_control_id)
 
-        if call_started:
+        # Only for a call that actually carried something: a stream that
+        # announced itself, audio that moved, or a failure worth recording. A
+        # connection rejected for an unknown agent, or one that opened and said
+        # nothing, returns through this same `finally`, and a completed
+        # voice.call span for it would put calls that never happened into every
+        # dashboard that counts them.
+        if call_failed or call_registered or recorder.has_audio:
             _emit_call_trace(
                 provider="telnyx",
                 call_id=webhook_call_id or call_control_id or session_id,

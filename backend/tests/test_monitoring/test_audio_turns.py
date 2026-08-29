@@ -67,6 +67,16 @@ class TestTimeToFirstAudio:
 
         assert recorder.conversation()[-1]["ttfb_ms"] == pytest.approx(400.0)
 
+    def test_an_empty_chunk_does_not_count_as_first_audio(self) -> None:
+        """A zero-byte delta carries nothing the caller can hear, so it must not
+        stop the clock — the real first chunk does."""
+        recorder = AudioTurnRecorder()
+        recorder.caller_speech_stopped(at=1.0)
+        recorder.agent_audio_delta(byte_count=0, at=1.1)
+        recorder.agent_audio_delta(byte_count=160, at=1.5)
+
+        assert recorder.conversation()[-1]["ttfb_ms"] == pytest.approx(500.0)
+
     def test_response_ms_reports_the_same_gap(self) -> None:
         """One observation point, so the two names carry one number."""
         recorder = AudioTurnRecorder()
