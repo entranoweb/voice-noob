@@ -78,15 +78,13 @@ def turns_from_conversation(conversation: list[Any] | None) -> tuple[TurnData, .
             continue
 
         message = entry.get("message") or entry.get("content")
+        intended, transcribed = _turn_text(entry, message)
         turns.append(
             TurnData(
                 index=index,
                 speaker=speaker,
-                # A text-only run has no STT, so what was said is also what was
-                # heard. Recording both keeps the shape stable for audio runs,
-                # where they genuinely differ.
-                text_intended=entry.get("text_intended") or message,
-                text_transcribed=entry.get("text_transcribed") or message,
+                text_intended=intended,
+                text_transcribed=transcribed,
                 response_ms=_as_float(entry.get("response_ms")),
                 ttfb_ms=_as_float(entry.get("ttfb_ms")),
                 audio_duration_ms=_as_float(entry.get("audio_duration_ms")),
@@ -95,6 +93,30 @@ def turns_from_conversation(conversation: list[Any] | None) -> tuple[TurnData, .
             ),
         )
     return tuple(turns)
+
+
+def _turn_text(entry: dict[str, Any], message: Any) -> tuple[str | None, str | None]:
+    """What the speaker meant to say, and what the other side heard.
+
+    A text-only run has no STT, so what was said is also what was heard, and both
+    fields take the turn's message. A turn recorded off a live line declares the
+    two separately — and often has only one of them, because nothing transcribes
+    the agent's own audio back and a real human caller has no script. There the
+    absent side must stay absent: falling back to the message would set intended
+    equal to transcribed and score every live call a perfect word error rate,
+    which is exactly the failure the metric exists to catch.
+    """
+    declares_audio_text = "text_intended" in entry or "text_transcribed" in entry
+    if declares_audio_text:
+        intended = entry.get("text_intended")
+        transcribed = entry.get("text_transcribed")
+        return (
+            str(intended) if intended else None,
+            str(transcribed) if transcribed else None,
+        )
+
+    text = str(message) if message else None
+    return text, text
 
 
 def tool_calls_from_records(

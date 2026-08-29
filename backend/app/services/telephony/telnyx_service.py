@@ -14,6 +14,13 @@ from app.services.telephony.base import (
 
 logger = structlog.get_logger()
 
+# How long the TeXML document waits after handing the call to the stream. The
+# document ending is what tears the call down, so this is an upper bound on call
+# length, not a delay anyone experiences. An hour is longer than any call this
+# platform is built for and shorter than an accidental open line costing money
+# forever.
+STREAM_PAUSE_SECONDS = 3600
+
 
 class TelnyxService(TelephonyProvider):
     """Telnyx telephony service for voice calls and phone number management."""
@@ -558,6 +565,26 @@ class TelnyxService(TelephonyProvider):
     def generate_answer_response(self, websocket_url: str, agent_id: str | None = None) -> str:  # noqa: ARG002
         """Generate TeXML response to answer a call and stream to WebSocket.
 
+        Three attributes here are load-bearing and none of them are optional:
+
+        ``bidirectionalMode="rtp"``
+            Telnyx defaults this to ``mp3``. On the default, audio the agent
+            sends back is interpreted as an MP3 stream, and this bridge sends
+            base64 G.711 µ-law — so the caller hears nothing while the logs show
+            audio being written. Only ``rtp`` carries raw codec frames back.
+
+        ``bidirectionalCodec="PCMU"``
+            µ-law, matching the ``g711_ulaw`` format the realtime session is
+            configured for in both directions. It is also Telnyx's default, but
+            a default that silences a call if it ever moves is worth stating.
+
+        ``bidirectionalSamplingRate="8000"``
+            8 kHz, matching PCMU on the PSTN.
+
+        The trailing ``<Pause>`` keeps the TeXML document from running to its end
+        while the stream is still connecting; without it the call can be torn
+        down before the websocket is established.
+
         Args:
             websocket_url: WebSocket URL for media streaming
             agent_id: Optional agent ID for context
@@ -571,8 +598,9 @@ class TelnyxService(TelephonyProvider):
         texml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
     <Connect>
-        <Stream url="{escaped_ws_url}" />
+        <Stream url="{escaped_ws_url}" bidirectionalMode="rtp" bidirectionalCodec="PCMU" bidirectionalSamplingRate="8000" />
     </Connect>
+    <Pause length="{STREAM_PAUSE_SECONDS}"/>
 </Response>"""
 
         return texml

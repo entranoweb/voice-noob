@@ -217,3 +217,63 @@ so the mock never sees a call. Install per test, restore afterwards.
 subset. A metric that silently stops registering would drop out of every result
 with nothing to notice it by. When you add a metric, this test failing is the
 system working.
+
+## 21. A Telnyx number can deliver either of two wire formats
+
+Call Control posts JSON and expects API commands; TeXML posts form-encoded with
+Twilio's parameter names and expects a document back. The inbound handlers read
+JSON and answered with a document, which is a combination no account can be
+configured to produce. `telnyx_events.parse_telnyx_webhook` accepts both, and
+prefers the body's shape over the declared content type — a dropped call is a
+worse outcome than trusting the bytes.
+
+## 22. `bidirectionalMode="rtp"` is not optional
+
+Telnyx defaults `<Stream>` to `mp3`. This bridge sends G.711 µ-law. On the
+default the caller hears nothing while the logs show audio being written, which
+is the hardest class of failure to find: everything on our side succeeds.
+
+## 23. A caller with no script has no word error rate
+
+`transcription_accuracy` compares what the caller meant to say against what STT
+heard. A human calling a real number supplies only the second. The recorder
+therefore leaves `text_intended` empty on a live caller turn, and
+`turns_from_conversation` no longer falls back to the turn's message when a turn
+declares its audio text explicitly.
+
+Without that, intended would equal transcribed and every real call would score a
+flawless 0.0 — the metric reporting perfection exactly where it has measured
+nothing. `value=None` means not measurable; `0.0` means measured and bad.
+
+## 24. Time to first audio is measured to the bytes, not to the intent
+
+The clock starts when the caller stops speaking and stops at the first audio
+chunk written toward the carrier, because that is the only moment the caller can
+hear. An opening greeting answers no caller turn, so it records `None` rather
+than a latency nobody waited through.
+
+On this bridge `response_ms` and `ttfb_ms` are the same number: there is one
+observation point. Recording one measurement under both of the schema's names is
+honest; subtracting an invented constant to make them differ would not be.
+
+## 25. `interrupted` comes from the provider, `barge_in` from the timing
+
+The audio stops either way, so timing cannot tell a turn that finished from one
+that was cut off. `barge_in` is ours to observe — the caller started speaking
+while the agent was still producing audio. `interrupted` is only known from the
+`response.done` the provider sends with a cancelled status.
+
+They are also recorded against different turns' worth of evidence and must not
+be collapsed: a barge-in the agent stopped for is good behaviour; a barge-in it
+talked through is the failure.
+
+## 26. `call_trace.py` was a vocabulary with no producer
+
+It defined `voice.call`, `voice.turn` and `voice.tool_call` in full, and nothing
+in the codebase emitted a span. `call_trace_emitter.py` is the producer, talking
+to the OpenTelemetry API only — with no provider configured the API returns
+non-recording spans, so no call site needs to check whether tracing is on.
+
+Still missing: nothing installs a `TracerProvider`, so a stock deployment
+creates the spans and drops them. `OTEL_ENABLED` and `OTEL_EXPORTER_OTLP_ENDPOINT`
+exist in settings and are not read.
