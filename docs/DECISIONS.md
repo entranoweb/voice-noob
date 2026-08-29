@@ -274,6 +274,45 @@ in the codebase emitted a span. `call_trace_emitter.py` is the producer, talking
 to the OpenTelemetry API only — with no provider configured the API returns
 non-recording spans, so no call site needs to check whether tracing is on.
 
-Still missing: nothing installs a `TracerProvider`, so a stock deployment
-creates the spans and drops them. `OTEL_ENABLED` and `OTEL_EXPORTER_OTLP_ENDPOINT`
-exist in settings and are not read.
+Talking to the API alone would have left the emitter a no-op everywhere, so
+`monitoring/tracing.py` installs an SDK provider and OTLP/HTTP exporter at
+startup and flushes on shutdown. It reads `OTEL_ENABLED` and
+`OTEL_EXPORTER_OTLP_ENDPOINT`, which had existed in settings since long before
+any of this and were read by nothing. With `OTEL_ENABLED` false the emitter is
+a no-op by design, and the startup log says which of the two it is — a tracing
+feature that silently exports nothing is the failure this repository exists to
+prevent.
+
+
+## 27. A real call is measured, not graded
+
+`MetricRunner.run` reports an error when no accuracy metric was measurable. That
+is right for a scenario: it means the harness misbehaved and the other numbers
+should not be read. It is wrong for a call that actually happened, which carries
+no scenario, so `task_completion` is unmeasurable by construction.
+
+Applied there, the gate stamped every genuine call `error` / not trustworthy and
+threw away the latency and interruption figures alongside it — the one flag that
+tells a consumer to ignore data, attached to the only data the path produces.
+`RunOutcome.OBSERVED` and `evaluate_observed` keep the validation gates and drop
+the verdict.
+
+## 28. The terminal status of a call does not say who ended it
+
+A call that reached `completed` may have been ended by the caller, by the agent,
+or by a duration cap. Mapping the status to a termination reason invents one of
+the three and puts it into every dashboard that groups by it.
+
+Only the media bridge observes this, so it writes what it saw to
+`call_records.termination_reason`. Null means nothing recorded a reason, which
+the validation gate reads as a run not worth scoring. That is the honest
+reading: we do not know how it ended.
+
+## 29. A default on a security predicate is a hole with a timer on it
+
+`save_transcript_to_call_record` took `agent_id` with a `None` default so the
+Telnyx path could be scoped without touching the Twilio one. The Twilio call
+site kept the unscoped signature, and with it the same cross-agent write.
+
+The parameter is required now. A scoping predicate that can be omitted will be
+omitted, by the next call site or the next author.
