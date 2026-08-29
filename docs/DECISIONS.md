@@ -339,3 +339,65 @@ deployment and a real exposure at once, and only the operator knows whether that
 network is trusted. `OTEL_ALLOW_INSECURE_EXPORT` is how they say so; it still
 logs the cleartext warning, because now the warning is accurate about what was
 chosen.
+
+## 31. `<Connect>` runs the next instruction, so the next instruction is `<Hangup/>`
+
+The answer document ended `<Connect><Stream/></Connect><Pause length="40"/>`,
+copied from a reference implementation as a guard against Connect returning
+early. Telnyx documents `<Connect>` as running the next instruction only once
+the connected service stops, so the pause guards nothing — it is forty seconds
+of dead air after every conversation, on a leg the caller is still paying for
+and still holding.
+
+`<Hangup/>` closes the leg the moment the stream ends. Anything between the two
+is silence the caller listens to after the call is over.
+
+The wider point is why this survived: it was in the document from the first
+version, and nothing had ever placed a call, so nothing had ever waited through
+it. A test that asserts the document parses would still pass today.
+
+## 32. Redaction covers the tool arguments, not just the speech
+
+An agent with `enable_transcript` false sets `retain_text=False` on the
+recorder. The first version dropped `text_intended` and `text_transcribed` and
+stopped there, which reads as complete and is not: a booking's tool arguments
+carry the caller's name, number and address, and a tool error carries whatever
+it was called with. Redacting the transcript and keeping the arguments derived
+from it protects the wording and leaks the content.
+
+`retain_text=False` now drops the turn text, the tool `arguments` and the tool
+`error`. The trace goes through the same recorder, so it is redacted by the
+same switch rather than by a second one that can drift.
+
+This is the third time in this work that a fix landed on one instance of a class
+and left the rest — the OTLP path but not its query string, the Telnyx write
+scoping but not the Twilio one. Worth stating as a habit to distrust.
+
+## 33. The call identifier travels in the stream URL
+
+The webhook knows the call by the identifier Telnyx signed the request with. The
+media stream announces a `call_control_id` in its start frame. On a TeXML
+application those are not guaranteed to be the same string, so the bridge cannot
+reliably find the row the webhook created by taking the stream's word for it.
+`build_telnyx_stream_url` puts `call_id` in the query string, and the socket
+matches on it *and* on the serving agent — the identifier arrives over an
+unauthenticated socket, so on its own it is a write primitive, not a lookup key
+(see §29).
+
+`direction` travels with it because inbound and outbound calls share the
+endpoint. A trace that labels every outbound call inbound is worse than one
+carrying no direction at all.
+
+## 34. The websocket tests speak ASGI in the test's own event loop
+
+`TestClient` drives the application from a second thread with its own event
+loop, which does not mix with an asyncpg engine created in the test's loop — so
+a websocket test using it cannot share the database fixtures every other test
+uses, and the end-to-end inbound call test needs exactly that: the real row, in
+the real transaction, rolled back with the rest.
+
+`tests/websocket/asgi_ws.py` calls the ASGI application in the running loop
+instead. It is a client, not a mock: real routing, real dependency graph, real
+endpoint function. The alternative — a second engine for websocket tests — buys
+a passing test that no longer proves the write happened where the application
+would have written it.

@@ -2,6 +2,9 @@
 
 **Written:** 29 August 2026
 **Reason:** PR #8 merged; work continues in a fresh session.
+**Last revised:** 29 August 2026, for the inbound-path work in
+[PR #11](https://github.com/entranoweb/voice-noob/pull/11) (open at the time of
+writing — §1 below still describes the last *merged* state).
 
 Everything a new session needs to pick this up without re-deriving it. Read
 [`../SYNTHIQ_PLAN.md`](../SYNTHIQ_PLAN.md) for the vision and the flywheel and
@@ -37,14 +40,39 @@ The harness lives in `backend/app/services/qa/`.
 | `evaluator.py` | Cost accounting; `self-hosted/` prefixed models cost zero |
 | `metrics/` | Four layers: `validation/` gates, `accuracy/` decides, `experience/` and `diagnostic/` report |
 
-Metrics currently registered: `conversation_valid_end`, `state_restored`
-(validation); `task_completion` (accuracy); `transcription_accuracy`,
-`time_to_first_audio`, `interruption_handling` (experience);
-`tool_call_validity`, `response_speed` (diagnostic).
+Metrics currently registered — ten, asserted as an exact set in
+`tests/test_services/test_metrics/test_runner.py`: `conversation_has_turns`,
+`conversation_valid_end`, `state_restored` (validation); `task_completion`
+(accuracy); `transcription_accuracy`, `time_to_first_audio`,
+`interruption_handling` (experience); `tool_call_validity`,
+`expected_tools_invoked`, `response_speed` (diagnostic).
 
 Outside the package: `POST /api/v1/testing/check` in `backend/app/api/testing.py`,
 the promptfoo provider in `integrations/promptfoo/`, and the `fixture` JSON
 column on `test_scenario` (migration `53b1ba24a87b`).
+
+**The live-call side**, added by the inbound-path work in §6. The harness above
+measures simulations; these are what produce the data for a call that actually
+happened.
+
+| File | What it does |
+| --- | --- |
+| `monitoring/audio_turns.py` | `AudioTurnRecorder` — rebuilds conversational turns from the live bridge: speech boundaries, first audio byte out, barge-ins, tool calls. Transport-agnostic, and it owns the clock. This is what feeds the three audio metrics |
+| `monitoring/call_trace_emitter.py` | `CallTraceEmitter` — the producer for the `voice.call` / `voice.turn` / `voice.tool_call` tree `call_trace.py` had only ever *defined*. Talks to the OTel API only |
+| `monitoring/tracing.py` | `configure_tracing` / `shutdown_tracing` — installs the SDK provider and OTLP/HTTP exporter at startup from `main.py`'s lifespan, flushes on shutdown. Without it the emitter is a no-op everywhere |
+| `services/telephony/telnyx_events.py` | `parse_telnyx_webhook` — normalises Call Control JSON and TeXML form-encoded into one `TelnyxCallEvent` |
+| `services/qa/call_metrics.py` | `metrics_for_call` — the metric suite over a real call's persisted turns, scoped to what a non-simulation can answer |
+| `api/calls.py` | `GET /api/v1/calls/{call_id}/metrics`, scoped to the calling user's own records |
+| `tests/websocket/asgi_ws.py` | Websocket client that speaks ASGI in the test's own event loop, so a websocket test can share the asyncpg fixtures. `TestClient` cannot: it drives the app from a second thread |
+
+`call_records` gained two nullable columns: `turns` (migration `7c4e91f0ab12`)
+and `termination_reason` (migration `b83d1c4f7a90`). Both are null-means-unknown,
+not null-means-zero — see DECISIONS §1, §28. Tracing adds one runtime dependency,
+`opentelemetry-exporter-otlp-proto-http`.
+
+**Transcript retention is honoured on this path.** An agent with
+`enable_transcript` false sets `retain_text=False` on the recorder, which drops
+the turn text *and* the tool arguments and tool errors — see DECISIONS §32.
 
 **Three model roles, three settings** (`backend/app/core/config.py`):
 `QA_AGENT_MODEL` is the measurement and stays capable; `QA_CALLER_MODEL` and
@@ -120,7 +148,7 @@ unverified thing is the next five bugs.
 | --- | --- |
 | `/webhooks/telnyx/voice` called `request.json()` | A TeXML application — what the purchase flow configures, and the only mode in which returning a document does anything — posts form-encoded. The webhook raised, returned 500, and the carrier dropped the call. Both webhooks now read either shape via `services/telephony/telnyx_events.py` |
 | `CallRecord(user_id=agent.user_id)` on both inbound webhooks | `call_records.user_id` is a UUID column; `Agent.user_id` is an integer. The insert raised against Postgres, so no inbound call had ever landed a row. Now goes through `user_id_to_uuid`, as the outbound path already did |
-| `<Stream>` set no `bidirectionalMode` | Telnyx defaults it to `mp3`; this bridge sends G.711 µ-law. The caller would have heard silence while the logs showed audio being written. Now `rtp` / `PCMU` / `8000`, with a `<Pause>` so the document does not end under the stream |
+| `<Stream>` set no `bidirectionalMode` | Telnyx defaults it to `mp3`; this bridge sends G.711 µ-law. The caller would have heard silence while the logs showed audio being written. Now `rtp` / `PCMU` / `8000`. The document is `<Connect><Stream/></Connect><Hangup/>` — an earlier version carried a `<Pause length="40"/>` after the stream, which ended every call with forty seconds of dead air; see DECISIONS §31 |
 | Nothing sent `{"event": "clear"}` on barge-in | Server VAD cancels the response upstream, but Telnyx keeps playing what it has already buffered. The agent talked over the caller. This is also what `interruption_handling` measures |
 | `log.info(..., event=...)` in the status callback | `event` is structlog's own key for the message. The call raised inside the logger *after* the commit, so the status webhook returned 500 to Telnyx on every hangup |
 
