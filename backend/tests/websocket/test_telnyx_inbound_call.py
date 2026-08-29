@@ -25,8 +25,8 @@ import asyncio
 import base64
 import time
 import uuid
-from typing import Any
-from xml.etree import ElementTree
+from typing import Any, ClassVar, Self
+from xml.etree import ElementTree as ET
 
 import fakeredis
 import pytest
@@ -34,7 +34,6 @@ import pytest_asyncio
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from httpx import ASGITransport, AsyncClient
-from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
@@ -109,17 +108,17 @@ class _Response:
 class _FakeRealtimeSession:
     """Stands in for GPTRealtimeSession, recording the audio it was handed."""
 
-    script: list[Any] = []
+    script: ClassVar[list[Any]] = []
 
     def __init__(self, **_: Any) -> None:
         self.connection = _FakeRealtimeConnection(list(self.script))
         self.audio_in: list[bytes] = []
         self._transcript: list[str] = []
 
-    async def __aenter__(self) -> _FakeRealtimeSession:
+    async def __aenter__(self) -> Self:
         return self
 
-    async def __aexit__(self, *_: Any) -> None:
+    async def __aexit__(self, *_: object) -> None:
         return None
 
     async def send_audio(self, audio: bytes) -> None:
@@ -260,13 +259,13 @@ def captured_spans() -> Any:
     # swapped underneath it rather than set globally.
     import app.monitoring.call_trace_emitter as emitter_module
 
-    original = emitter_module._tracer  # noqa: SLF001
-    emitter_module._tracer = provider.get_tracer(  # noqa: SLF001
+    original = emitter_module._tracer
+    emitter_module._tracer = provider.get_tracer(
         schema.INSTRUMENTATION_NAME,
         schema.INSTRUMENTATION_VERSION,
     )
     yield exporter
-    emitter_module._tracer = original  # noqa: SLF001
+    emitter_module._tracer = original
 
 
 class TestInboundCallEndToEnd:
@@ -296,7 +295,7 @@ class TestInboundCallEndToEnd:
 
         assert response.status_code == 200
 
-        document = ElementTree.fromstring(response.text)  # noqa: S314
+        document = ET.fromstring(response.text)  # noqa: S314
         stream = document.find("./Connect/Stream")
         assert stream is not None, "no <Stream> in the answer document"
 
@@ -348,7 +347,7 @@ class TestInboundCallEndToEnd:
                 },
             )
             await ws.send_json({"event": "media", "media": {"payload": ULAW_FRAME}})
-            frames = await ws.drain(timeout=1.0)
+            frames = await ws.drain(deadline_s=1.0)
 
         media_frames = [f for f in frames if f.get("event") == "media"]
         assert media_frames, "no audio was sent back to the carrier"
@@ -497,5 +496,5 @@ async def _run_stream(env: dict[str, Any]) -> None:
             },
         )
         await ws.send_json({"event": "media", "media": {"payload": ULAW_FRAME}})
-        await ws.drain(timeout=1.0)
+        await ws.drain(deadline_s=1.0)
         await ws.send_json({"event": "stop"})

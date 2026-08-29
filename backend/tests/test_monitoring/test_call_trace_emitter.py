@@ -7,7 +7,7 @@ rule that an unmeasured attribute is absent rather than zero.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from typing import TYPE_CHECKING
 
 import pytest
 from opentelemetry.sdk.trace import TracerProvider
@@ -26,19 +26,22 @@ from app.monitoring.call_trace import (
 )
 from app.monitoring.call_trace_emitter import CallTraceEmitter
 
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
 
 @pytest.fixture
 def spans() -> Iterator[InMemorySpanExporter]:
     exporter = InMemorySpanExporter()
     provider = TracerProvider()
     provider.add_span_processor(SimpleSpanProcessor(exporter))
-    original = emitter_module._tracer  # noqa: SLF001
-    emitter_module._tracer = provider.get_tracer(  # noqa: SLF001
+    original = emitter_module._tracer
+    emitter_module._tracer = provider.get_tracer(
         schema.INSTRUMENTATION_NAME,
         schema.INSTRUMENTATION_VERSION,
     )
     yield exporter
-    emitter_module._tracer = original  # noqa: SLF001
+    emitter_module._tracer = original
 
 
 class TestCallSpan:

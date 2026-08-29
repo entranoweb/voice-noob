@@ -13,8 +13,10 @@ from __future__ import annotations
 
 import asyncio
 import json
-from types import TracebackType
-from typing import Any, Self
+from typing import TYPE_CHECKING, Any, Self
+
+if TYPE_CHECKING:
+    from types import TracebackType
 
 
 class ASGIWebSocketClient:
@@ -65,25 +67,30 @@ class ASGIWebSocketClient:
         await self.disconnect()
 
     # -- test-facing API --------------------------------------------------
+    #
+    # The read deadlines below are named `deadline_s` rather than `timeout`
+    # deliberately: they bound how long a test waits for the app to say
+    # something, and are not a cancellation budget a caller should be passing
+    # down. Naming them `timeout` invites exactly that reading.
 
     async def send_json(self, payload: dict[str, Any]) -> None:
         await self._to_app.put({"type": "websocket.receive", "text": json.dumps(payload)})
 
-    async def receive_json(self, *, timeout: float = 2.0) -> dict[str, Any] | None:
+    async def receive_json(self, *, deadline_s: float = 2.0) -> dict[str, Any] | None:
         """The next frame the app sent, or None if it closed instead."""
-        message = await self._next(timeout=timeout)
+        message = await self._next(deadline_s=deadline_s)
         if message["type"] == "websocket.close":
             self.close_code = message.get("code", 1000)
             return None
         text = message.get("text")
         return json.loads(text) if text else None
 
-    async def drain(self, *, timeout: float = 0.5) -> list[dict[str, Any]]:
+    async def drain(self, *, deadline_s: float = 0.5) -> list[dict[str, Any]]:
         """Everything the app sends until it goes quiet or closes."""
         frames: list[dict[str, Any]] = []
         while True:
             try:
-                message = await self._next(timeout=timeout)
+                message = await self._next(deadline_s=deadline_s)
             except TimeoutError:
                 return frames
             if message["type"] == "websocket.close":
@@ -110,8 +117,8 @@ class ASGIWebSocketClient:
     async def _send(self, message: dict[str, Any]) -> None:
         await self._from_app.put(message)
 
-    async def _next(self, *, timeout: float = 5.0) -> dict[str, Any]:
-        return await asyncio.wait_for(self._from_app.get(), timeout=timeout)
+    async def _next(self, *, deadline_s: float = 5.0) -> dict[str, Any]:
+        return await asyncio.wait_for(self._from_app.get(), timeout=deadline_s)
 
 
 __all__ = ["ASGIWebSocketClient"]

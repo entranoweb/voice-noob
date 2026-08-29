@@ -8,16 +8,19 @@ endpoint must never collapse the two.
 from __future__ import annotations
 
 import uuid
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
-from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.auth import user_id_to_uuid
 from app.models.call_record import CallRecord, CallStatus
-from app.models.user import User
 from app.monitoring.audio_turns import AudioTurnRecorder
+
+if TYPE_CHECKING:
+    from httpx import AsyncClient
+
+    from app.models.user import User
 
 
 def _recorded_turns() -> list[dict[str, Any]]:
