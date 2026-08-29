@@ -417,6 +417,17 @@ strips the query string and any HTTP userinfo, keeping scheme, host, port and
 path — everything an operator needs to diagnose an endpoint, and nothing that
 authenticates to it.
 
+The redaction takes the authority from `netloc` with the userinfo cut off,
+rather than rebuilding it from `hostname` and `port`. `SplitResult.port`
+*parses*, so it raises `ValueError` on `:99999` or `:abc` — and the success log
+runs after the setup `try`, so a typo in `OTEL_EXPORTER_OTLP_ENDPOINT` would
+have crashed application startup from inside the logging of a feature that is
+meant to be optional. Nothing here needs the port as a number, so nothing here
+validates it.
+
 The regression test asserts on the events the three log sites actually emit
 rather than on `_loggable` alone. A fourth log site that forgets the helper is
-how this comes back, and a test of the helper would not see it.
+how this comes back, and a test of the helper would not see it. The test stubs
+the exporter: `set_tracer_provider` is a process-global one-shot, so a test that
+configures tracing for real leaves a live exporter and its batch worker running
+for every test after it.

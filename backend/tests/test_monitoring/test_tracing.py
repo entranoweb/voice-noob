@@ -240,16 +240,65 @@ class TestEndpointRedaction:
 
         assert _loggable(endpoint) == expected
 
+    @pytest.mark.parametrize(
+        "endpoint",
+        [
+            "http://collector:99999/v1/traces",
+            "http://collector:abc/v1/traces",
+        ],
+    )
+    def test_a_malformed_port_does_not_raise(self, endpoint: str) -> None:
+        """`SplitResult.port` parses, so it raises on these. One of the three
+        call sites is the success log, which runs *after* the setup try/except —
+        so a typo in the endpoint would have crashed startup from inside the
+        logging of an optional feature. Redaction must not validate."""
+        from app.monitoring.tracing import _loggable
+
+        assert "collector" in _loggable(endpoint)
+
+    def test_configure_tracing_survives_a_malformed_port(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The module's promise is that a broken telemetry configuration never
+        stops the application answering calls."""
+        from app.core.config import settings
+        from app.monitoring import tracing
+
+        monkeypatch.setattr(settings, "OTEL_ENABLED", True)
+        monkeypatch.setattr(settings, "OTEL_ALLOW_INSECURE_EXPORT", False)
+        monkeypatch.setattr(settings, "OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:99999")
+        monkeypatch.setattr(tracing, "_provider_installed", False)
+
+        assert tracing.configure_tracing() is False
+
     def test_no_secret_survives_any_of_the_three_log_sites(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """An assertion on the emitted events, not on the helper: a fourth log
         site added later that forgets the helper is the way this regresses."""
+        from opentelemetry.exporter.otlp.proto.http import trace_exporter
         from structlog.testing import capture_logs
 
         from app.core.config import settings
         from app.monitoring import tracing
+
+        # Two of the three cases install a provider for real, and
+        # `set_tracer_provider` is a process-global one-shot: a live exporter and
+        # its batch worker would outlive this test and be inherited by every test
+        # after it. Stub the exporter, as the sibling test does.
+        class _Stub(trace_exporter.OTLPSpanExporter):  # type: ignore[misc]
+            def __init__(self, *args: object, **kwargs: object) -> None:
+                pass
+
+            def export(self, *args: object, **kwargs: object) -> None:
+                return None
+
+            def shutdown(self) -> None:
+                return None
+
+        monkeypatch.setattr(trace_exporter, "OTLPSpanExporter", _Stub)
 
         secret = "s3cr3t-collector-key"
 

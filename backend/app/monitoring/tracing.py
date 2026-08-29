@@ -151,15 +151,20 @@ def _loggable(endpoint: str) -> str:
     twice: protecting the payload and leaking the credential to it. Scheme, host
     and path are what an operator needs to see to diagnose an endpoint; neither
     the query nor the userinfo tells them anything the rest does not.
+
+    The authority is taken from ``netloc`` with the userinfo cut off, rather than
+    rebuilt from ``hostname`` and ``port``. ``SplitResult.port`` *parses*, so it
+    raises ``ValueError`` on ``:99999`` or ``:abc`` — and one of this function's
+    three call sites is the success log, which runs after the setup ``try``. A
+    typo in ``OTEL_EXPORTER_OTLP_ENDPOINT`` would therefore have crashed startup
+    from inside the logging of a feature that is meant to be optional, which is
+    the opposite of what the module promises. Nothing here needs the port as a
+    number, so nothing here validates it.
     """
     parsed = urlsplit(endpoint)
-    host = parsed.hostname or ""
-    if ":" in host:  # IPv6 literals lose their brackets to `hostname`
-        host = f"[{host}]"
-    if parsed.port is not None:
-        host = f"{host}:{parsed.port}"
-    redacted = urlunsplit((parsed.scheme, host, parsed.path, "", ""))
-    if parsed.query or parsed.username or parsed.password:
+    authority = parsed.netloc.rsplit("@", 1)[-1]
+    redacted = urlunsplit((parsed.scheme, authority, parsed.path, "", ""))
+    if parsed.query or "@" in parsed.netloc:
         return f"{redacted} (credentials redacted)"
     return redacted
 
