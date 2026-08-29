@@ -1,10 +1,14 @@
-"""add turns column to call records
+"""add turns and termination reason to call records
 
-Holds the per-turn audio timings recorded off the live media bridge: intended and
-transcribed text, time to first audio byte, barge-in and interruption flags.
-Nullable on purpose — null means no audio was recorded for the call, which the
-audio metrics report as not measurable, and that is a different fact from a call
-whose turns were recorded and were bad.
+`turns` holds the per-turn audio timings recorded off the live media bridge:
+intended and transcribed text, time to first audio byte, barge-in and
+interruption flags. Nullable on purpose — null means no audio was recorded for
+the call, which the audio metrics report as not measurable, and that is a
+different fact from a call whose turns were recorded and were bad.
+
+`termination_reason` holds why the conversation ended, as the bridge observed it.
+Also nullable, and for the same reason: the terminal status of a call does not
+say who ended it, so a null here has to stay null rather than being inferred.
 
 Revision ID: 7c4e91f0ab12
 Revises: 53b1ba24a87b
@@ -35,7 +39,17 @@ def upgrade() -> None:
             comment="Recorded conversational turns with audio timings",
         ),
     )
+    op.add_column(
+        "call_records",
+        sa.Column(
+            "termination_reason",
+            sa.String(length=32),
+            nullable=True,
+            comment="Why the conversation ended, if observed",
+        ),
+    )
 
 
 def downgrade() -> None:
+    op.drop_column("call_records", "termination_reason")
     op.drop_column("call_records", "turns")

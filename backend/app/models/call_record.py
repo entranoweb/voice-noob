@@ -131,6 +131,16 @@ class CallRecord(Base):
         comment="Recorded conversational turns with audio timings",
     )
 
+    # Why the conversation ended, in the vocabulary of app.monitoring.call_trace.
+    # Written by the media bridge, which is the only thing that observes it. Null
+    # means nothing recorded a reason — which is not the same as, and must not be
+    # inferred from, the call's terminal status: a call that reached "completed"
+    # may have been ended by the caller, by the agent, or by a duration cap, and
+    # guessing between them would put an invention into every dashboard.
+    termination_reason: Mapped[str | None] = mapped_column(
+        String(32), nullable=True, comment="Why the conversation ended, if observed"
+    )
+
     # Timestamps
     started_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

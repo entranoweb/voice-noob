@@ -174,6 +174,45 @@ class TestSipResponseCode:
         assert event.resolved_status() is CallStatus.BUSY
 
 
+class TestMisdeclaredBodies:
+    """The body's shape decides, not the header. It can lie in either direction."""
+
+    @pytest.mark.asyncio
+    async def test_a_form_body_labelled_json_still_parses(self) -> None:
+        body = b"CallSid=v3%3Aabc&From=%2B1&To=%2B2&CallStatus=ringing"
+        event = await parse_telnyx_webhook(_request(body, "application/json"))
+
+        assert event.wire_format is WireFormat.TEXML
+        assert event.call_id == "v3:abc"
+
+
+class TestDurationEdges:
+    @pytest.mark.asyncio
+    async def test_a_zero_duration_is_preserved(self) -> None:
+        """A call that ended before it was answered really did last no time."""
+        body = json.dumps(
+            {
+                "data": {
+                    "event_type": "call.hangup",
+                    "payload": {"call_control_id": "v3:abc", "duration_seconds": 0},
+                },
+            },
+        ).encode()
+        event = await parse_telnyx_webhook(_request(body, "application/json"))
+
+        assert event.duration_seconds == 0
+
+    @pytest.mark.asyncio
+    async def test_an_overflowing_duration_does_not_raise(self) -> None:
+        """`int(float("1e309"))` is an OverflowError, and a 500 on the webhook."""
+        body = b"CallSid=v3%3Aabc&CallStatus=completed&CallDuration=1e309"
+        event = await parse_telnyx_webhook(
+            _request(body, "application/x-www-form-urlencoded"),
+        )
+
+        assert event.duration_seconds is None
+
+
 class TestUnknownEvents:
     @pytest.mark.asyncio
     async def test_an_unmapped_event_leaves_the_status_alone(self) -> None:

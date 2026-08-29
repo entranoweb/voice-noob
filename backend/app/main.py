@@ -50,6 +50,7 @@ from app.middleware.request_tracing import RequestTracingMiddleware
 from app.middleware.security import SecurityHeadersMiddleware
 from app.models.user import User
 from app.monitoring import get_metrics_router, loop_lag
+from app.monitoring.tracing import configure_tracing, shutdown_tracing
 from app.services.call_registry import set_shutting_down, wait_for_calls_to_drain
 from app.services.campaign_worker import start_campaign_worker, stop_campaign_worker
 
@@ -79,6 +80,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:  # noqa: PLR0912
     """Lifespan context manager for startup and shutdown events."""
     # Startup
     logger.info("Starting application", app_name=settings.APP_NAME)
+
+    # Install the tracer provider before anything can emit a span. Without it the
+    # OpenTelemetry API hands out non-recording spans and every call trace is
+    # created and dropped.
+    configure_tracing()
 
     try:
         # Initialize Redis (fatal if fails)
@@ -192,6 +198,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:  # noqa: PLR0912
         logger.info("Database connections closed")
     except Exception:
         logger.exception("Error closing database connections")
+
+    # Flush any spans the batch processor is still holding. A call that ended as
+    # the process did still produced a trace.
+    shutdown_tracing()
 
 
 # Create FastAPI app

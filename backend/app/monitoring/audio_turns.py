@@ -62,7 +62,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.monitoring.call_trace import Speaker
+from app.monitoring.call_trace import Speaker, ToolOutcome
 
 # G.711 (both µ-law and A-law) is one byte per sample. The sample rate is the
 # only thing that varies, and Telnyx and Twilio both stream 8 kHz by default.
@@ -94,6 +94,18 @@ class _Turn:
 
 
 @dataclass
+class _ToolCall:
+    """One tool invocation, with when it happened relative to the call."""
+
+    name: str
+    outcome: ToolOutcome
+    arguments: dict[str, Any]
+    started_at: float
+    duration_ms: float | None = None
+    error: str | None = None
+
+
+@dataclass
 class AudioTurnRecorder:
     """Turns a stream of bridge events into turns the metrics can read.
 
@@ -112,6 +124,11 @@ class AudioTurnRecorder:
     retain_text: bool = True
 
     _turns: list[_Turn] = field(default_factory=list, init=False)
+    _tool_calls: list[_ToolCall] = field(default_factory=list, init=False)
+    # When the first thing happened, so every turn can record how far into the
+    # call it began. The trace needs those offsets to keep the silences between
+    # turns, which is most of what a call trace is read for.
+    _origin: float | None = field(default=None, init=False)
     _caller_speech_ended_at: float | None = field(default=None, init=False)
     _audio_observed: bool = field(default=False, init=False)
     _scripted_index: int = field(default=0, init=False)
@@ -126,6 +143,7 @@ class AudioTurnRecorder:
         """
         moment = _now() if at is None else at
         self._audio_observed = True
+        self._mark_origin(moment)
 
         talked_over = self._unfinished_turn(Speaker.AGENT)
         if talked_over is not None:
@@ -152,6 +170,7 @@ class AudioTurnRecorder:
         so the transcript is not dropped.
         """
         moment = _now() if at is None else at
+        self._mark_origin(moment)
         turn = self._last_turn(Speaker.CALLER)
         if turn is None:
             turn = _Turn(speaker=Speaker.CALLER, started_at=moment, ended_at=moment, speaking=False)
@@ -176,6 +195,7 @@ class AudioTurnRecorder:
         """
         moment = _now() if at is None else at
         self._audio_observed = True
+        self._mark_origin(moment)
 
         turn = self._open_turn(Speaker.AGENT)
         if turn is None:
@@ -219,6 +239,35 @@ class AudioTurnRecorder:
         turn.speaking = False
         turn.interrupted = turn.interrupted or interrupted
 
+    def tool_called(
+        self,
+        name: str,
+        *,
+        outcome: ToolOutcome = ToolOutcome.OK,
+        arguments: dict[str, Any] | None = None,
+        duration_ms: float | None = None,
+        error: str | None = None,
+        at: float | None = None,
+    ) -> None:
+        """The agent invoked a tool.
+
+        Held here rather than emitted immediately because the trace tree is built
+        once the call ends, and a span written mid-call would have no parent to
+        attach to.
+        """
+        moment = _now() if at is None else at
+        self._mark_origin(moment)
+        self._tool_calls.append(
+            _ToolCall(
+                name=name,
+                outcome=outcome,
+                arguments=arguments or {},
+                started_at=moment,
+                duration_ms=duration_ms,
+                error=error,
+            ),
+        )
+
     # -- results ----------------------------------------------------------
 
     @property
@@ -245,6 +294,21 @@ class AudioTurnRecorder:
     def turn_count(self) -> int:
         return len(self._turns)
 
+    def tool_calls(self) -> list[dict[str, Any]]:
+        """Recorded tool invocations, with offsets from the start of the call."""
+        origin = self._origin
+        return [
+            {
+                "name": call.name,
+                "outcome": call.outcome,
+                "arguments": call.arguments,
+                "duration_ms": call.duration_ms,
+                "error": call.error,
+                "offset_ms": (call.started_at - origin) * 1000.0 if origin is not None else 0.0,
+            }
+            for call in self._tool_calls
+        ]
+
     def conversation(self) -> list[dict[str, Any]]:
         """The turns, in the shape ``build_context`` reads.
 
@@ -252,9 +316,14 @@ class AudioTurnRecorder:
         measured, so nothing downstream can mistake an absent measurement for a
         recorded zero.
         """
+        origin = self._origin
         records: list[dict[str, Any]] = []
         for turn in self._turns:
             record: dict[str, Any] = {"speaker": turn.speaker.value}
+            # How far into the call this turn began. Without it the trace has to
+            # pack turns end to end and the silences vanish.
+            if origin is not None:
+                record["offset_ms"] = (turn.started_at - origin) * 1000.0
 
             # Always present, even when empty, so the context builder knows this
             # turn came off a real line and must not fall back to copying one
@@ -280,6 +349,11 @@ class AudioTurnRecorder:
         return records
 
     # -- internals --------------------------------------------------------
+
+    def _mark_origin(self, moment: float) -> None:
+        """Remember when the call's first recorded event happened."""
+        if self._origin is None:
+            self._origin = moment
 
     def _open_turn(self, speaker: Speaker) -> _Turn | None:
         """The trailing turn for this speaker, if it is still in progress."""

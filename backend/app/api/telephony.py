@@ -184,11 +184,21 @@ async def get_agent_workspace_id(agent_id: uuid.UUID, db: AsyncSession) -> uuid.
     return row
 
 
-def build_telnyx_stream_url(request: Request, agent_id: str | None, *, call_id: str = "") -> str:
+def build_telnyx_stream_url(
+    request: Request,
+    agent_id: str | None,
+    *,
+    call_id: str = "",
+    direction: str = "inbound",
+) -> str:
     """The wss:// URL a Telnyx media stream should connect back to.
 
     The call identifier travels in the query string because the media stream and
-    the webhook do not agree on one. The webhook knows the call by the identifier
+    the webhook do not agree on one, and the direction travels with it because
+    inbound and outbound calls share this endpoint — a trace that labels every
+    outbound call inbound is worse than one with no direction at all.
+
+    On the identifier: The webhook knows the call by the identifier
     Telnyx signed the request with; the stream announces a ``call_control_id`` in
     its start frame. On a TeXML application those are not guaranteed to be the
     same string, and the bridge needs to find the row the webhook created in
@@ -196,10 +206,10 @@ def build_telnyx_stream_url(request: Request, agent_id: str | None, *, call_id: 
     """
     base_url = str(request.base_url).rstrip("/")
     ws_url = base_url.replace("http://", "wss://").replace("https://", "wss://")
-    stream_url = f"{ws_url}/ws/telephony/telnyx/{agent_id}"
+    query = f"direction={quote(direction, safe='')}"
     if call_id:
-        stream_url = f"{stream_url}?call_id={quote(call_id, safe='')}"
-    return stream_url
+        query = f"call_id={quote(call_id, safe='')}&{query}"
+    return f"{ws_url}/ws/telephony/telnyx/{agent_id}?{query}"
 
 
 async def update_campaign_contact_from_call(
@@ -1048,7 +1058,9 @@ async def telnyx_answer_webhook(
     )
     log.info("telnyx_outbound_answered")
 
-    stream_url = build_telnyx_stream_url(request, agent_id, call_id=event.call_id)
+    stream_url = build_telnyx_stream_url(
+        request, agent_id, call_id=event.call_id, direction="outbound"
+    )
 
     telnyx_service = TelnyxService("")
     texml = telnyx_service.generate_answer_response(stream_url, agent_id)

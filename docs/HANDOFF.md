@@ -135,8 +135,18 @@ narrows the blast radius without closing the hole.
 
 Also new, and previously absent entirely: **nothing emitted the OTel span tree**.
 `monitoring/call_trace.py` defined `voice.call` / `voice.turn` / `voice.tool_call`
-and had no producer; `monitoring/call_trace_emitter.py` is now that producer, and
-the bridge writes a tree per call.
+and had no producer; `monitoring/call_trace_emitter.py` is now that producer, the
+bridge writes a tree per call, and `monitoring/tracing.py` installs the SDK so the
+spans actually leave the process.
+
+**A real call is measured, not graded.** `metrics_for_call` reports the outcome
+`observed` rather than passed or failed, via `evaluate_observed`. The scenario
+runner errors when no accuracy metric was measurable — correct for a scenario,
+where it means the harness misbehaved — but a real call has no scenario, so
+`task_completion` is unmeasurable by construction and that gate would stamp every
+genuine call untrustworthy and throw away the latency numbers with it. The
+validation gates still apply, and a call whose ending was never recorded fails
+them, which is the honest reading: we do not know how it ended.
 
 ## 7. Placing the live call
 
@@ -159,11 +169,11 @@ Everything below the carrier is covered. This is what is not.
    - `GET /api/v1/calls/{id}/metrics` reports a measured
      `time_to_first_audio` and `interruption_handling`, and
      `transcription_accuracy: null` (correct — a human caller has no script);
-   - a `voice.call` span with `voice.turn` children, if an OTLP endpoint is
-     configured. **Note:** `OTEL_ENABLED` and `OTEL_EXPORTER_OTLP_ENDPOINT`
-     exist in settings but nothing installs a `TracerProvider` yet, so with a
-     stock deployment the spans are created and dropped. Wiring the exporter is
-     the one piece of the trace path still missing.
+   - a `voice.call` span with `voice.turn` (and `voice.tool_call`) children.
+     Set `OTEL_ENABLED=true` and `OTEL_EXPORTER_OTLP_ENDPOINT` to an OTLP/HTTP
+     collector; `app/monitoring/tracing.py` installs the provider at startup and
+     logs `tracing_configured` when it takes. With `OTEL_ENABLED` false the
+     emitter is a no-op by design and the log says so.
 5. Write down what actually happened, including the parts that did not work.
 
 Standing constraint for any agent session: never claim a capability the code

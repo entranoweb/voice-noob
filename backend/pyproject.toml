@@ -41,6 +41,9 @@ dependencies = [
     "sentry-sdk[fastapi]>=2.18.0",
     "opentelemetry-api>=1.28.2",
     "opentelemetry-sdk>=1.28.2",
+    # The OTLP/HTTP span exporter. Without it the call-trace spans are created
+    # and dropped, and the tracing feature is a no-op in every deployment.
+    "opentelemetry-exporter-otlp-proto-http>=1.28.2",
     "opentelemetry-instrumentation-fastapi>=0.49b2",
     "opentelemetry-instrumentation-sqlalchemy>=0.49b2",
     "structlog>=24.4.0",

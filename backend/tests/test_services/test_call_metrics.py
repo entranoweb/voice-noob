@@ -75,6 +75,42 @@ class TestARealCall:
         assert scores["state_restored"].value is None
 
 
+class TestTheVerdict:
+    """A real call is measured, not graded.
+
+    The scenario runner reports an error when no accuracy metric was measurable,
+    because for a scenario that means the harness misbehaved. A real call has no
+    scenario, so applying that gate would mark every genuine call untrustworthy
+    and discard the latency and interruption numbers alongside it.
+    """
+
+    def test_a_normal_call_is_observed_not_errored(self) -> None:
+        results = metrics_for_call(
+            _record(turns=_recorded_call(), termination_reason="caller_hangup"),
+        )
+
+        assert results.outcome.value == "observed"
+        assert results.trustworthy is True
+        assert results.invalid_reasons == ()
+
+    def test_the_measured_numbers_survive_the_verdict(self) -> None:
+        results = metrics_for_call(
+            _record(turns=_recorded_call(), termination_reason="caller_hangup"),
+        )
+        scores = results.by_name()
+
+        assert results.trustworthy is True
+        assert scores["time_to_first_audio"].measured
+        assert scores["interruption_handling"].measured
+
+    def test_a_call_that_ended_for_no_recorded_reason_is_not_trustworthy(self) -> None:
+        """We do not know how it ended, so the numbers are not worth reading."""
+        results = metrics_for_call(_record(turns=_recorded_call(), termination_reason=None))
+
+        assert results.outcome.value == "error"
+        assert results.trustworthy is False
+
+
 class TestACallWithNoAudio:
     def test_the_audio_metrics_stay_unmeasurable(self) -> None:
         """No turns stored means the bridge recorded no audio. The three audio
@@ -103,9 +139,22 @@ class TestACallWithNoAudio:
 
 
 class TestTermination:
-    def test_a_completed_call_reads_as_a_caller_hangup(self) -> None:
-        context = context_for_call(_record(status=CallStatus.COMPLETED.value))
-        assert context.termination_reason.value == "caller_hangup"
+    def test_the_reason_comes_from_what_was_recorded(self) -> None:
+        context = context_for_call(_record(termination_reason="agent_ended"))
+        assert context.termination_reason.value == "agent_ended"
+
+    def test_a_completed_status_is_not_evidence_of_who_hung_up(self) -> None:
+        """A completed call may have been ended by the caller, by the agent, or
+        by a duration cap. Picking one would put a fabrication into every
+        dashboard that groups by it."""
+        context = context_for_call(
+            _record(status=CallStatus.COMPLETED.value, termination_reason=None),
+        )
+        assert context.termination_reason.value == "unknown"
+
+    def test_an_unrecognised_reason_is_unknown_rather_than_a_crash(self) -> None:
+        context = context_for_call(_record(termination_reason="something_new"))
+        assert context.termination_reason.value == "unknown"
 
     def test_a_call_still_in_progress_claims_nothing(self) -> None:
         context = context_for_call(_record(status=CallStatus.RINGING.value))

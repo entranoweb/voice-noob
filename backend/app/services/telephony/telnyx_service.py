@@ -584,9 +584,15 @@ class TelnyxService(TelephonyProvider):
         ``bidirectionalSamplingRate="8000"``
             8 kHz, matching PCMU on the PSTN.
 
-        The trailing ``<Pause>`` keeps the TeXML document from running to its end
-        while the stream is still connecting; without it the call can be torn
-        down before the websocket is established.
+        The trailing ``<Pause>`` keeps the document from running to its end while
+        the stream is still connecting. ``<Connect>`` is documented as blocking
+        for the life of the stream, which would make the pause a no-op — but the
+        reference implementations all include it, so it stays as a guard against
+        Connect returning early. It has not been verified against a live carrier.
+
+        ``<Hangup/>`` closes the leg once the stream is over. Without it the
+        document merely runs out, leaving the caller connected to silence for the
+        length of the pause first.
 
         Args:
             websocket_url: WebSocket URL for media streaming
@@ -604,6 +610,7 @@ class TelnyxService(TelephonyProvider):
         <Stream url="{escaped_ws_url}" bidirectionalMode="rtp" bidirectionalCodec="PCMU" bidirectionalSamplingRate="8000" />
     </Connect>
     <Pause length="{STREAM_PAUSE_SECONDS}"/>
+    <Hangup/>
 </Response>"""
 
         return texml

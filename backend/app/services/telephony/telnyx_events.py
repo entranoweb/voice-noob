@@ -28,6 +28,7 @@ import json
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
+from urllib.parse import parse_qsl
 
 from app.models.call_record import CallStatus
 
@@ -135,22 +136,27 @@ async def parse_telnyx_webhook(request: Request) -> TelnyxCallEvent:
     caches it, so reading it again here is free and does not consume the stream.
     """
     body = await request.body()
-    content_type = request.headers.get("content-type", "")
 
-    if "json" in content_type.lower():
+    # The body's own shape decides, not the declared content type. Call Control
+    # sends a JSON object and TeXML sends form encoding; a header that disagrees
+    # with the bytes is a far cheaper failure to absorb than a dropped call, and
+    # it can disagree in either direction.
+    if body.lstrip().startswith(b"{"):
         return _from_call_control(body)
 
-    # Anything else is treated as form-encoded. TeXML posts
-    # application/x-www-form-urlencoded, but a body that parses as JSON is
-    # accepted as Call Control regardless of what the header claimed, because a
-    # misdeclared content type is a far cheaper failure to absorb than a dropped
-    # call.
-    stripped = body.lstrip()
-    if stripped.startswith(b"{"):
-        return _from_call_control(body)
+    return _from_texml(_parse_form(body))
 
-    form = await request.form()
-    return _from_texml({key: str(value) for key, value in form.items()})
+
+def _parse_form(body: bytes) -> dict[str, str]:
+    """Decode a urlencoded body without consulting the content type.
+
+    Starlette's ``request.form()`` dispatches on the declared content type and
+    returns nothing when it disagrees with the bytes, which would undo the point
+    of deciding by shape. TeXML posts ``application/x-www-form-urlencoded`` and
+    never multipart, so this is the whole format.
+    """
+    decoded = body.decode("utf-8", errors="replace")
+    return dict(parse_qsl(decoded, keep_blank_values=True))
 
 
 def _from_call_control(body: bytes) -> TelnyxCallEvent:
@@ -163,7 +169,11 @@ def _from_call_control(body: bytes) -> TelnyxCallEvent:
     payload = data.get("payload", {}) if isinstance(data, dict) else {}
     event_type = str(data.get("event_type", "")) if isinstance(data, dict) else ""
 
-    duration = payload.get("duration_seconds") or payload.get("call_duration")
+    # `is None`, not truthiness: a call that ended before it was answered has a
+    # real duration of zero, and falling through on it loses the carrier's figure.
+    duration = payload.get("duration_seconds")
+    if duration is None:
+        duration = payload.get("call_duration")
 
     return TelnyxCallEvent(
         wire_format=WireFormat.CALL_CONTROL,
@@ -204,7 +214,9 @@ def _as_int(value: Any) -> int | None:
         return None
     try:
         return int(float(value))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError covers a value like "1e309", which floats to infinity.
+        # An unreadable duration is absent, never a 500 on the webhook.
         return None
 
 

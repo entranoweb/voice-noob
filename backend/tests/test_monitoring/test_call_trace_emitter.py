@@ -13,6 +13,7 @@ import pytest
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from opentelemetry.trace import StatusCode
 
 import app.monitoring.call_trace_emitter as emitter_module
 from app.monitoring import call_trace as schema
@@ -141,6 +142,86 @@ class TestTurnSpans:
         assert (turn.end_time - turn.start_time) == pytest.approx(500_000_000, rel=1e-6)
 
 
+class TestSpanTiming:
+    def test_the_root_covers_the_call_not_the_write(self) -> None:
+        """The tree is written after the call, so the root must be told when the
+        call began — otherwise children start before their parent."""
+        exporter = InMemorySpanExporter()
+        provider = TracerProvider()
+        provider.add_span_processor(SimpleSpanProcessor(exporter))
+        original = emitter_module._tracer
+        emitter_module._tracer = provider.get_tracer("t", "1")
+        try:
+            start = 1_000_000_000_000
+            with CallTraceEmitter(
+                call_id="c",
+                provider="telnyx",
+                start_time_ns=start,
+            ) as emitter:
+                emitter.record_turn(
+                    index=0,
+                    speaker=Speaker.AGENT,
+                    start_time_ns=start + 1_000_000_000,
+                    end_time_ns=start + 2_000_000_000,
+                )
+                emitter.end(end_time_ns=start + 10_000_000_000)
+        finally:
+            emitter_module._tracer = original
+
+        finished = exporter.get_finished_spans()
+        (call,) = [s for s in finished if s.name == schema.SPAN_CALL]
+        (turn,) = [s for s in finished if s.name == schema.SPAN_TURN]
+
+        assert call.start_time == start
+        assert call.end_time == start + 10_000_000_000
+        assert call.start_time <= turn.start_time
+        assert turn.end_time <= call.end_time
+
+    def test_the_silence_between_turns_survives(self, spans: InMemorySpanExporter) -> None:
+        """Packing turns end to end would erase the pauses, and the pauses are
+        most of what a call trace is read for."""
+        conversation = [
+            {"speaker": "agent", "offset_ms": 0.0, "duration_ms": 1000.0},
+            # Two seconds of silence, then the caller replies.
+            {"speaker": "caller", "offset_ms": 3000.0, "duration_ms": 500.0},
+        ]
+        with CallTraceEmitter(call_id="c", provider="telnyx") as emitter:
+            emitter.record_turns(conversation, base_time_ns=0)
+
+        turns = sorted(
+            (s for s in spans.get_finished_spans() if s.name == schema.SPAN_TURN),
+            key=lambda s: s.start_time or 0,
+        )
+        assert turns[0].end_time == 1_000_000_000
+        assert turns[1].start_time == 3_000_000_000
+
+
+class TestCallStatusIsNotAlwaysAnError:
+    @pytest.mark.parametrize(
+        ("status", "expect_error"),
+        [
+            (CallStatus.COMPLETED, False),
+            (CallStatus.NO_ANSWER, False),
+            (CallStatus.BUSY, False),
+            (CallStatus.CANCELED, False),
+            (CallStatus.FAILED, True),
+        ],
+    )
+    def test_only_a_failure_is_an_error(
+        self,
+        spans: InMemorySpanExporter,
+        status: CallStatus,
+        expect_error: bool,
+    ) -> None:
+        """Busy and no-answer are call dispositions. Marking them as errors makes
+        every unanswered call inflate the error rate of the service."""
+        with CallTraceEmitter(call_id="c", provider="telnyx") as emitter:
+            emitter.end(status=status)
+
+        (call,) = [s for s in spans.get_finished_spans() if s.name == schema.SPAN_CALL]
+        assert (call.status.status_code == StatusCode.ERROR) is expect_error
+
+
 class TestToolSpans:
     def test_a_failing_tool_call_carries_its_error(self, spans: InMemorySpanExporter) -> None:
         with CallTraceEmitter(call_id="c", provider="telnyx") as emitter:
@@ -157,6 +238,21 @@ class TestToolSpans:
         assert tool.attributes[schema.TOOL_OUTCOME] == "error"
         assert tool.attributes[schema.TOOL_ERROR] == "calendar unreachable"
         assert '"day": "Tuesday"' in str(tool.attributes[schema.TOOL_ARGUMENTS])
+
+    def test_a_tool_span_uses_its_measured_time(self, spans: InMemorySpanExporter) -> None:
+        """Recorded at call end, so without explicit times the span shows the
+        wall clock of emission and a duration of zero."""
+        with CallTraceEmitter(call_id="c", provider="telnyx") as emitter:
+            emitter.record_tool_call(
+                name="book",
+                outcome=ToolOutcome.OK,
+                duration_ms=250.0,
+                start_time_ns=5_000_000_000,
+            )
+
+        (tool,) = [s for s in spans.get_finished_spans() if s.name == schema.SPAN_TOOL_CALL]
+        assert tool.start_time == 5_000_000_000
+        assert tool.end_time == 5_250_000_000
 
     def test_unserialisable_arguments_do_not_raise(self, spans: InMemorySpanExporter) -> None:
         with CallTraceEmitter(call_id="c", provider="telnyx") as emitter:

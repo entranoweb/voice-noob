@@ -51,12 +51,42 @@ class ASGIWebSocketClient:
         self._task = asyncio.create_task(self._app(scope, self._receive, self._send))
         await self._to_app.put({"type": "websocket.connect"})
 
-        message = await self._next()
+        message = await self._first_message()
         if message["type"] == "websocket.accept":
             self.accepted = True
         elif message["type"] == "websocket.close":
             self.close_code = message.get("code", 1000)
         return self
+
+    async def _first_message(self) -> dict[str, Any]:
+        """Wait for accept or close, surfacing an endpoint crash as itself.
+
+        An endpoint that raises before accepting sends nothing, so waiting on the
+        queue alone would spend the full deadline and then report a timeout —
+        hiding the real traceback, and leaving the application task never awaited
+        so its exception is never retrieved. Racing the task against the queue
+        turns a crashing endpoint into its own error, immediately.
+        """
+        queued = asyncio.ensure_future(self._from_app.get())
+        assert self._task is not None
+        done, _ = await asyncio.wait(
+            {queued, self._task},
+            timeout=5.0,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+
+        if queued in done:
+            return queued.result()
+
+        queued.cancel()
+        if self._task in done:
+            # Re-raises whatever the endpoint raised, or reports a silent exit.
+            self._task.result()
+            message = "the endpoint returned without accepting or closing"
+            raise AssertionError(message)
+
+        message = "the endpoint neither accepted nor closed the connection"
+        raise TimeoutError(message)
 
     async def __aexit__(
         self,

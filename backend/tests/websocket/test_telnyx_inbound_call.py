@@ -113,6 +113,7 @@ class _FakeRealtimeSession:
     def __init__(self, **_: Any) -> None:
         self.connection = _FakeRealtimeConnection(list(self.script))
         self.audio_in: list[bytes] = []
+        self.tools_called: list[str] = []
         self._transcript: list[str] = []
 
     async def __aenter__(self) -> Self:
@@ -126,6 +127,10 @@ class _FakeRealtimeSession:
 
     async def trigger_initial_greeting(self) -> bool:
         return True
+
+    async def handle_function_call_event(self, event: Any) -> dict[str, Any]:
+        self.tools_called.append(str(getattr(event, "name", "")))
+        return {"result": "booked"}
 
     def add_user_transcript(self, text: str) -> None:
         self._transcript.append(f"User: {text}")
@@ -499,6 +504,89 @@ class TestInboundCallEndToEnd:
             row = await session.get(CallRecord, victim_id)
             assert row is not None
             assert row.turns is None, "the bridge wrote turns onto another agent's call"
+
+    @pytest.mark.asyncio
+    async def test_a_tool_call_reaches_the_trace(
+        self,
+        inbound_call_env: dict[str, Any],
+        captured_spans: InMemorySpanExporter,
+    ) -> None:
+        """`voice.tool_call` is in the documented schema; before this it had no
+        producer, so a real tool invocation never appeared in a trace."""
+        _FakeRealtimeSession.script = [
+            _Event("session.updated"),
+            _Event("response.output_audio.delta", delta=ULAW_FRAME),
+            _Event(
+                "response.function_call_arguments.done",
+                call_id="fc-1",
+                name="book_appointment",
+                arguments='{"day": "Tuesday"}',
+            ),
+            _Event("response.done", response=_Response("completed")),
+        ]
+
+        await _place_webhook(inbound_call_env)
+        await _run_stream(inbound_call_env)
+
+        tools = [s for s in captured_spans.get_finished_spans() if s.name == schema.SPAN_TOOL_CALL]
+        assert tools, "the tool call produced no voice.tool_call span"
+        assert tools[0].attributes is not None
+        assert tools[0].attributes[schema.TOOL_NAME] == "book_appointment"
+        assert tools[0].attributes[schema.TOOL_OUTCOME] == "ok"
+        assert '"day": "Tuesday"' in str(tools[0].attributes[schema.TOOL_ARGUMENTS])
+
+    @pytest.mark.asyncio
+    async def test_the_recorded_ending_is_persisted_and_read_back(
+        self,
+        inbound_call_env: dict[str, Any],
+    ) -> None:
+        """The bridge is the only thing that sees why a call ended.
+
+        Without it on the record, nothing downstream can know — and inferring it
+        from the call's status would be a fabrication.
+        """
+        await _place_webhook(inbound_call_env)
+        await _run_stream(inbound_call_env)
+
+        async with inbound_call_env["session_maker"]() as session:
+            result = await session.execute(
+                select(CallRecord).where(CallRecord.provider_call_id == CALL_SID),
+            )
+            record = result.scalar_one()
+            # The stream ended with an explicit stop frame from the carrier.
+            assert record.termination_reason == "caller_hangup"
+
+            results = metrics_for_call(record)
+
+        # Measured, valid, and with nothing to pass or fail against.
+        assert results.outcome.value == "observed"
+        assert results.trustworthy is True
+
+    @pytest.mark.asyncio
+    async def test_an_outbound_leg_is_not_labelled_inbound(
+        self,
+        inbound_call_env: dict[str, Any],
+        captured_spans: InMemorySpanExporter,
+    ) -> None:
+        """Outbound calls share this endpoint, so the direction travels with the
+        stream URL rather than being assumed."""
+        await _place_webhook(inbound_call_env)
+        agent_id = str(inbound_call_env["agent"].id)
+
+        async with ASGIWebSocketClient(
+            app,
+            f"/ws/telephony/telnyx/{agent_id}",
+            query_string=f"call_id={CALL_SID}&direction=outbound",
+        ) as ws:
+            await ws.send_json(
+                {"event": "start", "stream_id": "s", "start": {"call_control_id": CALL_SID}},
+            )
+            await ws.drain(deadline_s=1.0)
+            await ws.send_json({"event": "stop"})
+
+        (call,) = [s for s in captured_spans.get_finished_spans() if s.name == schema.SPAN_CALL]
+        assert call.attributes is not None
+        assert call.attributes[schema.CALL_DIRECTION] == "outbound"
 
     @pytest.mark.asyncio
     async def test_the_status_callback_completes_the_row(

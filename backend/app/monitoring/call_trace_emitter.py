@@ -10,10 +10,11 @@ is configured — the default, and the case in most tests — the API hands back
 non-recording spans and every call here becomes close to free. Nothing needs to
 check whether tracing is on before recording a call.
 
-Turn spans are emitted with explicit start and end timestamps taken from the
-recorder rather than from when this code happens to run. A turn that took 300ms
-must appear as 300ms in the trace even though the whole tree is written at the
-end of the call, once the bridge knows how each turn terminated.
+Every span carries explicit timestamps taken from the recorder rather than from
+when this code happens to run. The whole tree is written at the end of the call,
+once the bridge knows how each turn terminated — so without them the root would
+span only the microseconds spent writing it while its children started minutes
+earlier, which is not a trace anything can read.
 """
 
 from __future__ import annotations
@@ -75,8 +76,13 @@ class CallTraceEmitter:
         stt_vendor: str | None = None,
         tts_vendor: str | None = None,
         carrier: str | None = None,
+        start_time_ns: int | None = None,
     ) -> None:
-        self._span = _tracer.start_span(schema.SPAN_CALL, kind=SpanKind.SERVER)
+        self._span = _tracer.start_span(
+            schema.SPAN_CALL,
+            kind=SpanKind.SERVER,
+            start_time=start_time_ns,
+        )
         self._context = trace.set_span_in_context(self._span)
         self._turn_count = 0
         self._ended = False
@@ -161,7 +167,14 @@ class CallTraceEmitter:
         _set(span, schema.TOOL_ERROR, error)
         if outcome is not ToolOutcome.OK:
             span.set_status(Status(StatusCode.ERROR, error or outcome.value))
-        span.end()
+
+        # The tree is written after the call, so without an explicit end the span
+        # would show the wall clock of emission and a duration of ~0 — detached
+        # from the call it belongs to, unlike every other span here.
+        end_time_ns = None
+        if start_time_ns is not None and duration_ms is not None:
+            end_time_ns = start_time_ns + int(duration_ms * _MS_TO_NS)
+        span.end(end_time=end_time_ns)
 
     def record_turns(self, conversation: list[dict[str, Any]], *, base_time_ns: int) -> None:
         """Emit turn spans for a recorder's conversation.
@@ -169,9 +182,12 @@ class CallTraceEmitter:
         ``base_time_ns`` anchors the relative turn times onto the wall clock.
         Turn records carry no absolute timestamps of their own — they are
         measured on a monotonic clock, which is correct for durations and
-        meaningless as a date.
+        meaningless as a date — so each one records how far into the call it
+        began, and that offset is what places it here.
+
+        Packing turns end to end instead would erase the silences between them,
+        and the silences in a phone call are most of what a trace is read for.
         """
-        offset_ns = 0
         for index, turn in enumerate(conversation):
             speaker = _speaker(turn.get("speaker"))
             if speaker is None:
@@ -180,6 +196,7 @@ class CallTraceEmitter:
             # Span length is how long the turn lasted, which is not its latency.
             duration_ms = _as_float(turn.get("duration_ms")) or 0.0
             duration_ns = int(duration_ms * _MS_TO_NS)
+            offset_ns = int((_as_float(turn.get("offset_ms")) or 0.0) * _MS_TO_NS)
             start_ns = base_time_ns + offset_ns
             self.record_turn(
                 index=index,
@@ -194,7 +211,6 @@ class CallTraceEmitter:
                 interrupted=bool(turn.get("interrupted", False)),
                 barge_in=bool(turn.get("barge_in", False)),
             )
-            offset_ns += duration_ns
 
     # -- lifecycle --------------------------------------------------------
 
@@ -212,6 +228,7 @@ class CallTraceEmitter:
         tokens_input: int | None = None,
         tokens_output: int | None = None,
         provider_raw: dict[str, Any] | None = None,
+        end_time_ns: int | None = None,
     ) -> None:
         """Close the call span. Safe to call twice; the second call is a no-op."""
         if self._ended:
@@ -232,9 +249,12 @@ class CallTraceEmitter:
         if provider_raw is not None:
             _set(self._span, schema.CALL_PROVIDER_RAW, _safe_json(provider_raw))
 
-        if status is not CallStatus.COMPLETED:
+        # Only a genuine failure is an error. Busy, no-answer and cancelled are
+        # ordinary call dispositions, and marking them as errors would make every
+        # unanswered call inflate the error rate of the service that placed it.
+        if status is CallStatus.FAILED:
             self._span.set_status(Status(StatusCode.ERROR, status.value))
-        self._span.end()
+        self._span.end(end_time=end_time_ns)
 
     def __enter__(self) -> Self:
         return self

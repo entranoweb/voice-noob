@@ -23,7 +23,7 @@ from app.models.call_record import CallRecord
 from app.models.workspace import AgentWorkspace
 from app.monitoring.audio_turns import AudioTurnRecorder
 from app.monitoring.call_trace import CallStatus as TraceCallStatus
-from app.monitoring.call_trace import Direction, TerminationReason
+from app.monitoring.call_trace import Direction, TerminationReason, ToolOutcome
 from app.monitoring.call_trace_emitter import CallTraceEmitter
 from app.monitoring.metrics import (
     record_call_completed,
@@ -51,6 +51,7 @@ def _emit_call_trace(
     call_duration_s: float,
     failed: bool,
     termination: TerminationReason,
+    direction: Direction,
 ) -> None:
     """Write the call's ``voice.call`` span tree.
 
@@ -60,24 +61,36 @@ def _emit_call_trace(
     finally block after a call has already ended would turn it into a user-facing
     one.
     """
+    base_time_ns = int(call_start_time * 1_000_000_000)
     try:
         with CallTraceEmitter(
             call_id=call_id,
             provider=provider,
             provider_call_id=provider_call_id,
             agent_id=agent_id,
-            direction=Direction.INBOUND,
+            direction=direction,
             engine="openai_realtime",
             carrier=provider,
+            # The tree is written once the call has ended, so the root has to be
+            # told when the call actually began or it would span only the moment
+            # spent writing it, with children starting long before their parent.
+            start_time_ns=base_time_ns,
         ) as emitter:
-            emitter.record_turns(
-                recorder.conversation(),
-                base_time_ns=int(call_start_time * 1_000_000_000),
-            )
+            emitter.record_turns(recorder.conversation(), base_time_ns=base_time_ns)
+            for call in recorder.tool_calls():
+                emitter.record_tool_call(
+                    name=str(call["name"]),
+                    outcome=call["outcome"],
+                    arguments=call["arguments"],
+                    duration_ms=call["duration_ms"],
+                    error=call["error"],
+                    start_time_ns=base_time_ns + int(float(call["offset_ms"]) * 1_000_000),
+                )
             emitter.end(
                 status=TraceCallStatus.FAILED if failed else TraceCallStatus.COMPLETED,
                 termination_reason=(TerminationReason.PIPELINE_ERROR if failed else termination),
                 duration_ms=call_duration_s * 1000.0,
+                end_time_ns=base_time_ns + int(call_duration_s * 1_000_000_000),
             )
     except Exception:  # pragma: no cover - defensive; the emitter does not raise
         logger.exception("call_trace_emit_failed", call_id=call_id)
@@ -122,6 +135,66 @@ def _record_transcript_event(
         return True
 
     return False
+
+
+async def _run_tool_call(
+    event: Any,
+    *,
+    realtime_session: GPTRealtimeSession,
+    turns: AudioTurnRecorder,
+    log: Any,
+) -> bool:
+    """Execute a tool the model asked for and record it for the trace.
+
+    Returns whether the tool asked for the call to end.
+    """
+    log.info("handling_function_call", call_id=event.call_id, name=event.name)
+    started_at = time.monotonic()
+    result = await realtime_session.handle_function_call_event(event)
+    _record_tool_call(turns, event, result, started_at=started_at)
+
+    if result.get("action") == "end_call":
+        log.info("end_call_action_received", reason=result.get("reason"))
+        return True
+    return False
+
+
+def _record_tool_call(
+    turns: AudioTurnRecorder,
+    event: Any,
+    result: dict[str, Any],
+    *,
+    started_at: float,
+) -> None:
+    """Record a tool invocation so it reaches the ``voice.tool_call`` span.
+
+    Held on the recorder rather than traced immediately: the span tree is built
+    once the call ends, and a span emitted mid-call would have no parent.
+
+    The outcome is inferred from the result the tool actually returned. It
+    defaults to OK only when there is no evidence of failure, never the reverse —
+    inventing failures is how tool-call validity stops being worth reading.
+    """
+    error = result.get("error")
+    outcome = ToolOutcome.ERROR if error else ToolOutcome.OK
+
+    arguments: dict[str, Any] = {}
+    raw_arguments = getattr(event, "arguments", None)
+    if isinstance(raw_arguments, str):
+        with contextlib.suppress(json.JSONDecodeError):
+            parsed = json.loads(raw_arguments)
+            if isinstance(parsed, dict):
+                arguments = parsed
+    elif isinstance(raw_arguments, dict):
+        arguments = raw_arguments
+
+    turns.tool_called(
+        str(getattr(event, "name", "") or "unknown"),
+        outcome=outcome,
+        arguments=arguments,
+        duration_ms=(time.monotonic() - started_at) * 1000.0,
+        error=str(error) if error else None,
+    )
 
 
 def _response_was_cancelled(event: Any) -> bool:
@@ -184,12 +257,48 @@ async def save_turns_to_call_record(
     log.info("turns_saved", record_id=str(call_record.id), turns=recorder.turn_count())
 
 
+async def save_termination_reason(
+    call_sid: str,
+    termination: TerminationReason,
+    db: AsyncSession,
+    log: Any,
+    agent_id: uuid.UUID,
+) -> None:
+    """Record why the conversation ended.
+
+    The bridge is the only thing that observes this. Nothing downstream may infer
+    it from the call's terminal status — a completed call may have been ended by
+    the caller, by the agent, or by a duration cap — so if it is not written here
+    it stays null and the run reads as "we do not know", which is true.
+    """
+    if termination is TerminationReason.UNKNOWN:
+        log.info("termination_reason_not_observed")
+        return
+
+    result = await db.execute(
+        select(CallRecord).where(
+            CallRecord.provider_call_id == call_sid,
+            CallRecord.agent_id == agent_id,
+        )
+    )
+    call_record = result.scalar_one_or_none()
+
+    if call_record is None:
+        log.warning("call_record_not_found_for_termination", call_sid=call_sid)
+        return
+
+    call_record.termination_reason = termination.value
+    await db.commit()
+    log.info("termination_reason_saved", reason=termination.value)
+
+
 async def _persist_call_artifacts(
     *,
     record_key: str,
     agent: Agent,
     realtime_session: GPTRealtimeSession,
     recorder: AudioTurnRecorder,
+    termination: TerminationReason,
     db: AsyncSession,
     log: Any,
 ) -> None:
@@ -208,6 +317,7 @@ async def _persist_call_artifacts(
         await save_transcript_to_call_record(record_key, transcript, db, log, agent_id=agent.id)
 
     await save_turns_to_call_record(record_key, recorder, db, log, agent_id=agent.id)
+    await save_termination_reason(record_key, termination, db, log, agent_id=agent.id)
 
 
 async def save_transcript_to_call_record(
@@ -626,11 +736,20 @@ async def telnyx_media_stream(  # noqa: PLR0915
     # the same string on a TeXML application, and this is the one the call record
     # was written under.
     webhook_call_id = websocket.query_params.get("call_id", "")
+    # Outbound calls reach this same endpoint, so the direction travels with the
+    # stream URL. Defaulting to inbound would label every outbound call's trace
+    # as inbound, which is worse than a missing attribute.
+    direction = (
+        Direction.OUTBOUND
+        if websocket.query_params.get("direction", "") == Direction.OUTBOUND.value
+        else Direction.INBOUND
+    )
     log = logger.bind(
         endpoint="telnyx_media_stream",
         agent_id=agent_id,
         session_id=session_id,
         webhook_call_id=webhook_call_id,
+        direction=direction.value,
     )
 
     await websocket.accept()
@@ -736,6 +855,7 @@ async def telnyx_media_stream(  # noqa: PLR0915
                 agent=agent,
                 realtime_session=realtime_session,
                 recorder=recorder,
+                termination=termination,
                 db=db,
                 log=log,
             )
@@ -774,6 +894,7 @@ async def telnyx_media_stream(  # noqa: PLR0915
                 call_duration_s=call_duration,
                 failed=call_failed,
                 termination=termination,
+                direction=direction,
             )
         log.info("telnyx_websocket_closed", stream_id=stream_id, call_control_id=call_control_id)
 
@@ -891,16 +1012,15 @@ async def _handle_telnyx_stream(  # noqa: PLR0915
 
                 # Handle tool calls
                 elif event_type == "response.function_call_arguments.done":
-                    log.info(
-                        "handling_function_call",
-                        call_id=event.call_id,
-                        name=event.name,
+                    pending_end_call = (
+                        await _run_tool_call(
+                            event,
+                            realtime_session=realtime_session,
+                            turns=turns,
+                            log=log,
+                        )
+                        or pending_end_call
                     )
-                    result = await realtime_session.handle_function_call_event(event)
-                    # Check if this is an end_call action
-                    if result.get("action") == "end_call":
-                        log.info("end_call_action_received", reason=result.get("reason"))
-                        pending_end_call = True
 
                 # Capture transcript events. The recorder is fed regardless of
                 # whether transcripts are stored: it needs the text to attribute
