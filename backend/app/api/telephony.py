@@ -11,6 +11,7 @@ This module provides:
 import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
+from urllib.parse import quote
 
 import structlog
 from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, Query, Request
@@ -31,6 +32,7 @@ from app.models.call_record import CallDirection, CallRecord, CallStatus
 from app.models.campaign import Campaign, CampaignContact, CampaignContactStatus
 from app.models.workspace import AgentWorkspace
 from app.services.qa import trigger_qa_evaluation
+from app.services.telephony.telnyx_events import parse_telnyx_webhook
 from app.services.telephony.telnyx_service import TelnyxService
 from app.services.telephony.twilio_service import TwilioService
 
@@ -180,6 +182,34 @@ async def get_agent_workspace_id(agent_id: uuid.UUID, db: AsyncSession) -> uuid.
     )
     row = result.scalar_one_or_none()
     return row
+
+
+def build_telnyx_stream_url(
+    request: Request,
+    agent_id: str | None,
+    *,
+    call_id: str = "",
+    direction: str = "inbound",
+) -> str:
+    """The wss:// URL a Telnyx media stream should connect back to.
+
+    The call identifier travels in the query string because the media stream and
+    the webhook do not agree on one, and the direction travels with it because
+    inbound and outbound calls share this endpoint — a trace that labels every
+    outbound call inbound is worse than one with no direction at all.
+
+    On the identifier: The webhook knows the call by the identifier
+    Telnyx signed the request with; the stream announces a ``call_control_id`` in
+    its start frame. On a TeXML application those are not guaranteed to be the
+    same string, and the bridge needs to find the row the webhook created in
+    order to attach a transcript to it. Passing it explicitly removes the guess.
+    """
+    base_url = str(request.base_url).rstrip("/")
+    ws_url = base_url.replace("http://", "wss://").replace("https://", "wss://")
+    query = f"direction={quote(direction, safe='')}"
+    if call_id:
+        query = f"call_id={quote(call_id, safe='')}&{query}"
+    return f"{ws_url}/ws/telephony/telnyx/{agent_id}?{query}"
 
 
 async def update_campaign_contact_from_call(
@@ -791,7 +821,10 @@ async def twilio_voice_webhook(
 
     # Create call record for inbound call
     call_record = CallRecord(
-        user_id=agent.user_id,
+        # call_records keys its owner by UUID while Agent carries the integer
+        # user id. Passing the integer straight through raises on insert against
+        # Postgres, so no inbound call has ever landed a row.
+        user_id=user_id_to_uuid(agent.user_id),
         workspace_id=agent_workspace_id,
         provider="twilio",
         provider_call_id=call_sid,
@@ -939,30 +972,28 @@ async def telnyx_voice_webhook(
     # Validate Telnyx signature
     await verify_telnyx_webhook(request)
 
-    body = await request.json()
-    data = body.get("data", {})
-    payload = data.get("payload", {})
-
-    call_control_id = payload.get("call_control_id", "")
-    from_number = payload.get("from", "")
-    to_number = payload.get("to", "")
-    event_type = data.get("event_type", "")
+    # Accepts both the TeXML (form-encoded) and Call Control (JSON) shapes. A
+    # number attached to a TeXML application — which is what the purchase flow
+    # configures, and the only mode in which returning a document does anything —
+    # posts the form-encoded one.
+    event = await parse_telnyx_webhook(request)
 
     log = logger.bind(
         webhook="telnyx_voice",
-        call_control_id=call_control_id,
-        from_number=from_number,
-        to_number=to_number,
-        event_type=event_type,
+        call_control_id=event.call_id,
+        from_number=event.from_number,
+        to_number=event.to_number,
+        event_type=event.event_type,
+        wire_format=event.wire_format.value,
     )
     log.info("telnyx_incoming_call")
 
     # Find agent by phone number
-    agent = await get_agent_by_phone_number(to_number, db)
+    agent = await get_agent_by_phone_number(event.to_number, db)
     agent_id = str(agent.id) if agent else None
 
     if not agent:
-        log.warning("no_agent_for_number", to_number=to_number)
+        log.warning("no_agent_for_number", to_number=event.to_number)
         return Response(
             content="""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -977,24 +1008,24 @@ async def telnyx_voice_webhook(
 
     # Create call record for inbound call
     call_record = CallRecord(
-        user_id=agent.user_id,
+        # call_records keys its owner by UUID while Agent carries the integer
+        # user id. Passing the integer straight through raises on insert against
+        # Postgres, so no inbound call has ever landed a row.
+        user_id=user_id_to_uuid(agent.user_id),
         workspace_id=agent_workspace_id,
         provider="telnyx",
-        provider_call_id=call_control_id,
+        provider_call_id=event.call_id,
         agent_id=agent.id,
         direction=CallDirection.INBOUND.value,
         status=CallStatus.RINGING.value,
-        from_number=from_number,
-        to_number=to_number,
+        from_number=event.from_number,
+        to_number=event.to_number,
     )
     db.add(call_record)
     await db.commit()
     log.info("call_record_created", record_id=str(call_record.id))
 
-    # Build WebSocket URL
-    base_url = str(request.base_url).rstrip("/")
-    ws_url = base_url.replace("http://", "wss://").replace("https://", "wss://")
-    stream_url = f"{ws_url}/ws/telephony/telnyx/{agent_id}"
+    stream_url = build_telnyx_stream_url(request, agent_id, call_id=event.call_id)
 
     telnyx_service = TelnyxService("")
     texml = telnyx_service.generate_answer_response(stream_url, agent_id)
@@ -1017,13 +1048,19 @@ async def telnyx_answer_webhook(
     # Validate Telnyx signature
     await verify_telnyx_webhook(request)
 
-    log = logger.bind(webhook="telnyx_answer", agent_id=agent_id)
+    event = await parse_telnyx_webhook(request)
+
+    log = logger.bind(
+        webhook="telnyx_answer",
+        agent_id=agent_id,
+        call_control_id=event.call_id,
+        wire_format=event.wire_format.value,
+    )
     log.info("telnyx_outbound_answered")
 
-    # Build WebSocket URL
-    base_url = str(request.base_url).rstrip("/")
-    ws_url = base_url.replace("http://", "wss://").replace("https://", "wss://")
-    stream_url = f"{ws_url}/ws/telephony/telnyx/{agent_id}"
+    stream_url = build_telnyx_stream_url(
+        request, agent_id, call_id=event.call_id, direction="outbound"
+    )
 
     telnyx_service = TelnyxService("")
     texml = telnyx_service.generate_answer_response(stream_url, agent_id)
@@ -1044,59 +1081,39 @@ async def telnyx_status_callback(
     # Validate Telnyx signature
     await verify_telnyx_webhook(request)
 
-    body = await request.json()
-    data = body.get("data", {})
-    event_type = data.get("event_type", "")
-    payload = data.get("payload", {})
-    call_control_id = payload.get("call_control_id", "")
+    event = await parse_telnyx_webhook(request)
 
     log = logger.bind(
         webhook="telnyx_status",
-        event_type=event_type,
-        call_control_id=call_control_id,
+        event_type=event.event_type,
+        call_control_id=event.call_id,
+        wire_format=event.wire_format.value,
     )
     log.info("telnyx_status_update")
 
     # Find and update call record
     result = await db.execute(
-        select(CallRecord).where(CallRecord.provider_call_id == call_control_id)
+        select(CallRecord).where(CallRecord.provider_call_id == event.call_id)
     )
     call_record = result.scalar_one_or_none()
 
     if call_record:
-        # Map Telnyx event types to our status
-        event_status_map = {
-            "call.initiated": CallStatus.INITIATED.value,
-            "call.ringing": CallStatus.RINGING.value,
-            "call.answered": CallStatus.IN_PROGRESS.value,
-            "call.hangup": CallStatus.COMPLETED.value,
-            "call.machine.detection.ended": None,  # Don't change status
-        }
+        new_status = event.resolved_status()
+        if new_status is not None:
+            call_record.status = new_status.value
 
-        new_status = event_status_map.get(event_type)
-        if new_status:
-            call_record.status = new_status
-
-        # Update timestamps based on event
-        if event_type == "call.answered" and not call_record.answered_at:
+        if event.is_answered and not call_record.answered_at:
             call_record.answered_at = datetime.now(UTC)
-        elif event_type == "call.hangup":
+        elif event.is_hangup:
             call_record.ended_at = datetime.now(UTC)
-            # Calculate duration if we have answered_at
-            if call_record.answered_at:
+            # Prefer the carrier's own figure; fall back to our timestamps. The
+            # carrier bills on its number, and a call answered before this
+            # process restarted has no answered_at to subtract from.
+            if event.duration_seconds is not None:
+                call_record.duration_seconds = event.duration_seconds
+            elif call_record.answered_at:
                 duration = (call_record.ended_at - call_record.answered_at).total_seconds()
                 call_record.duration_seconds = int(duration)
-
-            # Check hangup cause for failed calls
-            hangup_cause = payload.get("hangup_cause", "")
-            if hangup_cause == "USER_BUSY":
-                call_record.status = CallStatus.BUSY.value
-            elif hangup_cause == "NO_ANSWER":
-                call_record.status = CallStatus.NO_ANSWER.value
-            elif hangup_cause in ("CALL_REJECTED", "ORIGINATOR_CANCEL"):
-                call_record.status = CallStatus.CANCELED.value
-            elif hangup_cause and hangup_cause not in ("NORMAL_CLEARING", "NORMAL_RELEASE"):
-                call_record.status = CallStatus.FAILED.value
 
             # Update campaign contact status if this was a campaign call
             await update_campaign_contact_from_call(
@@ -1112,8 +1129,14 @@ async def telnyx_status_callback(
                 log.info("qa_evaluation_triggered", call_id=str(call_record.id))
 
         await db.commit()
-        log.info("call_record_updated", record_id=str(call_record.id), event=event_type)
+        # Not `event=`: structlog reserves that key for the message itself, and
+        # passing it raises inside the logger.
+        log.info(
+            "call_record_updated",
+            record_id=str(call_record.id),
+            telnyx_event=event.event_type,
+        )
     else:
-        log.warning("call_record_not_found", call_control_id=call_control_id)
+        log.warning("call_record_not_found", call_control_id=event.call_id)
 
     return {"status": "received"}

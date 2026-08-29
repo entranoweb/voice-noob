@@ -558,6 +558,31 @@ class TelnyxService(TelephonyProvider):
     def generate_answer_response(self, websocket_url: str, agent_id: str | None = None) -> str:  # noqa: ARG002
         """Generate TeXML response to answer a call and stream to WebSocket.
 
+        Three attributes here are load-bearing and none of them are optional:
+
+        ``bidirectionalMode="rtp"``
+            Telnyx defaults this to ``mp3``. On the default, audio the agent
+            sends back is interpreted as an MP3 stream, and this bridge sends
+            base64 G.711 µ-law — so the caller hears nothing while the logs show
+            audio being written. Only ``rtp`` carries raw codec frames back.
+
+        ``bidirectionalCodec="PCMU"``
+            µ-law, matching the ``g711_ulaw`` format the realtime session is
+            configured for in both directions. It is also Telnyx's default, but
+            a default that silences a call if it ever moves is worth stating.
+
+        ``bidirectionalSamplingRate="8000"``
+            8 kHz, matching PCMU on the PSTN.
+
+        ``<Hangup/>`` closes the leg the moment the stream ends. Telnyx documents
+        ``<Connect>`` as running the *next* instruction once the connected service
+        stops, so anything between Connect and Hangup is time the caller spends
+        listening to silence after the conversation is over. An earlier version of
+        this carried a ``<Pause length="40"/>`` there, copied from a reference
+        implementation as a guard against Connect returning early; it guards
+        nothing Connect does not already guarantee, and it ended every call with
+        forty seconds of dead air.
+
         Args:
             websocket_url: WebSocket URL for media streaming
             agent_id: Optional agent ID for context
@@ -571,8 +596,9 @@ class TelnyxService(TelephonyProvider):
         texml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
     <Connect>
-        <Stream url="{escaped_ws_url}" />
+        <Stream url="{escaped_ws_url}" bidirectionalMode="rtp" bidirectionalCodec="PCMU" bidirectionalSamplingRate="8000" />
     </Connect>
+    <Hangup/>
 </Response>"""
 
         return texml

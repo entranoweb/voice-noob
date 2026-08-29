@@ -2,6 +2,7 @@
 
 import uuid
 from datetime import datetime
+from typing import Any
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -13,6 +14,7 @@ from sqlalchemy.orm import selectinload
 from app.core.auth import CurrentUser, user_id_to_uuid
 from app.db.session import get_db
 from app.models.call_record import CallRecord
+from app.services.qa.call_metrics import metrics_for_call
 
 router = APIRouter(prefix="/api/v1/calls", tags=["calls"])
 logger = structlog.get_logger()
@@ -47,6 +49,36 @@ class CallRecordResponse(BaseModel):
     ended_at: datetime | None
 
     model_config = {"from_attributes": True}
+
+
+class MetricScoreResponse(BaseModel):
+    """One metric's result for one call.
+
+    ``value`` of ``null`` means the metric could not be measured for this call —
+    no audio, or no ground truth to compare against. It is deliberately distinct
+    from ``0.0``, which means measured and bad. A client that renders the two the
+    same way is reporting a failure that did not happen.
+    """
+
+    metric: str
+    version: str
+    category: str
+    kind: str
+    value: float | None
+    passed: bool | None
+    unit: str | None
+    detail: dict[str, Any]
+
+
+class CallMetricsResponse(BaseModel):
+    """Every metric computed for one real call."""
+
+    call_id: str
+    outcome: str
+    trustworthy: bool
+    has_audio: bool
+    scores: list[MetricScoreResponse]
+    invalid_reasons: list[str]
 
 
 class CallRecordListResponse(BaseModel):
@@ -248,6 +280,63 @@ async def get_call(
         started_at=record.started_at,
         answered_at=record.answered_at,
         ended_at=record.ended_at,
+    )
+
+
+@router.get("/{call_id}/metrics", response_model=CallMetricsResponse)
+async def get_call_metrics(
+    call_id: uuid.UUID,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+) -> CallMetricsResponse:
+    """Compute the metric suite for one real call.
+
+    Only some metrics can say anything about a call that was not a simulation:
+    latency and interruptions are measured off the live bridge, while word error
+    rate needs to know what the caller meant to say and a human caller has no
+    script. Those report ``value: null`` rather than a zero — see
+    ``app.services.qa.call_metrics`` for why the distinction is load-bearing.
+    """
+    log = logger.bind(user_id=current_user.id, call_id=call_id)
+
+    user_uuid = user_id_to_uuid(current_user.id)
+    result = await db.execute(
+        select(CallRecord).where(
+            CallRecord.id == call_id,
+            CallRecord.user_id == user_uuid,
+        )
+    )
+    record = result.scalar_one_or_none()
+
+    if not record:
+        raise HTTPException(status_code=404, detail="Call record not found")
+
+    results = metrics_for_call(record)
+    log.info("call_metrics_computed", outcome=results.outcome.value)
+
+    return CallMetricsResponse(
+        call_id=str(record.id),
+        outcome=results.outcome.value,
+        trustworthy=results.trustworthy,
+        # `is not None`, not truthiness: a null column means no audio was
+        # recorded, while an empty list means audio was recorded and produced no
+        # turns. Collapsing them is the same mistake as reporting an unmeasured
+        # metric as zero.
+        has_audio=record.turns is not None,
+        scores=[
+            MetricScoreResponse(
+                metric=score.metric,
+                version=score.version,
+                category=score.category.value,
+                kind=score.kind.value,
+                value=score.value,
+                passed=score.passed,
+                unit=score.unit,
+                detail=score.detail,
+            )
+            for score in results.scores
+        ],
+        invalid_reasons=list(results.invalid_reasons),
     )
 
 

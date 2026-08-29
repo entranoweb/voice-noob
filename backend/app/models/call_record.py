@@ -3,9 +3,10 @@
 import uuid
 from datetime import UTC, datetime
 from enum import Enum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, String, Text, Uuid
+from sqlalchemy import JSON, BigInteger, DateTime, ForeignKey, Integer, String, Text, Uuid
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -115,6 +116,30 @@ class CallRecord(Base):
         Text, nullable=True, comment="URL to call recording"
     )
     transcript: Mapped[str | None] = mapped_column(Text, nullable=True, comment="Call transcript")
+
+    # Per-turn timings recorded off the live audio bridge: what each side said,
+    # what was heard, time to first audio byte, and whether the agent was talked
+    # over. This is what the three audio metrics read. Null means no audio was
+    # recorded for this call, which those metrics report as not measurable —
+    # distinct from an empty list, which would mean a call with no turns.
+    # JSONB on Postgres, which is what this deploys against and what the
+    # migration creates; plain JSON elsewhere, so the property tests that build
+    # their own SQLite database can still compile the table.
+    turns: Mapped[list[dict[str, Any]] | None] = mapped_column(
+        JSON().with_variant(JSONB(), "postgresql"),
+        nullable=True,
+        comment="Recorded conversational turns with audio timings",
+    )
+
+    # Why the conversation ended, in the vocabulary of app.monitoring.call_trace.
+    # Written by the media bridge, which is the only thing that observes it. Null
+    # means nothing recorded a reason — which is not the same as, and must not be
+    # inferred from, the call's terminal status: a call that reached "completed"
+    # may have been ended by the caller, by the agent, or by a duration cap, and
+    # guessing between them would put an invention into every dashboard.
+    termination_reason: Mapped[str | None] = mapped_column(
+        String(32), nullable=True, comment="Why the conversation ended, if observed"
+    )
 
     # Timestamps
     started_at: Mapped[datetime] = mapped_column(

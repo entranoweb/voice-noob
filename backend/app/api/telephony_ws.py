@@ -21,6 +21,10 @@ from app.db.session import get_db
 from app.models.agent import Agent
 from app.models.call_record import CallRecord
 from app.models.workspace import AgentWorkspace
+from app.monitoring.audio_turns import AudioTurnRecorder
+from app.monitoring.call_trace import CallStatus as TraceCallStatus
+from app.monitoring.call_trace import Direction, TerminationReason, ToolOutcome
+from app.monitoring.call_trace_emitter import CallTraceEmitter
 from app.monitoring.metrics import (
     record_call_completed,
     record_call_failed,
@@ -36,6 +40,178 @@ logger = structlog.get_logger()
 EVENT_LOG_THRESHOLD = 20  # Log first N events, then every 100th
 
 
+def _emit_call_trace(
+    *,
+    provider: str,
+    call_id: str,
+    provider_call_id: str,
+    agent_id: str,
+    recorder: AudioTurnRecorder,
+    call_start_time: float,
+    call_duration_s: float,
+    failed: bool,
+    termination: TerminationReason,
+    direction: Direction,
+) -> None:
+    """Write the call's ``voice.call`` span tree.
+
+    Emitted at the end of the call, with each turn carrying the times it was
+    actually measured at rather than the time this ran. Failures here are
+    swallowed: losing a trace is a reporting problem, and raising out of a
+    finally block after a call has already ended would turn it into a user-facing
+    one.
+    """
+    base_time_ns = int(call_start_time * 1_000_000_000)
+    try:
+        with CallTraceEmitter(
+            call_id=call_id,
+            provider=provider,
+            provider_call_id=provider_call_id,
+            agent_id=agent_id,
+            direction=direction,
+            engine="openai_realtime",
+            carrier=provider,
+            # The tree is written once the call has ended, so the root has to be
+            # told when the call actually began or it would span only the moment
+            # spent writing it, with children starting long before their parent.
+            start_time_ns=base_time_ns,
+        ) as emitter:
+            emitter.record_turns(recorder.conversation(), base_time_ns=base_time_ns)
+            for call in recorder.tool_calls():
+                emitter.record_tool_call(
+                    name=str(call["name"]),
+                    outcome=call["outcome"],
+                    arguments=call["arguments"],
+                    duration_ms=call["duration_ms"],
+                    error=call["error"],
+                    start_time_ns=base_time_ns + int(float(call["offset_ms"]) * 1_000_000),
+                )
+            emitter.end(
+                status=TraceCallStatus.FAILED if failed else TraceCallStatus.COMPLETED,
+                termination_reason=(TerminationReason.PIPELINE_ERROR if failed else termination),
+                duration_ms=call_duration_s * 1000.0,
+                end_time_ns=base_time_ns + int(call_duration_s * 1_000_000_000),
+            )
+    except Exception:  # pragma: no cover - defensive; the emitter does not raise
+        logger.exception("call_trace_emit_failed", call_id=call_id)
+
+
+def _record_transcript_event(
+    event: Any,
+    event_type: str,
+    *,
+    turns: AudioTurnRecorder,
+    realtime_session: GPTRealtimeSession,
+    enable_transcript: bool,
+) -> bool:
+    """Feed a transcript event to the recorder, and to storage if enabled.
+
+    Returns whether the event was one of the transcript events, so the caller's
+    dispatch chain can move on.
+
+    The recorder is fed whether or not transcripts are being stored. Storing a
+    transcript is a product feature the agent can have switched off; measuring
+    the call is not, and the metrics need the text to know who said what.
+    """
+    if event_type == "conversation.item.input_audio_transcription.completed":
+        transcript = getattr(event, "transcript", None)
+        if transcript:
+            turns.caller_transcript(transcript)
+            if enable_transcript:
+                realtime_session.add_user_transcript(transcript)
+        return True
+
+    if event_type == "response.output_audio_transcript.delta":
+        delta = getattr(event, "delta", None)
+        if delta:
+            turns.agent_transcript_delta(delta)
+            if enable_transcript:
+                realtime_session.accumulate_assistant_text(delta)
+        return True
+
+    if event_type == "response.output_audio_transcript.done":
+        if enable_transcript:
+            realtime_session.flush_assistant_text()
+        return True
+
+    return False
+
+
+async def _run_tool_call(
+    event: Any,
+    *,
+    realtime_session: GPTRealtimeSession,
+    turns: AudioTurnRecorder,
+    log: Any,
+) -> bool:
+    """Execute a tool the model asked for and record it for the trace.
+
+    Returns whether the tool asked for the call to end.
+    """
+    log.info("handling_function_call", call_id=event.call_id, name=event.name)
+    started_at = time.monotonic()
+    result = await realtime_session.handle_function_call_event(event)
+    _record_tool_call(turns, event, result, started_at=started_at)
+
+    if result.get("action") == "end_call":
+        log.info("end_call_action_received", reason=result.get("reason"))
+        return True
+    return False
+
+
+def _record_tool_call(
+    turns: AudioTurnRecorder,
+    event: Any,
+    result: dict[str, Any],
+    *,
+    started_at: float,
+) -> None:
+    """Record a tool invocation so it reaches the ``voice.tool_call`` span.
+
+    Held on the recorder rather than traced immediately: the span tree is built
+    once the call ends, and a span emitted mid-call would have no parent.
+
+    The outcome is inferred from the result the tool actually returned. It
+    defaults to OK only when there is no evidence of failure, never the reverse —
+    inventing failures is how tool-call validity stops being worth reading.
+    """
+    error = result.get("error")
+    outcome = ToolOutcome.ERROR if error else ToolOutcome.OK
+
+    arguments: dict[str, Any] = {}
+    raw_arguments = getattr(event, "arguments", None)
+    if isinstance(raw_arguments, str):
+        with contextlib.suppress(json.JSONDecodeError):
+            parsed = json.loads(raw_arguments)
+            if isinstance(parsed, dict):
+                arguments = parsed
+    elif isinstance(raw_arguments, dict):
+        arguments = raw_arguments
+
+    turns.tool_called(
+        str(getattr(event, "name", "") or "unknown"),
+        outcome=outcome,
+        arguments=arguments,
+        duration_ms=(time.monotonic() - started_at) * 1000.0,
+        error=str(error) if error else None,
+        # When it was called, not when it returned. Without this the span starts
+        # at completion and its duration runs off the end of the tool it timed.
+        at=started_at,
+    )
+
+
+def _response_was_cancelled(event: Any) -> bool:
+    """Whether a ``response.done`` reports a response that was cut short.
+
+    Server-side turn detection cancels the agent's response when the caller
+    starts speaking, and reports it here. That is the only reliable signal that a
+    turn was interrupted rather than finished — the audio simply stops either
+    way, so timing cannot tell them apart.
+    """
+    response = getattr(event, "response", None)
+    return getattr(response, "status", None) == "cancelled"
+
+
 async def get_agent_workspace_id(agent_id: uuid.UUID, db: AsyncSession) -> uuid.UUID | None:
     """Get workspace ID for an agent."""
     result = await db.execute(
@@ -45,11 +221,114 @@ async def get_agent_workspace_id(agent_id: uuid.UUID, db: AsyncSession) -> uuid.
     return row
 
 
+async def save_turns_to_call_record(
+    call_sid: str,
+    recorder: AudioTurnRecorder,
+    db: AsyncSession,
+    log: Any,
+    agent_id: uuid.UUID,
+) -> None:
+    """Store the recorded turns on the call record.
+
+    Written only when audio actually moved. A call that connected and carried
+    nothing leaves the column null, and null is what makes the audio metrics
+    report ``not_measurable`` rather than a score of zero.
+
+    Scoped to the agent serving this websocket. The call identifier arrives from
+    the connection rather than from anything this process authenticated, so
+    without the agent predicate a connection could name any call in the database
+    and overwrite its turns.
+    """
+    if not recorder.has_audio:
+        log.info("no_audio_recorded_turns_not_saved")
+        return
+
+    result = await db.execute(
+        select(CallRecord).where(
+            CallRecord.provider_call_id == call_sid,
+            CallRecord.agent_id == agent_id,
+        )
+    )
+    call_record = result.scalar_one_or_none()
+
+    if call_record is None:
+        log.warning("call_record_not_found_for_turns", call_sid=call_sid)
+        return
+
+    call_record.turns = recorder.conversation()
+    await db.commit()
+    log.info("turns_saved", record_id=str(call_record.id), turns=recorder.turn_count())
+
+
+async def save_termination_reason(
+    call_sid: str,
+    termination: TerminationReason,
+    db: AsyncSession,
+    log: Any,
+    agent_id: uuid.UUID,
+) -> None:
+    """Record why the conversation ended.
+
+    The bridge is the only thing that observes this. Nothing downstream may infer
+    it from the call's terminal status — a completed call may have been ended by
+    the caller, by the agent, or by a duration cap — so if it is not written here
+    it stays null and the run reads as "we do not know", which is true.
+    """
+    if termination is TerminationReason.UNKNOWN:
+        log.info("termination_reason_not_observed")
+        return
+
+    result = await db.execute(
+        select(CallRecord).where(
+            CallRecord.provider_call_id == call_sid,
+            CallRecord.agent_id == agent_id,
+        )
+    )
+    call_record = result.scalar_one_or_none()
+
+    if call_record is None:
+        log.warning("call_record_not_found_for_termination", call_sid=call_sid)
+        return
+
+    call_record.termination_reason = termination.value
+    await db.commit()
+    log.info("termination_reason_saved", reason=termination.value)
+
+
+async def _persist_call_artifacts(
+    *,
+    record_key: str,
+    agent: Agent,
+    realtime_session: GPTRealtimeSession,
+    recorder: AudioTurnRecorder,
+    termination: TerminationReason,
+    db: AsyncSession,
+    log: Any,
+) -> None:
+    """Write what the call produced onto its record.
+
+    The transcript only when the agent stores transcripts; the turn timings
+    always, because they are telemetry about the call rather than its content
+    and are what the audio metrics read once the websocket has closed.
+    """
+    if not record_key:
+        log.warning("no_call_reference_nothing_persisted")
+        return
+
+    if agent.enable_transcript:
+        transcript = realtime_session.get_transcript()
+        await save_transcript_to_call_record(record_key, transcript, db, log, agent_id=agent.id)
+
+    await save_turns_to_call_record(record_key, recorder, db, log, agent_id=agent.id)
+    await save_termination_reason(record_key, termination, db, log, agent_id=agent.id)
+
+
 async def save_transcript_to_call_record(
     call_sid: str,
     transcript: str,
     db: AsyncSession,
     log: Any,
+    agent_id: uuid.UUID,
 ) -> None:
     """Save transcript to the call record.
 
@@ -58,12 +337,24 @@ async def save_transcript_to_call_record(
         transcript: Formatted transcript text
         db: Database session
         log: Logger instance
+        agent_id: Restricts the write to this agent's call records. Required,
+            not optional: the call identifier comes off the connection rather
+            than from anything this process authenticated, so an unscoped write
+            lets a connection name any call in the database and overwrite its
+            transcript. A default here would have left that door open on every
+            call site that forgot to pass it — which is how the Twilio path kept
+            the hole after the Telnyx one was closed.
     """
     if not transcript.strip():
         log.debug("empty_transcript_skipped")
         return
 
-    result = await db.execute(select(CallRecord).where(CallRecord.provider_call_id == call_sid))
+    result = await db.execute(
+        select(CallRecord).where(
+            CallRecord.provider_call_id == call_sid,
+            CallRecord.agent_id == agent_id,
+        )
+    )
     call_record = result.scalar_one_or_none()
 
     if call_record:
@@ -182,7 +473,9 @@ async def twilio_media_stream(  # noqa: PLR0915
             # Save transcript to call record if enabled
             if agent.enable_transcript and call_sid:
                 transcript = realtime_session.get_transcript()
-                await save_transcript_to_call_record(call_sid, transcript, db, log)
+                await save_transcript_to_call_record(
+                    call_sid, transcript, db, log, agent_id=agent.id
+                )
 
     except WebSocketDisconnect:
         log.info("twilio_websocket_disconnected")
@@ -448,10 +741,25 @@ async def telnyx_media_stream(  # noqa: PLR0915
     - {"event": "stop"}
     """
     session_id = str(uuid.uuid4())
+    # The webhook that answered this call put its own identifier for the call in
+    # the stream URL. The start frame's call_control_id is not guaranteed to be
+    # the same string on a TeXML application, and this is the one the call record
+    # was written under.
+    webhook_call_id = websocket.query_params.get("call_id", "")
+    # Outbound calls reach this same endpoint, so the direction travels with the
+    # stream URL. Defaulting to inbound would label every outbound call's trace
+    # as inbound, which is worse than a missing attribute.
+    direction = (
+        Direction.OUTBOUND
+        if websocket.query_params.get("direction", "") == Direction.OUTBOUND.value
+        else Direction.INBOUND
+    )
     log = logger.bind(
         endpoint="telnyx_media_stream",
         agent_id=agent_id,
         session_id=session_id,
+        webhook_call_id=webhook_call_id,
+        direction=direction.value,
     )
 
     await websocket.accept()
@@ -468,6 +776,15 @@ async def telnyx_media_stream(  # noqa: PLR0915
     call_start_time: float = time.time()
     call_registered: bool = False
     call_failed: bool = False
+    recorder = AudioTurnRecorder()
+    # The recorder times on the monotonic clock and the trace is anchored to the
+    # wall clock; both start here, so turn offsets and span timestamps line up
+    # instead of being shifted by however long the first speech took to arrive.
+    recorder.mark_call_start(time.monotonic())
+    # Stays UNKNOWN unless the bridge sees something that says why the call
+    # ended. Guessing here would put an invented reason into the trace that a
+    # dashboard would then group and count.
+    termination = TerminationReason.UNKNOWN
 
     try:
         # Load agent configuration
@@ -485,6 +802,11 @@ async def telnyx_media_stream(  # noqa: PLR0915
             return
 
         log.info("agent_loaded", agent_name=agent.name)
+
+        # An agent with transcripts switched off has had its owner decline to
+        # store what was said. That covers the metrics and the trace too, so the
+        # recorder keeps the timings and drops the words.
+        recorder.retain_text = agent.enable_transcript
 
         # agent.user_id is now directly the integer user ID
         user_id_int = agent.user_id
@@ -527,18 +849,24 @@ async def telnyx_media_stream(  # noqa: PLR0915
             workspace_id=workspace_id,
         ) as realtime_session:
             # Handle Telnyx media stream and capture call_control_id
-            call_control_id = await _handle_telnyx_stream(
+            call_control_id, termination = await _handle_telnyx_stream(
                 websocket=websocket,
                 realtime_session=realtime_session,
                 log=log,
                 enable_transcript=agent.enable_transcript,
                 on_call_start=on_call_start,
+                recorder=recorder,
             )
 
-            # Save transcript to call record if enabled
-            if agent.enable_transcript and call_control_id:
-                transcript = realtime_session.get_transcript()
-                await save_transcript_to_call_record(call_control_id, transcript, db, log)
+            await _persist_call_artifacts(
+                record_key=webhook_call_id or call_control_id,
+                agent=agent,
+                realtime_session=realtime_session,
+                recorder=recorder,
+                termination=termination,
+                db=db,
+                log=log,
+            )
 
     except WebSocketDisconnect:
         log.info("telnyx_websocket_disconnected")
@@ -562,6 +890,26 @@ async def telnyx_media_stream(  # noqa: PLR0915
                 )
             except Exception:
                 log.exception("call_unregistration_failed", call_control_id=call_control_id)
+
+        # Only for a call that actually carried something: a stream that
+        # announced itself, audio that moved, or a failure worth recording. A
+        # connection rejected for an unknown agent, or one that opened and said
+        # nothing, returns through this same `finally`, and a completed
+        # voice.call span for it would put calls that never happened into every
+        # dashboard that counts them.
+        if call_failed or call_registered or recorder.has_audio:
+            _emit_call_trace(
+                provider="telnyx",
+                call_id=webhook_call_id or call_control_id or session_id,
+                provider_call_id=call_control_id or webhook_call_id,
+                agent_id=agent_id,
+                recorder=recorder,
+                call_start_time=call_start_time,
+                call_duration_s=call_duration,
+                failed=call_failed,
+                termination=termination,
+                direction=direction,
+            )
         log.info("telnyx_websocket_closed", stream_id=stream_id, call_control_id=call_control_id)
 
 
@@ -571,7 +919,8 @@ async def _handle_telnyx_stream(  # noqa: PLR0915
     log: Any,
     enable_transcript: bool = False,
     on_call_start: Any | None = None,
-) -> str:
+    recorder: AudioTurnRecorder | None = None,
+) -> tuple[str, TerminationReason]:
     """Handle Telnyx Media Stream messages.
 
     Args:
@@ -580,17 +929,21 @@ async def _handle_telnyx_stream(  # noqa: PLR0915
         log: Logger instance
         enable_transcript: Whether to capture transcript
         on_call_start: Optional callback when call starts (receives call_control_id)
+        recorder: Collects the turn timings the audio metrics are computed from
 
     Returns:
-        The call_control_id for transcript saving
+        The call_control_id for transcript saving, and why the conversation
+        ended — UNKNOWN unless the bridge saw evidence of a reason.
     """
+    turns = recorder if recorder is not None else AudioTurnRecorder()
     stream_id = ""
     call_control_id = ""
     should_end_call = False  # Flag to signal call should end
+    termination = TerminationReason.UNKNOWN
 
     async def telnyx_to_realtime() -> None:
         """Forward audio from Telnyx to GPT Realtime."""
-        nonlocal stream_id, call_control_id, should_end_call
+        nonlocal stream_id, call_control_id, should_end_call, termination
 
         try:
             while not should_end_call:
@@ -621,6 +974,10 @@ async def _handle_telnyx_stream(  # noqa: PLR0915
 
                 elif event == "stop":
                     log.info("telnyx_stream_stopped")
+                    # The carrier tore the stream down. On an inbound call that
+                    # is the caller hanging up; the agent ending the call takes
+                    # the other branch and overwrites this.
+                    termination = TerminationReason.CALLER_HANGUP
                     break
 
         except WebSocketDisconnect:
@@ -630,7 +987,7 @@ async def _handle_telnyx_stream(  # noqa: PLR0915
 
     async def realtime_to_telnyx() -> None:  # noqa: PLR0912
         """Forward audio from GPT Realtime to Telnyx."""
-        nonlocal should_end_call
+        nonlocal should_end_call, termination
 
         try:
             if not realtime_session.connection:
@@ -656,6 +1013,7 @@ async def _handle_telnyx_stream(  # noqa: PLR0915
                     if hasattr(event, "delta") and event.delta:
                         audio_bytes = base64.b64decode(event.delta)
                         payload = base64.b64encode(audio_bytes).decode("utf-8")
+                        turns.agent_audio_delta(byte_count=len(audio_bytes))
                         await websocket.send_text(
                             json.dumps(
                                 {
@@ -668,49 +1026,59 @@ async def _handle_telnyx_stream(  # noqa: PLR0915
 
                 # Handle tool calls
                 elif event_type == "response.function_call_arguments.done":
-                    log.info(
-                        "handling_function_call",
-                        call_id=event.call_id,
-                        name=event.name,
+                    pending_end_call = (
+                        await _run_tool_call(
+                            event,
+                            realtime_session=realtime_session,
+                            turns=turns,
+                            log=log,
+                        )
+                        or pending_end_call
                     )
-                    result = await realtime_session.handle_function_call_event(event)
-                    # Check if this is an end_call action
-                    if result.get("action") == "end_call":
-                        log.info("end_call_action_received", reason=result.get("reason"))
-                        pending_end_call = True
 
-                # Capture transcript events
-                elif (
-                    enable_transcript
-                    and event_type == "conversation.item.input_audio_transcription.completed"
+                # Capture transcript events. The recorder is fed regardless of
+                # whether transcripts are stored: it needs the text to attribute
+                # turns, and the agent's own words are the only ground truth
+                # there is for what it meant to say.
+                elif _record_transcript_event(
+                    event,
+                    event_type,
+                    turns=turns,
+                    realtime_session=realtime_session,
+                    enable_transcript=enable_transcript,
                 ):
-                    # User speech transcription
-                    if hasattr(event, "transcript") and event.transcript:
-                        realtime_session.add_user_transcript(event.transcript)
-                        log.debug("user_transcript_captured", length=len(event.transcript))
-
-                elif enable_transcript and event_type == "response.output_audio_transcript.delta":
-                    # Assistant speech transcript delta
-                    if hasattr(event, "delta") and event.delta:
-                        realtime_session.accumulate_assistant_text(event.delta)
-
-                elif enable_transcript and event_type == "response.output_audio_transcript.done":
-                    # Assistant speech transcript complete
-                    realtime_session.flush_assistant_text()
+                    pass
 
                 # Handle response completion - check if we should end the call
                 elif event_type == "response.done":
                     log.debug("realtime_event", event_type=event_type)
+                    turns.agent_turn_ended(interrupted=_response_was_cancelled(event))
                     if pending_end_call:
                         log.info("ending_call_after_response_complete")
                         should_end_call = True
+                        termination = TerminationReason.AGENT_ENDED
                         break
 
-                elif event_type in [
-                    "response.output_audio.done",
-                    "input_audio_buffer.speech_started",
-                    "input_audio_buffer.speech_stopped",
-                ]:
+                elif event_type == "input_audio_buffer.speech_started":
+                    log.debug("realtime_event", event_type=event_type)
+                    # Order matters: ask before recording, because recording the
+                    # caller's turn closes the agent's.
+                    talked_over = turns.agent_is_speaking
+                    turns.caller_speech_started()
+                    if talked_over:
+                        # Server VAD cancels the response upstream, but Telnyx has
+                        # already buffered whatever audio was sent and will keep
+                        # playing it over the caller unless the buffer is flushed.
+                        # This is the difference between an agent that stops when
+                        # interrupted and one that talks through it.
+                        await websocket.send_text(json.dumps({"event": "clear"}))
+                        log.info("barge_in_cleared_playback")
+
+                elif event_type == "input_audio_buffer.speech_stopped":
+                    log.debug("realtime_event", event_type=event_type)
+                    turns.caller_speech_stopped()
+
+                elif event_type == "response.output_audio.done":
                     log.debug("realtime_event", event_type=event_type)
 
         except Exception as e:
@@ -728,6 +1096,7 @@ async def _handle_telnyx_stream(  # noqa: PLR0915
         )
     except TimeoutError:
         log.warning("telnyx_bridge_timeout", message="Call exceeded max duration, forcing cleanup")
+        termination = TerminationReason.MAX_DURATION
 
     # Close WebSocket to hang up the call if end_call was triggered
     if should_end_call:
@@ -735,4 +1104,4 @@ async def _handle_telnyx_stream(  # noqa: PLR0915
         with contextlib.suppress(Exception):
             await websocket.close(code=1000, reason="Call ended by agent")
 
-    return call_control_id
+    return call_control_id, termination

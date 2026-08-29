@@ -31,6 +31,11 @@ class RunOutcome(StrEnum):
     PASSED = "passed"
     FAILED = "failed"
     ERROR = "error"
+    # A call that happened rather than a scenario that was run: measured, valid,
+    # and with nothing to pass or fail against. A real caller declares no
+    # expected end state, so grading one against an accuracy metric it was never
+    # given would report every genuine call as an error.
+    OBSERVED = "observed"
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,26 +80,28 @@ class MetricRunner:
     categories: tuple[MetricCategory, ...] | None = None
     _scores: list[MetricScore] = field(default_factory=list, init=False)
 
-    def run(self, context: MetricContext) -> MetricResults:
-        """Compute every applicable metric and derive the run's outcome."""
-        scores = [metric.compute(context) for metric in all_metrics(self.categories)]
+    def _measure(self, context: MetricContext) -> tuple[list[MetricScore], MetricResults | None]:
+        """Every score, plus an ERROR result if a validation gate failed.
 
-        # Validation gates. A gate that could not be measured does not invalidate
-        # the run — only one that measured and failed.
-        invalid = [
-            s
-            for s in scores
-            if s.category == MetricCategory.VALIDATION and s.passed is False and s.measured
-        ]
+        Shared by both verdicts so they cannot drift apart: a gate that stops a
+        scenario has to stop an observed call too, and the two answering
+        differently would be a bug nobody would look for.
+        """
+        scores = [metric.compute(context) for metric in all_metrics(self.categories)]
+        invalid = _failed_gates(scores)
         if invalid:
-            return MetricResults(
+            return scores, MetricResults(
                 outcome=RunOutcome.ERROR,
                 scores=tuple(scores),
-                invalid_reasons=tuple(
-                    f"{s.metric}: {s.detail.get('termination_reason') or 'gate failed'}"
-                    for s in invalid
-                ),
+                invalid_reasons=invalid,
             )
+        return scores, None
+
+    def run(self, context: MetricContext) -> MetricResults:
+        """Compute every applicable metric and derive the run's outcome."""
+        scores, invalid_result = self._measure(context)
+        if invalid_result is not None:
+            return invalid_result
 
         # Accuracy decides pass or fail. An accuracy metric that could not be
         # measured is skipped rather than counted against the agent; if none were
@@ -117,7 +124,45 @@ class MetricRunner:
             scores=tuple(scores),
         )
 
+    def observe(self, context: MetricContext) -> MetricResults:
+        """Compute every metric for a call that happened, with nothing to grade.
+
+        Same metrics and the same validation gates as ``run``, without the
+        accuracy verdict. That gate exists because a *scenario* with no
+        measurable accuracy metric means the harness misbehaved — but a real call
+        carries no scenario, so ``task_completion`` is unmeasurable by
+        construction and the gate would mark every genuine call an error. Doing
+        so would discard exactly the latency and interruption numbers this path
+        exists to produce, under the flag that means "do not trust these".
+        """
+        scores, invalid_result = self._measure(context)
+        if invalid_result is not None:
+            return invalid_result
+
+        return MetricResults(outcome=RunOutcome.OBSERVED, scores=tuple(scores))
+
+
+def _failed_gates(scores: list[MetricScore]) -> tuple[str, ...]:
+    """Validation metrics that measured and failed.
+
+    A gate that could not be measured does not invalidate a run — only one that
+    looked and found the run broken.
+    """
+    invalid = [
+        s
+        for s in scores
+        if s.category == MetricCategory.VALIDATION and s.passed is False and s.measured
+    ]
+    return tuple(
+        f"{s.metric}: {s.detail.get('termination_reason') or 'gate failed'}" for s in invalid
+    )
+
 
 def evaluate(context: MetricContext) -> MetricResults:
     """Convenience wrapper: run every registered metric over one context."""
     return MetricRunner().run(context)
+
+
+def evaluate_observed(context: MetricContext) -> MetricResults:
+    """Every registered metric over one real call, with no accuracy verdict."""
+    return MetricRunner().observe(context)

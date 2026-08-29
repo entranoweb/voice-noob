@@ -38,6 +38,7 @@ from app.services.qa.metrics.runner import (
     MetricRunner,
     RunOutcome,
     evaluate,
+    evaluate_observed,
 )
 from app.services.qa.metrics.validation import (
     conversation_valid_end as _conversation_valid_end,
@@ -58,5 +59,6 @@ __all__ = [
     "ToolCallData",
     "TurnData",
     "evaluate",
+    "evaluate_observed",
     "registry",
 ]

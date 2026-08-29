@@ -1,0 +1,164 @@
+"""Tests for computing metrics from a call that really happened.
+
+The asymmetry these assert is the honest one: a real call can be measured for
+latency and interruptions and cannot be measured for word error rate, because a
+human caller arrives with no script to compare against.
+"""
+
+from __future__ import annotations
+
+import uuid
+
+import pytest
+
+from app.models.call_record import CallRecord, CallStatus
+from app.monitoring.audio_turns import AudioTurnRecorder
+from app.services.qa.call_metrics import context_for_call, metrics_for_call
+
+
+def _record(**kwargs: object) -> CallRecord:
+    """A call record built in memory. Nothing here touches the database."""
+    defaults: dict[str, object] = {
+        "id": uuid.uuid4(),
+        "user_id": uuid.uuid4(),
+        "provider": "telnyx",
+        "provider_call_id": "v3:abc",
+        "direction": "inbound",
+        "status": CallStatus.COMPLETED.value,
+        "from_number": "+15551230000",
+        "to_number": "+15559997777",
+        "duration_seconds": 30,
+    }
+    defaults.update(kwargs)
+    return CallRecord(**defaults)
+
+
+def _recorded_call() -> list[dict[str, object]]:
+    recorder = AudioTurnRecorder()
+    recorder.agent_audio_delta(byte_count=8000, at=0.0)
+    recorder.agent_turn_ended(at=1.0)
+    recorder.caller_speech_started(at=1.2)
+    recorder.caller_speech_stopped(at=2.0)
+    recorder.caller_transcript("book me for Tuesday", at=2.1)
+    recorder.agent_audio_delta(byte_count=8000, at=2.4)
+    recorder.caller_speech_started(at=2.6)
+    recorder.agent_turn_ended(interrupted=True, at=2.7)
+    return recorder.conversation()
+
+
+class TestARealCall:
+    def test_latency_and_interruptions_are_measurable(self) -> None:
+        scores = metrics_for_call(_record(turns=_recorded_call())).by_name()
+
+        ttfb = scores["time_to_first_audio"]
+        assert ttfb.measured
+        assert ttfb.value == pytest.approx(400.0)
+
+        interruptions = scores["interruption_handling"]
+        assert interruptions.measured
+        assert interruptions.detail["barge_ins"] == 1
+        assert interruptions.detail["talked_over"] == 0
+
+    def test_word_error_rate_is_not(self) -> None:
+        scores = metrics_for_call(_record(turns=_recorded_call())).by_name()
+
+        wer = scores["transcription_accuracy"]
+        assert wer.value is None
+        assert "intended" in str(wer.detail)
+
+    def test_a_scenario_metric_reports_no_expectation_rather_than_failure(self) -> None:
+        """A real call declares no expected end state, so task completion has
+        nothing to check. That is unmeasurable, not failed."""
+        scores = metrics_for_call(_record(turns=_recorded_call())).by_name()
+
+        assert scores["task_completion"].value is None
+        assert scores["state_restored"].value is None
+
+
+class TestTheVerdict:
+    """A real call is measured, not graded.
+
+    The scenario runner reports an error when no accuracy metric was measurable,
+    because for a scenario that means the harness misbehaved. A real call has no
+    scenario, so applying that gate would mark every genuine call untrustworthy
+    and discard the latency and interruption numbers alongside it.
+    """
+
+    def test_a_normal_call_is_observed_not_errored(self) -> None:
+        results = metrics_for_call(
+            _record(turns=_recorded_call(), termination_reason="caller_hangup"),
+        )
+
+        assert results.outcome.value == "observed"
+        assert results.trustworthy is True
+        assert results.invalid_reasons == ()
+
+    def test_the_measured_numbers_survive_the_verdict(self) -> None:
+        results = metrics_for_call(
+            _record(turns=_recorded_call(), termination_reason="caller_hangup"),
+        )
+        scores = results.by_name()
+
+        assert results.trustworthy is True
+        assert scores["time_to_first_audio"].measured
+        assert scores["interruption_handling"].measured
+
+    def test_a_call_that_ended_for_no_recorded_reason_is_not_trustworthy(self) -> None:
+        """We do not know how it ended, so the numbers are not worth reading."""
+        results = metrics_for_call(_record(turns=_recorded_call(), termination_reason=None))
+
+        assert results.outcome.value == "error"
+        assert results.trustworthy is False
+
+
+class TestACallWithNoAudio:
+    def test_the_audio_metrics_stay_unmeasurable(self) -> None:
+        """No turns stored means the bridge recorded no audio. The three audio
+        metrics must say so rather than score a zero."""
+        scores = metrics_for_call(_record(turns=None)).by_name()
+
+        for name in ("transcription_accuracy", "time_to_first_audio", "interruption_handling"):
+            assert scores[name].value is None, f"{name} invented a number for a silent call"
+
+    def test_the_context_reports_no_audio(self) -> None:
+        assert context_for_call(_record(turns=None)).has_audio is False
+        assert context_for_call(_record(turns=_recorded_call())).has_audio is True
+
+    def test_an_empty_turn_list_is_not_the_same_as_no_audio(self) -> None:
+        """Null means the websocket carried no audio. An empty list means it
+        carried audio that produced no turns. Those are different facts, and
+        `bool()` reports both as false."""
+        assert context_for_call(_record(turns=[])).has_audio is True
+
+        scores = metrics_for_call(_record(turns=[])).by_name()
+        # Still no number, but for the honest reason: audio was in the loop and
+        # no turn recorded a latency, rather than there being no audio at all.
+        ttfb = scores["time_to_first_audio"]
+        assert ttfb.value is None
+        assert "no audio" not in str(ttfb.detail)
+
+
+class TestTermination:
+    def test_the_reason_comes_from_what_was_recorded(self) -> None:
+        context = context_for_call(_record(termination_reason="agent_ended"))
+        assert context.termination_reason.value == "agent_ended"
+
+    def test_a_completed_status_is_not_evidence_of_who_hung_up(self) -> None:
+        """A completed call may have been ended by the caller, by the agent, or
+        by a duration cap. Picking one would put a fabrication into every
+        dashboard that groups by it."""
+        context = context_for_call(
+            _record(status=CallStatus.COMPLETED.value, termination_reason=None),
+        )
+        assert context.termination_reason.value == "unknown"
+
+    def test_an_unrecognised_reason_is_unknown_rather_than_a_crash(self) -> None:
+        context = context_for_call(_record(termination_reason="something_new"))
+        assert context.termination_reason.value == "unknown"
+
+    def test_a_call_still_in_progress_claims_nothing(self) -> None:
+        context = context_for_call(_record(status=CallStatus.RINGING.value))
+        assert context.termination_reason.value == "unknown"
+
+    def test_a_zero_duration_is_not_reported_as_a_measured_zero(self) -> None:
+        assert context_for_call(_record(duration_seconds=0)).duration_ms is None

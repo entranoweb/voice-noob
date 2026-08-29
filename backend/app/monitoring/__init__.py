@@ -1,6 +1,8 @@
-"""Monitoring: Prometheus metrics, event-loop lag, and the call-trace schema."""
+"""Monitoring: Prometheus metrics, event-loop lag, and the call trace."""
 
 from app.monitoring import call_trace, loop_lag
+from app.monitoring.audio_turns import AudioTurnRecorder
+from app.monitoring.call_trace_emitter import CallTraceEmitter
 from app.monitoring.metrics import (
     ACTIVE_CALLS,
     CALLS_COMPLETED,
@@ -19,6 +21,8 @@ __all__ = [
     "CALLS_DURATION",
     "CALLS_FAILED",
     "CALLS_INITIATED",
+    "AudioTurnRecorder",
+    "CallTraceEmitter",
     "call_trace",
     "get_metrics_router",
     "loop_lag",

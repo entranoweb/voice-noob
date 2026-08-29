@@ -46,6 +46,33 @@ class TestTurnConversion:
         assert turns[0].text_intended == "hello"
         assert turns[0].text_transcribed == "hello"
 
+    def test_a_turn_with_only_a_transcript_gets_no_invented_reference(self) -> None:
+        """A live caller turn declares what was heard and nothing else.
+
+        Falling back to the turn's message here would set intended equal to
+        transcribed and score every real call a flawless word error rate, which
+        is exactly the failure the metric exists to catch.
+        """
+        turns = turns_from_conversation(
+            [
+                {
+                    "speaker": "caller",
+                    "message": "book me for tuna day",
+                    "text_transcribed": "book me for tuna day",
+                },
+            ],
+        )
+        assert turns[0].text_transcribed == "book me for tuna day"
+        assert turns[0].text_intended is None
+
+    def test_a_turn_with_only_intended_text_gets_no_invented_transcript(self) -> None:
+        """Nothing transcribes the agent's own audio back off the line."""
+        turns = turns_from_conversation(
+            [{"speaker": "agent", "text_intended": "Sure, Tuesday works."}],
+        )
+        assert turns[0].text_intended == "Sure, Tuesday works."
+        assert turns[0].text_transcribed is None
+
     def test_audio_runs_keep_the_two_apart(self) -> None:
         """The delta between them is the voice-specific signal."""
         turns = turns_from_conversation(
