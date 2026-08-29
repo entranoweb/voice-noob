@@ -194,6 +194,9 @@ def _record_tool_call(
         arguments=arguments,
         duration_ms=(time.monotonic() - started_at) * 1000.0,
         error=str(error) if error else None,
+        # When it was called, not when it returned. Without this the span starts
+        # at completion and its duration runs off the end of the tool it timed.
+        at=started_at,
     )
 
 
@@ -774,6 +777,10 @@ async def telnyx_media_stream(  # noqa: PLR0915
     call_registered: bool = False
     call_failed: bool = False
     recorder = AudioTurnRecorder()
+    # The recorder times on the monotonic clock and the trace is anchored to the
+    # wall clock; both start here, so turn offsets and span timestamps line up
+    # instead of being shifted by however long the first speech took to arrive.
+    recorder.mark_call_start(time.monotonic())
     # Stays UNKNOWN unless the bridge sees something that says why the call
     # ended. Guessing here would put an invented reason into the trace that a
     # dashboard would then group and count.

@@ -85,6 +85,10 @@ class ASGIWebSocketClient:
             message = "the endpoint returned without accepting or closing"
             raise AssertionError(message)
 
+        # Raising out of `__aenter__` means `__aexit__` never runs, so nothing
+        # else will ever stop the application task. Cancel it here or a hung
+        # endpoint is left running for the rest of the session.
+        self._task.cancel()
         message = "the endpoint neither accepted nor closed the connection"
         raise TimeoutError(message)
 

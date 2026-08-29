@@ -217,6 +217,10 @@ class AudioTurnRecorder:
 
     def agent_transcript_delta(self, delta: str, *, at: float | None = None) -> None:
         """A fragment of the text the agent is speaking."""
+        # Marks the origin too: this can be the first event of the whole call,
+        # and an origin set later by the first audio chunk would put this turn
+        # before the start of the call and give it a negative offset.
+        self._mark_origin(_now() if at is None else at)
         turn = self._open_turn(Speaker.AGENT)
         if turn is None:
             # Text can arrive marginally before the first audio chunk. Open the
@@ -350,6 +354,16 @@ class AudioTurnRecorder:
         return records
 
     # -- internals --------------------------------------------------------
+
+    def mark_call_start(self, at: float) -> None:
+        """Anchor the call's timeline to a moment the caller chooses.
+
+        The bridge knows when the call started — the websocket was accepted — and
+        the recorder does not see an event until somebody speaks. Left to itself
+        the recorder would treat the first speech as time zero, and every turn
+        offset would be short by however long the greeting took to arrive.
+        """
+        self._mark_origin(at)
 
     def _mark_origin(self, moment: float) -> None:
         """Remember when the call's first recorded event happened."""

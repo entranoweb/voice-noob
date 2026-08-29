@@ -88,6 +88,37 @@ class TestTimeToFirstAudio:
         assert turn["ttfb_ms"] == pytest.approx(300.0)
 
 
+class TestTurnOffsets:
+    """Offsets place turns in the trace, so a negative one is not a rounding
+    error — it puts a turn before the call began."""
+
+    def test_a_transcript_before_any_audio_does_not_go_negative(self) -> None:
+        recorder = AudioTurnRecorder()
+        recorder.agent_transcript_delta("Hi there", at=5.0)
+        recorder.agent_audio_delta(byte_count=160, at=6.0)
+
+        assert recorder.conversation()[0]["offset_ms"] >= 0.0
+
+    def test_offsets_run_from_the_call_start_when_one_is_given(self) -> None:
+        """The bridge knows when the call began; the recorder sees nothing until
+        somebody speaks. Left to itself every offset is short by the greeting."""
+        recorder = AudioTurnRecorder()
+        recorder.mark_call_start(10.0)
+        recorder.agent_audio_delta(byte_count=160, at=12.0)
+
+        assert recorder.conversation()[0]["offset_ms"] == pytest.approx(2000.0)
+
+    def test_the_silence_between_turns_is_kept(self) -> None:
+        recorder = AudioTurnRecorder()
+        recorder.mark_call_start(0.0)
+        recorder.agent_audio_delta(byte_count=160, at=0.0)
+        recorder.agent_turn_ended(at=1.0)
+        recorder.caller_speech_started(at=4.0)
+
+        offsets = [t["offset_ms"] for t in recorder.conversation()]
+        assert offsets == pytest.approx([0.0, 4000.0])
+
+
 class TestBargeIn:
     def test_speaking_over_the_agent_marks_the_agents_turn(self) -> None:
         recorder = AudioTurnRecorder()

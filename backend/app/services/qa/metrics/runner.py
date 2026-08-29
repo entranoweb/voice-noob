@@ -80,17 +80,28 @@ class MetricRunner:
     categories: tuple[MetricCategory, ...] | None = None
     _scores: list[MetricScore] = field(default_factory=list, init=False)
 
-    def run(self, context: MetricContext) -> MetricResults:
-        """Compute every applicable metric and derive the run's outcome."""
-        scores = [metric.compute(context) for metric in all_metrics(self.categories)]
+    def _measure(self, context: MetricContext) -> tuple[list[MetricScore], MetricResults | None]:
+        """Every score, plus an ERROR result if a validation gate failed.
 
+        Shared by both verdicts so they cannot drift apart: a gate that stops a
+        scenario has to stop an observed call too, and the two answering
+        differently would be a bug nobody would look for.
+        """
+        scores = [metric.compute(context) for metric in all_metrics(self.categories)]
         invalid = _failed_gates(scores)
         if invalid:
-            return MetricResults(
+            return scores, MetricResults(
                 outcome=RunOutcome.ERROR,
                 scores=tuple(scores),
                 invalid_reasons=invalid,
             )
+        return scores, None
+
+    def run(self, context: MetricContext) -> MetricResults:
+        """Compute every applicable metric and derive the run's outcome."""
+        scores, invalid_result = self._measure(context)
+        if invalid_result is not None:
+            return invalid_result
 
         # Accuracy decides pass or fail. An accuracy metric that could not be
         # measured is skipped rather than counted against the agent; if none were
@@ -124,15 +135,9 @@ class MetricRunner:
         so would discard exactly the latency and interruption numbers this path
         exists to produce, under the flag that means "do not trust these".
         """
-        scores = [metric.compute(context) for metric in all_metrics(self.categories)]
-
-        invalid = _failed_gates(scores)
-        if invalid:
-            return MetricResults(
-                outcome=RunOutcome.ERROR,
-                scores=tuple(scores),
-                invalid_reasons=invalid,
-            )
+        scores, invalid_result = self._measure(context)
+        if invalid_result is not None:
+            return invalid_result
 
         return MetricResults(outcome=RunOutcome.OBSERVED, scores=tuple(scores))
 

@@ -554,12 +554,22 @@ class TestInboundCallEndToEnd:
         await _place_webhook(inbound_call_env)
         await _run_stream(inbound_call_env)
 
-        tools = [s for s in captured_spans.get_finished_spans() if s.name == schema.SPAN_TOOL_CALL]
+        finished = captured_spans.get_finished_spans()
+        tools = [s for s in finished if s.name == schema.SPAN_TOOL_CALL]
         assert tools, "the tool call produced no voice.tool_call span"
         assert tools[0].attributes is not None
         assert tools[0].attributes[schema.TOOL_NAME] == "book_appointment"
         assert tools[0].attributes[schema.TOOL_OUTCOME] == "ok"
         assert '"day": "Tuesday"' in str(tools[0].attributes[schema.TOOL_ARGUMENTS])
+
+        # The span has to sit inside the call it belongs to. It is written after
+        # the call ends, so without explicit times it would carry the wall clock
+        # of emission and float outside its own parent.
+        (call,) = [s for s in finished if s.name == schema.SPAN_CALL]
+        assert call.start_time is not None
+        assert call.end_time is not None
+        assert tools[0].start_time is not None
+        assert call.start_time <= tools[0].start_time <= call.end_time
 
     @pytest.mark.asyncio
     async def test_the_recorded_ending_is_persisted_and_read_back(
