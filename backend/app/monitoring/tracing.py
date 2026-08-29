@@ -26,6 +26,8 @@ logging, which is the only place that knows.
 
 from __future__ import annotations
 
+from urllib.parse import urlsplit, urlunsplit
+
 import structlog
 
 from app.core.config import settings
@@ -75,10 +77,23 @@ def configure_tracing() -> bool:
             settings.OTEL_EXPORTER_OTLP_ENDPOINT,
             DEFAULT_TRACES_EXPORT_PATH,
         )
-        provider.add_span_processor(
-            BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint)),
-        )
-        trace.set_tracer_provider(provider)
+        _warn_if_cleartext(endpoint)
+        processor = BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint))
+
+        # A provider may already be installed — auto-instrumentation does this,
+        # and OpenTelemetry ignores a second `set_tracer_provider` with a warning
+        # rather than an error. Setting one blindly and reporting success would
+        # leave our exporter attached to a provider nothing uses: configured on
+        # paper, delivering nothing, which is the failure this module exists to
+        # close. Attach to whoever is already there instead.
+        existing = trace.get_tracer_provider()
+        attach = getattr(existing, "add_span_processor", None)
+        if callable(attach):
+            attach(processor)
+            logger.info("tracing_attached_to_existing_provider")
+        else:
+            provider.add_span_processor(processor)
+            trace.set_tracer_provider(provider)
         _provider_installed = True
     except Exception:
         logger.exception("tracing_setup_failed")
@@ -105,10 +120,50 @@ def _traces_endpoint(configured: str, traces_path: str) -> str:
     tracing that reports itself configured and delivers nothing, which is the
     exact failure this module exists to close.
     """
-    trimmed = configured.rstrip("/")
-    if trimmed.endswith(f"/{traces_path.strip('/')}"):
-        return trimmed
-    return f"{trimmed}/{traces_path.strip('/')}"
+    parsed = urlsplit(configured)
+    signal = traces_path.strip("/")
+    path = parsed.path.rstrip("/")
+    if not path.endswith(f"/{signal}"):
+        path = f"{path}/{signal}"
+    # Rebuilt from its parts rather than concatenated: an endpoint carrying a
+    # query string would otherwise get the signal path appended *after* the
+    # query, producing a URL the collector has never heard of.
+    return urlunsplit((parsed.scheme, parsed.netloc, path, parsed.query, parsed.fragment))
+
+
+# Hosts whose traffic never leaves the machine. Everything else is a network.
+_LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "[::1]"})
+
+
+def _warn_if_cleartext(endpoint: str) -> None:
+    """Say so when spans will cross a network unencrypted.
+
+    A call trace carries what was said: transcripts, and tool arguments built
+    from them. Shipping that over plain HTTP to another host puts it on the wire
+    in the clear.
+
+    This warns rather than refuses. The ordinary OpenTelemetry deployment is a
+    collector on localhost or a sidecar in the same pod, reached over HTTP by
+    design, and refusing to start telemetry for it would break the common case to
+    protect against the uncommon one. A collector somewhere else over plain HTTP
+    is the operator's decision to make — but not one to make unknowingly.
+    """
+    parsed = urlsplit(endpoint)
+    if parsed.scheme != "http":
+        return
+
+    host = (parsed.hostname or "").lower()
+    if host in _LOCAL_HOSTS:
+        return
+
+    logger.warning(
+        "tracing_endpoint_is_cleartext",
+        endpoint=endpoint,
+        detail=(
+            "call traces carry transcripts and tool arguments; this endpoint is "
+            "plain HTTP to a remote host, so they cross the network unencrypted"
+        ),
+    )
 
 
 def shutdown_tracing() -> None:

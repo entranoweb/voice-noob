@@ -36,6 +36,62 @@ class TestTracesEndpoint:
         """The whole bug in one assertion."""
         assert _traces_endpoint("http://collector:4318", "v1/traces") != "http://collector:4318"
 
+    @pytest.mark.parametrize(
+        ("configured", "expected"),
+        [
+            (
+                "https://otel.example.com?key=abc",
+                "https://otel.example.com/v1/traces?key=abc",
+            ),
+            (
+                "https://otel.example.com/ingest?key=abc#frag",
+                "https://otel.example.com/ingest/v1/traces?key=abc#frag",
+            ),
+        ],
+    )
+    def test_a_query_string_stays_behind_the_path(
+        self,
+        configured: str,
+        expected: str,
+    ) -> None:
+        """Appending to the whole string would put the signal path after the
+        query and produce a URL no collector has ever heard of."""
+        assert _traces_endpoint(configured, "v1/traces") == expected
+
+
+class TestCleartextWarning:
+    """A call trace carries transcripts and tool arguments built from them."""
+
+    def test_plain_http_to_a_remote_host_is_reported(self) -> None:
+        from structlog.testing import capture_logs
+
+        from app.monitoring.tracing import _warn_if_cleartext
+
+        with capture_logs() as logs:
+            _warn_if_cleartext("http://otel.example.com/v1/traces")
+
+        assert [entry for entry in logs if entry["event"] == "tracing_endpoint_is_cleartext"]
+
+    @pytest.mark.parametrize(
+        "endpoint",
+        [
+            "http://localhost:4318/v1/traces",
+            "http://127.0.0.1:4318/v1/traces",
+            "https://otel.example.com/v1/traces",
+        ],
+    )
+    def test_a_local_collector_or_tls_is_not_worth_warning_about(self, endpoint: str) -> None:
+        """The ordinary deployment is a sidecar over HTTP. Warning about it would
+        train the operator to ignore the warning that matters."""
+        from structlog.testing import capture_logs
+
+        from app.monitoring.tracing import _warn_if_cleartext
+
+        with capture_logs() as logs:
+            _warn_if_cleartext(endpoint)
+
+        assert not [entry for entry in logs if entry["event"] == "tracing_endpoint_is_cleartext"]
+
 
 class TestConfigureTracing:
     def test_disabled_by_default_and_says_so(self, monkeypatch: pytest.MonkeyPatch) -> None:

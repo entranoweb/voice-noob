@@ -270,6 +270,32 @@ class TestTranscriptsSwitchedOff:
         assert recorder.conversation()[-1]["ttfb_ms"] == pytest.approx(400.0)
         assert recorder.has_audio is True
 
+    def test_tool_arguments_and_errors_are_dropped_too(self) -> None:
+        """A tool's arguments are made of what the caller said — the name to book
+        under, the number to text. Redacting the transcript and keeping these
+        would leak the same content back out through the trace."""
+        recorder = AudioTurnRecorder(retain_text=False)
+        recorder.tool_called(
+            "send_sms",
+            arguments={"to": "+15551230000", "body": "your appointment is Tuesday"},
+            error="could not reach +15551230000",
+            duration_ms=12.0,
+            at=1.0,
+        )
+
+        (call,) = recorder.tool_calls()
+        assert call["arguments"] == {}
+        assert call["error"] is None
+        # What the agent did is not what anybody said, and stays.
+        assert call["name"] == "send_sms"
+        assert call["duration_ms"] == 12.0
+
+    def test_tool_payloads_are_kept_when_retention_is_on(self) -> None:
+        recorder = AudioTurnRecorder(retain_text=True)
+        recorder.tool_called("send_sms", arguments={"to": "+15551230000"}, at=1.0)
+
+        assert recorder.tool_calls()[0]["arguments"] == {"to": "+15551230000"}
+
     def test_word_error_rate_becomes_unmeasurable(self) -> None:
         """The correct consequence of having chosen not to keep the words."""
         recorder = AudioTurnRecorder(

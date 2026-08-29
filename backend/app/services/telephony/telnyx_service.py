@@ -14,16 +14,6 @@ from app.services.telephony.base import (
 
 logger = structlog.get_logger()
 
-# A guard against the document running off its end while the stream is still
-# being established. `<Connect>` blocks for the life of the stream, so this is
-# not the call-length bound an earlier comment here claimed it was — it only
-# matters if Connect returns early.
-#
-# Telnyx accepts 1-180 for `<Pause length>`; a value outside that range risks
-# the whole document being rejected, which drops the call. 40 seconds matches
-# the reference implementations and stays well inside the range.
-STREAM_PAUSE_SECONDS = 40
-
 
 class TelnyxService(TelephonyProvider):
     """Telnyx telephony service for voice calls and phone number management."""
@@ -584,15 +574,14 @@ class TelnyxService(TelephonyProvider):
         ``bidirectionalSamplingRate="8000"``
             8 kHz, matching PCMU on the PSTN.
 
-        The trailing ``<Pause>`` keeps the document from running to its end while
-        the stream is still connecting. ``<Connect>`` is documented as blocking
-        for the life of the stream, which would make the pause a no-op — but the
-        reference implementations all include it, so it stays as a guard against
-        Connect returning early. It has not been verified against a live carrier.
-
-        ``<Hangup/>`` closes the leg once the stream is over. Without it the
-        document merely runs out, leaving the caller connected to silence for the
-        length of the pause first.
+        ``<Hangup/>`` closes the leg the moment the stream ends. Telnyx documents
+        ``<Connect>`` as running the *next* instruction once the connected service
+        stops, so anything between Connect and Hangup is time the caller spends
+        listening to silence after the conversation is over. An earlier version of
+        this carried a ``<Pause length="40"/>`` there, copied from a reference
+        implementation as a guard against Connect returning early; it guards
+        nothing Connect does not already guarantee, and it ended every call with
+        forty seconds of dead air.
 
         Args:
             websocket_url: WebSocket URL for media streaming
@@ -609,7 +598,6 @@ class TelnyxService(TelephonyProvider):
     <Connect>
         <Stream url="{escaped_ws_url}" bidirectionalMode="rtp" bidirectionalCodec="PCMU" bidirectionalSamplingRate="8000" />
     </Connect>
-    <Pause length="{STREAM_PAUSE_SECONDS}"/>
     <Hangup/>
 </Response>"""
 

@@ -54,6 +54,11 @@ are still recorded and still timed — that is telemetry about the call, not its
 content — but no recognised speech is kept, so none reaches the metrics, the
 database, or the trace. Word error rate is then unmeasurable, which is the
 correct consequence of having chosen not to keep the words.
+
+That covers tool arguments and tool errors as well as transcripts. A tool's
+arguments are assembled from what the caller said, so they carry the same content
+under a different name, and a redaction that stopped at the transcript would leak
+it straight back out through the trace.
 """
 
 from __future__ import annotations
@@ -259,6 +264,13 @@ class AudioTurnRecorder:
         Held here rather than emitted immediately because the trace tree is built
         once the call ends, and a span written mid-call would have no parent to
         attach to.
+
+        Arguments and errors are dropped when ``retain_text`` is false. A tool's
+        arguments are made of what the caller said — the name to book under, the
+        number to text, the address to look up — so they are exactly the content
+        an agent with transcripts switched off was told not to keep, and they
+        would otherwise reach the trace. The tool's name, outcome and duration
+        stay: those describe what the agent *did*, not what anybody said.
         """
         moment = _now() if at is None else at
         self._mark_origin(moment)
@@ -266,10 +278,10 @@ class AudioTurnRecorder:
             _ToolCall(
                 name=name,
                 outcome=outcome,
-                arguments=arguments or {},
+                arguments=(arguments or {}) if self.retain_text else {},
                 started_at=moment,
                 duration_ms=duration_ms,
-                error=error,
+                error=error if self.retain_text else None,
             ),
         )
 
