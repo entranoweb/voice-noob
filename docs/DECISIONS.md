@@ -401,3 +401,22 @@ instead. It is a client, not a mock: real routing, real dependency graph, real
 endpoint function. The alternative — a second engine for websocket tests — buys
 a passing test that no longer proves the write happened where the application
 would have written it.
+
+## 35. The exporter needs the collector's credential. The log does not.
+
+`_traces_endpoint` preserves the query string on purpose — Honeycomb, Grafana
+Cloud and Dash0 all authenticate with an API key there, and the exporter is
+handed the URL verbatim. The three log lines then printed that URL as-is, so a
+correctly configured collector put its own credential into the application log
+on every boot. Logs are aggregated, shipped and retained far more widely than
+the config holding the secret, so this moves the key somewhere strictly worse.
+
+Refusing cleartext transport (§30) and then printing the credential is the same
+mistake twice: protecting the payload and leaking the key to it. `_loggable`
+strips the query string and any HTTP userinfo, keeping scheme, host, port and
+path — everything an operator needs to diagnose an endpoint, and nothing that
+authenticates to it.
+
+The regression test asserts on the events the three log sites actually emit
+rather than on `_loggable` alone. A fourth log site that forgets the helper is
+how this comes back, and a test of the helper would not see it.

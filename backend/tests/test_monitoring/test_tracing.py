@@ -195,3 +195,75 @@ class TestConfigureTracing:
         assert tracing.configure_tracing() is False
         assert constructed == []
         assert tracing._provider_installed is False
+
+
+class TestEndpointRedaction:
+    """The exporter needs the collector's credential. The log does not.
+
+    `_traces_endpoint` preserves the query string on purpose, because that is
+    where Honeycomb, Grafana Cloud and Dash0 all put the API key. Logging the
+    result verbatim would put that key into application logs, which are shipped
+    and retained far more widely than the config holding the secret.
+    """
+
+    @pytest.mark.parametrize(
+        ("endpoint", "expected"),
+        [
+            (
+                "https://api.honeycomb.io/v1/traces?x-honeycomb-team=SECRET",
+                "https://api.honeycomb.io/v1/traces (credentials redacted)",
+            ),
+            (
+                "https://user:hunter2@otel.example.com/v1/traces",
+                "https://otel.example.com/v1/traces (credentials redacted)",
+            ),
+            (
+                "http://localhost:4318/v1/traces",
+                "http://localhost:4318/v1/traces",
+            ),
+            (
+                "https://otel.example.com:4318/v1/traces",
+                "https://otel.example.com:4318/v1/traces",
+            ),
+            (
+                "http://[::1]:4318/v1/traces",
+                "http://[::1]:4318/v1/traces",
+            ),
+        ],
+    )
+    def test_the_credential_never_reaches_the_log(
+        self,
+        endpoint: str,
+        expected: str,
+    ) -> None:
+        from app.monitoring.tracing import _loggable
+
+        assert _loggable(endpoint) == expected
+
+    def test_no_secret_survives_any_of_the_three_log_sites(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An assertion on the emitted events, not on the helper: a fourth log
+        site added later that forgets the helper is the way this regresses."""
+        from structlog.testing import capture_logs
+
+        from app.core.config import settings
+        from app.monitoring import tracing
+
+        secret = "s3cr3t-collector-key"
+
+        for endpoint, allow_insecure in (
+            (f"https://otel.example.com/v1/traces?key={secret}", False),
+            (f"http://otel.example.com/v1/traces?key={secret}", True),
+            (f"http://otel.example.com/v1/traces?key={secret}", False),
+        ):
+            monkeypatch.setattr(settings, "OTEL_ENABLED", True)
+            monkeypatch.setattr(settings, "OTEL_ALLOW_INSECURE_EXPORT", allow_insecure)
+            monkeypatch.setattr(settings, "OTEL_EXPORTER_OTLP_ENDPOINT", endpoint)
+            monkeypatch.setattr(tracing, "_provider_installed", False)
+
+            with capture_logs() as logs:
+                tracing.configure_tracing()
+
+            assert secret not in repr(logs), endpoint

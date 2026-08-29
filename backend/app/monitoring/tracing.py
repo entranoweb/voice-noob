@@ -109,7 +109,7 @@ def configure_tracing() -> bool:
     # provider is installed and spans will be addressed to this URL.
     logger.info(
         "tracing_provider_installed",
-        endpoint=endpoint,
+        endpoint=_loggable(endpoint),
         service=settings.OTEL_SERVICE_NAME,
     )
     return True
@@ -135,6 +135,33 @@ def _traces_endpoint(configured: str, traces_path: str) -> str:
     # query string would otherwise get the signal path appended *after* the
     # query, producing a URL the collector has never heard of.
     return urlunsplit((parsed.scheme, parsed.netloc, path, parsed.query, parsed.fragment))
+
+
+def _loggable(endpoint: str) -> str:
+    """The endpoint with its secrets removed, for the log line.
+
+    Collectors authenticate in two places this URL can carry: a query string
+    (``?api-key=...`` is how Honeycomb, Grafana Cloud and Dash0 all do it) and
+    HTTP userinfo. ``_traces_endpoint`` deliberately preserves both, because the
+    exporter needs them — and logging the result verbatim would put a collector
+    credential into application logs, which are aggregated, shipped and retained
+    far more widely than the config that holds the secret.
+
+    Refusing cleartext transport and then printing the key is the same mistake
+    twice: protecting the payload and leaking the credential to it. Scheme, host
+    and path are what an operator needs to see to diagnose an endpoint; neither
+    the query nor the userinfo tells them anything the rest does not.
+    """
+    parsed = urlsplit(endpoint)
+    host = parsed.hostname or ""
+    if ":" in host:  # IPv6 literals lose their brackets to `hostname`
+        host = f"[{host}]"
+    if parsed.port is not None:
+        host = f"{host}:{parsed.port}"
+    redacted = urlunsplit((parsed.scheme, host, parsed.path, "", ""))
+    if parsed.query or parsed.username or parsed.password:
+        return f"{redacted} (credentials redacted)"
+    return redacted
 
 
 # Hosts whose traffic never leaves the machine. Everything else is a network,
@@ -173,7 +200,7 @@ def _transport_is_permitted(endpoint: str) -> bool:
     if settings.OTEL_ALLOW_INSECURE_EXPORT:
         logger.warning(
             "tracing_endpoint_is_cleartext",
-            endpoint=endpoint,
+            endpoint=_loggable(endpoint),
             detail=(
                 "call traces carry transcripts and tool arguments, and this "
                 "endpoint is plain HTTP to a remote host; permitted because "
@@ -184,7 +211,7 @@ def _transport_is_permitted(endpoint: str) -> bool:
 
     logger.error(
         "tracing_refused_cleartext_endpoint",
-        endpoint=endpoint,
+        endpoint=_loggable(endpoint),
         detail=(
             "call traces carry transcripts and tool arguments; refusing to send "
             "them over plain HTTP to a remote host. Use https, point at a "
