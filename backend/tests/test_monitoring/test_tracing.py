@@ -261,16 +261,37 @@ class TestEndpointRedaction:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """The module's promise is that a broken telemetry configuration never
-        stops the application answering calls."""
+        stops the application answering calls.
+
+        The endpoint must be one the transport check *permits*. A refused
+        endpoint returns from inside the setup `try`, where a raising `_loggable`
+        would be swallowed by `except Exception` and reported as a tidy `False` —
+        so the test would pass against the very bug it exists to catch. Only the
+        success log, which runs after the `try`, can crash startup, and only a
+        permitted endpoint reaches it.
+        """
+        from opentelemetry.exporter.otlp.proto.http import trace_exporter
+
         from app.core.config import settings
         from app.monitoring import tracing
 
+        class _Stub(trace_exporter.OTLPSpanExporter):  # type: ignore[misc]
+            def __init__(self, *args: object, **kwargs: object) -> None:
+                pass
+
+            def export(self, *args: object, **kwargs: object) -> None:
+                return None
+
+            def shutdown(self) -> None:
+                return None
+
+        monkeypatch.setattr(trace_exporter, "OTLPSpanExporter", _Stub)
         monkeypatch.setattr(settings, "OTEL_ENABLED", True)
         monkeypatch.setattr(settings, "OTEL_ALLOW_INSECURE_EXPORT", False)
-        monkeypatch.setattr(settings, "OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:99999")
+        monkeypatch.setattr(settings, "OTEL_EXPORTER_OTLP_ENDPOINT", "https://collector:99999")
         monkeypatch.setattr(tracing, "_provider_installed", False)
 
-        assert tracing.configure_tracing() is False
+        assert tracing.configure_tracing() is True
 
     def test_no_secret_survives_any_of_the_three_log_sites(
         self,
