@@ -7,10 +7,12 @@ and livekit/agents repositories.
 
 from __future__ import annotations
 
+from typing import Any
+
 import anthropic
 import httpx
 import structlog
-from aiobreaker import CircuitBreaker, CircuitBreakerError
+from aiobreaker import CircuitBreaker, CircuitBreakerError  # type: ignore[import-untyped]
 from tenacity import (
     retry,
     retry_if_exception_type,
@@ -88,8 +90,9 @@ async def call_claude_with_resilience(
     client: anthropic.AsyncAnthropic,
     model: str,
     max_tokens: int,
-    messages: list[dict[str, str]],
+    messages: list[Any],
     system: str | None = None,
+    tools: list[dict[str, Any]] | None = None,
 ) -> anthropic.types.Message:
     """Call Claude API with retry and circuit breaker.
 
@@ -100,10 +103,12 @@ async def call_claude_with_resilience(
 
     Args:
         client: Anthropic async client (created with get_anthropic_client).
-        model: Model name (e.g., "claude-sonnet-4-20250514").
+        model: Model name (e.g., "claude-sonnet-4-6").
         max_tokens: Maximum tokens to generate.
-        messages: List of message dicts with "role" and "content".
+        messages: Conversation messages, in the Anthropic message shape.
         system: Optional system prompt.
+        tools: Optional tool definitions in Anthropic schema. Supplying these is
+            what lets a simulated run execute the agent's real tools.
 
     Returns:
         Claude API Message response.
@@ -123,20 +128,29 @@ async def call_claude_with_resilience(
         )
         raise CircuitBreakerError(claude_circuit_breaker)
 
+    async def _call() -> anthropic.types.Message:
+        # Built as kwargs rather than branched calls so that adding an optional
+        # parameter does not double the number of call sites again.
+        kwargs: dict[str, Any] = {
+            "model": model,
+            "max_tokens": max_tokens,
+            "messages": messages,
+        }
+        if system:
+            kwargs["system"] = system
+        if tools:
+            kwargs["tools"] = tools
+        message: anthropic.types.Message = await client.messages.create(**kwargs)
+        return message
+
     try:
-        async with claude_circuit_breaker:
-            if system:
-                return await client.messages.create(
-                    model=model,
-                    max_tokens=max_tokens,
-                    messages=messages,  # type: ignore[arg-type]
-                    system=system,
-                )
-            return await client.messages.create(
-                model=model,
-                max_tokens=max_tokens,
-                messages=messages,  # type: ignore[arg-type]
-            )
+        # aiobreaker's CircuitBreaker is not an async context manager; call_async
+        # is the supported entry point. `async with` raised TypeError at runtime,
+        # which meant the breaker never actually guarded a call.
+        # aiobreaker is untyped, so call_async returns Any; _call is annotated
+        # and this is the value it produced.
+        result: anthropic.types.Message = await claude_circuit_breaker.call_async(_call)
+        return result
 
     except anthropic.APIError as e:
         logger.warning(

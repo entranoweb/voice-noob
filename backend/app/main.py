@@ -49,6 +49,8 @@ from app.db.session import AsyncSessionLocal, engine
 from app.middleware.request_tracing import RequestTracingMiddleware
 from app.middleware.security import SecurityHeadersMiddleware
 from app.models.user import User
+from app.monitoring import get_metrics_router, loop_lag
+from app.services.call_registry import set_shutting_down, wait_for_calls_to_drain
 from app.services.campaign_worker import start_campaign_worker, stop_campaign_worker
 
 # Configure structured logging with async processors
@@ -73,7 +75,7 @@ logger = structlog.get_logger()
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:  # noqa: PLR0915
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:  # noqa: PLR0912, PLR0915
     """Lifespan context manager for startup and shutdown events."""
     # Startup
     logger.info("Starting application", app_name=settings.APP_NAME)
@@ -82,6 +84,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:  # noqa: PLR0915
         # Initialize Redis (fatal if fails)
         await get_redis()
         logger.info("Redis connection established")
+
+        # Clear any stale shutdown flag from previous crash
+        await set_shutting_down(False)
+        logger.info("Startup: shutdown flag cleared")
     except Exception:
         logger.exception("Failed to initialize Redis - application cannot start")
         raise  # Re-raise to prevent app startup
@@ -135,10 +141,36 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:  # noqa: PLR0915
     except Exception:
         logger.exception("Failed to start campaign worker - campaigns will not process")
 
+    # Event-loop lag gauge: the saturation signal for real-time audio.
+    # Cheap (one 100ms-interval task) and safe to run everywhere.
+    loop_lag.start()
+    logger.info("Event-loop lag monitor started")
+
     yield
 
     # Shutdown
     logger.info("Shutting down application")
+
+    await loop_lag.stop()
+
+    # Connection draining - wait for active calls to complete
+    if settings.ENABLE_CONNECTION_DRAINING:
+        try:
+            logger.info(
+                "connection_draining_started",
+                timeout=settings.SHUTDOWN_DRAIN_TIMEOUT,
+            )
+            await set_shutting_down(True)
+            drained = await wait_for_calls_to_drain(settings.SHUTDOWN_DRAIN_TIMEOUT)
+            if drained:
+                logger.info("connection_draining_complete")
+            else:
+                logger.warning(
+                    "connection_draining_timeout",
+                    timeout=settings.SHUTDOWN_DRAIN_TIMEOUT,
+                )
+        except Exception:
+            logger.exception("connection_draining_error")
 
     # Stop campaign worker
     try:
@@ -214,6 +246,10 @@ app.include_router(embed.router)  # Public embed API (unauthenticated)
 app.include_router(embed.ws_router)  # Public embed WebSocket
 app.include_router(qa.router)  # QA Testing Framework API
 app.include_router(testing.router)  # Pre-deployment Testing API
+
+# Include Prometheus metrics router (feature-flagged)
+if settings.ENABLE_PROMETHEUS_METRICS:
+    app.include_router(get_metrics_router(), tags=["monitoring"])
 
 
 @app.get("/")

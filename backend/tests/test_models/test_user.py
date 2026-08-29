@@ -75,17 +75,25 @@ class TestUserModel:
 
     @pytest.mark.asyncio
     @pytest.mark.usefixtures("test_session")
-    async def test_user_email_required(self) -> None:
-        """Test that email is required."""
-        with pytest.raises(TypeError):
-            User(hashed_password="password")  # type: ignore[call-arg]  # noqa: S106
+    async def test_user_email_required(self, test_session: AsyncSession) -> None:
+        """Test that email is required.
+
+        SQLAlchemy does not validate required columns at construction time, so
+        the constraint surfaces as an IntegrityError on flush. The previous
+        assertion expected a TypeError from the constructor, which never raised.
+        """
+        test_session.add(User(hashed_password="password"))  # noqa: S106
+        with pytest.raises(IntegrityError):
+            await test_session.flush()
+        await test_session.rollback()
 
     @pytest.mark.asyncio
-    @pytest.mark.usefixtures("test_session")
-    async def test_user_password_required(self) -> None:
-        """Test that hashed_password is required."""
-        with pytest.raises(TypeError):
-            User(email="test@example.com")  # type: ignore[call-arg]
+    async def test_user_password_required(self, test_session: AsyncSession) -> None:
+        """Test that hashed_password is required (enforced on flush)."""
+        test_session.add(User(email="test@example.com"))
+        with pytest.raises(IntegrityError):
+            await test_session.flush()
+        await test_session.rollback()
 
     @pytest.mark.asyncio
     async def test_user_defaults(

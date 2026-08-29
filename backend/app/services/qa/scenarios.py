@@ -1,6 +1,6 @@
 """Pre-built test scenarios for QA Testing Framework.
 
-12 comprehensive test scenarios covering common voice agent use cases.
+15 comprehensive test scenarios covering common voice agent use cases.
 """
 
 from typing import Any
@@ -409,6 +409,112 @@ BUILT_IN_SCENARIOS: list[dict[str, Any]] = [
             "must_complete": ["appointment_booking"],
         },
         "tags": ["edge_case", "language", "esl"],
+    },
+    # ==========================================================================
+    # HAPPY PATH SCENARIOS
+    # ==========================================================================
+    {
+        "name": "Simple Appointment Booking",
+        "description": "Straightforward appointment booking with cooperative caller",
+        "category": "happy_path",
+        "difficulty": "easy",
+        "caller_persona": {
+            "name": "Sarah Miller",
+            "mood": "friendly",
+            "speaking_style": "polite",
+            "context": "Wants to book a standard appointment",
+        },
+        "conversation_flow": [
+            {"speaker": "user", "message": "Hi, I'd like to book an appointment please."},
+            {"speaker": "user", "message": "Tomorrow at 2pm works great for me."},
+            {"speaker": "user", "message": "Perfect, thank you so much!"},
+        ],
+        "expected_behaviors": [
+            "Greet the caller warmly",
+            "Confirm appointment details",
+            "Provide confirmation",
+        ],
+        "expected_tool_calls": [
+            {"tool": "book_appointment", "required_args": ["date", "time"]},
+        ],
+        "success_criteria": {
+            "min_score": 85,
+            "must_invoke_tools": ["book_appointment"],
+            "appointment_booked": True,
+        },
+        "tags": ["happy-path", "booking", "simple"],
+    },
+    # ==========================================================================
+    # STRESS SCENARIOS
+    # ==========================================================================
+    {
+        "name": "Rapid-Fire Questions",
+        "description": "Caller asks multiple questions in quick succession",
+        "category": "stress",
+        "difficulty": "hard",
+        "caller_persona": {
+            "name": "Mike Thompson",
+            "mood": "rushed",
+            "speaking_style": "rapid",
+            "context": "In a hurry, needs quick answers",
+        },
+        "conversation_flow": [
+            {
+                "speaker": "user",
+                "message": "What are your hours? Do you take walk-ins? How much does it cost?",
+            },
+            {
+                "speaker": "user",
+                "message": "Can I book for tomorrow? What time slots are open? Do I need to bring anything?",
+            },
+            {
+                "speaker": "user",
+                "message": "Actually can you just book me for the earliest slot? What's the address?",
+            },
+        ],
+        "expected_behaviors": [
+            "Address all questions methodically",
+            "Maintain composure under pressure",
+            "Confirm understanding before proceeding",
+        ],
+        "expected_tool_calls": [
+            {"tool": "book_appointment", "required_args": ["date", "time"]},
+        ],
+        "success_criteria": {
+            "min_score": 70,
+            "must_handle": ["multiple_questions"],
+            "response_time_limit_seconds": 10,
+        },
+        "tags": ["stress", "rapid", "multiple-questions"],
+    },
+    {
+        "name": "Long Silence Handler",
+        "description": "Caller goes silent, tests agent patience and re-engagement",
+        "category": "stress",
+        "difficulty": "hard",
+        "caller_persona": {
+            "name": "Tom Harris",
+            "mood": "distracted",
+            "speaking_style": "sparse",
+            "context": "Gets distracted mid-call, long pauses",
+        },
+        "conversation_flow": [
+            {"speaker": "user", "message": "Hi, I want to schedule..."},
+            {"speaker": "user", "message": "[silence - 15 seconds]"},
+            {"speaker": "user", "message": "Sorry, I'm back. Where were we?"},
+        ],
+        "expected_behaviors": [
+            "Wait appropriate time before prompting",
+            "Gently re-engage without being pushy",
+            "Maintain context across silence",
+        ],
+        "expected_tool_calls": None,
+        "success_criteria": {
+            "min_score": 70,
+            "must_show": ["patience", "re-engagement"],
+            "must_not_include": ["hang up", "disconnect"],
+        },
+        "tags": ["stress", "silence", "patience"],
     },
 ]
 

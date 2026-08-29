@@ -12,6 +12,11 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         """Add security headers to response."""
         response = await call_next(request)
 
+        # Skip security headers for CORS preflight requests
+        # The CORS middleware handles these - we don't want to interfere
+        if request.method == "OPTIONS":
+            return response
+
         # Prevent clickjacking
         response.headers["X-Frame-Options"] = "DENY"
 
@@ -26,13 +31,14 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
         # Content Security Policy
         # Allow same origin and inline scripts/styles for API docs
+        # Note: connect-src allows 'self' and localhost for development CORS
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; "
             "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
             "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
             "img-src 'self' data: https:; "
             "font-src 'self' data:; "
-            "connect-src 'self'"
+            "connect-src 'self' http://localhost:* https://localhost:* ws://localhost:* wss://localhost:*"
         )
 
         # Permissions Policy (formerly Feature-Policy)

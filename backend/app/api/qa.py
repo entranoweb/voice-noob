@@ -22,6 +22,10 @@ from app.models.call_record import CallRecord
 from app.models.workspace import Workspace
 from app.services.qa.evaluator import QAEvaluator
 
+# Constants
+MAX_BATCH_CALL_IDS = 100  # Maximum number of call IDs per batch evaluation
+MAX_PASS_THRESHOLD = 100  # Maximum pass threshold percentage
+
 
 async def _verify_workspace_ownership(
     db: AsyncSession,
@@ -181,6 +185,40 @@ class QAStatusResponse(BaseModel):
     api_key_configured: bool
 
 
+# =============================================================================
+# Workspace QA Settings Schemas
+# =============================================================================
+
+
+class WorkspaceQASettings(BaseModel):
+    """Workspace-specific QA settings."""
+
+    qa_enabled: bool = True
+    auto_evaluate: bool = True
+    pass_threshold: int = 70
+    evaluation_model: str = Field(default_factory=lambda: settings.QA_EVALUATION_MODEL)
+    inherit_global: bool = True  # If true, use global settings
+
+
+class WorkspaceQASettingsUpdate(BaseModel):
+    """Update schema for workspace QA settings."""
+
+    qa_enabled: bool | None = None
+    auto_evaluate: bool | None = None
+    pass_threshold: int | None = None
+    evaluation_model: str | None = None
+    inherit_global: bool | None = None
+
+
+class WorkspaceQASettingsResponse(BaseModel):
+    """Response for workspace QA settings with metadata."""
+
+    workspace_id: str
+    settings: WorkspaceQASettings
+    global_settings: QAStatusResponse
+    effective_settings: WorkspaceQASettings  # What's actually used (after inheritance)
+
+
 class CircuitBreakerStatus(BaseModel):
     """Circuit breaker status."""
 
@@ -206,7 +244,7 @@ class QAHealthResponse(BaseModel):
 @router.get("/status", response_model=QAStatusResponse)
 @limiter.limit("30/minute")
 async def get_qa_status(
-    http_request: Request,
+    request: Request,
     current_user: CurrentUser,
 ) -> QAStatusResponse:
     """Get QA system status and configuration.
@@ -219,6 +257,177 @@ async def get_qa_status(
         evaluation_model=settings.QA_EVALUATION_MODEL,
         default_threshold=settings.QA_DEFAULT_THRESHOLD,
         api_key_configured=bool(settings.ANTHROPIC_API_KEY),
+    )
+
+
+# =============================================================================
+# Workspace QA Settings Endpoints
+# =============================================================================
+
+
+def _get_global_qa_settings() -> QAStatusResponse:
+    """Get global QA settings from environment configuration."""
+    return QAStatusResponse(
+        enabled=settings.QA_ENABLED,
+        auto_evaluate=settings.QA_AUTO_EVALUATE,
+        evaluation_model=settings.QA_EVALUATION_MODEL,
+        default_threshold=settings.QA_DEFAULT_THRESHOLD,
+        api_key_configured=bool(settings.ANTHROPIC_API_KEY),
+    )
+
+
+def _get_workspace_qa_settings(workspace: Workspace) -> WorkspaceQASettings:
+    """Extract QA settings from workspace settings JSON.
+
+    Args:
+        workspace: Workspace model instance
+
+    Returns:
+        WorkspaceQASettings with values from workspace or defaults
+    """
+    ws_settings = workspace.settings or {}
+    qa_settings = ws_settings.get("qa", {})
+
+    return WorkspaceQASettings(
+        qa_enabled=qa_settings.get("qa_enabled", True),
+        auto_evaluate=qa_settings.get("auto_evaluate", True),
+        pass_threshold=qa_settings.get("pass_threshold", 70),
+        evaluation_model=qa_settings.get("evaluation_model", settings.QA_EVALUATION_MODEL),
+        inherit_global=qa_settings.get("inherit_global", True),
+    )
+
+
+def _get_effective_qa_settings(
+    workspace_settings: WorkspaceQASettings,
+    global_settings: QAStatusResponse,
+) -> WorkspaceQASettings:
+    """Calculate effective QA settings after applying inheritance.
+
+    Args:
+        workspace_settings: Workspace-specific settings
+        global_settings: Global settings from environment
+
+    Returns:
+        Effective settings to use for this workspace
+    """
+    if workspace_settings.inherit_global:
+        # Use global settings
+        return WorkspaceQASettings(
+            qa_enabled=global_settings.enabled,
+            auto_evaluate=global_settings.auto_evaluate,
+            pass_threshold=global_settings.default_threshold,
+            evaluation_model=global_settings.evaluation_model,
+            inherit_global=True,
+        )
+    # Use workspace-specific settings
+    return workspace_settings
+
+
+@router.get("/workspace/{workspace_id}/settings", response_model=WorkspaceQASettingsResponse)
+@limiter.limit("30/minute")
+async def get_workspace_qa_settings(
+    workspace_id: str,
+    request: Request,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+) -> WorkspaceQASettingsResponse:
+    """Get QA settings for a specific workspace.
+
+    Returns workspace-specific settings, global settings, and effective settings
+    (what's actually used after applying inheritance rules).
+
+    Args:
+        workspace_id: Workspace ID
+        current_user: Authenticated user
+        db: Database session
+    """
+    log = logger.bind(user_id=current_user.id, workspace_id=workspace_id)
+    log.info("getting_workspace_qa_settings")
+
+    workspace_uuid = _parse_uuid(workspace_id, "workspace_id")
+
+    # Verify ownership
+    workspace = await _verify_workspace_ownership(db, workspace_uuid, current_user.id)
+
+    # Get settings
+    global_settings = _get_global_qa_settings()
+    workspace_settings = _get_workspace_qa_settings(workspace)
+    effective_settings = _get_effective_qa_settings(workspace_settings, global_settings)
+
+    return WorkspaceQASettingsResponse(
+        workspace_id=str(workspace.id),
+        settings=workspace_settings,
+        global_settings=global_settings,
+        effective_settings=effective_settings,
+    )
+
+
+@router.put("/workspace/{workspace_id}/settings", response_model=WorkspaceQASettingsResponse)
+@limiter.limit("30/minute")
+async def update_workspace_qa_settings(
+    workspace_id: str,
+    body: WorkspaceQASettingsUpdate,
+    request: Request,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+) -> WorkspaceQASettingsResponse:
+    """Update QA settings for a specific workspace.
+
+    Only workspace owners can update settings. Settings are stored in the
+    workspace.settings JSON column under the 'qa' key.
+
+    Args:
+        workspace_id: Workspace ID
+        body: Settings to update (partial update supported)
+        current_user: Authenticated user
+        db: Database session
+    """
+    log = logger.bind(user_id=current_user.id, workspace_id=workspace_id)
+    log.info("updating_workspace_qa_settings")
+
+    workspace_uuid = _parse_uuid(workspace_id, "workspace_id")
+
+    # Verify ownership
+    workspace = await _verify_workspace_ownership(db, workspace_uuid, current_user.id)
+
+    # Get current settings
+    current_settings = workspace.settings or {}
+    qa_settings = current_settings.get("qa", {})
+
+    # Apply updates (only non-None values)
+    update_data = body.model_dump(exclude_none=True)
+    for key, value in update_data.items():
+        qa_settings[key] = value
+
+    # Validate pass_threshold range
+    if "pass_threshold" in qa_settings:
+        threshold = qa_settings["pass_threshold"]
+        if not (0 <= threshold <= MAX_PASS_THRESHOLD):
+            raise HTTPException(
+                status_code=400,
+                detail=f"pass_threshold must be between 0 and {MAX_PASS_THRESHOLD}",
+            )
+
+    # Update workspace settings
+    current_settings["qa"] = qa_settings
+    workspace.settings = current_settings
+
+    # Commit changes
+    await db.commit()
+    await db.refresh(workspace)
+
+    log.info("workspace_qa_settings_updated", settings=qa_settings)
+
+    # Return updated settings
+    global_settings = _get_global_qa_settings()
+    workspace_settings = _get_workspace_qa_settings(workspace)
+    effective_settings = _get_effective_qa_settings(workspace_settings, global_settings)
+
+    return WorkspaceQASettingsResponse(
+        workspace_id=str(workspace.id),
+        settings=workspace_settings,
+        global_settings=global_settings,
+        effective_settings=effective_settings,
     )
 
 
@@ -263,7 +472,7 @@ async def get_qa_health() -> QAHealthResponse:
 @router.get("/evaluations", response_model=CallEvaluationListResponse)
 @limiter.limit("30/minute")
 async def list_evaluations(
-    http_request: Request,
+    request: Request,
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
     page: int = Query(default=1, ge=1),
@@ -361,7 +570,7 @@ async def list_evaluations(
 @limiter.limit("30/minute")
 async def get_evaluation(
     evaluation_id: str,
-    http_request: Request,
+    request: Request,
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> CallEvaluationResponse:
@@ -424,7 +633,7 @@ async def get_evaluation(
 @limiter.limit("30/minute")
 async def get_call_evaluation(
     call_id: str,
-    http_request: Request,
+    request: Request,
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> CallEvaluationResponse:
@@ -491,8 +700,8 @@ async def get_call_evaluation(
 @router.post("/evaluate", response_model=EvaluateCallResponse)
 @limiter.limit("10/minute")
 async def evaluate_call(
-    request: EvaluateCallRequest,
-    http_request: Request,
+    body: EvaluateCallRequest,
+    request: Request,
     background_tasks: BackgroundTasks,
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
@@ -500,12 +709,12 @@ async def evaluate_call(
     """Manually trigger evaluation for a specific call.
 
     Args:
-        request: Evaluation request with call_id
+        body: Evaluation request with call_id
         background_tasks: FastAPI background tasks
         current_user: Authenticated user
         db: Database session
     """
-    log = logger.bind(user_id=current_user.id, call_id=request.call_id)
+    log = logger.bind(user_id=current_user.id, call_id=body.call_id)
     log.info("manual_evaluation_requested")
 
     if not settings.QA_ENABLED:
@@ -514,7 +723,7 @@ async def evaluate_call(
     if not settings.ANTHROPIC_API_KEY:
         raise HTTPException(status_code=400, detail="Anthropic API key not configured")
 
-    call_uuid = _parse_uuid(request.call_id, "call_id")
+    call_uuid = _parse_uuid(body.call_id, "call_id")
     user_uuid = user_id_to_uuid(current_user.id)
 
     # Verify user owns the call
@@ -581,8 +790,8 @@ async def _batch_evaluate_background(
 @router.post("/evaluate/batch", response_model=BatchEvaluateResponse)
 @limiter.limit("5/minute")
 async def batch_evaluate_calls(
-    request: BatchEvaluateRequest,
-    http_request: Request,
+    body: BatchEvaluateRequest,
+    request: Request,
     background_tasks: BackgroundTasks,
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
@@ -590,12 +799,12 @@ async def batch_evaluate_calls(
     """Queue batch evaluation of multiple calls.
 
     Args:
-        request: Batch evaluation request with call_ids
+        body: Batch evaluation request with call_ids
         background_tasks: FastAPI background tasks
         current_user: Authenticated user
         db: Database session
     """
-    log = logger.bind(user_id=current_user.id, batch_size=len(request.call_ids))
+    log = logger.bind(user_id=current_user.id, batch_size=len(body.call_ids))
     log.info("batch_evaluation_requested")
 
     if not settings.QA_ENABLED:
@@ -604,17 +813,20 @@ async def batch_evaluate_calls(
     if not settings.ANTHROPIC_API_KEY:
         raise HTTPException(status_code=400, detail="Anthropic API key not configured")
 
-    if not request.call_ids:
+    if not body.call_ids:
         raise HTTPException(status_code=400, detail="No call IDs provided")
 
-    if len(request.call_ids) > 100:
-        raise HTTPException(status_code=400, detail="Maximum 100 calls per batch")
+    if len(body.call_ids) > MAX_BATCH_CALL_IDS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Maximum {MAX_BATCH_CALL_IDS} calls per batch",
+        )
 
     user_uuid = user_id_to_uuid(current_user.id)
 
     # Parse and validate all call IDs
     call_uuids: list[uuid.UUID] = []
-    for call_id in request.call_ids:
+    for call_id in body.call_ids:
         call_uuids.append(_parse_uuid(call_id, "call_id"))
 
     # Verify all calls belong to the current user
@@ -636,7 +848,7 @@ async def batch_evaluate_calls(
     background_tasks.add_task(
         _batch_evaluate_background,
         call_ids=valid_call_ids,
-        max_concurrent=request.max_concurrent,
+        max_concurrent=body.max_concurrent,
     )
 
     return BatchEvaluateResponse(
@@ -654,7 +866,7 @@ async def batch_evaluate_calls(
 @router.get("/metrics", response_model=QAMetricsResponse)
 @limiter.limit("30/minute")
 async def get_qa_metrics(
-    http_request: Request,
+    request: Request,
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
     agent_id: str | None = Query(default=None, description="Filter by agent ID"),
@@ -787,7 +999,7 @@ class AgentComparisonResponse(BaseModel):
 @router.get("/dashboard/metrics", response_model=DashboardMetricsResponse)
 @limiter.limit("30/minute")
 async def get_dashboard_metrics_endpoint(
-    http_request: Request,
+    request: Request,
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
     agent_id: str | None = Query(default=None, description="Filter by agent ID"),
@@ -828,7 +1040,7 @@ async def get_dashboard_metrics_endpoint(
 @router.get("/dashboard/trends", response_model=TrendDataResponse)
 @limiter.limit("30/minute")
 async def get_dashboard_trends(
-    http_request: Request,
+    request: Request,
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
     agent_id: str | None = Query(default=None, description="Filter by agent ID"),
@@ -872,7 +1084,7 @@ async def get_dashboard_trends(
 @router.get("/dashboard/failure-reasons", response_model=list[FailureReasonResponse])
 @limiter.limit("30/minute")
 async def get_dashboard_failure_reasons(
-    http_request: Request,
+    request: Request,
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
     agent_id: str | None = Query(default=None, description="Filter by agent ID"),
@@ -917,7 +1129,7 @@ async def get_dashboard_failure_reasons(
 @limiter.limit("30/minute")
 async def get_dashboard_agent_comparison(
     workspace_id: str,
-    http_request: Request,
+    request: Request,
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
     days: int = Query(default=7, ge=1, le=90, description="Number of days to include"),
@@ -981,7 +1193,7 @@ class AcknowledgeAlertRequest(BaseModel):
 @limiter.limit("30/minute")
 async def get_qa_alerts(
     workspace_id: str,
-    http_request: Request,
+    request: Request,
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
     acknowledged: bool | None = Query(default=None, description="Filter by acknowledged status"),
@@ -1020,7 +1232,7 @@ async def get_qa_alerts(
 async def acknowledge_qa_alert(
     alert_id: str,
     workspace_id: str,
-    http_request: Request,
+    request: Request,
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> AlertResponse:

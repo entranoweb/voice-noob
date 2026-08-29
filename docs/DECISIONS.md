@@ -1,0 +1,219 @@
+# Engineering decisions
+
+Why the QA harness is built the way it is. Each entry exists because the obvious
+alternative is wrong in a way that is not obvious, and someone will otherwise
+"simplify" it back.
+
+---
+
+## 1. `value=None` means *not measurable*. `0.0` means *measured and bad*.
+
+`MetricScore.value` is `float | None`, and the distinction is load-bearing.
+
+Before this existed, a JSON parse failure in the judge was written to the
+database as `score: 50, passed: False` — below the pass threshold — so **every
+harness malfunction raised a failure alert about an agent that may have
+performed perfectly.**
+
+Any metric that cannot compute must return `not_measurable(reason)`. Never zero.
+Zero is a measurement.
+
+## 2. A broken run reports `ERROR`, never `FAILED`
+
+`RunOutcome` has three values, not two. Validation-category metrics run first
+and gate everything after them; if the run is not trustworthy, the accuracy
+result is not reported as an agent result.
+
+`TestRun.passed` is set to `None`, not `False`, when the run is untrustworthy.
+An unmeasured run is not a failed one.
+
+## 3. Deterministic assertions decide the verdict; the judge does not
+
+Scenarios previously declared `min_score` and `must_invoke_tools`, and both were
+serialised into the judge's prompt as prose. The judge returned its own `passed`
+and the runner stored it unchallenged. The criteria were never enforced.
+
+Order is: validation gates → accuracy decides → experience and diagnostic are
+reported but do not decide. A slow-but-correct run passes; that distinction is
+real and worth keeping.
+
+## 4. Tools execute for real. Nothing is mocked.
+
+Asserting on a mocked tool response only tests that the model said the right
+words. The whole differentiator is asserting on what the database looks like
+afterwards.
+
+Third-party integrations (GoHighLevel, Calendly, Shopify, SMS) are excluded by
+passing **no credentials** to `ToolRegistry`, so `get_all_tool_definitions`
+skips them even when the agent has them enabled. A test run must never text a
+real customer.
+
+## 5. `join_transaction_mode="create_savepoint"` — the load-bearing line
+
+In `fixtures.py`. The session handed to the agent's tools joins an outer
+transaction in savepoint mode, so the `commit()` calls inside `CRMTools`
+release a savepoint instead of writing durably.
+
+**If this regresses, every simulated booking becomes a real one.**
+
+Rollback by transaction, not by deleting what we think we created. Tracked
+deletion misses cascades, cannot undo an *update* to a pre-existing row, and
+leaves residue exactly when a run crashed halfway — which is when residue
+matters most. There is a test for the crash case.
+
+## 6. Rollback is verified, not assumed
+
+After the transaction is gone, a **fresh connection** re-reads the database and
+diffs it against a baseline taken before the run. Reading through the same
+session could be answered from its identity map, which proves nothing about what
+is on disk.
+
+Three states stay distinct, for the same reason as decision 1: rollback failed /
+rollback happened but nothing checked it / rollback verified clean. Only the
+third is evidence, and only the third is what an audit record can claim.
+
+## 7. The engine comes from the session's bind, not the module
+
+`_engine_of(session)` rather than importing `app.db.session.engine`. Importing
+it directly would have a run pointed at a staging or test database quietly seed
+and roll back **somewhere else entirely** — which the first run of these tests
+demonstrated by trying to reach port 5432 while the tests were on 5433.
+
+## 8. `_execute` exists for its ordering
+
+The state snapshot must happen **inside** the fixture scope, while the agent's
+writes are still visible. The ledger is only complete **after** the scope exits
+and rollback has been verified. That is the whole reason the method exists;
+inlining it back into `run_scenario` loses the ordering.
+
+## 9. Isolation is on by default
+
+`run_scenario(isolated=True)`. This was a bug fix as much as a feature: once
+tool binding landed, runs were executing real tools against the caller's real
+database and leaving the rows there.
+
+`isolated=False` remains available and reports `state_restored` as
+**unmeasurable**, not clean — nothing checked it.
+
+## 10. A scenario is an argument, not a row
+
+`ScenarioSpec` builds a transient `TestScenario` that is never added to a
+session. A suite must not accumulate scenario and run records as a side effect
+of running.
+
+`fixture` is its own column rather than another key inside `success_criteria`.
+Fixtures are *setup*; confusing the world a test starts in with the world it
+must end in is how a scenario ends up asserting something it also created.
+
+## 11. `RunResult.__repr__` is the failure message
+
+pytest prints the repr of a falsey object. `assert result` on a bare boolean
+tells you a voice agent did something wrong somewhere, which is worthless at
+2am. The repr names the failing metric, the state diff, the tools invoked, and
+what the agent said.
+
+An `ERROR` is falsey too — a test that could not measure anything must not
+report success — but `explain()` says so in as many words.
+
+## 12. Comparisons refuse to name a winner when intervals overlap
+
+A voice agent is stochastic. One run against one run measures variance and
+reports it as a difference, which is worse than not measuring: it manufactures
+confidence.
+
+`repeats` defaults to 5, not 1. Pass rates carry **Wilson** score intervals —
+not the normal approximation, which returns a lower bound below zero for a
+variant that passed every run — and `Comparison.winner()` returns `None` unless
+the intervals separate. **That `None` is the designed outcome at small sample
+sizes, not a gap.**
+
+Errored runs count toward `repeats` but not toward the pass rate. An outage must
+not decide a prompt comparison.
+
+## 13. Mutations may only touch behaviour fields
+
+`MUTABLE_FIELDS` is a fixed allowlist. A mutation is an experiment, not a way to
+reassign an agent to another user or point it at a different phone number
+mid-comparison.
+
+Lists **replace** rather than concatenate on deep merge, otherwise removing a
+tool would be impossible to express.
+
+## 14. The simulated caller refuses to help
+
+Two constraints in its prompt do most of the work:
+
+- It must not volunteer information nobody asked for, and must not do the
+  agent's job for it. A caller that fills in gaps the agent should have asked
+  about tests nothing.
+- It must not be unusually patient. It is a customer, not a tester.
+
+It also does not decide whether the run passed. The caller talks; the metrics
+judge. Letting it conclude "great, that worked" would put a model's opinion back
+where deterministic assertions are supposed to sit.
+
+Bounded three ways: a per-persona turn budget, `MAX_TURNS_CEILING` above it, and
+a `<DONE>` sentinel. A final utterance arriving *alongside* the sentinel is
+still spoken — "great, thanks, bye" is a real turn, and dropping it denies the
+agent its chance to close the call.
+
+A persona can declare a scripted `opening`, which skips the model for the first
+turn. Two configurations under comparison must start identically or the
+comparison measures the caller as much as the agent.
+
+## 15. Three model roles, three settings
+
+`QA_AGENT_MODEL`, `QA_CALLER_MODEL`, `QA_JUDGE_MODEL`. All three were one knob,
+which cost roughly three times what the work requires.
+
+Only the **agent** is the measurement — a weaker model there reports the agent
+as worse than it is. The caller and judge default to Haiku.
+
+`QA_OPEN_MODEL_BASE_URL` points caller and judge at any OpenAI-compatible
+endpoint. This is not only a cost lever: a harness that must run inside a bank's
+own network cannot depend on an external API for any part of a run.
+
+Self-hosted models cost zero per token in the accounting, because the cost is
+the machine. An invented per-token rate would misreport the API bill and the
+infrastructure bill at once.
+
+## 16. The two OpenAI Realtime namespaces emit different event names
+
+`client.beta.realtime` sends `response.audio.delta`.
+`client.realtime` sends `response.output_audio.delta`.
+
+Renaming the handlers without moving the connect call would have silently killed
+every call. They move together or not at all.
+
+## 17. Tests run against Postgres, not SQLite
+
+SQLite silently drops tzinfo from `DateTime(timezone=True)` and cannot compile
+Postgres ARRAY columns. A suite run only on SQLite both fails tests that are
+correct and hides bugs that are real. One schema per test, dropped afterwards.
+
+## 18. Patch where a name is bound, not where it is defined
+
+`test_runner` does `from app.services.qa.resilience import get_anthropic_client`,
+so patching `app.services.qa.resilience.get_anthropic_client` rebinds nothing
+and the code reaches for a live API key.
+
+This has now bitten twice — once in `TestGetClient`, once in the inline-check
+tests. Patch `app.services.qa.test_runner.get_anthropic_client`.
+
+## 19. Shared state between tests must be reset explicitly
+
+The rate limiter keys on remote address and every test client shares one, so a
+test that deliberately exhausts a limit leaves every later test in the same
+process getting 429s. Thirteen tests were failing for reasons unrelated to the
+code they were in.
+
+Same class of problem: `global.fetch` assigned at module scope in a vitest file
+is replaced by MSW's `server.listen()` in a `beforeAll` from the shared setup,
+so the mock never sees a call. Install per test, restore afterwards.
+
+## 20. An exact-set assertion on the metric registry
+
+`test_the_registered_set_is_exactly_what_we_expect` compares the full set, not a
+subset. A metric that silently stops registering would drop out of every result
+with nothing to notice it by. When you add a metric, this test failing is the
+system working.

@@ -7,7 +7,7 @@ export default function QADashboardLoading() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <Skeleton className="h-6 w-32 mb-1" />
+          <Skeleton className="mb-1 h-6 w-32" />
           <Skeleton className="h-4 w-64" />
         </div>
         <div className="flex items-center gap-2">

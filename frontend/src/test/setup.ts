@@ -2,6 +2,10 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup } from "@testing-library/react";
 import React from "react";
 import { afterAll, afterEach, beforeAll, vi } from "vitest";
+import { server } from "../../tests/mocks/server";
+
+// Start MSW server before all tests
+beforeAll(() => server.listen({ onUnhandledRequest: "warn" }));
 
 // Mock framer-motion to avoid animation issues in tests
 vi.mock("framer-motion", () => {
@@ -41,6 +45,7 @@ vi.mock("framer-motion", () => {
 // Cleanup after each test
 afterEach(() => {
   cleanup();
+  server.resetHandlers();
 });
 
 // Mock Next.js router
@@ -137,4 +142,5 @@ beforeAll(() => {
 
 afterAll(() => {
   console.error = originalError;
+  server.close();
 });

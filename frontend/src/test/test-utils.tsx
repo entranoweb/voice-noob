@@ -39,3 +39,6 @@ export { customRender as render };
 
 // Export additional test utilities
 export { createTestQueryClient };
+
+// Export MSW server for test customization
+export { server } from "../../tests/mocks/server";

@@ -7,6 +7,9 @@ import {
   mockQAStatus,
   mockFailureReasons,
   mockTrendData,
+  mockWorkspaceQASettings,
+  mockTestScenarios,
+  mockTestRun,
 } from "./data";
 
 const API_URL = "http://localhost:8000";
@@ -17,13 +20,20 @@ export const handlers = [
     return HttpResponse.json({ status: "ok" });
   }),
 
+  // Telephony phone numbers. The CRM page loads these on mount; without a
+  // handler every request fell through MSW to a real backend on :8000, the
+  // page never finished loading, and its assertions failed on missing text.
+  http.get(`${API_URL}/api/v1/telephony/phone-numbers`, () => {
+    return HttpResponse.json([]);
+  }),
+
   // List contacts
-  http.get(`${API_URL}/crm/contacts`, () => {
+  http.get(`${API_URL}/api/v1/crm/contacts`, () => {
     return HttpResponse.json(mockContacts);
   }),
 
   // Get single contact
-  http.get(`${API_URL}/crm/contacts/:id`, ({ params }) => {
+  http.get(`${API_URL}/api/v1/crm/contacts/:id`, ({ params }) => {
     const contact = mockContacts.find((c) => c.id === Number(params.id));
 
     if (!contact) {
@@ -37,7 +47,7 @@ export const handlers = [
   }),
 
   // Create contact
-  http.post(`${API_URL}/crm/contacts`, async ({ request }) => {
+  http.post(`${API_URL}/api/v1/crm/contacts`, async ({ request }) => {
     const body = (await request.json()) as Record<string, unknown>;
 
     return HttpResponse.json(
@@ -51,12 +61,12 @@ export const handlers = [
   }),
 
   // CRM stats
-  http.get(`${API_URL}/crm/stats`, () => {
+  http.get(`${API_URL}/api/v1/crm/stats`, () => {
     return HttpResponse.json(mockCRMStats);
   }),
 
   // Error scenario: 404
-  http.get(`${API_URL}/crm/contacts/999`, () => {
+  http.get(`${API_URL}/api/v1/crm/contacts/999`, () => {
     return HttpResponse.json({ detail: "Contact not found" }, { status: 404 });
   }),
 
@@ -116,5 +126,121 @@ export const handlers = [
   // QA Alerts
   http.get(`${API_URL}/api/v1/qa/alerts`, () => {
     return HttpResponse.json([]);
+  }),
+
+  // Agents
+  http.get(`${API_URL}/api/v1/agents`, () => {
+    return HttpResponse.json([
+      { id: "agent-1", name: "Test Agent 1" },
+      { id: "agent-2", name: "Test Agent 2" },
+    ]);
+  }),
+
+  // Workspaces
+  http.get(`${API_URL}/api/v1/workspaces`, () => {
+    return HttpResponse.json([
+      { id: "ws-1", name: "Default Workspace", description: null, is_default: true },
+    ]);
+  }),
+
+  // Workspace QA Settings
+  http.get(`${API_URL}/api/v1/qa/workspace/:workspaceId/settings`, () => {
+    return HttpResponse.json(mockWorkspaceQASettings);
+  }),
+
+  http.put(`${API_URL}/api/v1/qa/workspace/:workspaceId/settings`, async ({ request }) => {
+    const body = (await request.json()) as Record<string, unknown>;
+    return HttpResponse.json({
+      settings: {
+        ...mockWorkspaceQASettings.settings,
+        ...body,
+      },
+      effective_settings: {
+        ...mockWorkspaceQASettings.effective_settings,
+        ...body,
+      },
+    });
+  }),
+
+  // Test Scenarios
+  http.get(`${API_URL}/api/v1/testing/scenarios`, () => {
+    return HttpResponse.json(mockTestScenarios);
+  }),
+
+  http.post(`${API_URL}/api/v1/testing/scenarios`, async ({ request }) => {
+    const body = (await request.json()) as Record<string, unknown>;
+    return HttpResponse.json(
+      {
+        id: "scenario-new",
+        ...body,
+        is_built_in: false,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      },
+      { status: 201 }
+    );
+  }),
+
+  http.put(`${API_URL}/api/v1/testing/scenarios/:id`, async ({ request, params }) => {
+    const body = (await request.json()) as Record<string, unknown>;
+    const scenario = mockTestScenarios.find((s) => s.id === params.id);
+    if (!scenario) {
+      return HttpResponse.json({ detail: "Scenario not found" }, { status: 404 });
+    }
+    return HttpResponse.json({
+      ...scenario,
+      ...body,
+      updated_at: new Date().toISOString(),
+    });
+  }),
+
+  http.delete(`${API_URL}/api/v1/testing/scenarios/:id`, ({ params }) => {
+    const scenario = mockTestScenarios.find((s) => s.id === params.id);
+    if (!scenario) {
+      return HttpResponse.json({ detail: "Scenario not found" }, { status: 404 });
+    }
+    return HttpResponse.json({ message: "Scenario deleted" });
+  }),
+
+  http.post(`${API_URL}/api/v1/testing/scenarios/:id/duplicate`, ({ params }) => {
+    const scenario = mockTestScenarios.find((s) => s.id === params.id);
+    if (!scenario) {
+      return HttpResponse.json({ detail: "Scenario not found" }, { status: 404 });
+    }
+    return HttpResponse.json({
+      ...scenario,
+      id: `${scenario.id}-copy`,
+      name: `${scenario.name} (Copy)`,
+      is_built_in: false,
+    });
+  }),
+
+  http.post(`${API_URL}/api/v1/testing/scenarios/seed`, () => {
+    return HttpResponse.json({
+      message: "Scenarios seeded",
+      scenarios_created: 5,
+    });
+  }),
+
+  // Test Runs
+  http.post(`${API_URL}/api/v1/testing/runs`, async ({ request }) => {
+    const body = (await request.json()) as Record<string, unknown>;
+    return HttpResponse.json({
+      id: "run-new",
+      agent_id: body.agent_id,
+      status: "pending",
+      total_scenarios: (body.scenario_ids as string[])?.length ?? 0,
+      passed_scenarios: 0,
+      failed_scenarios: 0,
+      results: [],
+      created_at: new Date().toISOString(),
+    });
+  }),
+
+  http.get(`${API_URL}/api/v1/testing/runs/:id`, ({ params }) => {
+    if (params.id === "run-new") {
+      return HttpResponse.json(mockTestRun);
+    }
+    return HttpResponse.json(mockTestRun);
   }),
 ];

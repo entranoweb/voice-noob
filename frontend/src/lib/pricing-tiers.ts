@@ -175,6 +175,17 @@ export function calculateMonthlyCost(
   };
 }
 
+// PRICING_TIERS is declared most-expensive first, which is how the tiers are
+// presented for selection. A comparison reads the other way: start from the
+// cheapest option and show what each step up costs against the premium
+// baseline. Kept as an explicit order rather than sorting by computed cost, so
+// the comparison does not reshuffle itself for unusual call volumes.
+const TIER_COMPARISON_ORDER = ["budget", "balanced", "premium-mini", "premium"];
+
+function byComparisonOrder(a: PricingTier, b: PricingTier): number {
+  return TIER_COMPARISON_ORDER.indexOf(a.id) - TIER_COMPARISON_ORDER.indexOf(b.id);
+}
+
 export function compareTiers(
   callsPerMonth: number,
   avgDurationMinutes: number
@@ -187,7 +198,7 @@ export function compareTiers(
   if (!premiumTier) throw new Error("Premium tier not found");
   const premiumCost = calculateMonthlyCost(premiumTier, callsPerMonth, avgDurationMinutes);
 
-  return PRICING_TIERS.map((tier) => {
+  return [...PRICING_TIERS].sort(byComparisonOrder).map((tier) => {
     const cost = calculateMonthlyCost(tier, callsPerMonth, avgDurationMinutes);
     const savingsVsPremium = premiumCost.totalCost - cost.totalCost;
 

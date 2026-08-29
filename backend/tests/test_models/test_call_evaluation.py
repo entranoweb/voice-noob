@@ -24,9 +24,7 @@ class TestCallEvaluationModel:
         user = await create_test_user()
         workspace = await create_test_workspace(user.id)
         agent = await create_test_agent(user.id)
-        call_record = await create_test_call_record(
-            agent_id=agent.id, workspace_id=workspace.id
-        )
+        call_record = await create_test_call_record(agent_id=agent.id, workspace_id=workspace.id)
 
         evaluation = CallEvaluation(
             call_id=call_record.id,
@@ -61,9 +59,7 @@ class TestCallEvaluationModel:
         user = await create_test_user()
         workspace = await create_test_workspace(user.id)
         agent = await create_test_agent(user.id)
-        call_record = await create_test_call_record(
-            agent_id=agent.id, workspace_id=workspace.id
-        )
+        call_record = await create_test_call_record(agent_id=agent.id, workspace_id=workspace.id)
 
         evaluation = CallEvaluation(
             call_id=call_record.id,

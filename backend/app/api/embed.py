@@ -433,7 +433,7 @@ async def _bridge_embed_streams(
                     event_type = event.type
 
                     # Log non-audio events (audio deltas are too frequent)
-                    if event_type != "response.audio.delta":
+                    if event_type != "response.output_audio.delta":
                         logger.info("realtime_event", event_type=event_type)
                     else:
                         logger.debug("audio_delta_received")

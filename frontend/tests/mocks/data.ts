@@ -175,3 +175,100 @@ export const mockTrendData = {
   values: [75, 78, 82, 80, 85],
   metric: "overall_score",
 };
+
+// Workspace QA Settings Mock Data
+export const mockWorkspaceQASettings = {
+  settings: {
+    qa_enabled: true,
+    auto_evaluate: true,
+    pass_threshold: 70,
+    evaluation_model: "claude-sonnet-4-20250514",
+    inherit_global: true,
+  },
+  effective_settings: {
+    qa_enabled: true,
+    auto_evaluate: true,
+    pass_threshold: 70,
+    evaluation_model: "claude-sonnet-4-20250514",
+  },
+};
+
+// Test Scenarios Mock Data
+export const mockTestScenarios = [
+  {
+    id: "scenario-1",
+    name: "Basic Greeting Test",
+    description: "Test basic greeting flow",
+    category: "greeting",
+    difficulty: "easy",
+    is_built_in: true,
+    is_active: true,
+    caller_persona: { name: "John", mood: "neutral", goal: "Say hello", context: "" },
+    initial_message: null,
+    expected_behaviors: ["Greet caller", "Ask how to help"],
+    failure_conditions: null,
+    success_criteria: { items: [{ criterion: "Agent greets caller", required: true }] },
+    max_turns: 10,
+    created_at: "2024-01-01T00:00:00Z",
+  },
+  {
+    id: "scenario-2",
+    name: "Appointment Booking",
+    description: "Test appointment booking flow",
+    category: "booking",
+    difficulty: "medium",
+    is_built_in: true,
+    is_active: true,
+    caller_persona: { name: "Jane", mood: "friendly", goal: "Book appointment", context: "New customer" },
+    initial_message: null,
+    expected_behaviors: ["Ask for date", "Confirm booking"],
+    failure_conditions: null,
+    success_criteria: { items: [{ criterion: "Booking confirmed", required: true }] },
+    max_turns: 10,
+    created_at: "2024-01-02T00:00:00Z",
+  },
+  {
+    id: "scenario-3",
+    name: "Custom VIP Scenario",
+    description: "Custom scenario for VIP clients",
+    category: "custom",
+    difficulty: "hard",
+    is_built_in: false,
+    is_active: true,
+    caller_persona: { name: "Sarah", mood: "impatient", goal: "Urgent booking", context: "VIP client" },
+    initial_message: null,
+    expected_behaviors: ["Prioritize request", "Expedite booking"],
+    failure_conditions: null,
+    success_criteria: { items: [{ criterion: "VIP acknowledged", required: true }] },
+    max_turns: 10,
+    created_at: "2024-01-03T00:00:00Z",
+  },
+];
+
+// Test Run Mock Data
+export const mockTestRun = {
+  id: "run-1",
+  agent_id: "agent-1",
+  workspace_id: "workspace-1",
+  status: "completed",
+  total_scenarios: 2,
+  passed_scenarios: 1,
+  failed_scenarios: 1,
+  results: [
+    {
+      scenario_id: "scenario-1",
+      passed: true,
+      score: 92,
+      duration_ms: 1500,
+    },
+    {
+      scenario_id: "scenario-2",
+      passed: false,
+      score: 55,
+      failure_reason: "Booking not confirmed",
+      duration_ms: 2000,
+    },
+  ],
+  created_at: "2024-01-15T10:00:00Z",
+  completed_at: "2024-01-15T10:05:00Z",
+};

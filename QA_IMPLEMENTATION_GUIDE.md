@@ -364,5 +364,118 @@ mcp__auggie-mcp__codebase-retrieval queries:
 
 ---
 
-*Last updated: 2024-12-19*
+*Last updated: 2026-01-08*
 *Branch: synthiqvoice*
+
+---
+
+## 12. QA Configuration UI (Phase 5 Complete)
+
+The QA Configuration UI provides a comprehensive interface for managing QA settings, test scenarios, and running tests.
+
+### Components Overview
+
+| Component | Location | Purpose |
+|-----------|----------|---------|
+| `QASettingsPanel` | `components/qa/qa-settings-panel.tsx` | Workspace QA settings management |
+| `ScenarioManager` | `components/qa/scenario-manager.tsx` | Test scenario CRUD operations |
+| `ScenarioForm` | `components/qa/scenario-form.tsx` | Create/edit scenario dialog |
+| `ScenarioCard` | `components/qa/scenario-card.tsx` | Individual scenario display |
+| `TestRunner` | `components/qa/test-runner.tsx` | Run tests as slide-out sheet |
+| `TestResultsSummary` | `components/qa/test-results-summary.tsx` | Display test run results |
+
+### QA Dashboard Tabs
+
+The QA Dashboard (`app/dashboard/qa/page.tsx`) has three tabs:
+
+1. **Overview** - Metrics, trends, failure reasons, recent evaluations
+2. **Scenarios** - Manage test scenarios with filtering and search
+3. **Settings** - Workspace-specific QA configuration
+
+### API Endpoints
+
+```typescript
+// Workspace QA Settings
+GET  /api/v1/qa/workspace/{workspace_id}/settings
+PUT  /api/v1/qa/workspace/{workspace_id}/settings
+
+// Test Scenarios
+GET    /api/v1/testing/scenarios
+POST   /api/v1/testing/scenarios
+PUT    /api/v1/testing/scenarios/{id}
+DELETE /api/v1/testing/scenarios/{id}
+POST   /api/v1/testing/scenarios/{id}/duplicate
+POST   /api/v1/testing/scenarios/seed
+
+// Test Runs
+POST /api/v1/testing/runs
+GET  /api/v1/testing/runs/{id}
+```
+
+### Test Coverage
+
+All QA components have comprehensive test coverage:
+
+```bash
+# Run all QA tests
+cd frontend && npx vitest run src/components/qa/__tests__/ src/app/dashboard/qa/__tests__/
+
+# Test files:
+# - qa-settings-panel.test.tsx (15 tests)
+# - scenario-manager.test.tsx (19 tests)
+# - scenario-form.test.tsx (17 tests)
+# - test-runner.test.tsx (14 tests)
+# - evaluation-list.test.tsx (8 tests)
+# - page.test.tsx (6 tests)
+# - integration.test.tsx (13 tests)
+# Total: 92 tests
+```
+
+### Key Patterns
+
+#### Workspace Settings Override
+```typescript
+// Settings can inherit from global or be workspace-specific
+const { data: settingsData } = useQuery({
+  queryKey: ["qa-workspace-settings", workspaceId],
+  queryFn: () => getWorkspaceQASettings(workspaceId),
+});
+
+// Check if inheriting
+const isInheriting = settingsData?.settings?.inherit_global ?? true;
+const effectiveSettings = settingsData?.effective_settings;
+```
+
+#### Test Runner Flow
+```typescript
+// 1. Select agent and scenarios
+// 2. Start test run
+const startRunMutation = useMutation({
+  mutationFn: startTestRun,
+  onSuccess: (run) => {
+    // 3. Poll for completion
+    void pollForCompletion(run.id, selectedScenarioList);
+  },
+});
+
+// 4. Display results with pass/fail status
+```
+
+#### Scenario Form Validation
+```typescript
+// Uses react-hook-form with zod schema
+const scenarioSchema = z.object({
+  name: z.string().min(1, "Name is required"),
+  category: z.string().min(1, "Category is required"),
+  difficulty: z.enum(["easy", "medium", "hard"]),
+  // ... more fields
+});
+```
+
+### UI Polish Features
+
+- **Loading Skeletons**: All components show skeleton loaders during data fetch
+- **Empty States**: Helpful messages when no data exists
+- **Confirmation Dialogs**: Delete actions require confirmation
+- **Responsive Design**: Works on mobile, tablet, and desktop
+- **Accessibility**: ARIA labels, keyboard navigation, screen reader support

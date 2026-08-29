@@ -76,8 +76,8 @@ async def cleanup_test_db(session: AsyncSession, db_path: str) -> None:
         path = Path(db_path)
         if path.exists():
             path.unlink()
-    except Exception:
-        pass
+    except Exception:  # noqa: S110
+        pass  # Intentionally silent - test cleanup should not fail tests
 
 
 @pytest.mark.asyncio

@@ -21,6 +21,7 @@ class TestAppointmentModel:
         create_test_user: Any,
         create_test_contact: Any,
         sample_appointment_data: dict[str, Any],
+        refresh_full: Any,
     ) -> None:
         """Test creating an appointment with all fields."""
         user = await create_test_user()
@@ -29,7 +30,7 @@ class TestAppointmentModel:
         appointment = Appointment(contact_id=contact.id, **sample_appointment_data)
         test_session.add(appointment)
         await test_session.commit()
-        await test_session.refresh(appointment)
+        await refresh_full(test_session, appointment)
 
         assert appointment.id is not None
         assert appointment.contact_id == contact.id
@@ -48,6 +49,7 @@ class TestAppointmentModel:
         test_session: AsyncSession,
         create_test_user: Any,
         create_test_contact: Any,
+        refresh_full: Any,
     ) -> None:
         """Test creating an appointment with minimal required fields."""
         user = await create_test_user()
@@ -61,7 +63,7 @@ class TestAppointmentModel:
         )
         test_session.add(appointment)
         await test_session.commit()
-        await test_session.refresh(appointment)
+        await refresh_full(test_session, appointment)
 
         assert appointment.id is not None
         assert appointment.contact_id == contact.id

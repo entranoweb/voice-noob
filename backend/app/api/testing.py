@@ -9,7 +9,7 @@ from typing import Any
 
 import structlog
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -25,6 +25,7 @@ from app.models.test_scenario import (
     TestScenario,
 )
 from app.services.qa.test_runner import TestRunner
+from app.services.qa.testing import checker
 
 
 def _parse_uuid(value: str, field_name: str = "ID") -> uuid.UUID:
@@ -140,6 +141,55 @@ class RunTestResponse(BaseModel):
     status: str
 
 
+class InlineCheckRequest(BaseModel):
+    """A scenario defined in the request rather than stored first.
+
+    This is what an external harness - promptfoo, a CI script, someone's own
+    runner - posts. Requiring a persisted scenario first would mean every
+    integration had to manage our resources before it could ask a question.
+    """
+
+    agent_id: str
+    says: list[str] = Field(min_length=1, description="Caller turns, in order")
+    invokes: list[str] = Field(default_factory=list, description="Tools that must be called")
+    leaves: dict[str, Any] | None = Field(
+        default=None,
+        description="Database state the run must produce",
+    )
+    given: dict[str, Any] | None = Field(default=None, description="Rows to seed before the run")
+    persona: dict[str, Any] | None = None
+    max_response_ms: float | None = None
+    workspace_id: str | None = None
+    judge: bool = Field(default=False, description="Also run the qualitative judge")
+
+
+class MetricScoreResponse(BaseModel):
+    """One metric's result. `value` of null means not measurable, not zero."""
+
+    metric: str
+    category: str
+    value: float | None
+    passed: bool | None
+    unit: str | None = None
+    detail: dict[str, Any] = Field(default_factory=dict)
+
+
+class InlineCheckResponse(BaseModel):
+    """Everything a caller needs to decide, and to explain the decision."""
+
+    outcome: str
+    passed: bool
+    trustworthy: bool
+    accuracy_score: float | None
+    explanation: str
+    transcript: list[dict[str, Any]]
+    tool_calls: list[dict[str, Any]]
+    final_state: dict[str, Any]
+    fixture_ledger: dict[str, Any] | None
+    metrics: list[MetricScoreResponse]
+    judgement: dict[str, Any] = Field(default_factory=dict)
+
+
 class RunAllTestsRequest(BaseModel):
     """Request to run all tests for an agent."""
 
@@ -174,6 +224,46 @@ class TestingSummaryResponse(BaseModel):
     pass_rate: float
     avg_score: float | None
     last_run_at: datetime | None
+
+
+class TestScenarioCreate(BaseModel):
+    """Create test scenario request."""
+
+    name: str = Field(..., max_length=200)
+    description: str | None = None
+    category: str
+    difficulty: str
+    caller_persona: dict[str, Any]
+    conversation_flow: list[dict[str, Any]]
+    expected_behaviors: list[str]
+    expected_tool_calls: list[dict[str, Any]] | None = None
+    success_criteria: dict[str, Any]
+    workspace_id: str | None = None
+    tags: list[str] | None = None
+
+
+class TestScenarioUpdate(BaseModel):
+    """Update test scenario request."""
+
+    name: str | None = Field(None, max_length=200)
+    description: str | None = None
+    category: str | None = None
+    difficulty: str | None = None
+    caller_persona: dict[str, Any] | None = None
+    conversation_flow: list[dict[str, Any]] | None = None
+    expected_behaviors: list[str] | None = None
+    expected_tool_calls: list[dict[str, Any]] | None = None
+    success_criteria: dict[str, Any] | None = None
+    is_active: bool | None = None
+    tags: list[str] | None = None
+
+
+class DuplicateScenarioResponse(BaseModel):
+    """Response after duplicating a scenario."""
+
+    message: str
+    original_id: str
+    new_scenario: TestScenarioResponse
 
 
 # =============================================================================
@@ -319,6 +409,261 @@ async def list_categories(
     }
 
 
+@router.post("/scenarios", response_model=TestScenarioResponse, status_code=201)
+async def create_scenario(
+    request: TestScenarioCreate,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+) -> TestScenarioResponse:
+    """Create a custom test scenario."""
+    log = logger.bind(user_id=current_user.id)
+    log.info("creating_scenario", name=request.name)
+
+    # Validate category against ScenarioCategory enum values
+    valid_categories = [c.value for c in ScenarioCategory]
+    if request.category not in valid_categories:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid category: {request.category}. Must be one of: {', '.join(valid_categories)}",
+        )
+
+    # Validate difficulty against ScenarioDifficulty enum values
+    valid_difficulties = [d.value for d in ScenarioDifficulty]
+    if request.difficulty not in valid_difficulties:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid difficulty: {request.difficulty}. Must be one of: {', '.join(valid_difficulties)}",
+        )
+
+    # Parse workspace_id if provided
+    workspace_uuid = (
+        _parse_uuid(request.workspace_id, "workspace_id") if request.workspace_id else None
+    )
+
+    # Create the scenario
+    scenario = TestScenario(
+        user_id=current_user.id,
+        workspace_id=workspace_uuid,
+        name=request.name,
+        description=request.description,
+        category=request.category,
+        difficulty=request.difficulty,
+        caller_persona=request.caller_persona,
+        conversation_flow=request.conversation_flow,
+        expected_behaviors=request.expected_behaviors,
+        expected_tool_calls=request.expected_tool_calls,
+        success_criteria=request.success_criteria,
+        is_active=True,
+        is_built_in=False,
+        tags=request.tags,
+    )
+
+    db.add(scenario)
+    await db.commit()
+    await db.refresh(scenario)
+
+    log.info("scenario_created", scenario_id=str(scenario.id))
+
+    return TestScenarioResponse(
+        id=str(scenario.id),
+        name=scenario.name,
+        description=scenario.description,
+        category=scenario.category,
+        difficulty=scenario.difficulty,
+        caller_persona=scenario.caller_persona,
+        expected_behaviors=scenario.expected_behaviors,
+        success_criteria=scenario.success_criteria,
+        is_active=scenario.is_active,
+        is_built_in=scenario.is_built_in,
+        tags=scenario.tags,
+        created_at=scenario.created_at,
+    )
+
+
+@router.put("/scenarios/{scenario_id}", response_model=TestScenarioResponse)
+async def update_scenario(
+    scenario_id: str,
+    request: TestScenarioUpdate,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+) -> TestScenarioResponse:
+    """Update a custom test scenario."""
+    log = logger.bind(user_id=current_user.id, scenario_id=scenario_id)
+    log.info("updating_scenario")
+
+    scenario_uuid = _parse_uuid(scenario_id, "scenario_id")
+
+    # Fetch the scenario
+    result = await db.execute(select(TestScenario).where(TestScenario.id == scenario_uuid))
+    scenario = result.scalar_one_or_none()
+
+    if not scenario:
+        raise HTTPException(status_code=404, detail="Scenario not found")
+
+    # Reject if built-in scenario
+    if scenario.is_built_in:
+        raise HTTPException(status_code=403, detail="Cannot modify built-in scenarios")
+
+    # Verify ownership
+    if scenario.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to modify this scenario")
+
+    # Validate category if provided
+    if request.category is not None:
+        valid_categories = [c.value for c in ScenarioCategory]
+        if request.category not in valid_categories:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid category: {request.category}. Must be one of: {', '.join(valid_categories)}",
+            )
+
+    # Validate difficulty if provided
+    if request.difficulty is not None:
+        valid_difficulties = [d.value for d in ScenarioDifficulty]
+        if request.difficulty not in valid_difficulties:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid difficulty: {request.difficulty}. Must be one of: {', '.join(valid_difficulties)}",
+            )
+
+    # Apply partial updates (only non-None fields)
+    update_fields = request.model_dump(exclude_unset=True)
+    for field, value in update_fields.items():
+        setattr(scenario, field, value)
+
+    await db.commit()
+    await db.refresh(scenario)
+
+    log.info("scenario_updated", scenario_id=str(scenario.id))
+
+    return TestScenarioResponse(
+        id=str(scenario.id),
+        name=scenario.name,
+        description=scenario.description,
+        category=scenario.category,
+        difficulty=scenario.difficulty,
+        caller_persona=scenario.caller_persona,
+        expected_behaviors=scenario.expected_behaviors,
+        success_criteria=scenario.success_criteria,
+        is_active=scenario.is_active,
+        is_built_in=scenario.is_built_in,
+        tags=scenario.tags,
+        created_at=scenario.created_at,
+    )
+
+
+@router.delete("/scenarios/{scenario_id}", status_code=204)
+async def delete_scenario(
+    scenario_id: str,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """Delete a custom test scenario."""
+    log = logger.bind(user_id=current_user.id, scenario_id=scenario_id)
+    log.info("deleting_scenario")
+
+    scenario_uuid = _parse_uuid(scenario_id, "scenario_id")
+
+    # Fetch the scenario
+    result = await db.execute(select(TestScenario).where(TestScenario.id == scenario_uuid))
+    scenario = result.scalar_one_or_none()
+
+    if not scenario:
+        raise HTTPException(status_code=404, detail="Scenario not found")
+
+    # Reject if built-in scenario
+    if scenario.is_built_in:
+        raise HTTPException(status_code=403, detail="Cannot delete built-in scenarios")
+
+    # Verify ownership
+    if scenario.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to delete this scenario")
+
+    await db.delete(scenario)
+    await db.commit()
+
+    log.info("scenario_deleted", scenario_id=str(scenario_uuid))
+
+
+@router.post("/scenarios/{scenario_id}/duplicate", response_model=DuplicateScenarioResponse)
+async def duplicate_scenario(
+    scenario_id: str,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+) -> DuplicateScenarioResponse:
+    """Duplicate a test scenario (built-in or user's own).
+
+    Creates a copy of the scenario owned by the current user.
+    Built-in scenarios can be duplicated to create custom versions.
+    """
+    log = logger.bind(user_id=current_user.id, scenario_id=scenario_id)
+    log.info("duplicating_scenario")
+
+    scenario_uuid = _parse_uuid(scenario_id, "scenario_id")
+
+    # Fetch the scenario - user can duplicate built-in OR their own scenarios
+    result = await db.execute(
+        select(TestScenario).where(
+            TestScenario.id == scenario_uuid,
+            or_(
+                TestScenario.is_built_in == True,  # noqa: E712
+                TestScenario.user_id == current_user.id,
+            ),
+        )
+    )
+    scenario = result.scalar_one_or_none()
+
+    if not scenario:
+        raise HTTPException(status_code=404, detail="Scenario not found")
+
+    # Create a duplicate with a new name
+    new_scenario = TestScenario(
+        user_id=current_user.id,
+        workspace_id=scenario.workspace_id,
+        name=f"{scenario.name} (Copy)",
+        description=scenario.description,
+        category=scenario.category,
+        difficulty=scenario.difficulty,
+        caller_persona=scenario.caller_persona,
+        conversation_flow=scenario.conversation_flow,
+        expected_behaviors=scenario.expected_behaviors,
+        expected_tool_calls=scenario.expected_tool_calls,
+        success_criteria=scenario.success_criteria,
+        is_active=True,
+        is_built_in=False,  # Duplicates are never built-in
+        tags=scenario.tags,
+    )
+
+    db.add(new_scenario)
+    await db.commit()
+    await db.refresh(new_scenario)
+
+    log.info(
+        "scenario_duplicated",
+        original_id=str(scenario_uuid),
+        new_id=str(new_scenario.id),
+    )
+
+    return DuplicateScenarioResponse(
+        message="Scenario duplicated successfully",
+        original_id=str(scenario_uuid),
+        new_scenario=TestScenarioResponse(
+            id=str(new_scenario.id),
+            name=new_scenario.name,
+            description=new_scenario.description,
+            category=new_scenario.category,
+            difficulty=new_scenario.difficulty,
+            caller_persona=new_scenario.caller_persona,
+            expected_behaviors=new_scenario.expected_behaviors,
+            success_criteria=new_scenario.success_criteria,
+            is_active=new_scenario.is_active,
+            is_built_in=new_scenario.is_built_in,
+            tags=new_scenario.tags,
+            created_at=new_scenario.created_at,
+        ),
+    )
+
+
 # =============================================================================
 # Test Run Endpoints
 # =============================================================================
@@ -421,6 +766,79 @@ async def _run_all_scenarios_background(
             )
     except Exception:
         log.exception("background_test_run_failed")
+
+
+@router.post("/check", response_model=InlineCheckResponse)
+async def check_inline(
+    request: InlineCheckRequest,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+) -> InlineCheckResponse:
+    """Run a scenario defined in the request and return the full result.
+
+    The entry point for anything outside this codebase: a promptfoo provider, a
+    CI script, someone's own harness. Nothing is persisted - no scenario, no run
+    record - and the agent's real tools execute inside a transaction that is
+    rolled back and verified, so calling this repeatedly leaves the caller's
+    data exactly as it found it.
+    """
+    log = logger.bind(user_id=current_user.id, agent_id=request.agent_id)
+    log.info("inline_check")
+
+    if not settings.QA_ENABLED:
+        raise HTTPException(status_code=400, detail="QA testing is disabled")
+
+    if not settings.ANTHROPIC_API_KEY:
+        raise HTTPException(status_code=400, detail="Anthropic API key not configured")
+
+    agent_uuid = _parse_uuid(request.agent_id, "agent_id")
+    workspace_uuid = (
+        _parse_uuid(request.workspace_id, "workspace_id") if request.workspace_id else None
+    )
+
+    agent_result = await db.execute(
+        select(Agent).where(Agent.id == agent_uuid, Agent.user_id == current_user.id)
+    )
+    agent = agent_result.scalar_one_or_none()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    result = await checker(TestRunner(db)).check(
+        agent=agent,
+        user_id=current_user.id,
+        says=request.says,
+        invokes=request.invokes,
+        leaves=request.leaves,
+        given=request.given,
+        persona=request.persona,
+        max_response_ms=request.max_response_ms,
+        workspace_id=workspace_uuid,
+        judge=request.judge,
+    )
+
+    return InlineCheckResponse(
+        outcome=str(result.outcome),
+        passed=result.passed,
+        trustworthy=result.metrics.trustworthy,
+        accuracy_score=result.metrics.accuracy_score(),
+        explanation=result.explain(),
+        transcript=result.transcript,
+        tool_calls=result.tool_calls,
+        final_state=result.final_state,
+        fixture_ledger=result.ledger,
+        metrics=[
+            MetricScoreResponse(
+                metric=score.metric,
+                category=str(score.category),
+                value=score.value,
+                passed=score.passed,
+                unit=score.unit,
+                detail=score.detail or {},
+            )
+            for score in result.metrics.scores
+        ],
+        judgement=result.judgement,
+    )
 
 
 @router.post("/run-all", response_model=RunAllTestsResponse)
