@@ -1,10 +1,7 @@
 # Handoff — Synthiq test layer
 
 **Written:** 29 August 2026
-**Reason:** PR #8 merged; work continues in a fresh session.
-**Last revised:** 29 August 2026, for the inbound-path work in
-[PR #11](https://github.com/entranoweb/voice-noob/pull/11) (open at the time of
-writing — §1 below still describes the last *merged* state).
+**Reason:** PR #11 merged; work continues in a fresh session.
 
 Everything a new session needs to pick this up without re-deriving it. Read
 [`../SYNTHIQ_PLAN.md`](../SYNTHIQ_PLAN.md) for the vision and the flywheel and
@@ -17,12 +14,23 @@ document is the state of play and the next move.
 
 | Fact | Value |
 | --- | --- |
-| Merged | [PR #8](https://github.com/entranoweb/voice-noob/pull/8) → `voice-prod` as `081cc1c`, 29 Aug 2026 06:39 UTC |
-| Size | 22 commits, 168 files, +21133 / −12966 |
-| Green at merge | 609 backend tests, 283 frontend tests; ruff, format, `mypy --strict` (104 files), eslint, tsc, prettier |
-| CI | `.github/workflows/` — Postgres 17 + Redis 7 services, import guard, single-Alembic-head assertion, backend and frontend gates |
+| Merged | [PR #11](https://github.com/entranoweb/voice-noob/pull/11) → `main` as `070b132`, 29 Aug 2026 21:17 UTC |
+| Size | 15 commits, 33 files, +4970 / −149 |
+| Green at merge | 729 backend tests, 283 frontend tests; ruff, format, `mypy --strict` (109 files), eslint, tsc, prettier |
+| Alembic | single head `b83d1c4f7a90` |
+| Before that | [PR #8](https://github.com/entranoweb/voice-noob/pull/8) as `081cc1c`, 29 Aug 06:39 UTC — the harness itself |
+| CI | `.github/workflows/ci.yml` — Postgres 17 + Redis 7 services, import guard, single-Alembic-head assertion, backend and frontend gates |
 
-`voice-prod` is the integration branch. Start new work from it.
+`main` carries everything. Branch from it.
+
+**Reviews on PR #11 ran to seven rounds.** Worth knowing why, because the pattern
+repeats: the first rounds found real defects in the diff, and the last three each
+found a defect introduced by the *previous* fix — all inside
+`monitoring/tracing.py`. If that file misbehaves, it is the youngest and most
+churned code in the merge. Two of those rounds also caught claims that were
+wrong rather than code that was: a metric category read off a directory instead
+of the class, and a "verified by reverting" claim that held for one of two tests.
+Verify, then claim.
 
 ## 2. What exists now
 
@@ -90,7 +98,7 @@ the turn text *and* the tool arguments and tool errors — see DECISIONS §32.
 
 State these before any claim built on the harness.
 
-- **No call has ever gone through Telnyx.** Still true. The inbound path is now
+- **No call has ever gone through Telnyx.** Still true after PR #11. The inbound path is now
   exercised end to end against the real application — signed webhook, TeXML
   document, websocket, µ-law frames both ways, a row in Postgres, spans out —
   with only the model stubbed (`backend/tests/websocket/test_telnyx_inbound_call.py`).
@@ -117,34 +125,52 @@ Ordered by value, from `SYNTHIQ_PLAN.md` §6.
 
 | # | Work | Blocked on | Size |
 | --- | --- | --- | --- |
-| 5 | **One real call, end to end** — Telnyx number, live call, a row landed | Path fixed and covered end to end; **the live call itself still needs credentials, a number and a handset** | ½ day left |
-| 6 | **Audio in the loop** — TTFB and barge-in wired to the live transport; WER wired but needs a scripted caller over audio to become measurable. Per-speaker tracks still to do | #5's live call | 1 week left |
+| 5 | **One real call, end to end** — Telnyx number, live call, a row landed | Nothing in the code. **Credentials, a number and a handset** — see §7 | ½ day |
+| 6 | **Audio in the loop** — TTFB and barge-in are wired to the live transport and land on the call record. WER is wired but needs a scripted caller speaking over audio to become measurable. Per-speaker tracks still to do | #5's live call | 1 week left |
 | 7 | **Red team over a real line** — OWASP LLM Top 10 / EU AI Act mapping; the procurement artifact | #6 | 4–5 days |
 | 8 | **Judge calibration** — human-vs-machine agreement, then prompt refinement | Human-labelled runs | 3 days |
 | 9 | **Scheduled runs and reports** — cron run templates, regression against a baseline | nothing | 4–5 days |
 | 10 | **The Synthiq rename** — repo, packages, API still say Voice Noob | nothing; cheap now, expensive after a design partner integrates | 1 day |
 
-**#5's remaining half-day is still the critical path.** #6 and #7 both sit behind it, and #7 is what
-converts the work into contracts. #9 and #10 are the only unblocked items, and
-#10 gets more expensive every week it waits.
+**#5 is the critical path and is now blocked on nothing but access.** Every
+defect between the carrier and the database has been fixed and covered; what
+remains is a phone call. #6 and #7 sit behind it, and #7 is what converts the
+work into contracts. #9 and #10 are the only unblocked items, and #10 gets more
+expensive every week it waits.
 
-Also open, from §7 — decide before more code, not after: licence (MIT or
+One more item, unnumbered because it is not product work: **the telephony
+websockets are unauthenticated** (§6). It is the largest known hole in the
+inbound path and it predates all of this. Anyone who learns an agent's UUID can
+talk to that agent with its tools. Do #5 first — it is half a day and it gates
+everything — but do not put a real number in front of the public internet
+without deciding about this one.
+
+Also open, from `SYNTHIQ_PLAN.md` §7 (not §7 of this document) — decide before
+more code, not after: licence (MIT or
 Apache-2.0, **not** BSL), monetisation (harness free and forkable; sell hosted
 EU-region cloud), the OpenAI-acquired-promptfoo answer for security reviews, and
 keeping the engine choice out of the test layer.
 
 ## 5. Next step for a new session
 
-1. Branch from `voice-prod`.
-2. Place the live call — see §7 for the exact procedure and what to check.
-3. Then item **#6**'s remainder: a scripted caller speaking over audio, so
+1. Branch from `main`.
+2. **Place the live call** — §7 has the exact procedure and what to check, in
+   order. This is the whole next step. Everything below it is blocked on it, and
+   the value of doing it is not the green tick: it is that the last time
+   something on this path was tried for the first time, it produced five defects
+   that no test had seen.
+3. Write down what happened, including the parts that did not work. Then item
+   **#6**'s remainder: a scripted caller speaking over audio, so
    `transcription_accuracy` has a reference to score against, and per-speaker
    tracks.
 
 Do **not** start #8 — building calibration machinery with no labelled runs to
 put through it is scaffolding, not progress.
 
-## 6. What the inbound path was doing wrong
+Do **not** treat #5 as done because the tests pass. They cover everything below
+the carrier; they do not cover the carrier.
+
+## 6. What the inbound path was doing wrong (fixed in PR #11)
 
 None of these were visible to any test, and each one alone was enough to lose a
 real call. They are listed because they are the argument for §7: the next
