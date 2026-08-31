@@ -210,36 +210,91 @@ them, which is the honest reading: we do not know how it ended.
 
 ## 7. Placing the live call
 
-Everything below the carrier is covered. This is what is not.
+Everything below the carrier is covered. This is what is not. Ordered so that
+each step fails loudly rather than silently.
 
-1. Put `TELNYX_API_KEY` and `TELNYX_PUBLIC_KEY` in the environment. Never commit
-   them. `TELNYX_PUBLIC_KEY` is required — with none set, signature verification
-   falls back to `settings.DEBUG`, which must be false in production.
-2. Point a number at `https://<host>/webhooks/telnyx/voice` as a **TeXML
-   application** (`configure_phone_number_webhook` does this), with the status
-   callback at `/webhooks/telnyx/status`. The host must be publicly reachable
-   over TLS: the answer document hands Telnyx a `wss://` URL derived from
-   `request.base_url`, so behind a proxy the app needs the forwarded-proto
-   headers or the URL will come out `ws://` and the stream will never connect.
-3. Create an agent with `phone_number_id` set to the number in E.164, and
-   `is_active` true. An inactive agent closes the websocket with 4003.
-4. Call it. Then check, in this order:
-   - a `call_records` row exists with that `CallSid` and status `completed`;
-   - `turns` on that row is non-null;
-   - `GET /api/v1/calls/{id}/metrics` reports a measured
-     `time_to_first_audio` and `interruption_handling`, and
-     `transcription_accuracy: null` (correct — a human caller has no script);
-   - a `voice.call` span with `voice.turn` (and `voice.tool_call`) children.
-     Set `OTEL_ENABLED=true` and `OTEL_EXPORTER_OTLP_ENDPOINT` to an OTLP/HTTP
-     collector; `app/monitoring/tracing.py` installs the provider at startup and
-     logs `tracing_provider_installed` when it takes — that line means the
-     provider is installed and spans are addressed there, not that anything
-     arrived. With `OTEL_ENABLED` false the emitter is a no-op by design and the
-     log says so. A trace carries transcripts, so plain `http://` to a host that
-     is not loopback is refused (`tracing_refused_cleartext_endpoint`, and
-     `configure_tracing` returns false); use `https://`, a loopback collector, or
-     set `OTEL_ALLOW_INSECURE_EXPORT=true` to state that the network is trusted.
-5. Write down what actually happened, including the parts that did not work.
+### 7.1 What must be deployed
+
+The sandbox a coding session runs in is not publicly reachable, so this needs a
+real deployment. Telnyx must be able to POST *into* it.
+
+| Requirement | Detail |
+| --- | --- |
+| Public HTTPS host | Telnyx posts to it and the answer document builds a `wss://` URL from it. See 7.2 — this is the step most likely to fail |
+| Postgres 17, Redis 7 | `docker-compose.yml` has both. Run `alembic upgrade head`; the head is `b83d1c4f7a90` |
+| `TELNYX_PUBLIC_KEY` | **Required.** Signature verification reads the *global* setting, not per-user credentials. With it unset, `validate_telnyx_signature` returns `settings.DEBUG` — so with `DEBUG=false` every webhook is rejected 403, and with `DEBUG=true` every webhook is accepted unverified. Neither is what you want by accident |
+| `OPENAI_API_KEY` | The bridge opens a Realtime session with `gpt-realtime-2025-08-28` |
+| `DEBUG=false` | See above |
+| `TELNYX_API_KEY` | Only needed for outbound calls and the number-purchase flow. The inbound path does not use it |
+
+Health: `/health`, `/health/db`, `/health/redis`, `/health/ready`, `/health/live`.
+Check `/health/ready` before dialling — a failed Redis or Postgres shows up
+there rather than in the middle of a call.
+
+### 7.2 The forwarded-proto trap
+
+`build_telnyx_stream_url` derives the websocket URL from `request.base_url`, and
+**not** from `PUBLIC_URL`. `PUBLIC_URL` is read only by the number-purchase flow
+when it auto-configures a webhook; it does not reach the answer document.
+
+So behind a TLS-terminating proxy that does not send `X-Forwarded-Proto`, the
+webhook succeeds, the document is well-formed, Telnyx accepts it — and the URL
+inside says `ws://`, which the carrier will not connect to. Every log line looks
+healthy and the caller hears nothing.
+
+Run uvicorn with `--proxy-headers --forwarded-allow-ips='*'` (narrow the IPs to
+the proxy in production), or terminate TLS at the app. Verify before dialling:
+
+```
+curl -s -X POST https://<host>/webhooks/telnyx/voice ... | grep -o 'wss\?://[^"]*'
+```
+
+If that prints `ws://`, stop and fix it — nothing downstream will work.
+
+### 7.3 Wiring
+
+1. Point the number at `https://<host>/webhooks/telnyx/voice` as a **TeXML
+   application**, status callback `https://<host>/webhooks/telnyx/status`.
+   TeXML, not Call Control: only TeXML consumes a returned document. Call
+   Control posts JSON and expects API commands back, and while
+   `parse_telnyx_webhook` reads either shape, the document is ignored in that
+   mode and the call goes nowhere.
+2. Create an agent with `phone_number_id` set to the number in E.164 and
+   `is_active` true. The lookup matches with or without the leading `+`. An
+   inactive agent closes the websocket with 4003; an unmatched number gets a
+   spoken "no agent is configured for this number".
+3. Set `enable_transcript` deliberately. False redacts turn text, tool arguments
+   and tool errors — correct for privacy, but it will make the call look emptier
+   than it was when you go looking at `turns`.
+
+### 7.4 Call it, then check in this order
+
+| # | Check | Meaning if it fails |
+| --- | --- | --- |
+| 1 | A `call_records` row with that `CallSid`, status `completed` | The webhook or the status callback did not land |
+| 2 | `turns` on that row is non-null | The websocket never carried audio. Suspect 7.2 first |
+| 3 | `GET /api/v1/calls/{id}/metrics` reports a measured `time_to_first_audio` and `interruption_handling`, and `transcription_accuracy: null` | Null on the first two means no audio was recorded. **Null on the third is correct** — a human caller has no script to score against |
+| 4 | Outcome is `observed`, not `passed`/`failed`/`error` | A real call is measured, not graded (§27) |
+| 5 | A `voice.call` span with `voice.turn` (and `voice.tool_call`) children | See 7.5 |
+
+### 7.5 Traces, if you want them
+
+Optional — the call works without any of this. Set `OTEL_ENABLED=true` and
+`OTEL_EXPORTER_OTLP_ENDPOINT` to an OTLP/HTTP collector. The startup log says
+`tracing_provider_installed`, which means the provider is installed and spans
+are addressed there — **not** that anything arrived. With `OTEL_ENABLED` false
+the emitter is a no-op by design and the log says so.
+
+A trace carries transcripts, so plain `http://` to a non-loopback host is
+refused: `tracing_refused_cleartext_endpoint`, and `configure_tracing` returns
+false. Use `https://`, a loopback collector, or set
+`OTEL_ALLOW_INSECURE_EXPORT=true` to state that the network is trusted.
+
+### 7.6 Then write down what actually happened
+
+Including the parts that did not work. The value of this exercise is not the
+green tick — it is that the last time this path was tried for the first time, it
+produced five defects no test had seen.
 
 Standing constraint for any agent session: never claim a capability the code
 does not have. The reason this project exists is that the previous plan called
