@@ -310,7 +310,10 @@ class TestInboundCallEndToEnd:
         assert stream.attrib["bidirectionalSamplingRate"] == "8000"
 
         url = stream.attrib["url"]
-        assert url.startswith("wss://")
+        # The host, not just the scheme: build_telnyx_stream_url maps both http
+        # and https to wss, so `startswith("wss://")` holds even when the host is
+        # the internal address Telnyx cannot reach.
+        assert url.startswith("wss://voice.example.com/"), url
         assert str(inbound_call_env["agent"].id) in url
         # The call identifier travels to the bridge so it can find this row.
         assert "call_id=" in url

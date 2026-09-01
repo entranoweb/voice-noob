@@ -203,8 +203,19 @@ def build_telnyx_stream_url(
     its start frame. On a TeXML application those are not guaranteed to be the
     same string, and the bridge needs to find the row the webhook created in
     order to attach a transcript to it. Passing it explicitly removes the guess.
+
+    On the host: ``PUBLIC_URL`` wins when it is set, because it is already the
+    source of truth for the webhook URLs registered against a purchased number
+    (``configure_phone_number_webhook``) and the carrier has to reach both at the
+    same host. ``request.base_url`` is derived from the request line and the Host
+    header, so behind a proxy that does not forward them it resolves to the
+    internal address the app is bound to — ``wss://internal:8000/...`` is handed
+    to Telnyx, the stream never connects, and the caller hears silence while
+    every log line reads healthy. The scheme is forced to ``wss`` either way; it
+    is the host that goes wrong.
     """
-    base_url = str(request.base_url).rstrip("/")
+    configured = settings.PUBLIC_URL
+    base_url = (configured or str(request.base_url)).strip().rstrip("/")
     ws_url = base_url.replace("http://", "wss://").replace("https://", "wss://")
     query = f"direction={quote(direction, safe='')}"
     if call_id:

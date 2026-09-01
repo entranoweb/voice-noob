@@ -158,6 +158,8 @@ ignore = [
 # reach into private members of the unit under test.
 "tests/**/*.py" = ["S101", "PLR2004", "ARG001", "ARG002", "SLF001"]
 "migrations/**/*.py" = ["ALL"]
+# An operator-facing CLI reports by printing; that is its whole output.
+"scripts/**/*.py" = ["T201"]
 
 [tool.ruff.format]
 quote-style = "double"

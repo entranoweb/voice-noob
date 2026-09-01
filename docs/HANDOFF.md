@@ -189,15 +189,35 @@ Everything below the carrier is covered. This is what is not.
 1. Put `TELNYX_API_KEY` and `TELNYX_PUBLIC_KEY` in the environment. Never commit
    them. `TELNYX_PUBLIC_KEY` is required — with none set, signature verification
    falls back to `settings.DEBUG`, which must be false in production.
-2. Point a number at `https://<host>/webhooks/telnyx/voice` as a **TeXML
+2. Set `PUBLIC_URL` to the public origin, e.g. `https://voice.example.com`.
+   The answer document's stream URL is derived from it, and so are the webhook
+   URLs registered against a purchased number — the carrier has to reach both at
+   the same host. With it unset the stream URL falls back to `request.base_url`,
+   which behind a proxy that does not forward the Host header is the internal
+   address the app is bound to: Telnyx is handed `wss://internal:8000/...`, the
+   stream never connects, and the caller hears silence while every log line
+   reads healthy. (An earlier revision of this document said the failure was a
+   `ws://` scheme. That was wrong — `build_telnyx_stream_url` maps both `http`
+   and `https` to `wss`, so the scheme is never the problem. It is the host.)
+3. Point a number at `https://<host>/webhooks/telnyx/voice` as a **TeXML
    application** (`configure_phone_number_webhook` does this), with the status
    callback at `/webhooks/telnyx/status`. The host must be publicly reachable
-   over TLS: the answer document hands Telnyx a `wss://` URL derived from
-   `request.base_url`, so behind a proxy the app needs the forwarded-proto
-   headers or the URL will come out `ws://` and the stream will never connect.
-3. Create an agent with `phone_number_id` set to the number in E.164, and
+   over TLS.
+4. Create an agent with `phone_number_id` set to the number in E.164, and
    `is_active` true. An inactive agent closes the websocket with 4003.
-4. Call it. Then check, in this order:
+5. Run the preflight against the deployment. It checks every step above and
+   opens a real websocket to the stream URL, which is the one thing no test
+   could cover before a live host existed:
+
+   ```
+   make preflight ARGS="--url https://voice.example.com"
+   ```
+
+   It places no call, writes no row and spends no carrier money — the probe uses
+   a random agent id, which the bridge closes with 4004 before it loads any
+   config. Exit status is 0 only when every check passed. Fix anything it fails
+   before dialling; a `warn` is a judgement call, a `FAIL` is not.
+6. Call it. Then check, in this order:
    - a `call_records` row exists with that `CallSid` and status `completed`;
    - `turns` on that row is non-null;
    - `GET /api/v1/calls/{id}/metrics` reports a measured
@@ -213,7 +233,7 @@ Everything below the carrier is covered. This is what is not.
      is not loopback is refused (`tracing_refused_cleartext_endpoint`, and
      `configure_tracing` returns false); use `https://`, a loopback collector, or
      set `OTEL_ALLOW_INSECURE_EXPORT=true` to state that the network is trusted.
-5. Write down what actually happened, including the parts that did not work.
+7. Write down what actually happened, including the parts that did not work.
 
 Standing constraint for any agent session: never claim a capability the code
 does not have. The reason this project exists is that the previous plan called

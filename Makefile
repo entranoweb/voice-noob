@@ -1,4 +1,4 @@
-.PHONY: help install dev stop clean test lint format migrate check check-backend check-frontend
+.PHONY: help install dev stop clean test lint format migrate check check-backend check-frontend preflight
 
 help:
 	@echo "Available commands:"
@@ -13,6 +13,7 @@ help:
 	@echo "  make check          - Run all quality checks (lint + typecheck + format)"
 	@echo "  make check-backend  - Run backend checks only"
 	@echo "  make check-frontend - Run frontend checks only"
+	@echo "  make preflight      - Check a deployment before placing a real call"
 
 install:
 	@echo "Installing backend dependencies..."
@@ -65,3 +66,6 @@ check-backend:
 check-frontend:
 	@echo "Running frontend checks..."
 	cd frontend && npm run check
+
+preflight:
+	cd backend && uv run python scripts/preflight_telnyx.py $(ARGS)
