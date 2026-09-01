@@ -432,7 +432,32 @@ the exporter: `set_tracer_provider` is a process-global one-shot, so a test that
 configures tracing for real leaves a live exporter and its batch worker running
 for every test after it.
 
-## 36. `PUBLIC_URL` owns the stream URL host, and a preflight proves it
+## 36. One engine, and the tier names are not wired to it
+
+`telephony_ws.py` writes `engine="openai_realtime"` as a string literal. There is
+no branch and no second path: every call is an OpenAI Realtime speech-to-speech
+session. No cascaded STT→LLM→TTS pipeline exists — `deepgram-sdk` and
+`elevenlabs` are declared dependencies whose clients are never constructed, and
+their API keys are stored and read by nothing at call time.
+
+`agents.py` serves tier configs naming `llm_provider: "cerebras"`,
+`stt_provider: "deepgram"`, `tts_provider: "elevenlabs"`. Nothing consumes those
+strings — not the backend, not the frontend. Every tier runs the same engine, so
+a customer on the budget tier is served the premium one and a customer told they
+are on Deepgram is on OpenAI. That is a claim the code does not have, with money
+attached, which makes it the same failure this repository exists to prevent
+rather than a missing feature.
+
+It is recorded here rather than fixed because the fix is a product decision, not
+a technical one: either delete the tiers and price the one engine honestly, or
+build the cascaded pipeline that would make them real. Only the second needs an
+engine framework, which is why "should we adopt Pipecat" cannot be answered
+before this is.
+
+Whichever is chosen, the engine stays out of the harness. The metrics read a
+`MetricContext`, not a pipeline — that is what lets the same code grade an agent
+this repository did not build, and it is the most valuable property here.
+## 37. `PUBLIC_URL` owns the stream URL host, and a preflight proves it
 
 `build_telnyx_stream_url` derived its origin from `request.base_url`, which is
 assembled from the request line and the Host header. Behind a proxy that does

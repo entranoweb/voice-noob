@@ -171,6 +171,7 @@ telephone network*.
 | --- | --- | --- | --- |
 | `livekit/agents` | ~120 plugin packages: STT, TTS, LLM, VAD, turn detection, Krisp, and Telnyx | **Apache 2.0** | The provider-optionality layer, already built and permissively licensed |
 | `pipecat-ai/pipecat` | Frames, pipelines, processors, transports. 60+ services, ~12–15k stars, maintained by Daily | **BSD-2** | We removed it as an unused dependency, not as an engine decision. Worth revisiting deliberately |
+| `dograh-hq/dograh` | Self-hosted Vapi/Retell alternative built **on** Pipecat, pinned as a submodule. Visual workflow builder, QA node, BYOK across LLM/STT/TTS, telephony across Twilio/Vonage/**Telnyx**/Plivo/Vobiz/Cloudonix/Asterisk ARI, one-command Docker. ~5.5k stars | **BSD-2** | Closest thing to a working reference for the architecture we keep discussing, and we already borrow from it: `monitoring/loop_lag.py` credits its event-loop lag technique. Read it, do not adopt it — it is a competing *platform*, so taking it whole means discarding our own CRM, workspaces and embed. Note it pins Pipecat rather than tracking it, which is what "take upstream updates" actually costs |
 | `rapidaai/voice-ai` | Go + gRPC orchestration, SIP, Postgres/Redis/OpenSearch, React console | **GPL-2.0 + visible-branding condition** | **Do not adopt.** See below |
 
 ### The Rapida licence trap
