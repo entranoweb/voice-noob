@@ -135,7 +135,11 @@ Open <http://localhost:3000> and create your first agent.
 
 ## Tech Stack
 
-**Voice & AI:** Pipecat, OpenAI Realtime, Google Gemini, Deepgram, ElevenLabs
+**Voice & AI:** OpenAI Realtime (`gpt-realtime-2025-08-28`) — speech-to-speech,
+the only engine the call path uses today. There is no cascaded STT/LLM/TTS
+pipeline: the `deepgram-sdk` and `elevenlabs` packages are declared and their API
+keys can be stored, but no client is constructed at call time. The pricing-tier
+provider names are not yet wired to anything
 **Backend:** FastAPI, PostgreSQL 17, Redis 7, SQLAlchemy 2.0
 **Frontend:** Next.js 15, React 19, TypeScript, Tailwind, shadcn/ui
 **Telephony:** Telnyx (primary), Twilio (optional)

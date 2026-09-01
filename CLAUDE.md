@@ -75,7 +75,12 @@ cd frontend && npm run dev                            # Check compilation warnin
 
 ## Tech Stack
 
-**Voice & AI**: Pipecat, Deepgram, ElevenLabs, OpenAI GPT-4o Realtime
+**Voice & AI**: OpenAI Realtime (`gpt-realtime-2025-08-28`), speech-to-speech.
+One engine — `telephony_ws.py` writes `engine="openai_realtime"` as a literal.
+No cascaded STT/LLM/TTS pipeline exists; Deepgram and ElevenLabs are declared
+dependencies whose clients are never constructed. Pipecat was removed in
+`dd186f0` as an unused dependency — see `docs/COMPETITIVE_LANDSCAPE.md` before
+reintroducing it
 **Backend**: FastAPI, PostgreSQL 17, Redis 7, SQLAlchemy 2.0, Python 3.12+, uv
 **Frontend**: Next.js 15, React 19, TypeScript 5.7, Tailwind, shadcn/ui
 **Telephony**: Telnyx (primary), Twilio (optional)
