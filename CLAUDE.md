@@ -47,6 +47,9 @@ voice-noob/
 ### Backend:
 ```bash
 cd backend
+uv sync --all-extras --frozen            # What CI installs. mypy needs the type
+                                         # stubs in the extras: without them it
+                                         # reports 30 errors that are not real
 uv run ruff check app tests --fix        # Lint + auto-fix
 uv run ruff format app tests             # Format
 uv run mypy app                          # Type check (strict)
