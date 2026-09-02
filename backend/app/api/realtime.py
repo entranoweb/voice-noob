@@ -455,21 +455,30 @@ async def create_webrtc_session(
     # Build session configuration for OpenAI Realtime
     # Use agent's configured voice (default to marin for natural conversational tone)
     agent_voice = agent.voice or "marin"
+    # `/v1/realtime/calls` takes a GA session object, which puts the audio
+    # settings under `audio.input` / `audio.output` and has no `temperature`.
+    # The formats are left unset on purpose: this is a WebRTC call and the codec
+    # is negotiated in the SDP, unlike the telephony bridge where the carrier
+    # fixes it at mu-law (see `_assert_ga_session` in services/gpt_realtime.py).
     session_config: dict[str, Any] = {
         "type": "realtime",
         "model": realtime_model,
         "instructions": instructions,
-        "voice": agent_voice,
-        "speed": 1.1,  # Slightly faster speech (1.0 = normal, range: 0.25-1.5)
-        "temperature": agent.temperature
-        if agent.temperature
-        else 0.6,  # Lower for consistent delivery
-        "input_audio_transcription": {"model": "whisper-1"},
-        "turn_detection": {
-            "type": "server_vad",
-            "threshold": agent.turn_detection_threshold or 0.5,
-            "prefix_padding_ms": agent.turn_detection_prefix_padding_ms or 200,
-            "silence_duration_ms": agent.turn_detection_silence_duration_ms or 200,
+        "output_modalities": ["audio"],
+        "audio": {
+            "input": {
+                "transcription": {"model": "whisper-1"},
+                "turn_detection": {
+                    "type": "server_vad",
+                    "threshold": agent.turn_detection_threshold or 0.5,
+                    "prefix_padding_ms": agent.turn_detection_prefix_padding_ms or 200,
+                    "silence_duration_ms": agent.turn_detection_silence_duration_ms or 200,
+                },
+            },
+            "output": {
+                "voice": agent_voice,
+                "speed": 1.1,  # 1.0 = normal, range 0.25-1.5
+            },
         },
     }
 
