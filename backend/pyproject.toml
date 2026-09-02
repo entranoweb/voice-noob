@@ -139,6 +139,19 @@ ignore = [
     "C901",    # too complex
     "COM812",  # trailing comma, conflicts with formatter
     "PLR0913", # too many arguments
+    # Both arrived with ruff 0.16 and are deferred rather than accepted: each is
+    # a code migration, not a lint fix, and neither belongs inside a dependency
+    # bump.
+    #
+    # PLR0917 would make 23 existing signatures keyword-only, changing every
+    # caller of each.
+    #
+    # UP042 would turn `class X(str, Enum)` into `StrEnum`, which changes what
+    # `str(member)` and f-string interpolation produce — "X.MEMBER" today, the
+    # bare value afterwards. These enums are persisted and compared as strings,
+    # so that is a data change wearing a linter's clothes.
+    "PLR0917", # too many positional arguments
+    "UP042",   # str + Enum rather than StrEnum
     "S101",    # use of assert
     "S104",    # hardcoded bind all interfaces (intentional for dev)
     "S105",    # hardcoded password (only in defaults/examples)
@@ -156,8 +169,12 @@ ignore = [
 "__init__.py" = ["F401", "D104"]
 # Tests legitimately assert, use magic numbers, take unused fixture args, and
 # reach into private members of the unit under test.
-"tests/**/*.py" = ["S101", "PLR2004", "ARG001", "ARG002", "SLF001"]
+# ASYNC240: teardown in async fixtures deletes the sqlite file with pathlib.
+# The alternative is an async filesystem library for four lines of cleanup.
+"tests/**/*.py" = ["S101", "PLR2004", "ARG001", "ARG002", "SLF001", "ASYNC240"]
 "migrations/**/*.py" = ["ALL"]
+# An operator-facing CLI reports by printing; that is its whole output.
+"scripts/**/*.py" = ["T201"]
 
 [tool.ruff.format]
 quote-style = "double"
@@ -197,8 +214,6 @@ disable_error_code = ["type-arg"]
 module = [
     "asyncpg.*",
     "redis.*",
-    "deepgram.*",
-    "elevenlabs.*",
     "telnyx.*",
     "twilio.*",
     "anthropic.*",

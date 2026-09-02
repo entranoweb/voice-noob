@@ -431,3 +431,63 @@ how this comes back, and a test of the helper would not see it. The test stubs
 the exporter: `set_tracer_provider` is a process-global one-shot, so a test that
 configures tracing for real leaves a live exporter and its batch worker running
 for every test after it.
+
+## 36. One engine, and the tier names are not wired to it
+
+`telephony_ws.py` writes `engine="openai_realtime"` as a string literal. There is
+no branch and no second path: every call is an OpenAI Realtime speech-to-speech
+session. No cascaded STT→LLM→TTS pipeline exists — `deepgram-sdk` and
+`elevenlabs` are declared dependencies whose clients are never constructed, and
+their API keys are stored and read by nothing at call time.
+
+`agents.py` serves tier configs naming `llm_provider: "cerebras"`,
+`stt_provider: "deepgram"`, `tts_provider: "elevenlabs"`. Nothing consumes those
+strings — not the backend, not the frontend. Every tier runs the same engine, so
+a customer on the budget tier is served the premium one and a customer told they
+are on Deepgram is on OpenAI. That is a claim the code does not have, with money
+attached, which makes it the same failure this repository exists to prevent
+rather than a missing feature.
+
+It is recorded here rather than fixed because the fix is a product decision, not
+a technical one: either delete the tiers and price the one engine honestly, or
+build the cascaded pipeline that would make them real. Only the second needs an
+engine framework, which is why "should we adopt Pipecat" cannot be answered
+before this is.
+
+Whichever is chosen, the engine stays out of the harness. The metrics read a
+`MetricContext`, not a pipeline — that is what lets the same code grade an agent
+this repository did not build, and it is the most valuable property here.
+## 37. `PUBLIC_URL` owns the stream URL host, and a preflight proves it
+
+`build_telnyx_stream_url` derived its origin from `request.base_url`, which is
+assembled from the request line and the Host header. Behind a proxy that does
+not forward them it resolves to the address the app is bound to, so the answer
+document hands Telnyx `wss://internal:8000/...`. Every observable signal is
+healthy — the webhook returns 200, the document is well-formed, the `call_records`
+row lands — and the caller hears silence, because the media stream connects to
+nothing. `PUBLIC_URL` was already the source of truth for the webhook URLs
+registered against a purchased number; the carrier has to reach the webhook and
+the stream at the same host, so one setting decides both. `request.base_url`
+stays as the fallback, so nothing that works today stops working.
+
+The scheme was never the failure, though an earlier revision of the runbook said
+it was: the builder maps both `http` and `https` to `wss`. That mattered,
+because a check written against the wrong failure mode passes while the call
+still fails — `assert url.startswith("wss://")` was the existing test's only
+assertion about the URL, and it holds no matter which host is in it. It now
+asserts the host.
+
+`scripts/preflight_telnyx.py` covers what a test cannot: the deployment itself.
+Its last check opens a real websocket to the stream URL with a random agent id
+and expects close code 4004, which the bridge sends after it has resolved the
+route, accepted the upgrade and queried for the agent — TLS, the proxy's
+websocket handling, routing and the database session, proven in one connection,
+with no call placed, no row written and nothing left behind. A proxy that will
+not forward the upgrade answers with an HTTP status instead, which is the other
+way this fails silently.
+
+The script reports rather than throws, and separates `warn` from `FAIL`: an
+operator running it once before dialling needs every problem in one pass, not
+the first one. It disables error logging while it runs, because the modules it
+exercises log their own tracebacks and a report buried in a stack trace is a
+report nobody reads.

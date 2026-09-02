@@ -10,7 +10,6 @@ from __future__ import annotations
 from typing import Any
 
 import anthropic
-import httpx
 import structlog
 from aiobreaker import CircuitBreaker, CircuitBreakerError  # type: ignore[import-untyped]
 from tenacity import (
@@ -46,9 +45,12 @@ def get_anthropic_client() -> anthropic.AsyncAnthropic:
     if not settings.ANTHROPIC_API_KEY:
         raise ValueError("ANTHROPIC_API_KEY not configured")
 
+    # `anthropic.Timeout` rather than `httpx.Timeout`: the SDK moved off httpx
+    # onto httpx2 in 1.0, so its own re-export is the only spelling that stays
+    # correct across that change.
     return anthropic.AsyncAnthropic(
         api_key=settings.ANTHROPIC_API_KEY,
-        timeout=httpx.Timeout(settings.ANTHROPIC_TIMEOUT, connect=5.0),
+        timeout=anthropic.Timeout(settings.ANTHROPIC_TIMEOUT, connect=5.0),
     )
 
 
@@ -57,7 +59,14 @@ def _create_retry_decorator() -> retry:  # type: ignore[valid-type]
 
     Uses tenacity with exponential backoff for transient errors.
     Retries on: RateLimitError (429), APIConnectionError, InternalServerError (5xx),
-    and httpx.TimeoutException (network timeouts).
+    and APITimeoutError (network timeouts).
+
+    The timeout is named as the SDK's own exception, not the transport's. The
+    client converts a transport timeout into APITimeoutError before it
+    surfaces, and since 1.0 that transport is httpx2 — so the httpx exception
+    this used to list could no longer be raised by any call made through the
+    SDK. It would have compiled, passed every test that does not time out, and
+    retried nothing.
     """
     return retry(
         stop=stop_after_attempt(settings.ANTHROPIC_MAX_RETRIES),
@@ -70,7 +79,7 @@ def _create_retry_decorator() -> retry:  # type: ignore[valid-type]
                 anthropic.RateLimitError,
                 anthropic.APIConnectionError,
                 anthropic.InternalServerError,
-                httpx.TimeoutException,
+                anthropic.APITimeoutError,
             )
         ),
         before_sleep=lambda retry_state: logger.warning(
@@ -97,7 +106,7 @@ async def call_claude_with_resilience(
     """Call Claude API with retry and circuit breaker.
 
     Implements the three key resilience patterns:
-    1. Timeout: Via httpx.Timeout in client initialization
+    1. Timeout: Via anthropic.Timeout in client initialization
     2. Retry: Via tenacity with exponential backoff for transient errors
     3. Circuit breaker: Via aiobreaker to prevent cascade failures
 
@@ -181,7 +190,7 @@ def get_circuit_state() -> dict[str, str | int]:
     state_str = str(claude_circuit_breaker.current_state)
     # Extract just the state name (e.g., "CLOSED" from "CircuitBreakerState.CLOSED")
     if "." in state_str:
-        state_str = state_str.split(".")[-1].lower()
+        state_str = state_str.rsplit(".", maxsplit=1)[-1].lower()
 
     return {
         "state": state_str,

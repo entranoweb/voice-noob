@@ -1,10 +1,7 @@
 # Handoff — Synthiq test layer
 
 **Written:** 29 August 2026
-**Reason:** PR #8 merged; work continues in a fresh session.
-**Last revised:** 29 August 2026, for the inbound-path work in
-[PR #11](https://github.com/entranoweb/voice-noob/pull/11) (open at the time of
-writing — §1 below still describes the last *merged* state).
+**Reason:** PR #11 merged; work continues in a fresh session.
 
 Everything a new session needs to pick this up without re-deriving it. Read
 [`../SYNTHIQ_PLAN.md`](../SYNTHIQ_PLAN.md) for the vision and the flywheel and
@@ -17,12 +14,23 @@ document is the state of play and the next move.
 
 | Fact | Value |
 | --- | --- |
-| Merged | [PR #8](https://github.com/entranoweb/voice-noob/pull/8) → `voice-prod` as `081cc1c`, 29 Aug 2026 06:39 UTC |
-| Size | 22 commits, 168 files, +21133 / −12966 |
-| Green at merge | 609 backend tests, 283 frontend tests; ruff, format, `mypy --strict` (104 files), eslint, tsc, prettier |
-| CI | `.github/workflows/` — Postgres 17 + Redis 7 services, import guard, single-Alembic-head assertion, backend and frontend gates |
+| Merged | [PR #11](https://github.com/entranoweb/voice-noob/pull/11) → `main` as `070b132`, 29 Aug 2026 21:17 UTC |
+| Size | 15 commits, 33 files, +4970 / −149 |
+| Green at merge | 729 backend tests, 283 frontend tests; ruff, format, `mypy --strict` (109 files), eslint, tsc, prettier |
+| Alembic | single head `b83d1c4f7a90` |
+| Before that | [PR #8](https://github.com/entranoweb/voice-noob/pull/8) as `081cc1c`, 29 Aug 06:39 UTC — the harness itself |
+| CI | `.github/workflows/ci.yml` — Postgres 17 + Redis 7 services, import guard, single-Alembic-head assertion, backend and frontend gates |
 
-`voice-prod` is the integration branch. Start new work from it.
+`main` carries everything. Branch from it.
+
+**Reviews on PR #11 ran to seven rounds.** Worth knowing why, because the pattern
+repeats: the first rounds found real defects in the diff, and the last three each
+found a defect introduced by the *previous* fix — all inside
+`monitoring/tracing.py`. If that file misbehaves, it is the youngest and most
+churned code in the merge. Two of those rounds also caught claims that were
+wrong rather than code that was: a metric category read off a directory instead
+of the class, and a "verified by reverting" claim that held for one of two tests.
+Verify, then claim.
 
 ## 2. What exists now
 
@@ -90,7 +98,7 @@ the turn text *and* the tool arguments and tool errors — see DECISIONS §32.
 
 State these before any claim built on the harness.
 
-- **No call has ever gone through Telnyx.** Still true. The inbound path is now
+- **No call has ever gone through Telnyx.** Still true after PR #11. The inbound path is now
   exercised end to end against the real application — signed webhook, TeXML
   document, websocket, µ-law frames both ways, a row in Postgres, spans out —
   with only the model stubbed (`backend/tests/websocket/test_telnyx_inbound_call.py`).
@@ -117,34 +125,52 @@ Ordered by value, from `SYNTHIQ_PLAN.md` §6.
 
 | # | Work | Blocked on | Size |
 | --- | --- | --- | --- |
-| 5 | **One real call, end to end** — Telnyx number, live call, a row landed | Path fixed and covered end to end; **the live call itself still needs credentials, a number and a handset** | ½ day left |
-| 6 | **Audio in the loop** — TTFB and barge-in wired to the live transport; WER wired but needs a scripted caller over audio to become measurable. Per-speaker tracks still to do | #5's live call | 1 week left |
+| 5 | **One real call, end to end** — Telnyx number, live call, a row landed | Nothing in the code. **Credentials, a number and a handset** — see §7 | ½ day |
+| 6 | **Audio in the loop** — TTFB and barge-in are wired to the live transport and land on the call record. WER is wired but needs a scripted caller speaking over audio to become measurable. Per-speaker tracks still to do | #5's live call | 1 week left |
 | 7 | **Red team over a real line** — OWASP LLM Top 10 / EU AI Act mapping; the procurement artifact | #6 | 4–5 days |
 | 8 | **Judge calibration** — human-vs-machine agreement, then prompt refinement | Human-labelled runs | 3 days |
 | 9 | **Scheduled runs and reports** — cron run templates, regression against a baseline | nothing | 4–5 days |
 | 10 | **The Synthiq rename** — repo, packages, API still say Voice Noob | nothing; cheap now, expensive after a design partner integrates | 1 day |
 
-**#5's remaining half-day is still the critical path.** #6 and #7 both sit behind it, and #7 is what
-converts the work into contracts. #9 and #10 are the only unblocked items, and
-#10 gets more expensive every week it waits.
+**#5 is the critical path and is now blocked on nothing but access.** Every
+defect between the carrier and the database has been fixed and covered; what
+remains is a phone call. #6 and #7 sit behind it, and #7 is what converts the
+work into contracts. #9 and #10 are the only unblocked items, and #10 gets more
+expensive every week it waits.
 
-Also open, from §7 — decide before more code, not after: licence (MIT or
+One more item, unnumbered because it is not product work: **the telephony
+websockets are unauthenticated** (§6). It is the largest known hole in the
+inbound path and it predates all of this. Anyone who learns an agent's UUID can
+talk to that agent with its tools. Do #5 first — it is half a day and it gates
+everything — but do not put a real number in front of the public internet
+without deciding about this one.
+
+Also open, from `SYNTHIQ_PLAN.md` §7 (not §7 of this document) — decide before
+more code, not after: licence (MIT or
 Apache-2.0, **not** BSL), monetisation (harness free and forkable; sell hosted
 EU-region cloud), the OpenAI-acquired-promptfoo answer for security reviews, and
 keeping the engine choice out of the test layer.
 
 ## 5. Next step for a new session
 
-1. Branch from `voice-prod`.
-2. Place the live call — see §7 for the exact procedure and what to check.
-3. Then item **#6**'s remainder: a scripted caller speaking over audio, so
+1. Branch from `main`.
+2. **Place the live call** — §7 has the exact procedure and what to check, in
+   order. This is the whole next step. Everything below it is blocked on it, and
+   the value of doing it is not the green tick: it is that the last time
+   something on this path was tried for the first time, it produced five defects
+   that no test had seen.
+3. Write down what happened, including the parts that did not work. Then item
+   **#6**'s remainder: a scripted caller speaking over audio, so
    `transcription_accuracy` has a reference to score against, and per-speaker
    tracks.
 
 Do **not** start #8 — building calibration machinery with no labelled runs to
 put through it is scaffolding, not progress.
 
-## 6. What the inbound path was doing wrong
+Do **not** treat #5 as done because the tests pass. They cover everything below
+the carrier; they do not cover the carrier.
+
+## 6. What the inbound path was doing wrong (fixed in PR #11)
 
 None of these were visible to any test, and each one alone was enough to lose a
 real call. They are listed because they are the argument for §7: the next
@@ -184,36 +210,116 @@ them, which is the honest reading: we do not know how it ended.
 
 ## 7. Placing the live call
 
-Everything below the carrier is covered. This is what is not.
+Everything below the carrier is covered. This is what is not. Ordered so that
+each step fails loudly rather than silently.
 
-1. Put `TELNYX_API_KEY` and `TELNYX_PUBLIC_KEY` in the environment. Never commit
-   them. `TELNYX_PUBLIC_KEY` is required — with none set, signature verification
-   falls back to `settings.DEBUG`, which must be false in production.
-2. Point a number at `https://<host>/webhooks/telnyx/voice` as a **TeXML
-   application** (`configure_phone_number_webhook` does this), with the status
-   callback at `/webhooks/telnyx/status`. The host must be publicly reachable
-   over TLS: the answer document hands Telnyx a `wss://` URL derived from
-   `request.base_url`, so behind a proxy the app needs the forwarded-proto
-   headers or the URL will come out `ws://` and the stream will never connect.
-3. Create an agent with `phone_number_id` set to the number in E.164, and
-   `is_active` true. An inactive agent closes the websocket with 4003.
-4. Call it. Then check, in this order:
-   - a `call_records` row exists with that `CallSid` and status `completed`;
-   - `turns` on that row is non-null;
-   - `GET /api/v1/calls/{id}/metrics` reports a measured
-     `time_to_first_audio` and `interruption_handling`, and
-     `transcription_accuracy: null` (correct — a human caller has no script);
-   - a `voice.call` span with `voice.turn` (and `voice.tool_call`) children.
-     Set `OTEL_ENABLED=true` and `OTEL_EXPORTER_OTLP_ENDPOINT` to an OTLP/HTTP
-     collector; `app/monitoring/tracing.py` installs the provider at startup and
-     logs `tracing_provider_installed` when it takes — that line means the
-     provider is installed and spans are addressed there, not that anything
-     arrived. With `OTEL_ENABLED` false the emitter is a no-op by design and the
-     log says so. A trace carries transcripts, so plain `http://` to a host that
-     is not loopback is refused (`tracing_refused_cleartext_endpoint`, and
-     `configure_tracing` returns false); use `https://`, a loopback collector, or
-     set `OTEL_ALLOW_INSECURE_EXPORT=true` to state that the network is trusted.
-5. Write down what actually happened, including the parts that did not work.
+### 7.1 What must be deployed
+
+The sandbox a coding session runs in is not publicly reachable, so this needs a
+real deployment. Telnyx must be able to POST *into* it.
+
+| Requirement | Detail |
+| --- | --- |
+| Public HTTPS host | Telnyx posts to it, and the media stream connects back to it. See 7.2 — this is the step most likely to fail |
+| `PUBLIC_URL` | The public origin, e.g. `https://voice.example.com`. It is what the answer document's stream URL is built from. See 7.2 |
+| Postgres 17, Redis 7 | `docker-compose.yml` has both. Run `alembic upgrade head`; the head is `b83d1c4f7a90` |
+| `TELNYX_PUBLIC_KEY` | **Required.** Signature verification reads the *global* setting, not per-user credentials. With it unset, `validate_telnyx_signature` returns `settings.DEBUG` — so with `DEBUG=false` every webhook is rejected 403, and with `DEBUG=true` every webhook is accepted unverified. Neither is what you want by accident |
+| `OPENAI_API_KEY` | The bridge opens a Realtime session with `gpt-realtime-2025-08-28` |
+| `DEBUG=false` | See above |
+| `TELNYX_API_KEY` | Only needed for outbound calls and the number-purchase flow. The inbound path does not use it |
+
+Health: `/health`, `/health/db`, `/health/redis`, `/health/ready`, `/health/live`.
+Check `/health/ready` before dialling — a failed Redis or Postgres shows up
+there rather than in the middle of a call.
+
+### 7.2 The stream URL host
+
+`build_telnyx_stream_url` takes its origin from `PUBLIC_URL`, falling back to
+`request.base_url` when it is unset. Set it. `request.base_url` is assembled
+from the request line and the Host header, so behind a proxy that does not
+forward them it resolves to the address the app is bound to, and the answer
+document hands Telnyx `wss://internal:8000/...`. The webhook returns 200, the
+document is well-formed, Telnyx accepts it, the `call_records` row lands — and
+the media stream connects to nothing, so the caller hears silence while every
+log line reads healthy.
+
+**It is the host that goes wrong, never the scheme.** An earlier revision of
+this section described this as a forwarded-proto trap that emits `ws://`, and
+prescribed grepping the answer document for it. That check cannot fail: the
+builder maps both `http` and `https` to `wss`, so the URL always says `wss` no
+matter which host is in it. The same blind spot was in the test suite, whose
+only assertion about the URL was `startswith("wss://")`; it asserts the host now
+(DECISIONS §37).
+
+Run uvicorn with `--proxy-headers --forwarded-allow-ips='<proxy IP>'` anyway —
+client IPs and redirects still depend on it — but it is no longer what stands
+between you and a silent call.
+
+### 7.3 Wiring
+
+1. Point the number at `https://<host>/webhooks/telnyx/voice` as a **TeXML
+   application**, status callback `https://<host>/webhooks/telnyx/status`.
+   TeXML, not Call Control: only TeXML consumes a returned document. Call
+   Control posts JSON and expects API commands back, and while
+   `parse_telnyx_webhook` reads either shape, the document is ignored in that
+   mode and the call goes nowhere.
+2. Create an agent with `phone_number_id` set to the number in E.164 and
+   `is_active` true. The lookup matches with or without the leading `+`. An
+   inactive agent closes the websocket with 4003; an unmatched number gets a
+   spoken "no agent is configured for this number".
+3. Set `enable_transcript` deliberately. False redacts turn text, tool arguments
+   and tool errors — correct for privacy, but it will make the call look emptier
+   than it was when you go looking at `turns`.
+
+### 7.4 Preflight
+
+Everything above, checked against the deployment itself, from a host that can
+reach its database and Redis:
+
+```
+make preflight ARGS="--url https://voice.example.com"
+```
+
+It reports on the credentials, `PUBLIC_URL`, the migration head, Redis, the
+agent's number, the public host, and then opens a real websocket to the stream
+URL — the one thing no test could cover before a live host existed. That last
+check uses a random agent id, which the bridge closes with 4004 after it has
+resolved the route, accepted the upgrade and queried for the agent: TLS, the
+proxy's websocket handling, routing and the database session, proven in one
+connection, with no call placed and no row written. A proxy that will not
+forward the upgrade answers with an HTTP status instead.
+
+Exit status is 0 only when every check passed. A `warn` is a judgement call; a
+`FAIL` is not.
+
+### 7.5 Call it, then check in this order
+
+| # | Check | Meaning if it fails |
+| --- | --- | --- |
+| 1 | A `call_records` row with that `CallSid`, status `completed` | The webhook or the status callback did not land |
+| 2 | `turns` on that row is non-null | The websocket never carried audio. Suspect 7.2 first |
+| 3 | `GET /api/v1/calls/{id}/metrics` reports a measured `time_to_first_audio` and `interruption_handling`, and `transcription_accuracy: null` | Null on the first two means no audio was recorded. **Null on the third is correct** — a human caller has no script to score against |
+| 4 | Outcome is `observed`, not `passed`/`failed`/`error` | A real call is measured, not graded (§27) |
+| 5 | A `voice.call` span with `voice.turn` (and `voice.tool_call`) children | See 7.6 |
+
+### 7.6 Traces, if you want them
+
+Optional — the call works without any of this. Set `OTEL_ENABLED=true` and
+`OTEL_EXPORTER_OTLP_ENDPOINT` to an OTLP/HTTP collector. The startup log says
+`tracing_provider_installed`, which means the provider is installed and spans
+are addressed there — **not** that anything arrived. With `OTEL_ENABLED` false
+the emitter is a no-op by design and the log says so.
+
+A trace carries transcripts, so plain `http://` to a non-loopback host is
+refused: `tracing_refused_cleartext_endpoint`, and `configure_tracing` returns
+false. Use `https://`, a loopback collector, or set
+`OTEL_ALLOW_INSECURE_EXPORT=true` to state that the network is trusted.
+
+### 7.7 Then write down what actually happened
+
+Including the parts that did not work. The value of this exercise is not the
+green tick — it is that the last time this path was tried for the first time, it
+produced five defects no test had seen.
 
 Standing constraint for any agent session: never claim a capability the code
 does not have. The reason this project exists is that the previous plan called

@@ -3,10 +3,13 @@
 import json
 import types
 import uuid
-from typing import Any
+from typing import Any, Self
 
 import structlog
 from openai import AsyncAzureOpenAI, AsyncOpenAI
+from openai.types.realtime.realtime_session_create_request import (
+    RealtimeSessionCreateRequest,
+)
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -44,6 +47,27 @@ LANGUAGE_NAMES: dict[str, str] = {
     "ms-MY": "Malay",
     "fil-PH": "Filipino",
 }
+
+
+def _assert_ga_session(config: dict[str, Any]) -> None:
+    """Fail here rather than silently on the server.
+
+    Neither `session.update` nor `send` validates: the first casts, the second
+    transforms. A malformed session therefore reaches OpenAI intact and comes
+    back as an asynchronous `error` event that nothing on this path is waiting
+    for, leaving the session on its defaults for the rest of the call. Checking
+    the payload against the SDK's own GA model turns that into an exception at
+    the point the mistake was made.
+
+    The model allows extra keys, so a leftover beta field would pass validation;
+    the keys are checked against the model's fields for that reason. This is the
+    check that would have caught `modalities` and `input_audio_format` outliving
+    the move to the GA namespace.
+    """
+    unknown = set(config) - set(RealtimeSessionCreateRequest.model_fields)
+    if unknown:
+        raise ValueError(f"not fields of a GA realtime session: {sorted(unknown)}")
+    RealtimeSessionCreateRequest.model_validate(config)
 
 
 def build_instructions_with_language(
@@ -299,30 +323,55 @@ class GPTRealtimeSession:
         language = self.agent_config.get("language", "en-US")
         # Default to marin for natural conversational tone
         voice = self.agent_config.get("voice", "marin")
-        temperature = self.agent_config.get("temperature", 0.6)
+        # The GA session has no temperature field; the agent's configured value
+        # has nowhere to go and is deliberately not sent rather than sent and
+        # silently ignored.
         instructions = build_instructions_with_language(
             system_prompt, language, timezone=workspace_timezone
         )
 
-        session_config = {
-            "modalities": ["text", "audio"],
+        # The GA session shape, which is not the beta one. This connection is on
+        # the GA namespace (see _connect_realtime_api), and GA moved the audio
+        # settings under `audio.input` / `audio.output`, renamed `modalities` to
+        # `output_modalities`, requires `type`, and dropped `temperature`
+        # entirely. Sending the beta shape here does not raise: `session.update`
+        # casts rather than validates and `send` transforms rather than
+        # validates, so the whole payload reaches the server, which rejects it
+        # asynchronously as an `error` event. The session then keeps its
+        # defaults — PCM16 at 24 kHz against a carrier sending 8 kHz mu-law, no
+        # instructions and no tools — and `session.updated` never arrives, so
+        # the greeting that waits on it never fires. A silent call with healthy
+        # logs.
+        #
+        # `output_modalities` is audio alone: GA does not accept both, and the
+        # transcript still arrives as response.output_audio_transcript.*, which
+        # is the only text this code path consumes.
+        session_config: dict[str, Any] = {
+            "type": "realtime",
             "instructions": instructions,
-            "voice": voice,
-            "speed": 1.1,  # Slightly faster speech (1.0 = normal, range: 0.25-1.5)
-            "temperature": temperature,  # Lower for consistent, natural delivery
-            # Use g711_ulaw for Twilio/Telnyx compatibility (mulaw at 8kHz)
-            "input_audio_format": "g711_ulaw",
-            "output_audio_format": "g711_ulaw",
-            "input_audio_transcription": {"model": "whisper-1"},
-            "turn_detection": {
-                "type": "server_vad",
-                "threshold": 0.5,
-                "prefix_padding_ms": 200,
-                "silence_duration_ms": 200,
+            "output_modalities": ["audio"],
+            "audio": {
+                "input": {
+                    # mu-law at 8 kHz, matching the PCMU the carrier streams.
+                    "format": {"type": "audio/pcmu"},
+                    "transcription": {"model": "whisper-1"},
+                    "turn_detection": {
+                        "type": "server_vad",
+                        "threshold": 0.5,
+                        "prefix_padding_ms": 200,
+                        "silence_duration_ms": 200,
+                    },
+                },
+                "output": {
+                    "format": {"type": "audio/pcmu"},
+                    "voice": voice,
+                    "speed": 1.1,  # 1.0 = normal, range 0.25-1.5
+                },
             },
             "tools": tools,
             "tool_choice": "auto",
         }
+        _assert_ga_session(session_config)
 
         self.logger.info("configuring_session", tool_count=len(tools), enabled_tools=enabled_tools)
 
@@ -639,7 +688,7 @@ class GPTRealtimeSession:
             transcript_entries=len(self._transcript_entries),
         )
 
-    async def __aenter__(self) -> "GPTRealtimeSession":
+    async def __aenter__(self) -> Self:
         """Async context manager entry."""
         await self.initialize()
         return self
