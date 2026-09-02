@@ -3,7 +3,7 @@
 import json
 import types
 import uuid
-from typing import Any
+from typing import Any, Self
 
 import structlog
 from openai import AsyncAzureOpenAI, AsyncOpenAI
@@ -688,7 +688,7 @@ class GPTRealtimeSession:
             transcript_entries=len(self._transcript_entries),
         )
 
-    async def __aenter__(self) -> "GPTRealtimeSession":
+    async def __aenter__(self) -> Self:
         """Async context manager entry."""
         await self.initialize()
         return self

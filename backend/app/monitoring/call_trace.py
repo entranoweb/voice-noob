@@ -201,7 +201,6 @@ __all__ = [
     "CALL_COST_MICROS",
     "CALL_DIRECTION",
     "CALL_DURATION_MS",
-    "CALL_DURATION_MS",
     "CALL_ENGINE",
     "CALL_ENGINE_MODEL",
     "CALL_FROM",
