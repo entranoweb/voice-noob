@@ -70,6 +70,31 @@ cd frontend && npm run dev                            # Check compilation warnin
 
 **Fix ALL errors/warnings before continuing!**
 
+## Agent Skills
+
+`.claude/skills/` holds five Telnyx reference skills, pinned by content hash in
+`skills-lock.json`:
+
+| Skill | Covers |
+| --- | --- |
+| `telnyx-texml-python` | TeXML applications, calls, conferences, streams |
+| `telnyx-voice-python` | Call Control — the outbound path (`telnyx.Call.create`) |
+| `telnyx-voice-streaming-python` | Media streaming, including the bidirectional stream parameters |
+| `telnyx-numbers-python` | Number search and orders (`/number_orders`) |
+| `telnyx-numbers-config-python` | Per-number configuration and webhooks |
+
+Update with `npx skills add team-telnyx/skills --skill <name> --agent claude-code`.
+
+Two things they are not. They document the **REST APIs**, not the TeXML markup
+verbs: the `<Stream bidirectionalMode="rtp">` attribute that silences a call
+when it defaults to `mp3` is not in any of them, though the equivalent Call
+Control enum is. And no skill covers OpenAI Realtime, which is where the session
+shape that silenced the bridge came from — the registry has nothing for it,
+FastAPI, SQLAlchemy or Next.js either. Skills shorten writing integration code;
+they do not check that this codebase's own pieces agree with each other.
+
+SMS is Twilio here, not Telnyx, so no messaging skill is installed.
+
 ## Key Commands
 
 - `/update-app` - Update dependencies, fix deprecations
