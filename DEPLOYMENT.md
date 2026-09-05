@@ -95,9 +95,27 @@ TELNYX_API_KEY=your_telnyx_api_key
 # REQUIRED in production. See TELNYX_PUBLIC_KEY above.
 DEBUG=false
 
-# Where the dashboard is served from, so the browser can call the API.
-CORS_ORIGINS=https://app.synthiqvoice.com
+# These three are read by docker-compose.prod.yml, not by the app directly.
+# FRONTEND_URL becomes the backend's CORS_ORIGINS. BACKEND_URL and
+# BACKEND_WS_URL are baked into the frontend at BUILD time as
+# NEXT_PUBLIC_API_URL / NEXT_PUBLIC_WS_URL — changing them later needs a
+# rebuild, not a restart. Setting CORS_ORIGINS directly does nothing: compose
+# sets it explicitly from FRONTEND_URL and that wins.
+FRONTEND_URL=https://app.synthiqvoice.com
+BACKEND_URL=https://api.synthiqvoice.com
+BACKEND_WS_URL=wss://api.synthiqvoice.com
 ```
+
+Every one of these is passed into the backend container by
+`docker-compose.prod.yml`. A variable set in Coolify that the compose file does
+not list never reaches the app — which is why `PUBLIC_URL` and
+`TELNYX_PUBLIC_KEY` are declared required there: the deploy fails with a message
+naming the missing variable rather than starting a server that cannot take a
+call.
+
+Migrations run themselves. `docker-entrypoint.sh` waits for Postgres and Redis,
+runs `alembic upgrade head`, then starts gunicorn — there is no manual migration
+step.
 
 **The OpenAI key does not go here.** The call path reads it from the agent's
 **workspace**, not the environment — Settings > Workspace API Keys in the
@@ -108,7 +126,29 @@ for this reason.
 
 ```
 
-### Step 5: Configure Domains in Coolify
+### Step 5: Cloudflare DNS
+
+Two A records to the server's IP:
+
+| Record | Proxy | Why |
+| --- | --- | --- |
+| `app.synthiqvoice.com` | **Proxied** (orange) | Ordinary web traffic. Cloudflare's cache and WAF are worth having in front of the dashboard |
+| `api.synthiqvoice.com` | **DNS only** (grey) | Telnyx posts webhooks here and opens the media stream here. Proxying it puts Cloudflare's edge between the carrier and the audio: it adds a hop to `time_to_first_audio`, which is one of the metrics this platform measures, and Free and Pro plans close a WebSocket after 100 seconds idle |
+
+Set SSL/TLS mode to **Full (strict)** for the zone. Flexible would have
+Cloudflare talk plain HTTP to the origin, which breaks the `app` → `api`
+requests the dashboard makes.
+
+Leave `api` grey while Coolify issues certificates in the next step: the
+Let's Encrypt HTTP-01 challenge is answered by Traefik on the origin, and a
+proxied record can intercept it. `app` can be turned orange once its certificate
+is issued.
+
+Grey-clouding `api` exposes the server's IP for that hostname. If that matters
+later, restrict port 443 on the host firewall to Telnyx's published IP ranges
+rather than putting the proxy back in front of the audio.
+
+### Step 6: Configure Domains in Coolify
 
 For each service that needs external access:
 
@@ -126,13 +166,13 @@ For each service that needs external access:
 4. Port: `3000`
 5. Enable **HTTPS** (Let's Encrypt)
 
-### Step 6: Deploy
+### Step 7: Deploy
 
 1. Click **Deploy** button
 2. Wait for build (~5-10 minutes first time)
 3. Check logs for any errors
 
-### Step 7: Verify Deployment
+### Step 8: Verify Deployment
 
 ```bash
 # Check backend health
@@ -143,7 +183,7 @@ curl https://api.synthiqvoice.com/health
 
 Visit `https://app.synthiqvoice.com` - you should see the login page.
 
-### Step 8: Wire the phone number, then preflight before dialling
+### Step 9: Wire the phone number, then preflight before dialling
 
 1. Log in, and add the OpenAI key under **Settings > Workspace API Keys**. The
    call path reads it from there, not from the environment.
