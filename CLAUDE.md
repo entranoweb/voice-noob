@@ -85,6 +85,12 @@ cd frontend && npm run dev                            # Check compilation warnin
 
 Update with `npx skills add team-telnyx/skills --skill <name> --agent claude-code`.
 
+Alongside them, `synthiq-voice-calls` is this project's own — the six silent
+failures on the inbound call path, and how to reproduce a call locally without a
+carrier (`references/rehearsal.md`, `scripts/signed_webhook.py`). Read it before
+changing anything between the webhook and the audio, and before calling a
+deployment ready.
+
 Two things they are not. They document the **REST APIs**, not the TeXML markup
 verbs: the `<Stream bidirectionalMode="rtp">` attribute that silences a call
 when it defaults to `mp3` is not in any of them, though the equivalent Call
