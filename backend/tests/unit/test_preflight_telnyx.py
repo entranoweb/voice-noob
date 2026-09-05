@@ -143,3 +143,40 @@ class TestStreamProbe:
         results = await preflight.check_stream_url("http://127.0.0.1:1")
 
         assert _levels(results) == [Level.FAIL]
+
+
+class TestCredentials:
+    """Which key is fatal, and which only limits what you can do."""
+
+    @pytest.fixture(autouse=True)
+    def settings(self, monkeypatch: pytest.MonkeyPatch) -> Any:
+        from app.core.config import settings
+
+        monkeypatch.setattr(settings, "TELNYX_API_KEY", None)
+        monkeypatch.setattr(settings, "TELNYX_PUBLIC_KEY", None)
+        monkeypatch.setattr(settings, "DEBUG", False)
+        return settings
+
+    def _by_check(self, results: list[Any], name: str) -> Any:
+        return next(r for r in results if r.check == name)
+
+    def test_a_missing_public_key_is_fatal(self) -> None:
+        assert (
+            self._by_check(preflight.check_credentials(), "TELNYX_PUBLIC_KEY").level is Level.FAIL
+        )
+
+    def test_a_missing_api_key_only_costs_outbound(self) -> None:
+        """Inbound never reads it, so failing the run on it would be wrong."""
+        assert self._by_check(preflight.check_credentials(), "TELNYX_API_KEY").level is Level.WARN
+
+    def test_debug_without_a_public_key_is_an_open_door(
+        self, settings: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Verification falls back to DEBUG, so this accepts any webhook at all."""
+        monkeypatch.setattr(settings, "DEBUG", True)
+
+        assert self._by_check(preflight.check_credentials(), "DEBUG").level is Level.FAIL
+
+    def test_the_environment_openai_key_is_not_checked(self) -> None:
+        """The call reads the workspace key; an env check here would be a lie."""
+        assert not [r for r in preflight.check_credentials() if "OPENAI" in r.check]

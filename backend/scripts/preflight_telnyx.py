@@ -71,9 +71,17 @@ def check_credentials() -> list[Result]:
 
     results: list[Result] = []
 
-    for name in ("TELNYX_API_KEY", "TELNYX_PUBLIC_KEY", "OPENAI_API_KEY"):
-        value = getattr(settings, name, None)
-        results.append(ok(name, "set") if value else fail(name, "unset"))
+    # TELNYX_API_KEY is only needed for outbound calls and the number-purchase
+    # flow, so its absence does not stop an inbound call landing.
+    if settings.TELNYX_API_KEY:
+        results.append(ok("TELNYX_API_KEY", "set"))
+    else:
+        results.append(warn("TELNYX_API_KEY", "unset — inbound works, outbound does not"))
+
+    if settings.TELNYX_PUBLIC_KEY:
+        results.append(ok("TELNYX_PUBLIC_KEY", "set"))
+    else:
+        results.append(fail("TELNYX_PUBLIC_KEY", "unset — see DEBUG below"))
 
     if settings.DEBUG and not settings.TELNYX_PUBLIC_KEY:
         results.append(
@@ -202,6 +210,71 @@ async def check_agent() -> list[Result]:
     return results
 
 
+async def check_agent_openai_key() -> list[Result]:
+    """The key the call uses, which is not the one in the environment.
+
+    `OPENAI_API_KEY` in settings is read by other things; the telephony bridge
+    reads `user_settings.openai_api_key` for the agent's *workspace*, with no
+    fallback to user-level settings and none to the environment. An env-only
+    check would pass while every call died at `initialize` with "API key not
+    configured for this workspace", which is the kind of green tick this script
+    exists not to give.
+    """
+    from sqlalchemy import select
+
+    from app.api.settings import get_user_api_keys
+    from app.api.telephony import get_agent_workspace_id
+    from app.core.auth import user_id_to_uuid
+    from app.db.session import AsyncSessionLocal
+    from app.models.agent import Agent
+
+    try:
+        async with AsyncSessionLocal() as session:
+            agents = (
+                await session.execute(
+                    select(Agent.id, Agent.name, Agent.user_id).where(
+                        Agent.phone_number_id.isnot(None), Agent.is_active.is_(True)
+                    )
+                )
+            ).all()
+
+            if not agents:
+                return []
+
+            results: list[Result] = []
+            for agent_id, name, user_id in agents:
+                label = f"{name} ({agent_id})"
+                workspace_id = await get_agent_workspace_id(agent_id, session)
+                user_settings = await get_user_api_keys(
+                    user_id_to_uuid(user_id), session, workspace_id=workspace_id
+                )
+                if not user_settings:
+                    results.append(
+                        fail("openai key", f"{label}: workspace has no settings row at all")
+                    )
+                    continue
+
+                provider = getattr(user_settings, "openai_provider", "openai") or "openai"
+                if provider == "azure":
+                    have = bool(
+                        user_settings.azure_openai_endpoint and user_settings.azure_openai_api_key
+                    )
+                    detail = (
+                        "azure endpoint and key set" if have else "azure endpoint or key missing"
+                    )
+                else:
+                    have = bool(user_settings.openai_api_key)
+                    detail = "set" if have else "missing — add it in Settings > Workspace API Keys"
+                results.append(
+                    ok("openai key", f"{label}: {provider}, {detail}")
+                    if have
+                    else fail("openai key", f"{label}: {provider}, {detail}")
+                )
+            return results
+    except Exception as exc:  # any failure here is a failed check
+        return [fail("openai key", f"{type(exc).__name__}: {exc}")]
+
+
 async def check_reachable(url: str) -> list[Result]:
     """The carrier has to reach the webhook host over TLS from outside."""
     import httpx
@@ -305,6 +378,7 @@ async def main() -> int:
     results += await check_migrations()
     results += await check_redis()
     results += await check_agent()
+    results += await check_agent_openai_key()
     if url and not args.skip_remote:
         results += await check_reachable(url)
         results += await check_stream_url(url)
