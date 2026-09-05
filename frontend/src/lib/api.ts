@@ -32,6 +32,7 @@ function safeRemoveItem(key: string): void {
 export function logout(): void {
   safeRemoveItem("access_token");
   try {
+    // eslint-disable-next-line @next/next/no-location-assign-relative-destination -- a full page load is the point: it drops every piece of client state along with the token. router.push() would keep a logged-out SPA alive.
     window.location.href = "/login";
   } catch (navError) {
     console.error("Failed to redirect to login:", navError);
@@ -65,6 +66,7 @@ api.interceptors.response.use(
       safeRemoveItem("access_token");
       // Safely navigate to login
       try {
+        // eslint-disable-next-line @next/next/no-location-assign-relative-destination -- a full page load is the point: it drops every piece of client state along with the token. router.push() would keep a logged-out SPA alive.
         window.location.href = "/login";
       } catch (navError) {
         console.error("Failed to redirect to login:", navError);
