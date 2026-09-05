@@ -79,3 +79,7 @@ Thumbs.db
 
 # Redis writes its snapshot into whatever directory it was started from.
 *.rdb
+
+# Rehearsal signing keys from .claude/skills/synthiq-voice-calls (see keygen).
+telnyx_rehearsal_key
+telnyx_rehearsal_key.pub

@@ -51,16 +51,23 @@ true at each one.
 
 Two columns record this and they are not the same:
 
-- `PhoneNumber.assigned_agent_id` — what the dashboard and
-  `PUT /api/v1/phone-numbers/{id}` write. This is the normal route.
-- `Agent.phone_number_id` — a string on the agent that **no API can set**.
-  Neither `AgentCreate` nor `AgentUpdate` exposes it, so only direct SQL
-  populates it. Legacy rows use it.
+- `Agent.phone_number_id` — written by `CreateAgentRequest` /
+  `UpdateAgentRequest`. The **agent create and edit pages** send this.
+- `PhoneNumber.assigned_agent_id` — written by
+  `PUT /api/v1/phone-numbers/{id}`. The **phone-numbers page** sends this, and
+  it sets no column on the agent.
 
-`get_agent_by_phone_number` honours both, and released or suspended numbers
-deliberately route nowhere. Before that was true, assigning a number exactly as
-the product intends left the caller hearing *"no agent is configured for this
-number"* while the dashboard showed the agent assigned.
+Two screens offer the user the same choice and they write different tables.
+Only the first used to route, so a number assigned from the phone-numbers page
+left the caller hearing *"no agent is configured for this number"* while that
+page showed the agent assigned. `get_agent_by_phone_number` honours both now,
+and released or suspended numbers deliberately route nowhere.
+
+How that stayed hidden is worth copying down. An OpenAPI dump was searched for
+schemas named `AgentCreate` and `AgentUpdate`, which do not exist — the models
+are `CreateAgentRequest` and `UpdateAgentRequest` — and the empty result was
+read as "the field is not exposed anywhere". An empty answer is only evidence
+once you have checked you asked the right question.
 
 If you add a third way to associate a number with an agent, that function is
 where it has to be taught, and `check_agent` in the preflight has to learn it

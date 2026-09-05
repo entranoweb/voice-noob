@@ -47,6 +47,13 @@ KEY = Path("telnyx_rehearsal_key")
 def keygen() -> None:
     key = Ed25519PrivateKey.generate()
     raw = serialization.Encoding.Raw
+    # Created 0600 before anything is written to it. It only signs rehearsal
+    # webhooks, but anyone holding it can forge a call into whatever instance
+    # trusts the matching public half, so it should not be readable by other
+    # users on a shared box. *.rdb-style accidents are why .gitignore covers
+    # both halves too.
+    KEY.touch(mode=0o600, exist_ok=True)
+    KEY.chmod(0o600)
     KEY.write_text(
         base64.b64encode(
             key.private_bytes(raw, serialization.PrivateFormat.Raw, serialization.NoEncryption())
@@ -59,6 +66,7 @@ def keygen() -> None:
     )
     print(f"wrote {KEY} and {KEY.with_suffix('.pub')}")
     print("this stands in for Telnyx; it is not a Telnyx key and never leaves your machine")
+    print("both halves are gitignored; the private half is 0600")
 
 
 def main() -> int:

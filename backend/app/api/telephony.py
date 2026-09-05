@@ -162,16 +162,18 @@ async def get_agent_by_phone_number(phone_number: str, db: AsyncSession) -> Agen
 
     Two places record that relationship and only one of them used to be read.
 
-    ``Agent.phone_number_id`` is a string on the agent, and nothing in the API
-    can set it: neither ``AgentCreate`` nor ``AgentUpdate`` exposes the field.
-    The only way to populate it is direct SQL.
+    ``Agent.phone_number_id`` is written by ``CreateAgentRequest`` and
+    ``UpdateAgentRequest``; the agent create and edit pages send it.
 
-    ``PhoneNumber.assigned_agent_id`` is what the product actually writes.
-    Assigning a number to an agent — in the dashboard, or through
-    ``PUT /api/v1/phone-numbers/{id}`` — sets that column and nothing else. So a
-    number assigned exactly as the product intends left this lookup returning
-    None, and the caller heard "no agent is configured for this number" while
-    the dashboard showed the agent assigned. Both are honoured now.
+    ``PhoneNumber.assigned_agent_id`` is written by
+    ``PUT /api/v1/phone-numbers/{id}``; the phone-numbers page sends that, and
+    it sets no column on the agent.
+
+    Two screens offer the same choice and they write different tables. Only the
+    first used to route, so a number assigned from the phone-numbers page left
+    this lookup returning None, and the caller heard "no agent is configured for
+    this number" while that page showed the agent assigned. Both are honoured
+    now.
 
     Released and suspended numbers do not route: a number taken out of service
     should stop reaching an agent, and it is the assignment table that knows.

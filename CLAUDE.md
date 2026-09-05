@@ -87,7 +87,8 @@ Update with `npx skills add team-telnyx/skills --skill <name> --agent claude-cod
 
 Alongside them, `synthiq-voice-calls` is this project's own — the six silent
 failures on the inbound call path, and how to reproduce a call locally without a
-carrier (`references/rehearsal.md`, `scripts/signed_webhook.py`). Read it before
+carrier — see `.claude/skills/synthiq-voice-calls/references/rehearsal.md`
+and `.claude/skills/synthiq-voice-calls/scripts/signed_webhook.py`. Read it before
 changing anything between the webhook and the audio, and before calling a
 deployment ready.
 
