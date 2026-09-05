@@ -1,4 +1,4 @@
-# VoiceNoob QA Framework - Implementation Plan
+# SynthiqVoice QA Framework - Implementation Plan
 
 **Date:** December 23, 2025
 **Status:** Research & Planning Complete (Verified)
@@ -10,7 +10,7 @@
 
 ## Executive Summary
 
-The VoiceNoob QA Framework is **85% production-ready** with a projected **+$38K/year ROI**. After user verification, security and resilience scores were upgraded. Only **~1.5 hours of P0 fixes** remain before ship-ready status.
+The SynthiqVoice QA Framework is **85% production-ready** with a projected **+$38K/year ROI**. After user verification, security and resilience scores were upgraded. Only **~1.5 hours of P0 fixes** remain before ship-ready status.
 
 ### Quick Status
 

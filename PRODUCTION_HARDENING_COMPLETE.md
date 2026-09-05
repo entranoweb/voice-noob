@@ -1,4 +1,4 @@
-# VoiceNoob Production Hardening - Implementation Complete
+# SynthiqVoice Production Hardening - Implementation Complete
 
 **Date**: December 24, 2025
 **Branch**: `voice-prod`
@@ -8,7 +8,7 @@
 
 ## Executive Summary
 
-Successfully implemented Production Hardening Sprint 1, 2, and 3 for the VoiceNoob platform. All features are additive-only, feature-flagged for safe rollout, and backed by comprehensive test coverage.
+Successfully implemented Production Hardening Sprint 1, 2, and 3 for the SynthiqVoice platform. All features are additive-only, feature-flagged for safe rollout, and backed by comprehensive test coverage.
 
 ---
 
@@ -199,7 +199,7 @@ MAX_CALL_QUEUE_SIZE=1000
 
 ### Prometheus Metrics
 - Endpoint: `GET /metrics`
-- Metrics prefix: `voicenoob_`
+- Metrics prefix: `synthiq_`
 
 ---
 

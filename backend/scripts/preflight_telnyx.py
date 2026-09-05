@@ -27,6 +27,7 @@ import uuid
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse
 
 BACKEND = Path(__file__).resolve().parent.parent
@@ -71,9 +72,17 @@ def check_credentials() -> list[Result]:
 
     results: list[Result] = []
 
-    for name in ("TELNYX_API_KEY", "TELNYX_PUBLIC_KEY", "OPENAI_API_KEY"):
-        value = getattr(settings, name, None)
-        results.append(ok(name, "set") if value else fail(name, "unset"))
+    # TELNYX_API_KEY is only needed for outbound calls and the number-purchase
+    # flow, so its absence does not stop an inbound call landing.
+    if settings.TELNYX_API_KEY:
+        results.append(ok("TELNYX_API_KEY", "set"))
+    else:
+        results.append(warn("TELNYX_API_KEY", "unset — inbound works, outbound does not"))
+
+    if settings.TELNYX_PUBLIC_KEY:
+        results.append(ok("TELNYX_PUBLIC_KEY", "set"))
+    else:
+        results.append(fail("TELNYX_PUBLIC_KEY", "unset — see DEBUG below"))
 
     if settings.DEBUG and not settings.TELNYX_PUBLIC_KEY:
         results.append(
@@ -161,45 +170,134 @@ async def check_redis() -> list[Result]:
     return [ok("redis", "reachable")]
 
 
-async def check_agent() -> list[Result]:
-    """An active agent whose number is in the shape the webhook looks up by."""
+async def _dialable() -> list[tuple[Any, str, str]]:
+    """(agent, number, where the routing came from), resolved as the webhook does.
+
+    `get_agent_by_phone_number` accepts two routes: the legacy string on the
+    agent, and the assignment the phone-numbers API writes. Anything this script
+    reports has to agree with that function, or it reports on a deployment other
+    than the one that will take the call — which it did, failing a correctly
+    assigned number because it only knew about the first route.
+    """
     from sqlalchemy import select
 
     from app.db.session import AsyncSessionLocal
     from app.models.agent import Agent
+    from app.models.phone_number import PhoneNumber, PhoneNumberStatus
 
+    found: list[tuple[Any, str, str]] = []
+    async with AsyncSessionLocal() as session:
+        legacy = (
+            (await session.execute(select(Agent).where(Agent.phone_number_id.isnot(None))))
+            .scalars()
+            .all()
+        )
+        found += [(a, a.phone_number_id or "", "agent.phone_number_id") for a in legacy]
+
+        assigned = (
+            await session.execute(
+                select(Agent, PhoneNumber.phone_number)
+                .join(PhoneNumber, PhoneNumber.assigned_agent_id == Agent.id)
+                .where(PhoneNumber.status == PhoneNumberStatus.ACTIVE.value)
+            )
+        ).all()
+        seen = {(a.id, n) for a, n, _ in found}
+        found += [(a, n, "phone number assignment") for a, n in assigned if (a.id, n) not in seen]
+    return found
+
+
+async def check_agent() -> list[Result]:
+    """An active agent, reachable on a number in the shape the lookup matches."""
     try:
-        async with AsyncSessionLocal() as session:
-            rows = (
-                await session.execute(
-                    select(Agent.id, Agent.name, Agent.phone_number_id, Agent.is_active).where(
-                        Agent.phone_number_id.isnot(None)
-                    )
-                )
-            ).all()
+        dialable = await _dialable()
     except Exception as exc:  # any failure here is a failed check
         return [fail("agent", f"{type(exc).__name__}: {exc}")]
 
-    if not rows:
-        return [fail("agent", "no agent has a phone_number_id set")]
+    if not dialable:
+        return [
+            fail(
+                "agent",
+                "no agent is reachable on a number: nothing has agent.phone_number_id "
+                "set, and no active phone number is assigned to an agent",
+            )
+        ]
 
     results: list[Result] = []
     reachable = 0
-    for agent_id, name, number, is_active in rows:
-        label = f"{name} ({agent_id})"
+    for agent, number, source in dialable:
+        label = f"{agent.name} ({agent.id})"
         if not E164.match(number or ""):
             results.append(
-                fail("agent", f"{label}: phone_number_id {number!r} is not E.164 (+15551234567)")
+                fail("agent", f"{label}: {number!r} is not E.164 (+15551234567), via {source}")
             )
-        elif not is_active:
+        elif not agent.is_active:
             results.append(fail("agent", f"{label}: {number} but is_active is false (closes 4003)"))
         else:
             reachable += 1
-            results.append(ok("agent", f"{label}: {number}, active"))
+            results.append(ok("agent", f"{label}: {number}, active, via {source}"))
 
     if not reachable:
         results.append(fail("agent", "no agent is dialable"))
     return results
+
+
+async def check_agent_openai_key() -> list[Result]:
+    """The key the call uses, which is not the one in the environment.
+
+    `OPENAI_API_KEY` in settings is read by other things; the telephony bridge
+    reads `user_settings.openai_api_key` for the agent's *workspace*, with no
+    fallback to user-level settings and none to the environment. An env-only
+    check would pass while every call died at `initialize` with "API key not
+    configured for this workspace", which is the kind of green tick this script
+    exists not to give.
+    """
+    from app.api.settings import get_user_api_keys
+    from app.api.telephony import get_agent_workspace_id
+    from app.core.auth import user_id_to_uuid
+    from app.db.session import AsyncSessionLocal
+
+    try:
+        dialable = [(a, n) for a, n, _ in await _dialable() if a.is_active]
+        if not dialable:
+            return []
+
+        results: list[Result] = []
+        async with AsyncSessionLocal() as session:
+            for agent, _number in dialable:
+                label = f"{agent.name} ({agent.id})"
+                workspace_id = await get_agent_workspace_id(agent.id, session)
+                user_settings = await get_user_api_keys(
+                    user_id_to_uuid(agent.user_id), session, workspace_id=workspace_id
+                )
+                if not user_settings:
+                    results.append(
+                        fail(
+                            "openai key",
+                            f"{label}: no settings for its workspace — add the key in "
+                            "Settings > Workspace API Keys",
+                        )
+                    )
+                    continue
+
+                provider = getattr(user_settings, "openai_provider", "openai") or "openai"
+                if provider == "azure":
+                    have = bool(
+                        user_settings.azure_openai_endpoint and user_settings.azure_openai_api_key
+                    )
+                    detail = (
+                        "azure endpoint and key set" if have else "azure endpoint or key missing"
+                    )
+                else:
+                    have = bool(user_settings.openai_api_key)
+                    detail = "set" if have else "missing — add it in Settings > Workspace API Keys"
+                results.append(
+                    ok("openai key", f"{label}: {provider}, {detail}")
+                    if have
+                    else fail("openai key", f"{label}: {provider}, {detail}")
+                )
+        return results
+    except Exception as exc:  # any failure here is a failed check
+        return [fail("openai key", f"{type(exc).__name__}: {exc}")]
 
 
 async def check_reachable(url: str) -> list[Result]:
@@ -305,6 +403,7 @@ async def main() -> int:
     results += await check_migrations()
     results += await check_redis()
     results += await check_agent()
+    results += await check_agent_openai_key()
     if url and not args.skip_remote:
         results += await check_reachable(url)
         results += await check_stream_url(url)

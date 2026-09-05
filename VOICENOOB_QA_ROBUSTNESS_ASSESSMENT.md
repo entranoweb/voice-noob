@@ -1,4 +1,4 @@
-# VoiceNoob QA Framework - Deep Robustness Assessment
+# SynthiqVoice QA Framework - Deep Robustness Assessment
 
 **Date:** December 20, 2025
 **Scope:** Code-level analysis of error handling, failure modes, and resilience

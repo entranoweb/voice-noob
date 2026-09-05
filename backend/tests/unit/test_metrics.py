@@ -227,11 +227,11 @@ class TestMetricsEndpoint:
 
         # Check for expected metric names in output
         content = response.text
-        assert "voicenoob_calls_initiated_total" in content
-        assert "voicenoob_calls_completed_total" in content
-        assert "voicenoob_calls_failed_total" in content
-        assert "voicenoob_call_duration_seconds" in content
-        assert "voicenoob_active_calls_current" in content
+        assert "synthiq_calls_initiated_total" in content
+        assert "synthiq_calls_completed_total" in content
+        assert "synthiq_calls_failed_total" in content
+        assert "synthiq_call_duration_seconds" in content
+        assert "synthiq_active_calls_current" in content
 
     def test_metrics_endpoint_disabled(
         self,
@@ -271,8 +271,8 @@ class TestMetricsRegistry:
         metric_families = list(REGISTRY.collect())
         metric_names = [mf.name for mf in metric_families]
 
-        assert "voicenoob_calls_initiated" in metric_names
-        assert "voicenoob_calls_completed" in metric_names
-        assert "voicenoob_calls_failed" in metric_names
-        assert "voicenoob_call_duration_seconds" in metric_names
-        assert "voicenoob_active_calls_current" in metric_names
+        assert "synthiq_calls_initiated" in metric_names
+        assert "synthiq_calls_completed" in metric_names
+        assert "synthiq_calls_failed" in metric_names
+        assert "synthiq_call_duration_seconds" in metric_names
+        assert "synthiq_active_calls_current" in metric_names

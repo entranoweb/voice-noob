@@ -30,6 +30,11 @@ from app.db.session import get_db
 from app.models.agent import Agent
 from app.models.call_record import CallDirection, CallRecord, CallStatus
 from app.models.campaign import Campaign, CampaignContact, CampaignContactStatus
+
+# Aliased: `PhoneNumber` in this module already means the provider DTO from
+# services.telephony.base, which is a different thing from the table.
+from app.models.phone_number import PhoneNumber as PhoneNumberRecord
+from app.models.phone_number import PhoneNumberStatus
 from app.models.workspace import AgentWorkspace
 from app.services.qa import trigger_qa_evaluation
 from app.services.telephony.telnyx_events import parse_telnyx_webhook
@@ -153,18 +158,45 @@ async def get_telnyx_service(
 
 
 async def get_agent_by_phone_number(phone_number: str, db: AsyncSession) -> Agent | None:
-    """Find agent by assigned phone number."""
+    """Find the agent a call to this number should reach.
+
+    Two places record that relationship and only one of them used to be read.
+
+    ``Agent.phone_number_id`` is written by ``CreateAgentRequest`` and
+    ``UpdateAgentRequest``; the agent create and edit pages send it.
+
+    ``PhoneNumber.assigned_agent_id`` is written by
+    ``PUT /api/v1/phone-numbers/{id}``; the phone-numbers page sends that, and
+    it sets no column on the agent.
+
+    Two screens offer the same choice and they write different tables. Only the
+    first used to route, so a number assigned from the phone-numbers page left
+    this lookup returning None, and the caller heard "no agent is configured for
+    this number" while that page showed the agent assigned. Both are honoured
+    now.
+
+    Released and suspended numbers do not route: a number taken out of service
+    should stop reaching an agent, and it is the assignment table that knows.
+    """
     # Remove + prefix for comparison if present
     normalized = phone_number.lstrip("+")
+    candidates = (phone_number, normalized, f"+{normalized}")
+
+    result = await db.execute(select(Agent).where(Agent.phone_number_id.in_(candidates)).limit(1))
+    agent = result.scalars().first()
+    if agent:
+        return agent
 
     result = await db.execute(
-        select(Agent).where(
-            (Agent.phone_number_id == phone_number)
-            | (Agent.phone_number_id == normalized)
-            | (Agent.phone_number_id == f"+{normalized}")
+        select(Agent)
+        .join(PhoneNumberRecord, PhoneNumberRecord.assigned_agent_id == Agent.id)
+        .where(
+            PhoneNumberRecord.phone_number.in_(candidates),
+            PhoneNumberRecord.status == PhoneNumberStatus.ACTIVE.value,
         )
+        .limit(1)
     )
-    return result.scalar_one_or_none()
+    return result.scalars().first()
 
 
 async def get_agent_workspace_id(agent_id: uuid.UUID, db: AsyncSession) -> uuid.UUID | None:

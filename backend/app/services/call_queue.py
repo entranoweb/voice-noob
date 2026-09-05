@@ -23,8 +23,8 @@ if TYPE_CHECKING:
 logger = structlog.get_logger()
 
 # Redis key prefixes
-CALL_QUEUE_KEY = "voicenoob:queue:calls"
-QUEUE_STATS_KEY = "voicenoob:queue:stats"
+CALL_QUEUE_KEY = "synthiq:queue:calls"
+QUEUE_STATS_KEY = "synthiq:queue:stats"
 
 # Queue lock for thread safety
 _queue_lock = asyncio.Lock()

@@ -1,4 +1,4 @@
-# Frontend Dockerfile for Voice Noob Dashboard
+# Frontend Dockerfile for Synthiq Voice Dashboard
 FROM node:20-alpine AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./

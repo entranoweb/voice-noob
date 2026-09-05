@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     )
 
     # Application
-    APP_NAME: str = "Voice Noob API"
+    APP_NAME: str = "Synthiq Voice API"
     APP_VERSION: str = "0.1.0"
     DEBUG: bool = False
     API_V1_PREFIX: str = "/api/v1"
@@ -130,7 +130,7 @@ class Settings(BaseSettings):
 
     # OpenTelemetry
     OTEL_ENABLED: bool = False
-    OTEL_SERVICE_NAME: str = "voicenoob-api"
+    OTEL_SERVICE_NAME: str = "synthiq-voice-api"
     OTEL_EXPORTER_OTLP_ENDPOINT: str | None = None
     # Allow spans to leave the host over plain HTTP. Off by default: a call trace
     # carries transcripts and the tool arguments built from them, so an

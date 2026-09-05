@@ -1,4 +1,4 @@
-# VoiceNoob QA Testing Framework - Implementation Plan
+# SynthiqVoice QA Testing Framework - Implementation Plan
 
 ## Spec Files Reference
 

@@ -19,7 +19,7 @@ class TestBasicHealthCheck:
         assert response.status_code == 200
         data = response.json()
         assert data["status"] == "healthy"
-        assert data["app"] == "Voice Noob API"
+        assert data["app"] == "Synthiq Voice API"
         assert "version" in data
 
 

@@ -12,8 +12,10 @@
 
 ### 1. Coolify Server Ready
 - [ ] Coolify installed on Azure VM (Germany region)
-- [ ] Domain DNS pointing to server (e.g., `voice.synthiq.io`)
-- [ ] Wildcard or subdomain for API (e.g., `api.voice.synthiq.io`)
+- [ ] `app.synthiqvoice.com` A record pointing to the server (the dashboard)
+- [ ] `api.synthiqvoice.com` A record pointing to the server (the backend, and the
+      host Telnyx dials — see Step 4)
+- [ ] `synthiq.io` is the marketing site and is not involved here
 
 ### 2. GitHub Repo
 - [ ] Code pushed to GitHub
@@ -59,7 +61,12 @@ In Coolify's **Environment Variables** section, add:
 # Database (REQUIRED - change these!)
 POSTGRES_USER=postgres
 POSTGRES_PASSWORD=YourSecurePostgresPassword123!
-POSTGRES_DB=voice_agent
+# Whatever you put here wins: compose builds DATABASE_URL from it and passes
+# that to the app explicitly, so the app's own default is never consulted. Pick
+# a name on a fresh deployment and then leave it alone — pointing an existing
+# deployment at a different name gives it an empty database in which every
+# table looks missing.
+POSTGRES_DB=synthiq_voice
 
 # Redis (REQUIRED - change this!)
 REDIS_PASSWORD=YourSecureRedisPassword456!
@@ -69,50 +76,147 @@ REDIS_PASSWORD=YourSecureRedisPassword456!
 SECRET_KEY=your_64_character_hex_string_here
 
 # Admin User (REQUIRED - change these!)
-ADMIN_EMAIL=admin@yourcompany.com
+ADMIN_EMAIL=admin@synthiqvoice.com
 ADMIN_PASSWORD=YourSecureAdminPassword789!
 ADMIN_NAME=Admin
 
-# URLs (REQUIRED - use your actual domains!)
-FRONTEND_URL=https://voice.synthiq.io
-BACKEND_URL=https://api.voice.synthiq.io
-BACKEND_WS_URL=wss://api.voice.synthiq.io
+# The public origin of the BACKEND. Required for a phone call to work.
+# The answer document builds the media stream URL from this, and the carrier
+# dials it. Unset, it falls back to the request's own host, which behind
+# Coolify's proxy is the container address Telnyx cannot reach: the call
+# connects, the row lands, and the caller hears silence. See docs/HANDOFF.md
+# section 7.2.
+PUBLIC_URL=https://api.synthiqvoice.com
+
+# Telnyx webhook signature verification. REQUIRED.
+# Unset, verification falls back to DEBUG: with DEBUG=false every webhook is
+# rejected 403 and no call ever reaches an agent; with DEBUG=true every webhook
+# is accepted unverified by anyone who finds the URL.
+TELNYX_PUBLIC_KEY=your_telnyx_public_key
+
+# Only needed for outbound calls and buying numbers. Inbound does not use it.
+TELNYX_API_KEY=your_telnyx_api_key
+
+# REQUIRED in production. See TELNYX_PUBLIC_KEY above.
+DEBUG=false
+
+# These three are read by docker-compose.prod.yml, not by the app directly.
+# FRONTEND_URL becomes the backend's CORS_ORIGINS. BACKEND_URL and
+# BACKEND_WS_URL are baked into the frontend at BUILD time as
+# NEXT_PUBLIC_API_URL / NEXT_PUBLIC_WS_URL — changing them later needs a
+# rebuild, not a restart. Setting CORS_ORIGINS directly does nothing: compose
+# sets it explicitly from FRONTEND_URL and that wins.
+FRONTEND_URL=https://app.synthiqvoice.com
+BACKEND_URL=https://api.synthiqvoice.com
+BACKEND_WS_URL=wss://api.synthiqvoice.com
 ```
 
-### Step 5: Configure Domains in Coolify
+Every one of these is passed into the backend container by
+`docker-compose.prod.yml`. A variable set in Coolify that the compose file does
+not list never reaches the app — which is why `PUBLIC_URL` and
+`TELNYX_PUBLIC_KEY` are declared required there: the deploy fails with a message
+naming the missing variable rather than starting a server that cannot take a
+call.
+
+Migrations run themselves. `docker-entrypoint.sh` waits for Postgres and Redis,
+runs `alembic upgrade head`, then starts gunicorn — there is no manual migration
+step.
+
+**The OpenAI key does not go here.** The call path reads it from the agent's
+**workspace**, not the environment — Settings > Workspace API Keys in the
+dashboard, after the first login. There is no fallback: a workspace without a
+key raises "API key not configured for this workspace" the moment the caller is
+connected. `make preflight` checks the workspace key, not the environment one,
+for this reason.
+
+```
+
+### Step 5: Cloudflare DNS
+
+Two A records to the server's IP:
+
+| Record | Proxy | Why |
+| --- | --- | --- |
+| `app.synthiqvoice.com` | **Proxied** (orange) | Ordinary web traffic. Cloudflare's cache and WAF are worth having in front of the dashboard |
+| `api.synthiqvoice.com` | **DNS only** (grey) | Telnyx posts webhooks here and opens the media stream here. Proxying it puts Cloudflare's edge between the carrier and the audio: it adds a hop to `time_to_first_audio`, which is one of the metrics this platform measures, and Free and Pro plans close a WebSocket after 100 seconds idle |
+
+Set SSL/TLS mode to **Full (strict)** for the zone. Flexible would have
+Cloudflare talk plain HTTP to the origin, which breaks the `app` → `api`
+requests the dashboard makes.
+
+Leave `api` grey while Coolify issues certificates in the next step: the
+Let's Encrypt HTTP-01 challenge is answered by Traefik on the origin, and a
+proxied record can intercept it. `app` can be turned orange once its certificate
+is issued.
+
+Grey-clouding `api` exposes the server's IP for that hostname. If that matters
+later, restrict port 443 on the host firewall to Telnyx's published IP ranges
+rather than putting the proxy back in front of the audio.
+
+### Step 6: Configure Domains in Coolify
 
 For each service that needs external access:
 
 **Backend Service:**
 1. Click on `backend` service
 2. Go to **Domains** tab
-3. Add: `api.voice.synthiq.io`
+3. Add: `api.synthiqvoice.com`
 4. Port: `8000`
 5. Enable **HTTPS** (Let's Encrypt)
 
 **Frontend Service:**
 1. Click on `frontend` service
 2. Go to **Domains** tab
-3. Add: `voice.synthiq.io`
+3. Add: `app.synthiqvoice.com`
 4. Port: `3000`
 5. Enable **HTTPS** (Let's Encrypt)
 
-### Step 6: Deploy
+### Step 7: Deploy
 
 1. Click **Deploy** button
 2. Wait for build (~5-10 minutes first time)
 3. Check logs for any errors
 
-### Step 7: Verify Deployment
+### Step 8: Verify Deployment
 
 ```bash
 # Check backend health
-curl https://api.voice.synthiq.io/health
+curl https://api.synthiqvoice.com/health
 
 # Should return: {"status": "healthy", ...}
 ```
 
-Visit `https://voice.synthiq.io` - you should see the login page.
+Visit `https://app.synthiqvoice.com` - you should see the login page.
+
+### Step 9: Wire the phone number, then preflight before dialling
+
+1. Log in, and add the OpenAI key under **Settings > Workspace API Keys**. The
+   call path reads it from there, not from the environment.
+2. Create an agent with `phone_number_id` set to the number in E.164
+   (`+15551234567`) and **is_active** on. An inactive agent closes the media
+   stream with 4003.
+3. In Telnyx, point the number at a **TeXML application** — not Call Control —
+   with the voice webhook at `https://api.synthiqvoice.com/webhooks/telnyx/voice`
+   and the status callback at `https://api.synthiqvoice.com/webhooks/telnyx/status`.
+   Only TeXML consumes the document the webhook returns; on Call Control the
+   document is ignored and the call goes nowhere.
+4. Run the preflight from somewhere that can reach the database and Redis:
+
+   ```bash
+   make preflight ARGS="--url https://api.synthiqvoice.com"
+   ```
+
+   It checks the credentials, `PUBLIC_URL`, the migration head, Redis, the
+   agent's number, the workspace OpenAI key, the public host, and then opens a
+   real websocket to the media stream URL. It places no call and writes no row.
+   Exit status is 0 only when every check passed. A `warn` is a judgement call;
+   a `FAIL` is not.
+5. Dial the number. Then check, in order: a `call_records` row with that
+   `CallSid`; `turns` on it non-null; `GET /api/v1/calls/{id}/metrics` reporting
+   a measured `time_to_first_audio`. `transcription_accuracy: null` is correct —
+   a human caller has no script to score against.
+
+`docs/HANDOFF.md` section 7 has the full version, including what each failure means.
 
 ---
 
@@ -120,7 +224,7 @@ Visit `https://voice.synthiq.io` - you should see the login page.
 
 ### 1. Login & Initial Setup
 
-1. Go to `https://voice.synthiq.io`
+1. Go to `https://app.synthiqvoice.com`
 2. Login with your admin credentials
 3. **Create a Workspace** (required for multi-tenant isolation)
 
@@ -149,12 +253,12 @@ In **Telnyx Portal** → Your Phone Number → **Voice Settings**:
 | Setting | Value |
 |---------|-------|
 | Connection Type | Webhook |
-| Webhook URL | `https://api.voice.synthiq.io/webhooks/telnyx/voice` |
+| Webhook URL | `https://api.synthiqvoice.com/webhooks/telnyx/voice` |
 | Failover URL | (leave empty) |
 
 For **TeXML Applications** (if using):
-- Answer URL: `https://api.voice.synthiq.io/webhooks/telnyx/voice`
-- Status URL: `https://api.voice.synthiq.io/webhooks/telnyx/status`
+- Answer URL: `https://api.synthiqvoice.com/webhooks/telnyx/voice`
+- Status URL: `https://api.synthiqvoice.com/webhooks/telnyx/status`
 
 ### 4. Create Your First Agent
 
@@ -212,12 +316,12 @@ git add -A && git commit -m "Clean build" && git push
 
 1. **Verify domain is accessible:**
    ```bash
-   curl https://api.voice.synthiq.io/health
+   curl https://api.synthiqvoice.com/health
    ```
 
 2. **Check Telnyx webhook URL** is exactly:
    ```
-   https://api.voice.synthiq.io/webhooks/telnyx/voice
+   https://api.synthiqvoice.com/webhooks/telnyx/voice
    ```
 
 3. **Check backend logs** for webhook errors

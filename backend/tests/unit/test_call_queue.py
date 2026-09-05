@@ -127,7 +127,7 @@ class TestEnqueueCall:
             assert result is True
 
             # Verify call was added to queue
-            queue_len = await mock_redis.llen("voicenoob:queue:calls")
+            queue_len = await mock_redis.llen("synthiq:queue:calls")
             assert queue_len == 1
 
     @pytest.mark.asyncio
@@ -215,7 +215,7 @@ class TestDequeueCall:
             assert call.agent_id == "agent-456"
 
             # Queue should be empty
-            queue_len = await mock_redis.llen("voicenoob:queue:calls")
+            queue_len = await mock_redis.llen("synthiq:queue:calls")
             assert queue_len == 0
 
     @pytest.mark.asyncio
@@ -287,7 +287,7 @@ class TestPeekQueue:
             assert calls[1].call_id == "call-2"
 
             # Queue should not be modified
-            queue_len = await mock_redis.llen("voicenoob:queue:calls")
+            queue_len = await mock_redis.llen("synthiq:queue:calls")
             assert queue_len == 2
 
     @pytest.mark.asyncio

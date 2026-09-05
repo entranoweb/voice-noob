@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "skills": {
+    "telnyx-numbers-config-python": {
+      "source": "team-telnyx/skills",
+      "sourceType": "github",
+      "skillPath": "skills/telnyx-numbers-config-python/SKILL.md",
+      "computedHash": "31a31bf4700b5971e7e9d1945fd67394a285e87ff529c7425ee17ce85ef4c23b"
+    },
+    "telnyx-numbers-python": {
+      "source": "team-telnyx/skills",
+      "sourceType": "github",
+      "skillPath": "skills/telnyx-numbers-python/SKILL.md",
+      "computedHash": "1ba1234b1478a770aa4649b0d195a191321e287c5aaafafb51b348d4a5981a26"
+    },
+    "telnyx-texml-python": {
+      "source": "team-telnyx/skills",
+      "sourceType": "github",
+      "skillPath": "skills/telnyx-texml-python/SKILL.md",
+      "computedHash": "f7797bbeba0ad3356ae31569ce6640fbb6d6c1304800462335c3e343c22597f0"
+    },
+    "telnyx-voice-python": {
+      "source": "team-telnyx/skills",
+      "sourceType": "github",
+      "skillPath": "skills/telnyx-voice-python/SKILL.md",
+      "computedHash": "a229266a72c38bb8917f9ace2657157fab86c295714cc8b617921b648d692b47"
+    },
+    "telnyx-voice-streaming-python": {
+      "source": "team-telnyx/skills",
+      "sourceType": "github",
+      "skillPath": "skills/telnyx-voice-streaming-python/SKILL.md",
+      "computedHash": "0bb1390b8841cfa1c9ecc406cd4c5be78ed5dae5bb62abe2183882541dbc3d3c"
+    }
+  }
+}

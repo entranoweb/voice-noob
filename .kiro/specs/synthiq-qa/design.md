@@ -1,4 +1,4 @@
-# VoiceNoob QA Testing Framework - Design
+# SynthiqVoice QA Testing Framework - Design
 
 ## Reference Documents
 

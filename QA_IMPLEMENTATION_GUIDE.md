@@ -1,4 +1,4 @@
-# VoiceNoob QA Testing Framework - Implementation Guide
+# SynthiqVoice QA Testing Framework - Implementation Guide
 
 > **Purpose:** Single source of truth for implementing the QA Testing Framework. Follow this document to prevent context rot and maintain consistency across sessions.
 
@@ -10,7 +10,7 @@
 |------|-------|
 | **Base Branch** | `synthiqvoice` |
 | **PR Target** | `synthiqvoice` |
-| **Spec Location** | `.kiro/specs/voicenoob-qa/` |
+| **Spec Location** | `.kiro/specs/synthiq-qa/` |
 | **Verification Tool** | Augment MCP (`mcp__auggie-mcp__codebase-retrieval`) |
 
 ---
@@ -20,7 +20,7 @@
 Before any implementation, read these files in order:
 
 ```
-.kiro/specs/voicenoob-qa/
+.kiro/specs/synthiq-qa/
 ├── requirements.md          # WHAT to build (20 FRs, 11 NFRs, 14 constraints)
 ├── design.md                # HOW to build (architecture, models, patterns)
 ├── tasks.md                 # STEPS to build (26 tasks, 4 weeks)
@@ -81,7 +81,7 @@ main (protected)
    - Add QA_* feature flags to config.py
    - Task 1 of QA Testing Framework
 
-   Refs: .kiro/specs/voicenoob-qa/tasks.md#task-1"
+   Refs: .kiro/specs/synthiq-qa/tasks.md#task-1"
    ```
 
 5. **Push and create PR**:
@@ -264,7 +264,7 @@ cd frontend && npm run check && npm test
 gh pr create --base synthiqvoice --title "feat(qa): <description>"
 
 # View spec files
-cat .kiro/specs/voicenoob-qa/tasks.md
+cat .kiro/specs/synthiq-qa/tasks.md
 ```
 
 ---

@@ -1,8 +1,8 @@
-# VoiceNoob QA Testing Framework - Requirements
+# SynthiqVoice QA Testing Framework - Requirements
 
 ## Overview
 
-Build a production-grade QA/Testing layer for the VoiceNoob voice AI platform that provides automated post-call evaluation, pre-deployment testing, real-time monitoring, and auto-remediation capabilities.
+Build a production-grade QA/Testing layer for the SynthiqVoice voice AI platform that provides automated post-call evaluation, pre-deployment testing, real-time monitoring, and auto-remediation capabilities.
 
 ## Reference Documents
 

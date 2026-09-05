@@ -1,4 +1,4 @@
-# VoiceNoob QA - Resilience Implementation Plan
+# SynthiqVoice QA - Resilience Implementation Plan
 
 **Date:** December 21, 2025
 **Scope:** Add retry, timeout, circuit breaker to Claude API calls

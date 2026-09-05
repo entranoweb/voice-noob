@@ -119,11 +119,11 @@ delete (window as { location?: Location }).location;
   pathname: "/",
   search: "",
   hash: "",
-  reload: vi.fn() as unknown as () => void,
-  replace: vi.fn() as unknown as (url: string | URL) => void,
-  assign: vi.fn() as unknown as (url: string | URL) => void,
+  reload: vi.fn(),
+  replace: vi.fn(),
+  assign: vi.fn(),
   ancestorOrigins: {} as DOMStringList,
-} as Location;
+};
 
 // Suppress console errors during tests (optional)
 const originalError = console.error;

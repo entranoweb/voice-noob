@@ -1,4 +1,4 @@
-# VoiceNoob Testing Infrastructure - Honest User-Centric Assessment
+# SynthiqVoice Testing Infrastructure - Honest User-Centric Assessment
 
 **Date:** December 22, 2025
 **Perspective:** A real user who wants to test their voice agent before going live

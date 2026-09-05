@@ -60,6 +60,26 @@ services:
       ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@synthiq.io}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-changeme}
       ADMIN_NAME: ${ADMIN_NAME:-Admin}
+      # Telephony. Only what is listed here reaches the container, which is why
+      # setting these in the deployment platform alone is not enough.
+      #
+      # PUBLIC_URL is the origin the carrier dials back: the answer document
+      # builds the media stream URL from it. Unset, it falls back to the
+      # request's own host, which behind a proxy is this container's address —
+      # the call connects, the row lands, the caller hears silence.
+      # See docs/HANDOFF.md 7.2.
+      PUBLIC_URL: ${PUBLIC_URL:?set PUBLIC_URL to the backend's public origin, e.g. https://api.synthiqvoice.com}
+      # Webhook signature verification. Unset, it falls back to DEBUG: false
+      # rejects every webhook 403, true accepts every webhook unverified.
+      TELNYX_PUBLIC_KEY: ${TELNYX_PUBLIC_KEY:?set TELNYX_PUBLIC_KEY from the Telnyx portal}
+      # Outbound calls and buying numbers only; inbound never reads it.
+      TELNYX_API_KEY: ${TELNYX_API_KEY:-}
+      DEBUG: ${DEBUG:-false}
+      # Optional. A trace carries transcripts, so cleartext to a non-loopback
+      # host is refused.
+      OTEL_ENABLED: ${OTEL_ENABLED:-false}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-synthiq-voice-api}
       # Postgres connection for entrypoint health check
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
