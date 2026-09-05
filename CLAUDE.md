@@ -1,4 +1,4 @@
-# Voice Noob
+# Synthiq Voice
 
 AI-powered voice agent platform for configuring and deploying custom voice agents with tool calling, multi-provider support, and transparent pricing tiers.
 

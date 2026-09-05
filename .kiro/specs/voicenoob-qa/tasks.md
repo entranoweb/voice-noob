@@ -1,4 +1,4 @@
-# VoiceNoob QA Testing Framework - Tasks
+# SynthiqVoice QA Testing Framework - Tasks
 
 ## Reference Documents
 

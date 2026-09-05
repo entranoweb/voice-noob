@@ -1,4 +1,4 @@
-# VoiceNoob QA Dashboard - 2025 Production Patterns Analysis
+# SynthiqVoice QA Dashboard - 2025 Production Patterns Analysis
 
 **Date:** December 22, 2025
 **Purpose:** Reference for future QA dashboard improvements based on 2025 industry standards

@@ -1,4 +1,4 @@
-# VoiceNoob QA Framework - End-to-End Test Checklist
+# SynthiqVoice QA Framework - End-to-End Test Checklist
 
 **Date:** December 20, 2025
 **Purpose:** Manual verification steps for QA Framework functionality

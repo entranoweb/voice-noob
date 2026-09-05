@@ -311,7 +311,7 @@ Ordered by value, not by ease.
 | 7 | **Red team over a real line** | The compliance artifact. Rides on the telephony driver phase 6 builds, then it is mostly scenario content plus the OWASP and EU AI Act mapping. | 4–5 days |
 | 8 | **Judge calibration** | Human-vs-machine label agreement, then prompt refinement. Until this exists, judge scores are opinion. Needs human-labelled runs to be worth anything. | 3 days |
 | 9 | **Scheduled runs and reports** | Continuous evaluation rather than only CI. Run templates on cron, regression detection against a baseline. | 4–5 days |
-| 10 | **The Synthiq rename** | Repo, packages and API still say Voice Noob. Nearly free today; a migration once a design partner integrates against the provider. | 1 day |
+| 10 | **The Synthiq rename** | Repo, packages and API still say Synthiq Voice. Nearly free today; a migration once a design partner integrates against the provider. | 1 day |
 
 ---
 

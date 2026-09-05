@@ -1,3 +1,3 @@
-"""Voice Noob API - FastAPI backend."""
+"""Synthiq Voice API - FastAPI backend."""
 
 __version__ = "0.1.0"

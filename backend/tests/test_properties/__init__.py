@@ -1,1 +1,1 @@
-"""Property-based tests for the Voice Noob platform."""
+"""Property-based tests for the Synthiq Voice platform."""

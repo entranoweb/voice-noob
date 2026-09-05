@@ -73,7 +73,7 @@ class TestRegisterCall:
             assert result is True
 
             # Verify data was stored in Redis
-            key = "voicenoob:calls:test-call-123"
+            key = "synthiq:calls:test-call-123"
             data = await mock_redis.hgetall(key)
             assert data["call_id"] == "test-call-123"
             assert data["agent_id"] == "agent-456"
@@ -95,7 +95,7 @@ class TestRegisterCall:
 
             assert result is True
 
-            key = "voicenoob:calls:test-call-789"
+            key = "synthiq:calls:test-call-789"
             data = await mock_redis.hgetall(key)
             assert data["meta:campaign"] == "outbound"
             assert data["meta:source"] == "crm"
@@ -143,7 +143,7 @@ class TestUnregisterCall:
     ) -> None:
         """Test successful call unregistration."""
         # First register a call
-        key = "voicenoob:calls:test-call-123"
+        key = "synthiq:calls:test-call-123"
         await mock_redis.hset(key, mapping={"call_id": "test-call-123", "agent_id": "agent-456"})
 
         with patch.object(call_registry, "get_redis", AsyncMock(return_value=mock_redis)):
@@ -201,7 +201,7 @@ class TestGetActiveCalls:
         """Test getting multiple active calls."""
         # Register multiple calls
         for i in range(3):
-            key = f"voicenoob:calls:call-{i}"
+            key = f"synthiq:calls:call-{i}"
             await mock_redis.hset(
                 key,
                 mapping={
@@ -250,7 +250,7 @@ class TestGetCallCount:
     ) -> None:
         """Test counting multiple calls."""
         for i in range(5):
-            key = f"voicenoob:calls:call-{i}"
+            key = f"synthiq:calls:call-{i}"
             await mock_redis.hset(key, mapping={"call_id": f"call-{i}", "agent_id": "agent"})
 
         with patch.object(call_registry, "get_redis", AsyncMock(return_value=mock_redis)):
@@ -286,7 +286,7 @@ class TestShutdownFlag:
             assert is_shutting_down() is True
 
             # Check Redis flag
-            flag = await mock_redis.get("voicenoob:shutdown")
+            flag = await mock_redis.get("synthiq:shutdown")
             assert flag == "1"
 
     @pytest.mark.asyncio
@@ -297,7 +297,7 @@ class TestShutdownFlag:
     ) -> None:
         """Test clearing shutdown flag."""
         call_registry._shutdown_flag = True
-        await mock_redis.set("voicenoob:shutdown", "1")
+        await mock_redis.set("synthiq:shutdown", "1")
 
         with patch.object(call_registry, "get_redis", AsyncMock(return_value=mock_redis)):
             await set_shutting_down(False)
@@ -338,7 +338,7 @@ class TestWaitForCallsToDrain:
     ) -> None:
         """Test drain waits for calls to complete."""
         # Register a call
-        key = "voicenoob:calls:drain-test"
+        key = "synthiq:calls:drain-test"
         await mock_redis.hset(key, mapping={"call_id": "drain-test", "agent_id": "agent"})
 
         async def remove_call_after_delay() -> None:
@@ -362,7 +362,7 @@ class TestWaitForCallsToDrain:
     ) -> None:
         """Test drain returns False on timeout."""
         # Register a call that won't be removed
-        key = "voicenoob:calls:timeout-test"
+        key = "synthiq:calls:timeout-test"
         await mock_redis.hset(key, mapping={"call_id": "timeout-test", "agent_id": "agent"})
 
         with patch.object(call_registry, "get_redis", AsyncMock(return_value=mock_redis)):

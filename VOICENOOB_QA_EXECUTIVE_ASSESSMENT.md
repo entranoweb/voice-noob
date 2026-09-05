@@ -1,4 +1,4 @@
-# VoiceNoob QA Framework - Executive Assessment
+# SynthiqVoice QA Framework - Executive Assessment
 
 **Date:** December 22, 2025
 **Assessment Type:** Production Readiness & Business Viability
@@ -57,27 +57,27 @@ Call completes → Background task triggered → Claude API evaluates
 ## 2. COMPETITIVE ADVANTAGE (You're Ahead)
 
 ### vs Retell.ai
-| Feature | Retell | VoiceNoob | Winner |
+| Feature | Retell | SynthiqVoice | Winner |
 |---------|--------|-----------|--------|
-| Evaluation dimensions | 4-6 | 12+ | **VoiceNoob** |
-| Pre-deployment testing | 3rd party (Hamming) | Built-in | **VoiceNoob** |
-| Cost tracking | Not exposed | Per-evaluation | **VoiceNoob** |
-| Turn-by-turn analysis | No | Yes | **VoiceNoob** |
+| Evaluation dimensions | 4-6 | 12+ | **SynthiqVoice** |
+| Pre-deployment testing | 3rd party (Hamming) | Built-in | **SynthiqVoice** |
+| Cost tracking | Not exposed | Per-evaluation | **SynthiqVoice** |
+| Turn-by-turn analysis | No | Yes | **SynthiqVoice** |
 
 ### vs Vapi.ai
-| Feature | Vapi | VoiceNoob | Winner |
+| Feature | Vapi | SynthiqVoice | Winner |
 |---------|------|-----------|--------|
 | LLM model | Claude Sonnet | Claude Sonnet 4 | **Tied** |
 | No-code customization | Yes | No | **Vapi** |
-| Batch evaluation | Not mentioned | Yes | **VoiceNoob** |
-| Circuit breaker | Not mentioned | Yes | **VoiceNoob** |
+| Batch evaluation | Not mentioned | Yes | **SynthiqVoice** |
+| Circuit breaker | Not mentioned | Yes | **SynthiqVoice** |
 
 ### vs Bland.ai
-| Feature | Bland | VoiceNoob | Winner |
+| Feature | Bland | SynthiqVoice | Winner |
 |---------|-------|-----------|--------|
-| Automated QA | Manual only | Fully automated | **VoiceNoob** |
-| Pre-deployment testing | None | Built-in | **VoiceNoob** |
-| Quality metrics | Basic | Comprehensive | **VoiceNoob** |
+| Automated QA | Manual only | Fully automated | **SynthiqVoice** |
+| Pre-deployment testing | None | Built-in | **SynthiqVoice** |
+| Quality metrics | Basic | Comprehensive | **SynthiqVoice** |
 
 **Unique Differentiators:**
 1. 12+ evaluation dimensions (competitors have 4-6)

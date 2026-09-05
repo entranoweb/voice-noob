@@ -61,7 +61,7 @@ In Coolify's **Environment Variables** section, add:
 # Database (REQUIRED - change these!)
 POSTGRES_USER=postgres
 POSTGRES_PASSWORD=YourSecurePostgresPassword123!
-POSTGRES_DB=voicenoob
+POSTGRES_DB=synthiq
 
 # Redis (REQUIRED - change this!)
 REDIS_PASSWORD=YourSecureRedisPassword456!

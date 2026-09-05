@@ -1,4 +1,4 @@
-# VoiceNoob QA Framework - Scalability & Robustness Analysis
+# SynthiqVoice QA Framework - Scalability & Robustness Analysis
 
 **Date:** December 20, 2025
 **Purpose:** Gap analysis against 2025 industry best practices for voice AI testing at scale
@@ -7,7 +7,7 @@
 
 ## Executive Summary
 
-The current VoiceNoob QA Framework is **functional but not production-scale ready**. It implements the basics (post-call evaluation, test scenarios, dashboards) but lacks the distributed infrastructure needed for enterprise-scale testing. Based on analysis of leading 2025 platforms (Hamming, Cekura, Coval, VoiceBench), here's the gap analysis and improvement plan.
+The current SynthiqVoice QA Framework is **functional but not production-scale ready**. It implements the basics (post-call evaluation, test scenarios, dashboards) but lacks the distributed infrastructure needed for enterprise-scale testing. Based on analysis of leading 2025 platforms (Hamming, Cekura, Coval, VoiceBench), here's the gap analysis and improvement plan.
 
 ---
 
@@ -48,7 +48,7 @@ The current VoiceNoob QA Framework is **functional but not production-scale read
 | [VoiceBench](https://github.com/MatthewCYM/VoiceBench) | Open source benchmark | Synthetic accent/noise generation |
 | [Roark](https://dev.to/kuldeep_paul/top-5-voice-agent-evaluation-tools-in-2025-ensuring-reliable-conversational-ai-5d3m) | Production monitoring | Real-time call analytics |
 
-### Key Patterns Missing in VoiceNoob
+### Key Patterns Missing in SynthiqVoice
 
 1. **Distributed Task Queue** - Industry uses Celery/Redis for 1000s of concurrent tests
 2. **Production Call Replay** - Replay real calls against new agent versions
@@ -124,7 +124,7 @@ backend/
 from celery import Celery
 
 celery_app = Celery(
-    "voicenoob",
+    "synthiq",
     broker=settings.REDIS_URL,
     backend=settings.REDIS_URL,
 )
@@ -436,7 +436,7 @@ backend/
 
 ## Conclusion
 
-The VoiceNoob QA Framework has a solid foundation but needs distributed infrastructure to scale. **Priority 1 is adding Celery workers** - this unblocks everything else.
+The SynthiqVoice QA Framework has a solid foundation but needs distributed infrastructure to scale. **Priority 1 is adding Celery workers** - this unblocks everything else.
 
 ### Next Steps
 1. Add `celery[redis]` dependency

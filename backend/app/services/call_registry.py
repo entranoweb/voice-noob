@@ -22,8 +22,8 @@ if TYPE_CHECKING:
 logger = structlog.get_logger()
 
 # Redis key prefix for call registry
-CALL_REGISTRY_PREFIX = "voicenoob:calls:"
-SHUTDOWN_FLAG_KEY = "voicenoob:shutdown"
+CALL_REGISTRY_PREFIX = "synthiq:calls:"
+SHUTDOWN_FLAG_KEY = "synthiq:shutdown"
 
 # Module-level state
 _shutdown_flag = False

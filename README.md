@@ -1,26 +1,26 @@
-# Voice Noob
+# Synthiq Voice
 
 Build AI voice agents that handle phone calls. No PhD required.
 
 Built by [Ken Kai](https://www.youtube.com/@kenkaidoesai) · [Join the community](https://www.skool.com/kenkai/about)
 
-![Voice Noob](voicenoob.png)
+![Synthiq Voice](synthiq.png)
 
 ---
 
 ## What Is This?
 
-Voice Noob is an open-source platform for creating AI-powered phone agents. Configure an agent, connect a phone number, and let it handle calls — booking appointments, answering questions, or qualifying leads while you sleep.
+Synthiq Voice is an open-source platform for creating AI-powered phone agents. Configure an agent, connect a phone number, and let it handle calls — booking appointments, answering questions, or qualifying leads while you sleep.
 
 **The problem:** Building voice AI is painful. You need to stitch together speech-to-text, LLMs, text-to-speech, telephony, and a dozen APIs. Then pray it doesn't sound like a robot.
 
-**The solution:** Voice Noob handles the plumbing. Pick your AI tier, write a system prompt, enable tools, and deploy.
+**The solution:** Synthiq Voice handles the plumbing. Pick your AI tier, write a system prompt, enable tools, and deploy.
 
 ---
 
-## Why Voice Noob?
+## Why Synthiq Voice?
 
-| Feature | Voice Noob | Vapi | Retell | Bland AI |
+| Feature | Synthiq Voice | Vapi | Retell | Bland AI |
 |---------|------------|------|--------|----------|
 | Open source | Yes | No | No | No |
 | Self-hostable | Yes | No | No | No |

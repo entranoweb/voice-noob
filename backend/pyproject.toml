@@ -1,7 +1,7 @@
 [project]
-name = "voicenoob-api"
+name = "synthiq-voice-api"
 version = "0.1.0"
-description = "Voice Noob API - FastAPI backend for voice agent platform"
+description = "Synthiq Voice API - FastAPI backend for voice agent platform"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

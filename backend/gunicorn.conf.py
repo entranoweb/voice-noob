@@ -25,7 +25,7 @@ graceful_timeout = 30  # Time to finish requests on shutdown
 keepalive = 5  # Keep connections alive for reuse
 
 # Process naming
-proc_name = "voicenoob-api"
+proc_name = "synthiq-voice-api"
 
 # Logging
 accesslog = "-"  # stdout

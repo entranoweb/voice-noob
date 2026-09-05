@@ -26,21 +26,21 @@ REGISTRY = CollectorRegistry(auto_describe=True)
 
 # Counters
 CALLS_INITIATED = Counter(
-    "voicenoob_calls_initiated_total",
+    "synthiq_calls_initiated_total",
     "Total number of calls initiated",
     ["agent_id"],
     registry=REGISTRY,
 )
 
 CALLS_COMPLETED = Counter(
-    "voicenoob_calls_completed_total",
+    "synthiq_calls_completed_total",
     "Total number of calls completed successfully",
     ["agent_id"],
     registry=REGISTRY,
 )
 
 CALLS_FAILED = Counter(
-    "voicenoob_calls_failed_total",
+    "synthiq_calls_failed_total",
     "Total number of calls that failed",
     ["agent_id", "error_type"],
     registry=REGISTRY,
@@ -48,7 +48,7 @@ CALLS_FAILED = Counter(
 
 # Histograms
 CALLS_DURATION = Histogram(
-    "voicenoob_call_duration_seconds",
+    "synthiq_call_duration_seconds",
     "Call duration in seconds",
     ["agent_id"],
     buckets=(5, 15, 30, 60, 120, 300, 600, 1800),
@@ -57,7 +57,7 @@ CALLS_DURATION = Histogram(
 
 # Gauges
 ACTIVE_CALLS = Gauge(
-    "voicenoob_active_calls_current",
+    "synthiq_active_calls_current",
     "Current number of active calls",
     registry=REGISTRY,
 )

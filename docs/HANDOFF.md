@@ -130,7 +130,7 @@ Ordered by value, from `SYNTHIQ_PLAN.md` §6.
 | 7 | **Red team over a real line** — OWASP LLM Top 10 / EU AI Act mapping; the procurement artifact | #6 | 4–5 days |
 | 8 | **Judge calibration** — human-vs-machine agreement, then prompt refinement | Human-labelled runs | 3 days |
 | 9 | **Scheduled runs and reports** — cron run templates, regression against a baseline | nothing | 4–5 days |
-| 10 | **The Synthiq rename** — repo, packages, API still say Voice Noob | nothing; cheap now, expensive after a design partner integrates | 1 day |
+| 10 | **The Synthiq rename** — repo, packages, API still say Synthiq Voice | nothing; cheap now, expensive after a design partner integrates | 1 day |
 
 **#5 is the critical path and is now blocked on nothing but access.** Every
 defect between the carrier and the database has been fixed and covered; what
