@@ -3,7 +3,7 @@
  *
  * This script creates a floating voice chat widget that can be embedded on any website.
  * Usage:
- *   <script src="https://synthiq.com/widget/v1/widget.js" defer></script>
+ *   <script src="https://app.synthiqvoice.com/widget/v1/widget.js" defer></script>
  *   <voice-agent agent-id="ag_xK9mN2pQ"></voice-agent>
  */
 
@@ -387,7 +387,7 @@ class VoiceAgentElement extends HTMLElement {
             <span id="button-text">${this.buttonText}</span>
           </button>
           <div class="va-widget-branding">
-            Powered by <a href="https://synthiq.com" target="_blank" rel="noopener noreferrer">Synthiq Voice</a>
+            Powered by <a href="https://synthiq.io" target="_blank" rel="noopener noreferrer">Synthiq Voice</a>
           </div>
         </div>
       </div>

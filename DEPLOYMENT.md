@@ -61,7 +61,12 @@ In Coolify's **Environment Variables** section, add:
 # Database (REQUIRED - change these!)
 POSTGRES_USER=postgres
 POSTGRES_PASSWORD=YourSecurePostgresPassword123!
-POSTGRES_DB=synthiq
+# Whatever you put here wins: compose builds DATABASE_URL from it and passes
+# that to the app explicitly, so the app's own default is never consulted. Pick
+# a name on a fresh deployment and then leave it alone — pointing an existing
+# deployment at a different name gives it an empty database in which every
+# table looks missing.
+POSTGRES_DB=synthiq_voice
 
 # Redis (REQUIRED - change this!)
 REDIS_PASSWORD=YourSecureRedisPassword456!

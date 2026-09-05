@@ -994,7 +994,7 @@ export default function EmbedPage() {
         <div className="mt-3 text-center text-xs" style={{ color: isDark ? "#6b7280" : "#9ca3af" }}>
           Powered by{" "}
           <a
-            href="https://synthiq.com"
+            href="https://synthiq.io"
             target="_blank"
             rel="noopener noreferrer"
             className="transition-colors duration-200 hover:underline"
