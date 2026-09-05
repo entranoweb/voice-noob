@@ -76,3 +76,6 @@ Thumbs.db
 
 # Auto Claude data directory
 .auto-claude/
+
+# Redis writes its snapshot into whatever directory it was started from.
+*.rdb
