@@ -491,3 +491,87 @@ operator running it once before dialling needs every problem in one pass, not
 the first one. It disables error logging while it runs, because the modules it
 exercises log their own tracebacks and a report buried in a stack trace is a
 report nobody reads.
+
+## 38. The media stream is admitted by a token the webhook minted
+
+The telephony websockets accepted any connection. An agent's UUID was the only
+thing between a stranger and a conversation with that agent, tools included, and
+a UUID is an identifier, not a secret: it is in URLs, logs and the dashboard.
+
+The carrier cannot present a user session, so the proof has to descend from the
+one thing this process does authenticate: the signed webhook that answers the
+call. That webhook mints a token (`app/core/stream_token.py`) and the carrier
+brings it back when it opens the stream. HMAC-SHA256 over provider, agent id,
+call id and expiry, under a key derived from `SECRET_KEY`; two minutes; compared
+in constant time. Standard library only, because this sits on every call.
+
+Three things about its shape are deliberate.
+
+It is bound to the **call id**, not only the agent. §33 puts the webhook's call
+identifier in the stream URL so the bridge can find the row, and notes that over
+an unauthenticated socket that identifier is a write primitive. A token bound to
+the agent alone would have left that standing: take a valid URL, change
+`call_id`. Bound to both, changing either invalidates it.
+
+It is checked **before the agent is loaded**. A refusal closes 4401 without a
+database read, so a caller with no token cannot use 4003 and 4004 to learn which
+agent ids exist.
+
+The two carriers carry it **differently**, because they have to. Telnyx keeps the
+`<Stream>` URL's query string, so the token rides there and the connection is
+refused before it is accepted. Twilio strips the query string and delivers custom
+values in the start frame's `customParameters`, so the socket must be accepted
+first; the token is then required on the first start frame, bound to that
+frame's `callSid`, inside ten seconds, and nothing else is processed until it
+verifies. Putting a Twilio token in the URL would have looked right, tested green
+against a client that preserves query strings, and refused every real call.
+
+It is not single-use. That would need shared state, and a Redis outage would
+then drop calls to enforce a property whose absence costs little: the token
+travels only between this process and the carrier, over TLS, and dies in two
+minutes.
+
+What this costs: every backend instance must share one `SECRET_KEY`, because the
+webhook and the socket can land on different instances. And the preflight's
+stream probe now mints a token for its random agent id, so a preflight run from
+a host with a different key reports HTTP 403 — which is a true finding about
+that host, and says so.
+
+That Telnyx's TeXML `<Stream>` preserves the query string is still verified only
+by the rehearsal. If it does not, calls fail closed and loudly
+(`telnyx_stream_token_rejected reason=missing`), not silently.
+
+## 39. Verification does not ask `DEBUG` for permission
+
+`validate_telnyx_signature` returned `settings.DEBUG` when no key was configured,
+and the Twilio verifier had the same branch twice. So one flag meant both "log
+verbosely" and "accept calls from anyone", and the second meaning was invisible
+at the place the flag was set.
+
+An unverifiable webhook is refused. The only exception is
+`ALLOW_UNSIGNED_WEBHOOKS`, off by default, which exists so that a local
+rehearsal with no carrier key is a decision somebody wrote down. It logs at
+critical when the app starts and on every webhook it admits, and the preflight
+fails on it. `validate_telnyx_signature` itself never honours the override — it
+returns True only for a signature it checked — so a new caller of it cannot
+inherit the hole by accident (§29).
+
+The Twilio verifier also signs against the public URL now. Twilio signs the URL
+it posted to; behind a proxy `request.url` is the internal one, so the check
+could only ever fail there.
+
+## 40. The signing key has no usable default
+
+`SECRET_KEY` shipped with a default, and the compose file and both example files
+each carried a placeholder of their own. Every one of them is public. Since §38
+the key also admits media streams, so a deployment left on a placeholder would
+have had forgeable logins and forgeable stream tokens while passing every check.
+
+The application refuses to start on any of those values unless `DEBUG` is on,
+and the production compose file requires the variable rather than defaulting it.
+
+The check is a plain function called after the settings are built, not a
+pydantic validator. A validator was the first version, and its failure message
+printed the input it had rejected — which is the process environment, so a
+startup error about one secret wrote a fragment of another into the log.
+

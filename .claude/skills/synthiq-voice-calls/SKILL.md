@@ -103,12 +103,42 @@ read as an MP3 stream — the caller hears silence while the logs show audio
 being written. `bidirectionalCodec="PCMU"` and
 `bidirectionalSamplingRate="8000"` match the PSTN and the Realtime session.
 
-## 4. Signature verification depends on DEBUG
+## 4. Signature verification fails closed
 
-With `TELNYX_PUBLIC_KEY` unset, `validate_telnyx_signature` returns
-`settings.DEBUG`. So an unset key means every webhook is rejected 403 when
-`DEBUG` is false, and every webhook is accepted **unverified** when it is true.
-Both are wrong and neither announces itself. Set the key; keep `DEBUG` false.
+With `TELNYX_PUBLIC_KEY` unset, every webhook is refused 403. That used to
+depend on `DEBUG` — an unset key accepted every webhook **unverified** when
+`DEBUG` was true — and it no longer does. The only way to accept an unsigned
+webhook is `ALLOW_UNSIGNED_WEBHOOKS=true`, which is off by default, logs a
+critical line at startup and on every webhook it lets through, and fails the
+preflight. Set the key; leave the override alone.
+
+The Twilio verifier follows the same rule, and checks the signature against
+the public URL (`PUBLIC_URL` + path), because that is the URL Twilio signed.
+
+## 4a. The media stream needs a token, and the two carriers carry it differently
+
+`/ws/telephony/{provider}/{agent_id}` admits nobody without the stream token
+the answering webhook minted (`app/core/stream_token.py`): HMAC-SHA256 over
+provider, agent id, call id and expiry, keyed from `SECRET_KEY`, valid for two
+minutes. A refusal closes with **4401** — before 4003 and 4004 are ever
+reached, so an unauthenticated caller cannot even learn whether an agent
+exists.
+
+- **Telnyx**: the token is a `token=` query parameter on the `<Stream>` URL,
+  beside `call_id`, and is checked before the socket is accepted. It is bound
+  to that `call_id`, so editing the `call_id` in the URL invalidates it.
+- **Twilio**: Twilio strips query strings from a `<Stream>` URL, so the token
+  is a `<Parameter name="token">` and arrives in `start.customParameters`. The
+  socket is accepted, then the first start frame must carry a valid token
+  bound to that frame's `callSid`, within ten seconds, or it is closed.
+
+Two consequences worth knowing before they cost an afternoon. A deployment
+whose instances do not share one `SECRET_KEY` refuses its own calls, because
+the webhook and the socket can land on different instances. And if a carrier
+ever stops passing the query string through, every Telnyx call closes 4401 —
+loudly, with `telnyx_stream_token_rejected reason=missing` in the log, not
+silently. That the Telnyx TeXML `<Stream>` preserves the query string has
+still only been exercised by the rehearsal, never by the carrier.
 
 ## 5. The OpenAI key is per workspace
 

@@ -157,6 +157,10 @@ remains is a phone call. #6 and #7 sit behind it, and #7 is what converts the
 work into contracts. #9 and #10 are the only unblocked items, and #10 gets more
 expensive every week it waits.
 
+**Update, 24 Nov 2026:** the item below is closed. The telephony websockets now
+require a stream token minted by the answering webhook; see DECISIONS §38–§40.
+The paragraph is kept as it was written, for the history.
+
 One more item, unnumbered because it is not product work: **the telephony
 websockets are unauthenticated** (§6). It is the largest known hole in the
 inbound path and it predates all of this. Anyone who learns an agent's UUID can
@@ -203,6 +207,9 @@ unverified thing is the next five bugs.
 | Nothing sent `{"event": "clear"}` on barge-in | Server VAD cancels the response upstream, but Telnyx keeps playing what it has already buffered. The agent talked over the caller. This is also what `interruption_handling` measures |
 | `log.info(..., event=...)` in the status callback | `event` is structlog's own key for the message. The call raised inside the logger *after* the commit, so the status webhook returned 500 to Telnyx on every hangup |
 
+**Update, 24 Nov 2026:** fixed since — DECISIONS §38. What follows describes the
+hole as it stood.
+
 One thing this pass did **not** fix, and a new session should know about: the
 telephony websockets are unauthenticated. Anyone who learns an agent's UUID can
 open `/ws/telephony/{provider}/{agent_id}` and hold a conversation with that
@@ -242,7 +249,7 @@ real deployment. Telnyx must be able to POST *into* it.
 | Public HTTPS host | Telnyx posts to it, and the media stream connects back to it. See 7.2 — this is the step most likely to fail |
 | `PUBLIC_URL` | The public origin, e.g. `https://voice.example.com`. It is what the answer document's stream URL is built from. See 7.2 |
 | Postgres 17, Redis 7 | `docker-compose.yml` has both. Run `alembic upgrade head`; the head is `b83d1c4f7a90` |
-| `TELNYX_PUBLIC_KEY` | **Required.** Signature verification reads the *global* setting, not per-user credentials. With it unset, `validate_telnyx_signature` returns `settings.DEBUG` — so with `DEBUG=false` every webhook is rejected 403, and with `DEBUG=true` every webhook is accepted unverified. Neither is what you want by accident |
+| `TELNYX_PUBLIC_KEY` | **Required.** Signature verification reads the *global* setting, not per-user credentials. With it unset every webhook is rejected 403, whatever `DEBUG` says (DECISIONS §39; it used to be accepted unverified under `DEBUG=true`) |
 | `OPENAI_API_KEY` | The bridge opens a Realtime session with `gpt-realtime-2025-08-28` |
 | `DEBUG=false` | See above |
 | `TELNYX_API_KEY` | Only needed for outbound calls and the number-purchase flow. The inbound path does not use it |

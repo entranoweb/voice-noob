@@ -263,12 +263,24 @@ class TwilioService(TelephonyProvider):
             self.logger.exception("webhook_config_failed", sid=phone_number_id, error=str(e))
             return False
 
-    def generate_answer_response(self, websocket_url: str, agent_id: str | None = None) -> str:
+    def generate_answer_response(
+        self,
+        websocket_url: str,
+        agent_id: str | None = None,
+        *,
+        stream_token: str | None = None,
+    ) -> str:
         """Generate TwiML response to answer a call and stream to WebSocket.
+
+        The stream token travels as a ``<Parameter>``, not in the URL: Twilio
+        drops query parameters from a ``<Stream>`` URL and delivers custom
+        values in the start frame's ``customParameters`` instead. The media
+        socket reads it from there and admits nobody without it.
 
         Args:
             websocket_url: WebSocket URL for media streaming
             agent_id: Optional agent ID for context
+            stream_token: Signed token admitting this call's stream
 
         Returns:
             TwiML response string
@@ -282,6 +294,8 @@ class TwilioService(TelephonyProvider):
         # Add custom parameters to the stream
         if agent_id:
             stream.parameter(name="agent_id", value=agent_id)
+        if stream_token:
+            stream.parameter(name="token", value=stream_token)
 
         response.append(connect)
 
