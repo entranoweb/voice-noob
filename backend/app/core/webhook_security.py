@@ -149,11 +149,28 @@ async def get_twilio_webhook_params(request: Request) -> dict[str, str]:
     return {key: str(value) for key, value in form_data.items()}
 
 
-async def verify_twilio_webhook(request: Request) -> bool:
+async def verify_twilio_webhook(request: Request, workspace_auth_token: str | None = None) -> bool:
     """Verify Twilio webhook signature from request.
+
+    Twilio signs with the auth token of the account the number belongs to. In a
+    deployment where each workspace brings its own Twilio account, that is the
+    workspace's token, not this instance's global one, so the caller passes the
+    token of the workspace that owns what the webhook is about (the number it
+    was sent to, the agent it names, the call it reports on).
+
+    The caller resolves that from the target and never from the ``AccountSid``
+    the request claims. A request is only as trustworthy as the secret it is
+    checked against: picking the secret from a field the sender controls would
+    let one tenant sign, with their own token, a webhook aimed at another
+    tenant's number.
+
+    The global token remains a fallback, so a deployment that runs every number
+    on one platform account keeps working.
 
     Args:
         request: FastAPI request object
+        workspace_auth_token: Twilio auth token of the workspace the webhook's
+            target belongs to, when it has one
 
     Returns:
         True if the signature is valid, or if ALLOW_UNSIGNED_WEBHOOKS is set
@@ -165,9 +182,12 @@ async def verify_twilio_webhook(request: Request) -> bool:
         logger.critical("twilio_webhook_accepted_unverified")
         return True
 
-    # Get auth token from settings
-    auth_token = settings.TWILIO_AUTH_TOKEN
-    if not auth_token:
+    candidates: list[tuple[str, str]] = []
+    if workspace_auth_token:
+        candidates.append(("workspace", workspace_auth_token))
+    if settings.TWILIO_AUTH_TOKEN and workspace_auth_token != settings.TWILIO_AUTH_TOKEN:
+        candidates.append(("global", settings.TWILIO_AUTH_TOKEN))
+    if not candidates:
         # Refused, not a server error: an instance with no token cannot tell a
         # genuine webhook from a forged one, and the answer to both is no.
         logger.error("twilio_auth_token_not_configured")
@@ -185,11 +205,13 @@ async def verify_twilio_webhook(request: Request) -> bool:
     params = await get_twilio_webhook_params(request)
 
     # Validate signature
-    if not validate_twilio_signature(signature, url, params, auth_token):
-        logger.warning("invalid_twilio_signature", url=url)
-        raise HTTPException(status_code=403, detail="Invalid Twilio signature")
+    for source, auth_token in candidates:
+        if validate_twilio_signature(signature, url, params, auth_token):
+            logger.debug("twilio_signature_verified", credential=source)
+            return True
 
-    return True
+    logger.warning("invalid_twilio_signature", url=url, tried=[source for source, _ in candidates])
+    raise HTTPException(status_code=403, detail="Invalid Twilio signature")
 
 
 async def verify_telnyx_webhook(request: Request) -> bool:

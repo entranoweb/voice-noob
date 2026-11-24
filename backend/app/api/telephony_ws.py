@@ -36,6 +36,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.stream_token import STREAM_TOKEN_REJECTED, verify_stream_token
+from app.core.stream_token_use import claim_stream_token
 from app.db.session import get_db
 from app.models.agent import Agent
 from app.models.call_record import CallRecord
@@ -107,9 +108,16 @@ async def _authorise_twilio_stream(
                     agent_id=agent_id,
                     call_id=str(start.get("callSid", "")),
                 )
-                if result.ok:
+                if not result.ok:
+                    reason = result.verdict.value
+                    break
+                # Valid, and now it has to be the first time it is used: a
+                # second stream presenting the same token is refused, and so
+                # is this one if Redis cannot record the claim.
+                claim = await claim_stream_token(str(token))
+                if claim.ok:
                     return data
-                reason = result.verdict.value
+                reason = claim.value
                 break
     except TimeoutError:
         reason = "no_start_frame"
@@ -826,7 +834,7 @@ async def _handle_twilio_stream(  # noqa: PLR0915
 
 
 @router.websocket("/telnyx/{agent_id}")
-async def telnyx_media_stream(  # noqa: PLR0915
+async def telnyx_media_stream(  # noqa: PLR0912, PLR0915
     websocket: WebSocket,
     agent_id: str,
     db: AsyncSession = Depends(get_db),
@@ -876,6 +884,16 @@ async def telnyx_media_stream(  # noqa: PLR0915
     )
     if not token_result.ok:
         log.warning("telnyx_stream_token_rejected", reason=token_result.verdict.value)
+        await websocket.close(code=STREAM_TOKEN_REJECTED, reason="Stream token rejected")
+        return
+
+    # A valid token admits one stream. The first socket to present it claims it;
+    # a replay inside its two-minute life is refused, and so is any stream while
+    # Redis cannot record the claim (app.core.stream_token_use says why that is
+    # the right way round).
+    token_claim = await claim_stream_token(websocket.query_params.get("token") or "")
+    if not token_claim.ok:
+        log.warning("telnyx_stream_token_rejected", reason=token_claim.value)
         await websocket.close(code=STREAM_TOKEN_REJECTED, reason="Stream token rejected")
         return
 

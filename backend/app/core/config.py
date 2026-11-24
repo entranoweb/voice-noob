@@ -102,6 +102,20 @@ class Settings(BaseSettings):
     # anyone who can reach the webhook can post a call to this instance.
     ALLOW_UNSIGNED_WEBHOOKS: bool = False
 
+    # Public embed widget (app.core.embed_session).
+    # An agent with no allowed domains can be embedded by no other site. This
+    # restores the old meaning, "every site", for a deployment that needs time to
+    # fill its allow-lists in. It logs a warning each time it is why a request
+    # was served. Leave it off.
+    EMBED_ALLOW_ANY_ORIGIN_WHEN_UNSET: bool = False
+    # The longest an embedded session can run, and the lifetime of its token.
+    EMBED_SESSION_MAX_SECONDS: int = 900
+    # Whether embedded sessions may call an agent's tools when the agent's own
+    # embed settings do not say (embed_settings.allow_tools). Off: a tool call
+    # from the widget acts with the owner's integrations on an anonymous
+    # visitor's input.
+    EMBED_TOOLS_DEFAULT_ENABLED: bool = False
+
     # CORS
     CORS_ORIGINS: list[str] = [
         "http://localhost:3000",

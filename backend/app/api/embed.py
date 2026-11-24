@@ -1,16 +1,23 @@
 """Public embed API routes for embeddable voice widgets.
 
-These endpoints are unauthenticated but protected by:
-- Domain allowlisting (Origin header validation)
-- Rate limiting
-- Ephemeral session tokens
+These endpoints are public by design: an anonymous visitor on a customer's site
+talks to that customer's agent. What protects the agent's owner
+(``app.core.embed_session`` has the reasoning):
+
+- the embedding site is checked against the agent's allowed domains before a
+  session is minted, and an agent with no allowed domains can be embedded by no
+  other site;
+- every call after that carries a signed, short-lived session token bound to the
+  agent and to the site it was minted for;
+- each endpoint is rate limited, per address and per session;
+- a session has a hard maximum length;
+- tools run only when the agent's owner has allowed them for embedded sessions.
 """
 
 import asyncio
 import contextlib
-import fnmatch
 import json
-import secrets
+import time
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -26,12 +33,25 @@ from fastapi import (
     WebSocketDisconnect,
 )
 from pydantic import BaseModel
-from slowapi import Limiter
-from slowapi.util import get_remote_address
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.integrations import get_workspace_integrations
+from app.core.auth import user_id_to_uuid
+from app.core.config import settings
+from app.core.embed_session import (
+    EMBED_SESSION_EXPIRED,
+    EMBED_SESSION_REJECTED,
+    EmbedSessionCheck,
+    embedding_site,
+    mint_embed_session,
+    session_rate_key,
+    site_allowed,
+    tools_allowed,
+    verify_embed_session,
+)
+from app.core.limiter import limiter
+from app.core.stream_token_use import claim_stream_token
 from app.db.session import get_db
 from app.models.agent import Agent
 from app.models.workspace import Workspace
@@ -41,12 +61,10 @@ router = APIRouter(prefix="/api/public/embed", tags=["public-embed"])
 ws_router = APIRouter(prefix="/ws/public/embed", tags=["public-embed-ws"])
 logger = structlog.get_logger()
 
-# Rate limiter for public endpoints
-limiter = Limiter(key_func=get_remote_address)
 
-# In-memory session store (in production, use Redis with TTL)
-_embed_sessions: dict[str, dict[str, Any]] = {}
-SESSION_EXPIRY_MINUTES = 5
+def _session_key(request: Request) -> str:
+    """Rate-limit key for the session a request presents (never the token itself)."""
+    return session_rate_key(request.headers.get("x-embed-session"))
 
 
 class EmbedConfigResponse(BaseModel):
@@ -71,47 +89,32 @@ class EmbedSessionResponse(BaseModel):
     websocket_url: str
 
 
-def validate_origin(origin: str | None, allowed_domains: list[str]) -> bool:
-    """Validate that the Origin header matches allowed domains.
+def _require_allowed_site(
+    origin: str | None, parent_origin: str | None, agent: Agent, log: Any
+) -> str:
+    """The site this request is embedded in, or 403 if it may not embed the agent."""
+    site = embedding_site(origin, parent_origin)
+    if not site_allowed(site, agent.allowed_domains):
+        log.warning("origin_not_allowed", site=site, allowed=agent.allowed_domains)
+        raise HTTPException(status_code=403, detail="Origin not allowed")
+    return site
 
-    Supports wildcards: "*.example.com" matches "app.example.com"
-    Empty allowed_domains means all origins are allowed.
 
-    Args:
-        origin: The Origin header value
-        allowed_domains: List of allowed domain patterns
+def _require_session(
+    token: str | None, origin: str | None, parent_origin: str | None, agent: Agent, log: Any
+) -> EmbedSessionCheck:
+    """The live session this request belongs to, or 401.
 
-    Returns:
-        True if origin is allowed, False otherwise
+    The site is recomputed from this request and is part of what the token
+    signs, so a token minted for one site is refused from another without a
+    second allow-list lookup.
     """
-    if not allowed_domains:
-        # Empty list means all origins allowed (for development/testing)
-        return True
-
-    if not origin:
-        return False
-
-    # Extract hostname from origin (e.g., "https://example.com" -> "example.com")
-    try:
-        from urllib.parse import urlparse
-
-        parsed = urlparse(origin)
-        hostname = parsed.hostname or ""
-    except Exception:
-        return False
-
-    # Check against each allowed domain pattern
-    for pattern in allowed_domains:
-        # Handle wildcard patterns
-        if pattern.startswith("*."):
-            # Convert "*.example.com" to fnmatch pattern
-            fnmatch_pattern = f"*{pattern[1:]}"
-            if fnmatch.fnmatch(hostname, fnmatch_pattern):
-                return True
-        elif hostname == pattern:
-            return True
-
-    return False
+    site = embedding_site(origin, parent_origin)
+    check = verify_embed_session(token, agent_id=str(agent.id), site=site)
+    if not check.ok:
+        log.warning("embed_session_rejected", reason=check.verdict.value, site=site)
+        raise HTTPException(status_code=401, detail="Embed session missing, expired or invalid")
+    return check
 
 
 async def get_agent_by_public_id(
@@ -124,11 +127,13 @@ async def get_agent_by_public_id(
 
 
 @router.get("/{public_id}/config", response_model=EmbedConfigResponse)
+@limiter.limit("60/minute")
 async def get_embed_config(
     public_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db),
     origin: str | None = Header(None),
+    x_embed_parent_origin: str | None = Header(None),
 ) -> EmbedConfigResponse:
     """Get public agent configuration for widget initialization.
 
@@ -151,10 +156,7 @@ async def get_embed_config(
         log.warning("agent_inactive")
         raise HTTPException(status_code=403, detail="Agent is not active")
 
-    # Validate origin
-    if not validate_origin(origin, agent.allowed_domains):
-        log.warning("origin_not_allowed", allowed=agent.allowed_domains)
-        raise HTTPException(status_code=403, detail="Origin not allowed")
+    _require_allowed_site(origin, x_embed_parent_origin, agent, log)
 
     # Extract embed settings with defaults
     embed_settings = agent.embed_settings or {}
@@ -175,11 +177,13 @@ async def get_embed_config(
 
 
 @router.post("/{public_id}/session", response_model=EmbedSessionResponse)
+@limiter.limit("10/minute")
 async def create_embed_session(
     public_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db),
     origin: str | None = Header(None),
+    x_embed_parent_origin: str | None = Header(None),
 ) -> EmbedSessionResponse:
     """Create an ephemeral session for WebRTC/WebSocket connection.
 
@@ -202,114 +206,44 @@ async def create_embed_session(
         log.warning("agent_inactive")
         raise HTTPException(status_code=403, detail="Agent is not active")
 
-    # Validate origin
-    if not validate_origin(origin, agent.allowed_domains):
-        log.warning("origin_not_allowed", allowed=agent.allowed_domains)
-        raise HTTPException(status_code=403, detail="Origin not allowed")
+    site = _require_allowed_site(origin, x_embed_parent_origin, agent, log)
 
-    # Generate session
-    session_id = secrets.token_urlsafe(32)
-    expires_at = datetime.now(UTC) + timedelta(minutes=SESSION_EXPIRY_MINUTES)
+    # A signed session, bound to this agent and to the site it is embedded in.
+    # Nothing is stored: the token is its own proof, so it works the same on
+    # every worker and survives a restart.
+    session = mint_embed_session(agent_id=str(agent.id), site=site)
+    expires_at = datetime.now(UTC) + timedelta(seconds=session.expires_in)
+    ws_url = f"/ws/public/embed/{public_id}?session={session.token}"
 
-    # Store session (in production, use Redis with TTL)
-    _embed_sessions[session_id] = {
-        "agent_id": str(agent.id),
-        "public_id": public_id,
-        "origin": origin,
-        "created_at": datetime.now(UTC).isoformat(),
-        "expires_at": expires_at.isoformat(),
-    }
-
-    # Clean up expired sessions (simple cleanup, production would use Redis TTL)
-    cleanup_expired_sessions()
-
-    # Build WebSocket URL
-    ws_url = f"/ws/public/embed/{public_id}?session={session_id}"
-
-    log.info("session_created", session_id=session_id[:8])
+    log.info("session_created", session_id=session.session_id[:8], site=site)
 
     return EmbedSessionResponse(
-        session_id=session_id,
+        session_id=session.token,
         expires_at=expires_at.isoformat(),
         websocket_url=ws_url,
     )
 
 
-def cleanup_expired_sessions() -> None:
-    """Remove expired sessions from memory."""
-    now = datetime.now(UTC)
-    expired = [
-        sid
-        for sid, data in _embed_sessions.items()
-        if datetime.fromisoformat(data["expires_at"]) < now
-    ]
-    for sid in expired:
-        del _embed_sessions[sid]
-
-
-def validate_session(session_id: str, public_id: str) -> dict[str, Any] | None:
-    """Validate a session token.
-
-    Args:
-        session_id: The session token
-        public_id: The expected public ID
-
-    Returns:
-        Session data if valid, None otherwise
-    """
-    session = _embed_sessions.get(session_id)
-    if not session:
-        return None
-
-    # Check expiry
-    expires_at = datetime.fromisoformat(session["expires_at"])
-    if datetime.now(UTC) > expires_at:
-        del _embed_sessions[session_id]
-        return None
-
-    # Check public_id matches
-    if session["public_id"] != public_id:
-        return None
-
-    return session
-
-
-async def _get_embed_session_context(
+async def _get_embed_agent_context(
     websocket: WebSocket,
     public_id: str,
-    session_token: str,
     db: AsyncSession,
     log: Any,
 ) -> tuple[Agent, uuid.UUID, int] | None:
-    """Validate session and get agent context for embed WebSocket.
+    """Load the agent and its workspace for an already-authenticated embed socket.
 
-    Returns (agent, workspace_id, user_id_int) or None if validation fails.
+    Returns (agent, workspace_id, user_id_int) or None once the socket is closed.
     """
     from app.models.workspace import AgentWorkspace
 
-    # Validate session
-    session_data = validate_session(session_token, public_id)
-    if not session_data:
-        log.warning("invalid_session")
-        await websocket.send_json({"type": "error", "error": "Invalid or expired session"})
-        await websocket.close(code=4001)
-        return None
-
-    # Get agent
     agent = await get_agent_by_public_id(public_id, db)
-    if not agent:
-        await websocket.send_json({"type": "error", "error": "Agent not found"})
-        await websocket.close(code=4004)
-        return None
-
-    if not agent.embed_enabled or not agent.is_active:
+    if not agent or not agent.embed_enabled or not agent.is_active:
         await websocket.send_json({"type": "error", "error": "Agent not available"})
         await websocket.close(code=4003)
         return None
 
     log.info("agent_loaded", agent_name=agent.name, tier=agent.pricing_tier)
 
-    # Get workspace for this agent
     workspace_result = await db.execute(
         select(AgentWorkspace).where(AgentWorkspace.agent_id == agent.id).limit(1)
     )
@@ -321,35 +255,74 @@ async def _get_embed_session_context(
         await websocket.close(code=4000)
         return None
 
-    # agent.user_id is now directly the integer user ID
-    user_id_int = agent.user_id
+    return agent, agent_workspace.workspace_id, agent.user_id
 
-    return agent, agent_workspace.workspace_id, user_id_int
+
+async def _admit_embed_socket(
+    websocket: WebSocket, public_id: str, session: str | None, db: AsyncSession, log: Any
+) -> int | None:
+    """Decide, before the socket is accepted, whether this session may connect.
+
+    Returns the session's expiry (unix seconds) or None after refusing. Refusal
+    happens on the handshake, so an unauthenticated client never holds an open
+    socket and no model session is ever started for it.
+    """
+    agent = await get_agent_by_public_id(public_id, db)
+    if not agent or not agent.embed_enabled or not agent.is_active:
+        await websocket.close(code=4004)
+        return None
+
+    site = embedding_site(
+        websocket.headers.get("origin"), websocket.query_params.get("parent_origin")
+    )
+    check = verify_embed_session(session, agent_id=str(agent.id), site=site)
+    if not check.ok:
+        log.warning("embed_socket_session_rejected", reason=check.verdict.value, site=site)
+        await websocket.close(code=EMBED_SESSION_REJECTED)
+        return None
+
+    # One socket per session: without this a single minted session opens as many
+    # model sessions as its holder cares to, each billed to the agent's owner.
+    claim = await claim_stream_token(
+        session or "", ttl_seconds=int(settings.EMBED_SESSION_MAX_SECONDS)
+    )
+    if not claim.ok:
+        log.warning("embed_socket_session_rejected", reason=claim.value, site=site)
+        await websocket.close(code=EMBED_SESSION_REJECTED)
+        return None
+
+    return check.expires_at
 
 
 @ws_router.websocket("/{public_id}")
 async def embed_websocket(
     websocket: WebSocket,
     public_id: str,
-    session: str,
+    session: str | None = None,
     db: AsyncSession = Depends(get_db),
 ) -> None:
     """Public WebSocket endpoint for embed voice streaming."""
     ws_session_id = str(uuid.uuid4())
     log = logger.bind(endpoint="embed_websocket", public_id=public_id, ws_session_id=ws_session_id)
 
+    expires_at = await _admit_embed_socket(websocket, public_id, session, db, log)
+    if expires_at is None:
+        return
+
     await websocket.accept()
     log.info("websocket_connected")
 
     try:
-        context = await _get_embed_session_context(websocket, public_id, session, db, log)
+        context = await _get_embed_agent_context(websocket, public_id, db, log)
         if not context:
             return
 
         agent, workspace_id, user_id_int = context
         agent_config = {
             "system_prompt": agent.system_prompt,
-            "enabled_tools": agent.enabled_tools,
+            # No tool definitions reach the model unless the owner allowed tools
+            # for embedded sessions, so there is nothing for it to call.
+            "enabled_tools": agent.enabled_tools if tools_allowed(agent.embed_settings) else [],
             "language": agent.language,
             "voice": agent.voice or "shimmer",
         }
@@ -369,7 +342,18 @@ async def embed_websocket(
                         "agent": {"name": agent.name, "voice": agent.voice},
                     }
                 )
-                await _bridge_embed_streams(websocket, realtime_session, log)
+                # The session ends when its token does, whatever either side is
+                # doing: this is the hard cap on what one session can cost.
+                remaining = max(1.0, expires_at - time.time())
+                try:
+                    async with asyncio.timeout(remaining):
+                        await _bridge_embed_streams(websocket, realtime_session, log)
+                except TimeoutError:
+                    log.info("embed_session_max_length_reached")
+                    with contextlib.suppress(Exception):
+                        await websocket.close(
+                            code=EMBED_SESSION_EXPIRED, reason="Session time limit reached"
+                        )
         else:
             await websocket.send_json(
                 {"type": "error", "error": "Voice chat requires Premium tier agent"}
@@ -381,7 +365,7 @@ async def embed_websocket(
     except Exception as e:
         log.exception("websocket_error", error=str(e))
         with contextlib.suppress(Exception):
-            await websocket.send_json({"type": "error", "error": str(e)})
+            await websocket.send_json({"type": "error", "error": "Internal error"})
     finally:
         with contextlib.suppress(Exception):
             await websocket.close()
@@ -466,11 +450,13 @@ async def _bridge_embed_streams(
 
 
 @router.post("/{public_id}/token")
+@limiter.limit("10/minute")
 async def get_embed_ephemeral_token(  # noqa: PLR0915
     public_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db),
     origin: str | None = Header(None),
+    x_embed_parent_origin: str | None = Header(None),
 ) -> dict[str, Any]:
     """Get an ephemeral token for OpenAI Realtime API WebRTC connection.
 
@@ -485,7 +471,6 @@ async def get_embed_ephemeral_token(  # noqa: PLR0915
     import httpx
 
     from app.api.settings import get_user_api_keys
-    from app.core.auth import user_id_to_uuid
     from app.models.workspace import AgentWorkspace
     from app.services.gpt_realtime import build_instructions_with_language
 
@@ -505,10 +490,7 @@ async def get_embed_ephemeral_token(  # noqa: PLR0915
         log.warning("agent_inactive")
         raise HTTPException(status_code=403, detail="Agent is not active")
 
-    # Validate origin
-    if not validate_origin(origin, agent.allowed_domains):
-        log.warning("origin_not_allowed", allowed=agent.allowed_domains)
-        raise HTTPException(status_code=403, detail="Origin not allowed")
+    site = _require_allowed_site(origin, x_embed_parent_origin, agent, log)
 
     # Check premium tier
     if agent.pricing_tier not in ("premium", "premium-mini"):
@@ -621,9 +603,17 @@ async def get_embed_ephemeral_token(  # noqa: PLR0915
                 integrations=integrations,
                 workspace_id=workspace_id,
             )
-            tools = tool_registry.get_all_tool_definitions(
-                agent.enabled_tools or [], agent.enabled_tool_ids
+            # Tool definitions go to the browser only when the owner has allowed
+            # tools for embedded sessions; /tool-call refuses on the same rule.
+            embed_tools_on = tools_allowed(agent.embed_settings)
+            tools = (
+                tool_registry.get_all_tool_definitions(
+                    agent.enabled_tools or [], agent.enabled_tool_ids
+                )
+                if embed_tools_on
+                else []
             )
+            embed_session = mint_embed_session(agent_id=str(agent.id), site=site)
 
             log.info(
                 "tools_prepared",
@@ -644,6 +634,10 @@ async def get_embed_ephemeral_token(  # noqa: PLR0915
                 },
                 "model": realtime_model,
                 "tools": tools,
+                # Every later call from this widget (/tool-call, /transcript)
+                # must send this back in the X-Embed-Session header.
+                "session_token": embed_session.token,
+                "session_expires_in": embed_session.expires_in,
             }
 
     except httpx.RequestError as e:
@@ -667,12 +661,16 @@ class SaveTranscriptRequest(BaseModel):
 
 
 @router.post("/{public_id}/tool-call")
+@limiter.limit("120/minute")
+@limiter.limit("30/minute", key_func=_session_key)
 async def execute_embed_tool_call(
     public_id: str,
     tool_request: ToolCallRequest,
     request: Request,
     db: AsyncSession = Depends(get_db),
     origin: str | None = Header(None),
+    x_embed_parent_origin: str | None = Header(None),
+    x_embed_session: str | None = Header(None),
 ) -> dict[str, Any]:
     """Execute a tool call for an embed widget.
 
@@ -683,7 +681,6 @@ async def execute_embed_tool_call(
     - Origin validation against allowed domains
     - Only tools enabled for the agent are executed
     """
-    from app.core.auth import user_id_to_uuid
 
     log = logger.bind(
         endpoint="embed_tool_call",
@@ -702,10 +699,13 @@ async def execute_embed_tool_call(
         log.warning("agent_not_available")
         raise HTTPException(status_code=403, detail="Agent not available")
 
-    # Validate origin
-    if not validate_origin(origin, agent.allowed_domains):
-        log.warning("origin_not_allowed", allowed=agent.allowed_domains)
-        raise HTTPException(status_code=403, detail="Origin not allowed")
+    _require_session(x_embed_session, origin, x_embed_parent_origin, agent, log)
+
+    if not tools_allowed(agent.embed_settings):
+        log.warning("embed_tools_not_allowed")
+        raise HTTPException(
+            status_code=403, detail="Tools are not enabled for embedded sessions of this agent"
+        )
 
     # agent.user_id is now directly the integer user ID
     user_id_int = agent.user_id
@@ -771,12 +771,16 @@ async def execute_embed_tool_call(
 
 
 @router.post("/{public_id}/transcript")
+@limiter.limit("20/minute")
+@limiter.limit("3/minute", key_func=_session_key)
 async def save_embed_transcript(
     public_id: str,
     transcript_request: SaveTranscriptRequest,
     request: Request,
     db: AsyncSession = Depends(get_db),
     origin: str | None = Header(None),
+    x_embed_parent_origin: str | None = Header(None),
+    x_embed_session: str | None = Header(None),
 ) -> dict[str, Any]:
     """Save a call transcript from an embed widget session.
 
@@ -807,10 +811,7 @@ async def save_embed_transcript(
         log.warning("agent_not_available")
         raise HTTPException(status_code=403, detail="Agent not available")
 
-    # Validate origin
-    if not validate_origin(origin, agent.allowed_domains):
-        log.warning("origin_not_allowed", allowed=agent.allowed_domains)
-        raise HTTPException(status_code=403, detail="Origin not allowed")
+    embed_session = _require_session(x_embed_session, origin, x_embed_parent_origin, agent, log)
 
     # Check if transcripts are enabled for this agent
     if not agent.enable_transcript:
@@ -831,10 +832,13 @@ async def save_embed_transcript(
 
     # Create call record for widget session
     call_record = CallRecord(
-        user_id=agent.user_id,
+        # call_records keys its owner by UUID while Agent carries the integer
+        # user id; the integer raises on insert against Postgres.
+        user_id=user_id_to_uuid(agent.user_id),
         workspace_id=workspace_id,
         provider="widget",
-        provider_call_id=transcript_request.session_id,
+        # The session the server minted, not an identifier the browser chose.
+        provider_call_id=f"embed-{embed_session.session_id}",
         agent_id=agent.id,
         direction=CallDirection.INBOUND.value,
         status=CallStatus.COMPLETED.value,

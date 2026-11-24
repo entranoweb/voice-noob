@@ -381,3 +381,47 @@ class TestStreamAdmission:
             await ws.drain(deadline_s=1.0)
             assert ws.close_code == AGENT_NOT_FOUND
         assert _FakeRealtimeSession.opened == 0
+
+
+class TestATokenAdmitsOneStream:
+    """A valid token used to open as many streams as anyone cared to inside its
+    two minutes. It is claimed on first use now (``app.core.stream_token_use``)."""
+
+    @pytest.mark.asyncio
+    async def test_a_replayed_token_is_refused(self, twilio_env: dict[str, Any]) -> None:
+        agent_id = str(twilio_env["agent"].id)
+        token = mint_stream_token(provider="twilio", agent_id=agent_id, call_id=CALL_SID)
+
+        async with ASGIWebSocketClient(app, f"/ws/telephony/twilio/{agent_id}") as ws:
+            await ws.send_json(_start(CALL_SID, token))
+            await ws.send_json({"event": "stop"})
+            await ws.drain(deadline_s=1.0)
+            assert ws.close_code != STREAM_TOKEN_REJECTED
+        assert _FakeRealtimeSession.opened == 1
+
+        async with ASGIWebSocketClient(app, f"/ws/telephony/twilio/{agent_id}") as ws:
+            await ws.send_json(_start(CALL_SID, token))
+            await ws.drain(deadline_s=1.0)
+            assert ws.close_code == STREAM_TOKEN_REJECTED
+        assert _FakeRealtimeSession.opened == 1, "the replay opened a second realtime session"
+
+    @pytest.mark.asyncio
+    async def test_a_valid_token_is_refused_while_the_claim_store_is_down(
+        self, twilio_env: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Fail closed: a call that cannot be shown to be the first use of its
+        token does not connect."""
+        from app.core import stream_token_use
+
+        async def _down() -> Any:
+            raise ConnectionError("redis is unreachable")
+
+        monkeypatch.setattr(stream_token_use, "_store", _down)
+        agent_id = str(twilio_env["agent"].id)
+        token = mint_stream_token(provider="twilio", agent_id=agent_id, call_id=CALL_SID)
+
+        async with ASGIWebSocketClient(app, f"/ws/telephony/twilio/{agent_id}") as ws:
+            await ws.send_json(_start(CALL_SID, token))
+            await ws.drain(deadline_s=1.0)
+            assert ws.close_code == STREAM_TOKEN_REJECTED
+        assert _FakeRealtimeSession.opened == 0
