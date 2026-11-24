@@ -4,6 +4,12 @@ import asyncio
 import logging
 import os
 
+# Before anything imports the application: settings refuse to load on the
+# signing key shipped in the repository unless DEBUG is on, and the suite runs
+# with DEBUG off because that is what production runs with. CI sets its own
+# value; this only fills the gap for a local run.
+os.environ.setdefault("SECRET_KEY", "test-only-signing-key-never-used-outside-the-test-suite")
+
 # Test database URL (using temp file SQLite for tests)
 import tempfile
 import uuid as uuid_module

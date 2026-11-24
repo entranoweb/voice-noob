@@ -5,6 +5,21 @@ from typing import Any
 from pydantic import PostgresDsn, RedisDsn, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# The value SECRET_KEY shipped with. It is public, so anything signed with it is
+# forgeable by anyone who has read this file.
+INSECURE_DEFAULT_SECRET_KEY = "change-this-to-a-random-secret-key-in-production"
+
+# Placeholders the example files and the compose default have carried. Each is as
+# public as the default, and a deployment that copied one unchanged is as open.
+PLACEHOLDER_SECRET_KEYS = frozenset(
+    {
+        INSECURE_DEFAULT_SECRET_KEY,
+        "generate_a_secure_key_here",
+        "your_64_character_secret_key_here",
+        "your_64_character_hex_string_here",
+    }
+)
+
 
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
@@ -27,6 +42,9 @@ class Settings(BaseSettings):
     PORT: int = 8000
     RELOAD: bool = False
     PUBLIC_URL: str | None = None  # Public URL for webhook callbacks (e.g., ngrok URL)
+    # Origin of the web app, which also serves the embeddable widget. Optional:
+    # the embed snippet falls back to the first CORS origin, then to PUBLIC_URL.
+    FRONTEND_URL: str | None = None
 
     # Database
     POSTGRES_SERVER: str = "localhost"
@@ -74,10 +92,15 @@ class Settings(BaseSettings):
         return f"redis://{password_part}{data.get('REDIS_HOST')}:{data.get('REDIS_PORT')}/{data.get('REDIS_DB')}"
 
     # Security
-    SECRET_KEY: str = "change-this-to-a-random-secret-key-in-production"
+    SECRET_KEY: str = INSECURE_DEFAULT_SECRET_KEY
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+    # Accept carrier webhooks that carry no verifiable signature. Off by default
+    # and meant to stay off: it exists so a local rehearsal without a carrier key
+    # is a deliberate, named choice instead of a side effect of DEBUG. With it on,
+    # anyone who can reach the webhook can post a call to this instance.
+    ALLOW_UNSIGNED_WEBHOOKS: bool = False
 
     # CORS
     CORS_ORIGINS: list[str] = [
@@ -197,4 +220,37 @@ class Settings(BaseSettings):
     MAX_CALL_QUEUE_SIZE: int = 1000  # Max queued calls (Sprint 2)
 
 
+class InsecureSecretKeyError(RuntimeError):
+    """The application was started on a signing key anyone can read."""
+
+
+def refuse_placeholder_secret_key(candidate: Settings) -> None:
+    """Refuse to start on a shipped signing key outside DEBUG.
+
+    The key signs login tokens and the tokens that admit a carrier's media stream
+    to an agent. The shipped value and the example placeholders are in the
+    repository, so running on one means both can be forged by anyone. Failing
+    here, at import, is loud and immediate; the alternative is a deployment that
+    works and is open.
+
+    This is a plain check after the settings are built, not a pydantic
+    validator, on purpose: a validation error prints the input it rejected, and
+    the input is the process environment. A startup failure about one secret
+    must not write fragments of the others into the log.
+    """
+    if candidate.DEBUG:
+        return
+    key = candidate.SECRET_KEY.strip()
+    if not key or key in PLACEHOLDER_SECRET_KEYS:
+        message = (
+            "SECRET_KEY is unset or still a placeholder shipped in the repository. "
+            "Set SECRET_KEY to a long random string (for example "
+            "`openssl rand -hex 32`). It signs login tokens and call stream "
+            "tokens, so a known value would let anyone forge both. For a throwaway "
+            "local run only, DEBUG=true skips this check."
+        )
+        raise InsecureSecretKeyError(message)
+
+
 settings = Settings()
+refuse_placeholder_secret_key(settings)
