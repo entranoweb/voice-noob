@@ -6,6 +6,7 @@ from app.models.audit_event import AuditEvent
 from app.models.call_evaluation import CallEvaluation
 from app.models.call_interaction import CallInteraction
 from app.models.call_record import CallRecord
+from app.models.caller_run import CallerCall, CallerRun
 from app.models.campaign import Campaign, CampaignContact
 from app.models.compliance_run import ComplianceRun
 from app.models.contact import Contact
@@ -24,6 +25,8 @@ __all__ = [
     "CallEvaluation",
     "CallInteraction",
     "CallRecord",
+    "CallerCall",
+    "CallerRun",
     "Campaign",
     "CampaignContact",
     "ComplianceRun",

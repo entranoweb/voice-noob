@@ -25,6 +25,7 @@ from app.models.appointment import Appointment
 from app.models.call_evaluation import CallEvaluation
 from app.models.call_interaction import CallInteraction
 from app.models.call_record import CallRecord
+from app.models.caller_run import CallerCall, CallerRun
 from app.models.campaign import Campaign, CampaignContact
 from app.models.compliance_run import (
     KIND_RETENTION,
@@ -233,6 +234,23 @@ async def erase_account_data(db: AsyncSession, user_id: int) -> dict[str, int]:
         )
     )
     counts["call_records"] = _rows(await db.execute(delete(CallRecord).where(call_filter)))
+    # Results uploaded from the caller rig: the account's own uploads, and anything
+    # uploaded into a workspace it owns. Calls first; they hang off the runs.
+    caller_run_filter = _any_of(
+        CallerRun.user_id == user_id,
+        CallerRun.workspace_id.in_(workspace_ids) if workspace_ids else None,
+    )
+    counts["caller_calls"] = _rows(
+        await db.execute(
+            delete(CallerCall).where(
+                _any_of(
+                    CallerCall.run_pk.in_(select(CallerRun.id).where(caller_run_filter)),
+                    CallerCall.workspace_id.in_(workspace_ids) if workspace_ids else None,
+                )
+            )
+        )
+    )
+    counts["caller_runs"] = _rows(await db.execute(delete(CallerRun).where(caller_run_filter)))
     counts["phone_numbers"] = _rows(
         await db.execute(delete(PhoneNumber).where(PhoneNumber.user_id == user_uuid))
     )
