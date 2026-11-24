@@ -22,7 +22,5 @@ repos:
     hooks:
       - id: mypy
         additional_dependencies:
-          - types-passlib
-          - types-python-jose
           - types-redis
         args: [--ignore-missing-imports]
