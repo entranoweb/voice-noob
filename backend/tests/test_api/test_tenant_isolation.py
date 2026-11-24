@@ -242,9 +242,7 @@ class TestToolExecution:
 
 class TestRealtimeRoutes:
     @pytest.mark.asyncio
-    async def test_token_route_does_not_return_another_customers_prompt(
-        self, world: World
-    ) -> None:
+    async def test_token_route_does_not_return_another_customers_prompt(self, world: World) -> None:
         response = await world.client.get(
             f"/api/v1/realtime/token/{world.bob.agent.id}",
             headers=world.alice.headers,

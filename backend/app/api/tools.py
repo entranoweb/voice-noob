@@ -1,6 +1,5 @@
 """API endpoints for tool execution."""
 
-import uuid
 from typing import Any
 
 import structlog
@@ -60,37 +59,30 @@ async def execute_tool(
     # and integration credentials the tool acts on, so it has to be the
     # caller's own agent: get_owned_agent answers 404 for anyone else's.
     agent = await get_owned_agent(db, request.agent_id, current_user)
-    workspace_id: uuid.UUID | None = await owned_agent_workspace_id(db, agent, current_user)
+    workspace_id = await owned_agent_workspace_id(db, agent, current_user)
+
+    # Get integration credentials for the workspace
+    integrations: dict[str, dict[str, Any]] = {}
+    if workspace_id:
+        user_uuid = user_id_to_uuid(user_id)
+        integrations = await get_workspace_integrations(user_uuid, workspace_id, db)
+
+    tool_registry = ToolRegistry(db, user_id, integrations=integrations, workspace_id=workspace_id)
+
+    # Only a tool the agent's owner switched on may run. Without this the
+    # route is a general-purpose executor for every tool in the registry.
+    allowed = tool_registry.enabled_tool_names(agent.enabled_tools or [], agent.enabled_tool_ids)
+    if request.tool_name not in allowed:
+        tool_logger.warning("tool_not_enabled_for_agent")
+        raise HTTPException(status_code=403, detail="Tool is not enabled for this agent")
 
     try:
-        # Get integration credentials for the workspace
-        integrations: dict[str, dict[str, Any]] = {}
-        if workspace_id:
-            user_uuid = user_id_to_uuid(user_id)
-            integrations = await get_workspace_integrations(user_uuid, workspace_id, db)
-
-        # Create tool registry and execute tool
-        tool_registry = ToolRegistry(
-            db, user_id, integrations=integrations, workspace_id=workspace_id
-        )
-
-        # Only a tool the agent's owner switched on may run. Without this the
-        # route is a general-purpose executor for every tool in the registry.
-        allowed = tool_registry.enabled_tool_names(
-            agent.enabled_tools or [], agent.enabled_tool_ids
-        )
-        if request.tool_name not in allowed:
-            tool_logger.warning("tool_not_enabled_for_agent")
-            raise HTTPException(status_code=403, detail="Tool is not enabled for this agent")
-
         result = await tool_registry.execute_tool(request.tool_name, request.arguments)
 
         tool_logger.info("tool_execution_completed", success=result.get("success", False))
 
         return result
 
-    except HTTPException:
-        raise
     except Exception as e:
         tool_logger.exception("tool_execution_failed", error=str(e))
         raise HTTPException(status_code=500, detail="Tool execution failed") from e

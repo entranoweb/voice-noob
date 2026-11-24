@@ -39,7 +39,6 @@ from app.db.redis import close_redis, get_redis
 from app.db.session import AsyncSessionLocal, engine
 from app.middleware.request_tracing import RequestTracingMiddleware
 from app.middleware.security import SecurityHeadersMiddleware
-from app.models.user import User
 from app.monitoring import get_metrics_router, loop_lag
 from app.monitoring.tracing import configure_tracing, shutdown_tracing
 from app.services.call_registry import set_shutting_down, wait_for_calls_to_drain

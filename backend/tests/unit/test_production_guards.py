@@ -9,7 +9,7 @@ import importlib.util
 import socket
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Self
 
 import pytest
 import sqlalchemy as sa
@@ -149,7 +149,7 @@ class TestFirstAdministrator:
 class TestProductionComposeFile:
     """The file itself: nothing in it may work as a credential, or bypass the proxy."""
 
-    @pytest.fixture(scope="class")
+    @pytest.fixture
     def compose(self) -> dict[str, Any]:
         return yaml.safe_load((REPO / "docker-compose.prod.yml").read_text(encoding="utf-8"))
 
@@ -192,7 +192,7 @@ class TestDestinationChecks:
             "192.168.1.1",
             "169.254.169.254",
             "100.64.0.1",
-            "0.0.0.0",  # noqa: S104
+            "0.0.0.0",
             "::1",
             "fe80::1",
             "fd00::1",
@@ -231,7 +231,12 @@ class TestDestinationChecks:
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         "url",
-        ["http://hooks.example.com/x", "https://user:pw@hooks.example.com/x", "ftp://x", "nonsense"],
+        [
+            "http://hooks.example.com/x",
+            "https://user:pw@hooks.example.com/x",
+            "ftp://x",
+            "nonsense",
+        ],
     )
     async def test_only_plain_https_urls_are_accepted(self, url: str) -> None:
         with pytest.raises(UnsafeDestinationError):
@@ -270,10 +275,10 @@ class TestDestinationChecks:
             def __init__(self, *_: Any, **__: Any) -> None:
                 pass
 
-            async def __aenter__(self) -> _Client:
+            async def __aenter__(self) -> Self:
                 return self
 
-            async def __aexit__(self, *_: Any) -> None:
+            async def __aexit__(self, *_: object) -> None:
                 return None
 
             async def post(self, url: str, **_: Any) -> Any:
@@ -412,7 +417,11 @@ class TestOneOwnerMigration:
 
     def _migration(self) -> Any:
         path = (
-            REPO / "backend" / "migrations" / "versions" / "d2f5a8c31b47_one_owner_per_phone_number.py"
+            REPO
+            / "backend"
+            / "migrations"
+            / "versions"
+            / "d2f5a8c31b47_one_owner_per_phone_number.py"
         )
         spec = importlib.util.spec_from_file_location("one_owner_migration", path)
         assert spec is not None

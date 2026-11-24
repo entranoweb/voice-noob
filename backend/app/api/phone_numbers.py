@@ -372,7 +372,7 @@ async def create_phone_number(
 
 @router.put("/{phone_number_id}", response_model=PhoneNumberResponse)
 @limiter.limit("30/minute")  # Rate limit phone number updates
-async def update_phone_number(
+async def update_phone_number(  # noqa: PLR0912
     phone_number_id: str,
     update_request: UpdatePhoneNumberRequest,
     request: Request,

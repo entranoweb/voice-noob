@@ -483,3 +483,84 @@ If deployment fails:
 2. Verify all environment variables are set
 3. Ensure domains are properly configured with SSL
 4. Test webhook URLs are accessible from internet
+
+---
+
+## Behaviour changes: tenant isolation and start-up checks (November 2026)
+
+Read this before upgrading an existing deployment. Each item changes what a running instance does.
+
+### The deployment will not start until these are set
+
+`docker-compose.prod.yml` no longer has a default for any credential. Compose stops with a message naming the variable if one is missing:
+
+- `POSTGRES_PASSWORD`
+- `REDIS_PASSWORD`
+- `ADMIN_EMAIL`
+- `ADMIN_PASSWORD`
+
+If your deployment was running on the old defaults, the database and Redis already hold those passwords. Change the password inside Postgres (`ALTER USER ... PASSWORD ...`) and set the same value in `POSTGRES_PASSWORD`; changing the variable alone does not change an existing database.
+
+### The backend refuses passwords this repository has shipped
+
+Outside `DEBUG=true` the backend stops at start-up when:
+
+- the database or Redis password is one of the old defaults or example values;
+- there are no users yet and `ADMIN_PASSWORD` is a shipped value;
+- an administrator account still has a shipped password stored.
+
+For the last case, set `ADMIN_EMAIL` to that account's address and `ADMIN_PASSWORD` to a new value, then start again. The stored password is replaced at start-up.
+
+### Sign-up is closed
+
+`POST /api/v1/auth/register` answers 403 unless `ALLOW_PUBLIC_SIGNUP=true`. The administrator creates accounts:
+
+```bash
+curl -X POST https://api.YOUR-DOMAIN/api/v1/auth/users \
+  -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" \
+  -d '{"email": "clinic@example.com", "username": "Clinic", "password": "..."}'
+```
+
+To switch an account off or back on (it loses access on its next request, not when its token expires):
+
+```bash
+curl -X POST https://api.YOUR-DOMAIN/api/v1/auth/users/42/disable -H "Authorization: Bearer $ADMIN_TOKEN"
+curl -X POST https://api.YOUR-DOMAIN/api/v1/auth/users/42/enable  -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+### One owner per phone number
+
+- The migration `d2f5a8c31b47` adds a unique index on live phone numbers. If two live records already hold the same number, the upgrade stops, changes nothing, and prints the record and owner ids that collide. Release or delete the wrong record and run it again.
+- A second account that registers a number another account holds gets 409.
+- An agent's phone field only accepts a number registered to the same account. A carrier id from the agent page's number list is still accepted.
+- An inbound call reaches only an agent in the account that holds the number.
+
+### Requests that now answer 404 or 403
+
+- Another account's agent id on the tool, realtime token, realtime session, transcript and phone-number assignment routes: 404.
+- Another account's workspace or agent when creating a campaign: 404.
+- `POST /api/v1/compliance/retention/cleanup` from anyone but the administrator: 403.
+- A tool the agent's owner did not enable, on `POST /api/v1/tools/execute` and on phone calls: refused.
+
+### Operational endpoints
+
+- `/docs`, `/redoc` and `/openapi.json` answer 404 unless `ENABLE_API_DOCS=true`.
+- `/metrics` answers 404 unless `METRICS_TOKEN` is set and the scraper sends it as `Authorization: Bearer <token>`.
+- Ports 8000 and 3000 are no longer published on the host. The reverse proxy reaches both services over the compose network. Anything that called `http://SERVER-IP:8000` directly must use the public address.
+- The backend container runs as user `app` (uid 10001), not root.
+
+### Outbound requests and webhooks
+
+- The QA alert webhook, the Slack alert webhook and the Azure OpenAI endpoint must be `https://` and must resolve to public addresses. A private destination your own operator needs (an Azure private endpoint, for example) goes in `OUTBOUND_ALLOW_PRIVATE_HOSTS` as a JSON list of host names.
+- A Shopify shop domain must be `<name>.myshopify.com`.
+- A Telnyx webhook whose timestamp is more than five minutes from the server's clock is refused (`TELNYX_WEBHOOK_MAX_AGE_SECONDS`). Keep the server's clock synchronised.
+
+### New settings
+
+| Setting | Default | Meaning |
+|---------|---------|---------|
+| `ALLOW_PUBLIC_SIGNUP` | follows `DEBUG` | Whether anyone may create an account |
+| `ENABLE_API_DOCS` | follows `DEBUG` | Serve the interactive API documentation |
+| `METRICS_TOKEN` | unset | Bearer token required to read `/metrics` |
+| `TELNYX_WEBHOOK_MAX_AGE_SECONDS` | `300` | Oldest signed Telnyx webhook accepted |
+| `OUTBOUND_ALLOW_PRIVATE_HOSTS` | `[]` | Host names the server may call although they are private |

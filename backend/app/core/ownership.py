@@ -12,6 +12,7 @@ that the id is real.
 
 from __future__ import annotations
 
+import contextlib
 import re
 import uuid
 from typing import TYPE_CHECKING
@@ -50,9 +51,7 @@ def parse_uuid(value: str | uuid.UUID, what: str) -> uuid.UUID:
 async def get_owned_agent(db: AsyncSession, agent_id: str | uuid.UUID, user: User) -> Agent:
     """The agent with this id if `user` owns it; 404 otherwise."""
     agent_uuid = parse_uuid(agent_id, "Agent")
-    result = await db.execute(
-        select(Agent).where(Agent.id == agent_uuid, Agent.user_id == user.id)
-    )
+    result = await db.execute(select(Agent).where(Agent.id == agent_uuid, Agent.user_id == user.id))
     agent = result.scalar_one_or_none()
     if agent is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
@@ -90,7 +89,7 @@ async def owned_agent_workspace_id(db: AsyncSession, agent: Agent, user: User) -
 
 def is_diallable(value: str | None) -> bool:
     """Whether this string is something a dialled number could equal."""
-    return bool(value) and _DIALLABLE.match(value.strip()) is not None
+    return value is not None and _DIALLABLE.match(value.strip()) is not None
 
 
 def number_variants(number: str) -> tuple[str, str]:
@@ -126,10 +125,8 @@ async def ensure_phone_reference_is_owned(
     conditions = [PhoneNumber.provider_id == reference]
     if is_diallable(reference):
         conditions.append(PhoneNumber.phone_number.in_(number_variants(reference)))
-    try:
+    with contextlib.suppress(ValueError):
         conditions.append(PhoneNumber.id == uuid.UUID(reference))
-    except ValueError:
-        pass
 
     result = await db.execute(select(PhoneNumber.user_id).where(or_(*conditions)))
     owners = set(result.scalars().all())

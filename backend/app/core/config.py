@@ -186,7 +186,7 @@ class Settings(BaseSettings):
     # Default Admin User (created on first startup if no users exist)
     # IMPORTANT: Change these in production via environment variables!
     ADMIN_EMAIL: str = "admin@example.com"
-    ADMIN_PASSWORD: str = "CHANGE_ME_IN_PRODUCTION"  # noqa: S105 - refused at start-up outside DEBUG
+    ADMIN_PASSWORD: str = "CHANGE_ME_IN_PRODUCTION"
     ADMIN_NAME: str = "Admin"
 
     # Voice & AI Services

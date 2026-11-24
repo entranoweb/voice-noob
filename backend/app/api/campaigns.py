@@ -12,7 +12,6 @@ from sqlalchemy.orm import selectinload
 from app.core.auth import CurrentUser, user_id_to_uuid
 from app.core.ownership import get_owned_agent, get_owned_workspace
 from app.db.session import get_db
-from app.models.agent import Agent
 from app.models.campaign import (
     CallDisposition,
     Campaign,
