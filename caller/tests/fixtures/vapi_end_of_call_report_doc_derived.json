@@ -1,0 +1,96 @@
+{
+  "_provenance": "DOC-DERIVED, NOT CAPTURED. Built by hand from Vapi's end-of-call-report page (docs.vapi.ai/server-url/end-of-call-report) and the UserMessage, BotMessage, ToolCallMessage, ToolCallResultMessage and ToolCall schemas of Vapi's published API description, read 24 Nov 2026. The conversation and ids are invented. No real account produced this.",
+  "message": {
+    "type": "end-of-call-report",
+    "timestamp": 1795127480000,
+    "endedReason": "assistant-ended-call",
+    "startedAt": "2026-11-20T10:00:00.000Z",
+    "endedAt": "2026-11-20T10:00:30.000Z",
+    "call": { "id": "call_doc_example_1" },
+    "analysis": {},
+    "artifact": {
+      "transcript": "AI: Hi, how can I help?\nUser: I'd like to book.",
+      "messages": [
+        {
+          "role": "system",
+          "message": "You are a receptionist.",
+          "time": 1795127450000,
+          "secondsFromStart": 0
+        },
+        {
+          "role": "bot",
+          "message": "Hi, how can I help?",
+          "time": 1795127450950,
+          "endTime": 1795127452400,
+          "secondsFromStart": 0.5,
+          "duration": 1.45,
+          "source": "llm"
+        },
+        {
+          "role": "user",
+          "message": "I'd like to book. My postcode is A B one two three C D.",
+          "time": 1795127458120,
+          "endTime": 1795127462000,
+          "secondsFromStart": 7.2,
+          "duration": 3.88
+        },
+        {
+          "role": "tool_calls",
+          "message": "",
+          "time": 1795127463000,
+          "secondsFromStart": 12.5,
+          "toolCalls": [
+            {
+              "id": "call_lookup_1",
+              "type": "function",
+              "function": {
+                "name": "identify_patient",
+                "arguments": "{\"name\": \"Alex Example\", \"postcode\": \"AB12 3CD\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool_call_result",
+          "toolCallId": "call_lookup_1",
+          "name": "identify_patient",
+          "result": "{\"success\": true, \"status\": \"unique\", \"patient_ref\": \"p_1\"}",
+          "time": 1795127463900,
+          "secondsFromStart": 13.4
+        },
+        {
+          "role": "tool_calls",
+          "message": "",
+          "time": 1795127470000,
+          "secondsFromStart": 19.5,
+          "toolCalls": [
+            {
+              "id": "call_book_1",
+              "type": "function",
+              "function": {
+                "name": "book_appointment",
+                "arguments": "{\"patient_ref\": \"p_1\", \"start\": \"2026-12-02T10:00:00Z\"}"
+              }
+            },
+            {
+              "id": "call_note_1",
+              "type": "function",
+              "function": {
+                "name": "add_note",
+                "arguments": "{\"text\": \"prefers mornings\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool_call_result",
+          "toolCallId": "call_book_1",
+          "name": "book_appointment",
+          "result": "{\"success\": false, \"code\": \"SLOT_NOT_AVAILABLE\"}",
+          "time": 1795127471000,
+          "secondsFromStart": 20.5
+        }
+      ]
+    }
+  }
+}
