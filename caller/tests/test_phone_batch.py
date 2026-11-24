@@ -11,7 +11,7 @@ import pytest
 import websockets
 
 from synthiq_caller import cli
-from synthiq_caller.batch import regrade, reread_missing_traces, run_batch
+from synthiq_caller.batch import CallInfo, regrade, reread_missing_traces, run_batch
 from synthiq_caller.clips import ClipBank
 from synthiq_caller.leg import Leg
 from synthiq_caller.legs.fake_twilio import RATE, FakeTwilio, tone_pcm
@@ -281,6 +281,47 @@ async def test_a_call_whose_trace_is_not_found_is_ungraded_and_fails_the_gate(
     assert await reread_missing_traces(line.out, found) == 1
     assert regrade(line.out, [("lookup.json", scenario())]) == 1
     assert cli.report(str(line.out), details=False, fail_under=100) == 0
+
+
+class RememberingHooks:
+    def __init__(self) -> None:
+        self.calls: list[CallInfo | None] = []
+
+    async def before_call(self, scenario_file: str, scenario: Scenario, repeat: int) -> None:
+        return None
+
+    async def after_call(
+        self, scenario_file: str, scenario: Scenario, repeat: int, call: CallInfo | None = None
+    ) -> None:
+        self.calls.append(call)
+
+
+@pytest.mark.parametrize(("finds", "expected"), [(True, "conv-1"), (False, "")])
+async def test_the_after_call_hook_is_told_the_platforms_id_never_the_carriers(
+    bank: ClipBank, tmp_path: Path, finds: bool, expected: str
+) -> None:
+    line = Line(tmp_path, FinderByOrder(finds=finds), StoredDate())
+    hooks = RememberingHooks()
+    try:
+        await run_batch(
+            [("lookup.json", scenario())],
+            await line.factory(),
+            bank,
+            line.out,
+            turn_settings=FAST,
+            hooks=hooks,
+            wait=no_wait,
+        )
+    finally:
+        await line.exchange.close()
+
+    run = json.loads((line.out / "run-001.json").read_text(encoding="utf-8"))
+    told = hooks.calls[0]
+    assert told is not None and told.run_file == "run-001.json"
+    # A hook that tidies up by conversation id must get the platform's id, or none:
+    # the carrier's id names a different leg of the call and would match nothing.
+    assert told.call_ref == expected
+    assert run["carrier_call_ref"] == run["record"]["call_ref"] != told.call_ref
 
 
 def test_the_gate_counts_every_call_placed() -> None:
