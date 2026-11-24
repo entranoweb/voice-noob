@@ -1,0 +1,1587 @@
+{
+"conversation_id": "fixture-2ttj",
+"status": "done",
+"metadata": {
+"termination_reason": "end_call tool was called."
+},
+"transcript": [
+{
+"role": "agent",
+"time_in_call_secs": 1,
+"message": "Hi, this is Sophie from ClinWell. How can I help you today?",
+"workflow_node_id": "R0"
+},
+{
+"role": "user",
+"time_in_call_secs": 5,
+"message": "Sophie, can you book an MRI appointment for me, please?"
+},
+{
+"role": "agent",
+"time_in_call_secs": 8,
+"workflow_node_id": "R0",
+"tool_calls": [
+{
+"tool_name": "notify_condition_1_met",
+"params_as_json": {}
+}
+]
+},
+{
+"role": "agent",
+"time_in_call_secs": 8,
+"workflow_node_id": "R0",
+"tool_results": [
+{
+"tool_name": "notify_condition_1_met",
+"result_value": {
+"steps": [
+{
+"type": "edge",
+"edge_id": "e1_R0_I0",
+"target_node_id": "I0"
+},
+{
+"type": "nested_tools",
+"node_id": "I0",
+"requests": [
+{
+"tool_name": "transfer_to_agent",
+"params_as_json": {
+"reason": "Transferring to agent as part of a workflow route.",
+"agent_number": 0,
+"agent_id": "[agent]"
+}
+}
+],
+"results": [
+{
+"tool_name": "transfer_to_agent",
+"result_value": {
+"result_type": "transfer_to_agent_success",
+"status": "success"
+},
+"is_error": false,
+"error_type": "",
+"raw_error_message": ""
+}
+]
+}
+]
+}
+}
+]
+},
+{
+"role": "agent",
+"time_in_call_secs": 9,
+"workflow_node_id": "I0",
+"tool_calls": [
+{
+"tool_name": "notify_condition_3_met",
+"params_as_json": {}
+}
+]
+},
+{
+"role": "agent",
+"time_in_call_secs": 9,
+"workflow_node_id": "I0",
+"tool_results": [
+{
+"tool_name": "notify_condition_3_met",
+"result_value": {
+"steps": [
+{
+"type": "edge",
+"edge_id": "e4_I0_I1",
+"target_node_id": "I1"
+},
+{
+"type": "nested_tools",
+"node_id": "I1",
+"requests": [
+{
+"tool_name": "transfer_to_agent",
+"params_as_json": {
+"reason": "Transferring to agent as part of a workflow route.",
+"agent_number": 0,
+"agent_id": "[agent]"
+}
+}
+],
+"results": [
+{
+"tool_name": "transfer_to_agent",
+"result_value": {
+"result_type": "transfer_to_agent_success",
+"status": "success"
+},
+"is_error": false,
+"error_type": "",
+"raw_error_message": ""
+}
+]
+}
+]
+}
+}
+]
+},
+{
+"role": "agent",
+"time_in_call_secs": 10,
+"message": "Of course. Could I take your full name, please?",
+"workflow_node_id": "I1"
+},
+{
+"role": "user",
+"time_in_call_secs": 15,
+"message": "It's Elliot Allen."
+},
+{
+"role": "agent",
+"time_in_call_secs": 19,
+"workflow_node_id": "I1",
+"tool_calls": [
+{
+"tool_name": "notify_condition_2_met",
+"params_as_json": {}
+}
+]
+},
+{
+"role": "agent",
+"time_in_call_secs": 20,
+"workflow_node_id": "I1",
+"tool_results": [
+{
+"tool_name": "notify_condition_2_met",
+"result_value": {
+"steps": [
+{
+"type": "edge",
+"edge_id": "e10_I1_T1",
+"target_node_id": "T1"
+},
+{
+"type": "nested_tools",
+"node_id": "T1",
+"requests": [
+{
+"tool_name": "[token]",
+"params_as_json": {
+"fullName": "Elliot Allen",
+"intent": "mri"
+}
+}
+],
+"results": [
+{
+"tool_name": "[token]",
+"result_value": {
+"success": true
+},
+"is_error": false,
+"error_type": "",
+"raw_error_message": ""
+}
+]
+},
+{
+"type": "edge",
+"edge_id": "e12_T1_I2",
+"target_node_id": "I2"
+},
+{
+"type": "nested_tools",
+"node_id": "I2",
+"requests": [
+{
+"tool_name": "transfer_to_agent",
+"params_as_json": {
+"reason": "Transferring to agent as part of a workflow route.",
+"agent_number": 0,
+"agent_id": "[agent]"
+}
+}
+],
+"results": [
+{
+"tool_name": "transfer_to_agent",
+"result_value": {
+"result_type": "transfer_to_agent_success",
+"status": "success"
+},
+"is_error": false,
+"error_type": "",
+"raw_error_message": ""
+}
+]
+}
+]
+}
+}
+]
+},
+{
+"role": "agent",
+"time_in_call_secs": 20,
+"workflow_node_id": "I2",
+"tool_calls": [
+{
+"tool_name": "notify_condition_7_met",
+"params_as_json": {}
+}
+]
+},
+{
+"role": "agent",
+"time_in_call_secs": 20,
+"workflow_node_id": "I2",
+"tool_results": [
+{
+"tool_name": "notify_condition_7_met",
+"result_value": {
+"steps": [
+{
+"type": "edge",
+"edge_id": "e412_I2_SAY_BEEN_BEFORE",
+"target_node_id": "SAY_BEEN_BEFORE"
+},
+{
+"type": "nested_tools",
+"node_id": "SAY_BEEN_BEFORE",
+"requests": [
+{
+"tool_name": "transfer_to_agent",
+"params_as_json": {
+"reason": "Transferring to agent as part of a workflow route.",
+"agent_number": 0,
+"agent_id": "[agent]"
+}
+}
+],
+"results": [
+{
+"tool_name": "transfer_to_agent",
+"result_value": {
+"result_type": "transfer_to_agent_success",
+"status": "success"
+},
+"is_error": false,
+"error_type": "",
+"raw_error_message": ""
+}
+]
+}
+]
+}
+}
+]
+},
+{
+"role": "agent",
+"time_in_call_secs": 20,
+"message": "Thanks. And have you been to see us before?",
+"workflow_node_id": "SAY_BEEN_BEFORE"
+},
+{
+"role": "user",
+"time_in_call_secs": 25,
+"message": "Uh, no."
+},
+{
+"role": "agent",
+"time_in_call_secs": 27,
+"workflow_node_id": "SAY_BEEN_BEFORE",
+"tool_calls": [
+{
+"tool_name": "progress_workflow",
+"params_as_json": {}
+}
+]
+},
+{
+"role": "agent",
+"time_in_call_secs": 27,
+"workflow_node_id": "SAY_BEEN_BEFORE",
+"tool_results": [
+{
+"tool_name": "progress_workflow",
+"result_value": {
+"steps": [
+{
+"type": "edge",
+"edge_id": "e413_SAY_BEEN_BEFORE_BB1",
+"target_node_id": "BB1"
+},
+{
+"type": "nested_tools",
+"node_id": "BB1",
+"requests": [
+{
+"tool_name": "transfer_to_agent",
+"params_as_json": {
+"reason": "Transferring to agent as part of a workflow route.",
+"agent_number": 0,
+"agent_id": "[agent]"
+}
+}
+],
+"results": [
+{
+"tool_name": "transfer_to_agent",
+"result_value": {
+"result_type": "transfer_to_agent_success",
+"status": "success"
+},
+"is_error": false,
+"error_type": "",
+"raw_error_message": ""
+}
+]
+}
+]
+}
+}
+]
+},
+{
+"role": "agent",
+"time_in_call_secs": 28,
+"workflow_node_id": "BB1",
+"tool_calls": [
+{
+"tool_name": "notify_condition_2_met",
+"params_as_json": {}
+}
+]
+},
+{
+"role": "agent",
+"time_in_call_secs": 28,
+"workflow_node_id": "BB1",
+"tool_results": [
+{
+"tool_name": "notify_condition_2_met",
+"result_value": {
+"steps": [
+{
+"type": "edge",
+"edge_id": "e415_BB1_NEW_PATIENT_ENTRY",
+"target_node_id": "NEW_PATIENT_ENTRY"
+},
+{
+"type": "nested_tools",
+"node_id": "NEW_PATIENT_ENTRY",
+"requests": [
+{
+"tool_name": "transfer_to_agent",
+"params_as_json": {
+"reason": "Transferring to agent as part of a workflow route.",
+"agent_number": 0,
+"agent_id": "[agent]"
+}
+}
+],
+"results": [
+{
+"tool_name": "transfer_to_agent",
+"result_value": {
+"result_type": "transfer_to_agent_success",
+"status": "success"
+},
+"is_error": false,
+"error_type": "",
+"raw_error_message": ""
+}
+]
+}
+]
+}
+}
+]
+},
+{
+"role": "agent",
+"time_in_call_secs": 28,
+"message": "Happy to help. What's bringing you in to see us?",
+"workflow_node_id": "NEW_PATIENT_ENTRY"
+},
+{
+"role": "user",
+"time_in_call_secs": 33,
+"message": "I'm having shoulder pain."
+},
+{
+"role": "agent",
+"time_in_call_secs": 35,
+"workflow_node_id": "NEW_PATIENT_ENTRY",
+"tool_calls": [
+{
+"tool_name": "progress_workflow",
+"params_as_json": {}
+}
+]
+},
+{
+"role": "agent",
+"time_in_call_secs": 35,
+"workflow_node_id": "NEW_PATIENT_ENTRY",
+"tool_results": [
+{
+"tool_name": "progress_workflow",
+"result_value": {
+"steps": [
+{
+"type": "edge",
+"edge_id": "e417_NEW_PATIENT_ENTRY_SAY_NP_REACT",
+"target_node_id": "SAY_NP_REACT"
+},
+{
+"type": "nested_tools",
+"node_id": "SAY_NP_REACT",
+"requests": [
+{
+"tool_name": "transfer_to_agent",
+"params_as_json": {
+"reason": "Transferring to agent as part of a workflow route.",
+"agent_number": 0,
+"agent_id": "[agent]"
+}
+}
+],
+"results": [
+{
+"tool_name": "transfer_to_agent",
+"result_value": {
+"result_type": "transfer_to_agent_success",
+"status": "success"
+},
+"is_error": false,
+"error_type": "",
+"raw_error_message": ""
+}
+]
+}
+]
+}
+}
+]
+},
+{
+"role": "agent",
+"time_in_call_secs": 36,
+"message": "I'm sorry to hear that.",
+"workflow_node_id": "SAY_NP_REACT"
+},
+{
+"role": "agent",
+"time_in_call_secs": 37,
+"workflow_node_id": "SAY_NP_REACT",
+"tool_calls": [
+{
+"tool_name": "progress_workflow",
+"params_as_json": {}
+}
+]
+},
+{
+"role": "agent",
+"time_in_call_secs": 38,
+"workflow_node_id": "SAY_NP_REACT",
+"tool_results": [
+{
+"tool_name": "progress_workflow",
+"result_value": {
+"steps": [
+{
+"type": "edge",
+"edge_id": "e435_SAY_NP_REACT_NP_SCOPE",
+"target_node_id": "NP_SCOPE"
+},
+{
+"type": "nested_tools",
+"node_id": "NP_SCOPE",
+"requests": [
+{
+"tool_name": "sophie_v2_check_scope_dkc",
+"params_as_json": {
+"reason": "shoulder pain",
+"appointmentType": "MRI appointment",
+"continuingCare": false
+}
+}
+],
+"results": [
+{
+"tool_name": "sophie_v2_check_scope_dkc",
+"result_value": {
+"success": true,
+"scopeStatus": "in_scope"
+},
+"is_error": false,
+"error_type": "",
+"raw_error_message": ""
+}
+]
+},
+{
+"type": "edge",
+"edge_id": "e436_NP_SCOPE_NP_SCOPER",
+"target_node_id": "NP_SCOPER"
+},
+{
+"type": "nested_tools",
+"node_id": "NP_SCOPER",
+"requests": [
+{
+"tool_name": "transfer_to_agent",
+"params_as_json": {
+"reason": "Transferring to agent as part of a workflow route.",
+"agent_number": 0,
+"agent_id": "[agent]"
+}
+}
+],
+"results": [
+{
+"tool_name": "transfer_to_agent",
+"result_value": {
+"result_type": "transfer_to_agent_success",
+"status": "success"
+},
+"is_error": false,
+"error_type": "",
+"raw_error_message": ""
+}
+]
+}
+]
+}
+}
+]
+},
+{
+"role": "agent",
+"time_in_call_secs": 39,
+"workflow_node_id": "NP_SCOPER",
+"tool_calls": [
+{
+"tool_name": "notify_condition_3_met",
+"params_as_json": {}
+}
+]
+},
+{
+"role": "agent",
+"time_in_call_secs": 39,
+"workflow_node_id": "NP_SCOPER",
+"tool_results": [
+{
+"tool_name": "notify_condition_3_met",
+"result_value": {
+"steps": [
+{
+"type": "edge",
+"edge_id": "e440_NP_SCOPER_SAY_NP_ASK_DETAILS",
+"target_node_id": "SAY_NP_ASK_DETAILS"
+},
+{
+"type": "nested_tools",
+"node_id": "SAY_NP_ASK_DETAILS",
+"requests": [
+{
+"tool_name": "transfer_to_agent",
+"params_as_json": {
+"reason": "Transferring to agent as part of a workflow route.",
+"agent_number": 0,
+"agent_id": "[agent]"
+}
+}
+],
+"results": [
+{
+"tool_name": "transfer_to_agent",
+"result_value": {
+"result_type": "transfer_to_agent_success",
+"status": "success"
+},
+"is_error": false,
+"error_type": "",
+"raw_error_message": ""
+}
+]
+}
+]
+}
+}
+]
+},
+{
+"role": "agent",
+"time_in_call_secs": 39,
+"message": "I'll get you registered. Could I take your date of birth, please?",
+"workflow_node_id": "SAY_NP_ASK_DETAILS"
+},
+{
+"role": "user",
+"time_in_call_secs": 35,
+"message": "6th July, 1987."
+},
+{
+"role": "agent",
+"time_in_call_secs": 49,
+"workflow_node_id": "SAY_NP_ASK_DETAILS",
+"tool_calls": [
+{
+"tool_name": "progress_workflow",
+"params_as_json": {}
+}
+]
+},
+{
+"role": "agent",
+"time_in_call_secs": 49,
+"workflow_node_id": "SAY_NP_ASK_DETAILS",
+"tool_results": [
+{
+"tool_name": "progress_workflow",
+"result_value": {
+"steps": [
+{
+"type": "edge",
+"edge_id": "e444_SAY_NP_ASK_DETAILS_NP_NAME",
+"target_node_id": "NP_NAME"
+},
+{
+"type": "nested_tools",
+"node_id": "NP_NAME",
+"requests": [
+{
+"tool_name": "transfer_to_agent",
+"params_as_json": {
+"reason": "Transferring to agent as part of a workflow route.",
+"agent_number": 0,
+"agent_id": "[agent]"
+}
+}
+],
+"results": [
+{
+"tool_name": "transfer_to_agent",
+"result_value": {
+"result_type": "transfer_to_agent_success",
+"status": "success"
+},
+"is_error": false,
+"error_type": "",
+"raw_error_message": ""
+}
+]
+}
+]
+}
+}
+]
+},
+{
+"role": "agent",
+"time_in_call_secs": 50,
+"workflow_node_id": "NP_NAME",
+"tool_calls": [
+{
+"tool_name": "notify_condition_1_met",
+"params_as_json": {}
+}
+]
+},
+{
+"role": "agent",
+"time_in_call_secs": 51,
+"workflow_node_id": "NP_NAME",
+"tool_results": [
+{
+"tool_name": "notify_condition_1_met",
+"result_value": {
+"steps": [
+{
+"type": "edge",
+"edge_id": "e445_NP_NAME_NP_CHECK",
+"target_node_id": "NP_CHECK"
+},
+{
+"type": "nested_tools",
+"node_id": "NP_CHECK",
+"requests": [
+{
+"tool_name": "sophie_v2_new_patient_check_dkc",
+"params_as_json": {
+"fullName": "Elliot Allen",
+"dateOfBirth": "6th July, 1987"
+}
+}
+],
+"results": [
+{
+"tool_name": "sophie_v2_new_patient_check_dkc",
+"result_value": {
+"success": true
+},
+"is_error": false,
+"error_type": "",
+"raw_error_message": ""
+}
+]
+},
+{
+"type": "edge",
+"edge_id": "e456_NP_CHECK_NP_CHECKR",
+"target_node_id": "NP_CHECKR"
+},
+{
+"type": "nested_tools",
+"node_id": "NP_CHECKR",
+"requests": [
+{
+"tool_name": "transfer_to_agent",
+"params_as_json": {
+"reason": "Transferring to agent as part of a workflow route.",
+"agent_number": 0,
+"agent_id": "[agent]"
+}
+}
+],
+"results": [
+{
+"tool_name": "transfer_to_agent",
+"result_value": {
+"result_type": "transfer_to_agent_success",
+"status": "success"
+},
+"is_error": false,
+"error_type": "",
+"raw_error_message": ""
+}
+]
+}
+]
+}
+}
+]
+},
+{
+"role": "agent",
+"time_in_call_secs": 51,
+"workflow_node_id": "NP_CHECKR",
+"tool_calls": [
+{
+"tool_name": "notify_condition_1_met",
+"params_as_json": {}
+}
+]
+},
+{
+"role": "agent",
+"time_in_call_secs": 51,
+"workflow_node_id": "NP_CHECKR",
+"tool_results": [
+{
+"tool_name": "notify_condition_1_met",
+"result_value": {
+"steps": [
+{
+"type": "edge",
+"edge_id": "e458_NP_CHECKR_SAY_NP_ASK_PHONE",
+"target_node_id": "SAY_NP_ASK_PHONE"
+},
+{
+"type": "nested_tools",
+"node_id": "SAY_NP_ASK_PHONE",
+"requests": [
+{
+"tool_name": "transfer_to_agent",
+"params_as_json": {
+"reason": "Transferring to agent as part of a workflow route.",
+"agent_number": 0,
+"agent_id": "[agent]"
+}
+}
+],
+"results": [
+{
+"tool_name": "transfer_to_agent",
+"result_value": {
+"result_type": "transfer_to_agent_success",
+"status": "success"
+},
+"is_error": false,
+"error_type": "",
+"raw_error_message": ""
+}
+]
+}
+]
+}
+}
+]
+},
+{
+"role": "agent",
+"time_in_call_secs": 51,
+"message": "And the best mobile number to reach you on, please?",
+"workflow_node_id": "SAY_NP_ASK_PHONE"
+},
+{
+"role": "user",
+"time_in_call_secs": 57,
+"message": "0782293457."
+},
+{
+"role": "agent",
+"time_in_call_secs": 61,
+"workflow_node_id": "SAY_NP_ASK_PHONE",
+"tool_calls": [
+{
+"tool_name": "progress_workflow",
+"params_as_json": {}
+}
+]
+},
+{
+"role": "agent",
+"time_in_call_secs": 61,
+"workflow_node_id": "SAY_NP_ASK_PHONE",
+"tool_results": [
+{
+"tool_name": "progress_workflow",
+"result_value": {
+"steps": [
+{
+"type": "edge",
+"edge_id": "e461_SAY_NP_ASK_PHONE_NP_PHONE",
+"target_node_id": "NP_PHONE"
+},
+{
+"type": "nested_tools",
+"node_id": "NP_PHONE",
+"requests": [
+{
+"tool_name": "transfer_to_agent",
+"params_as_json": {
+"reason": "Transferring to agent as part of a workflow route.",
+"agent_number": 0,
+"agent_id": "[agent]"
+}
+}
+],
+"results": [
+{
+"tool_name": "transfer_to_agent",
+"result_value": {
+"result_type": "transfer_to_agent_success",
+"status": "success"
+},
+"is_error": false,
+"error_type": "",
+"raw_error_message": ""
+}
+]
+}
+]
+}
+}
+]
+},
+{
+"role": "agent",
+"time_in_call_secs": 62,
+"workflow_node_id": "NP_PHONE",
+"tool_calls": [
+{
+"tool_name": "notify_condition_1_met",
+"params_as_json": {}
+}
+]
+},
+{
+"role": "agent",
+"time_in_call_secs": 62,
+"workflow_node_id": "NP_PHONE",
+"tool_results": [
+{
+"tool_name": "notify_condition_1_met",
+"result_value": {
+"steps": [
+{
+"type": "edge",
+"edge_id": "e462_NP_PHONE_SAY_NP_ASK_POSTCODE",
+"target_node_id": "SAY_NP_ASK_POSTCODE"
+},
+{
+"type": "nested_tools",
+"node_id": "SAY_NP_ASK_POSTCODE",
+"requests": [
+{
+"tool_name": "transfer_to_agent",
+"params_as_json": {
+"reason": "Transferring to agent as part of a workflow route.",
+"agent_number": 0,
+"agent_id": "[agent]"
+}
+}
+],
+"results": [
+{
+"tool_name": "transfer_to_agent",
+"result_value": {
+"result_type": "transfer_to_agent_success",
+"status": "success"
+},
+"is_error": false,
+"error_type": "",
+"raw_error_message": ""
+}
+]
+}
+]
+}
+}
+]
+},
+{
+"role": "agent",
+"time_in_call_secs": 62,
+"message": "Thanks. And could I take your postcode, please? It helps us confirm it's you when you call again.",
+"workflow_node_id": "SAY_NP_ASK_POSTCODE"
+},
+{
+"role": "user",
+"time_in_call_secs": 72,
+"message": "E12XY."
+},
+{
+"role": "agent",
+"time_in_call_secs": 76,
+"workflow_node_id": "SAY_NP_ASK_POSTCODE",
+"tool_calls": [
+{
+"tool_name": "progress_workflow",
+"params_as_json": {}
+}
+]
+},
+{
+"role": "agent",
+"time_in_call_secs": 76,
+"workflow_node_id": "SAY_NP_ASK_POSTCODE",
+"tool_results": [
+{
+"tool_name": "progress_workflow",
+"result_value": {
+"steps": [
+{
+"type": "edge",
+"edge_id": "e468_SAY_NP_ASK_POSTCODE_NP_POSTCODE",
+"target_node_id": "NP_POSTCODE"
+},
+{
+"type": "nested_tools",
+"node_id": "NP_POSTCODE",
+"requests": [
+{
+"tool_name": "transfer_to_agent",
+"params_as_json": {
+"reason": "Transferring to agent as part of a workflow route.",
+"agent_number": 0,
+"agent_id": "[agent]"
+}
+}
+],
+"results": [
+{
+"tool_name": "transfer_to_agent",
+"result_value": {
+"result_type": "transfer_to_agent_success",
+"status": "success"
+},
+"is_error": false,
+"error_type": "",
+"raw_error_message": ""
+}
+]
+}
+]
+}
+}
+]
+},
+{
+"role": "agent",
+"time_in_call_secs": 77,
+"workflow_node_id": "NP_POSTCODE",
+"tool_calls": [
+{
+"tool_name": "notify_condition_1_met",
+"params_as_json": {}
+}
+]
+},
+{
+"role": "agent",
+"time_in_call_secs": 77,
+"workflow_node_id": "NP_POSTCODE",
+"tool_results": [
+{
+"tool_name": "notify_condition_1_met",
+"result_value": {
+"steps": [
+{
+"type": "edge",
+"edge_id": "e469_NP_POSTCODE_SAY_NP_ASK_INSURANCE",
+"target_node_id": "SAY_NP_ASK_INSURANCE"
+},
+{
+"type": "nested_tools",
+"node_id": "SAY_NP_ASK_INSURANCE",
+"requests": [
+{
+"tool_name": "transfer_to_agent",
+"params_as_json": {
+"reason": "Transferring to agent as part of a workflow route.",
+"agent_number": 0,
+"agent_id": "[agent]"
+}
+}
+],
+"results": [
+{
+"tool_name": "transfer_to_agent",
+"result_value": {
+"result_type": "transfer_to_agent_success",
+"status": "success"
+},
+"is_error": false,
+"error_type": "",
+"raw_error_message": ""
+}
+]
+}
+]
+}
+}
+]
+},
+{
+"role": "agent",
+"time_in_call_secs": 77,
+"message": "And will you be using health insurance for this, or paying yourself?",
+"workflow_node_id": "SAY_NP_ASK_INSURANCE"
+},
+{
+"role": "user",
+"time_in_call_secs": 85,
+"message": "Using health insurance."
+},
+{
+"role": "agent",
+"time_in_call_secs": 87,
+"workflow_node_id": "SAY_NP_ASK_INSURANCE",
+"tool_calls": [
+{
+"tool_name": "progress_workflow",
+"params_as_json": {}
+}
+]
+},
+{
+"role": "agent",
+"time_in_call_secs": 87,
+"workflow_node_id": "SAY_NP_ASK_INSURANCE",
+"tool_results": [
+{
+"tool_name": "progress_workflow",
+"result_value": {
+"steps": [
+{
+"type": "edge",
+"edge_id": "e472_SAY_NP_ASK_INSURANCE_NP_INS",
+"target_node_id": "NP_INS"
+},
+{
+"type": "nested_tools",
+"node_id": "NP_INS",
+"requests": [
+{
+"tool_name": "transfer_to_agent",
+"params_as_json": {
+"reason": "Transferring to agent as part of a workflow route.",
+"agent_number": 0,
+"agent_id": "[agent]"
+}
+}
+],
+"results": [
+{
+"tool_name": "transfer_to_agent",
+"result_value": {
+"result_type": "transfer_to_agent_success",
+"status": "success"
+},
+"is_error": false,
+"error_type": "",
+"raw_error_message": ""
+}
+]
+}
+]
+}
+}
+]
+},
+{
+"role": "agent",
+"time_in_call_secs": 88,
+"workflow_node_id": "NP_INS",
+"tool_calls": [
+{
+"tool_name": "notify_condition_2_met",
+"params_as_json": {}
+}
+]
+},
+{
+"role": "agent",
+"time_in_call_secs": 88,
+"workflow_node_id": "NP_INS",
+"tool_results": [
+{
+"tool_name": "notify_condition_2_met",
+"result_value": {
+"steps": [
+{
+"type": "edge",
+"edge_id": "e474_NP_INS_SAY_NP_ASK_PROVIDER",
+"target_node_id": "SAY_NP_ASK_PROVIDER"
+},
+{
+"type": "nested_tools",
+"node_id": "SAY_NP_ASK_PROVIDER",
+"requests": [
+{
+"tool_name": "transfer_to_agent",
+"params_as_json": {
+"reason": "Transferring to agent as part of a workflow route.",
+"agent_number": 0,
+"agent_id": "[agent]"
+}
+}
+],
+"results": [
+{
+"tool_name": "transfer_to_agent",
+"result_value": {
+"result_type": "transfer_to_agent_success",
+"status": "success"
+},
+"is_error": false,
+"error_type": "",
+"raw_error_message": ""
+}
+]
+}
+]
+}
+}
+]
+},
+{
+"role": "agent",
+"time_in_call_secs": 88,
+"message": "And which insurer are you with?",
+"workflow_node_id": "SAY_NP_ASK_PROVIDER"
+},
+{
+"role": "user",
+"time_in_call_secs": 95,
+"message": "Axa APT."
+},
+{
+"role": "agent",
+"time_in_call_secs": 97,
+"workflow_node_id": "SAY_NP_ASK_PROVIDER",
+"tool_calls": [
+{
+"tool_name": "progress_workflow",
+"params_as_json": {}
+}
+]
+},
+{
+"role": "agent",
+"time_in_call_secs": 97,
+"workflow_node_id": "SAY_NP_ASK_PROVIDER",
+"tool_results": [
+{
+"tool_name": "progress_workflow",
+"result_value": {
+"steps": [
+{
+"type": "edge",
+"edge_id": "e476_SAY_NP_ASK_PROVIDER_NP_PROV",
+"target_node_id": "NP_PROV"
+},
+{
+"type": "nested_tools",
+"node_id": "NP_PROV",
+"requests": [
+{
+"tool_name": "transfer_to_agent",
+"params_as_json": {
+"reason": "Transferring to agent as part of a workflow route.",
+"agent_number": 0,
+"agent_id": "[agent]"
+}
+}
+],
+"results": [
+{
+"tool_name": "transfer_to_agent",
+"result_value": {
+"result_type": "transfer_to_agent_success",
+"status": "success"
+},
+"is_error": false,
+"error_type": "",
+"raw_error_message": ""
+}
+]
+}
+]
+}
+}
+]
+},
+{
+"role": "agent",
+"time_in_call_secs": 98,
+"workflow_node_id": "NP_PROV",
+"tool_calls": [
+{
+"tool_name": "notify_condition_1_met",
+"params_as_json": {}
+}
+]
+},
+{
+"role": "agent",
+"time_in_call_secs": 98,
+"workflow_node_id": "NP_PROV",
+"tool_results": [
+{
+"tool_name": "notify_condition_1_met",
+"result_value": {
+"steps": [
+{
+"type": "edge",
+"edge_id": "e477_NP_PROV_NP_PREP",
+"target_node_id": "NP_PREP"
+},
+{
+"type": "nested_tools",
+"node_id": "NP_PREP",
+"requests": [
+{
+"tool_name": "sophie_v2_prepare_register_patient_dkc",
+"params_as_json": {
+"fullName": "Elliot Allen",
+"dateOfBirth": "6th July, 1987",
+"phone": "0782293457",
+"postcode": "E12XY",
+"insuranceStatus": "insured",
+"insuranceProvider": "Axa APT",
+"appointmentType": "MRI appointment"
+}
+}
+],
+"results": [
+{
+"tool_name": "sophie_v2_prepare_register_patient_dkc",
+"result_value": {
+"success": true
+},
+"is_error": false,
+"error_type": "",
+"raw_error_message": ""
+}
+]
+},
+{
+"type": "edge",
+"edge_id": "e498_NP_PREP_SAY_NP_CONFIRM",
+"target_node_id": "SAY_NP_CONFIRM"
+},
+{
+"type": "nested_tools",
+"node_id": "SAY_NP_CONFIRM",
+"requests": [
+{
+"tool_name": "transfer_to_agent",
+"params_as_json": {
+"reason": "Transferring to agent as part of a workflow route.",
+"agent_number": 0,
+"agent_id": "[agent]"
+}
+}
+],
+"results": [
+{
+"tool_name": "transfer_to_agent",
+"result_value": {
+"result_type": "transfer_to_agent_success",
+"status": "success"
+},
+"is_error": false,
+"error_type": "",
+"raw_error_message": ""
+}
+]
+}
+]
+}
+}
+]
+},
+{
+"role": "agent",
+"time_in_call_secs": 99,
+"message": "Let me just check I've got that right. I have the name Elliot Allen, with the date of birth 6 July 1987. Is that right?",
+"workflow_node_id": "SAY_NP_CONFIRM"
+},
+{
+"role": "user",
+"time_in_call_secs": 111,
+"message": "Yes."
+},
+{
+"role": "agent",
+"time_in_call_secs": 113,
+"workflow_node_id": "SAY_NP_CONFIRM",
+"tool_calls": [
+{
+"tool_name": "progress_workflow",
+"params_as_json": {}
+}
+]
+},
+{
+"role": "agent",
+"time_in_call_secs": 113,
+"workflow_node_id": "SAY_NP_CONFIRM",
+"tool_results": [
+{
+"tool_name": "progress_workflow",
+"result_value": {
+"steps": [
+{
+"type": "edge",
+"edge_id": "e500_SAY_NP_CONFIRM_NP_C0",
+"target_node_id": "NP_C0"
+},
+{
+"type": "nested_tools",
+"node_id": "NP_C0",
+"requests": [
+{
+"tool_name": "transfer_to_agent",
+"params_as_json": {
+"reason": "Transferring to agent as part of a workflow route.",
+"agent_number": 0,
+"agent_id": "[agent]"
+}
+}
+],
+"results": [
+{
+"tool_name": "transfer_to_agent",
+"result_value": {
+"result_type": "transfer_to_agent_success",
+"status": "success"
+},
+"is_error": false,
+"error_type": "",
+"raw_error_message": ""
+}
+]
+}
+]
+}
+}
+]
+},
+{
+"role": "agent",
+"time_in_call_secs": 114,
+"workflow_node_id": "NP_C0",
+"tool_calls": [
+{
+"tool_name": "notify_condition_2_met",
+"params_as_json": {}
+}
+]
+},
+{
+"role": "agent",
+"time_in_call_secs": 115,
+"workflow_node_id": "NP_C0",
+"tool_results": [
+{
+"tool_name": "notify_condition_2_met",
+"result_value": {
+"steps": [
+{
+"type": "edge",
+"edge_id": "e501_NP_C0_MR",
+"target_node_id": "MR"
+},
+{
+"type": "nested_tools",
+"node_id": "MR",
+"requests": [
+{
+"tool_name": "sophie_v2_register_patient_dkc",
+"params_as_json": {
+"proposalToken": "dynamic",
+"conversationHistory": "[omitted]"
+}
+}
+],
+"results": [
+{
+"tool_name": "sophie_v2_register_patient_dkc",
+"result_value": {
+"success": true
+},
+"is_error": false,
+"error_type": "",
+"raw_error_message": ""
+}
+]
+},
+{
+"type": "edge",
+"edge_id": "e513_MR_MRI_NP_ROUTE",
+"target_node_id": "MRI_NP_ROUTE"
+},
+{
+"type": "nested_tools",
+"node_id": "MRI_NP_ROUTE",
+"requests": [
+{
+"tool_name": "transfer_to_agent",
+"params_as_json": {
+"reason": "Transferring to agent as part of a workflow route.",
+"agent_number": 0,
+"agent_id": "[agent]"
+}
+}
+],
+"results": [
+{
+"tool_name": "transfer_to_agent",
+"result_value": {
+"result_type": "transfer_to_agent_success",
+"status": "success"
+},
+"is_error": false,
+"error_type": "",
+"raw_error_message": ""
+}
+]
+}
+]
+}
+}
+]
+},
+{
+"role": "agent",
+"time_in_call_secs": 115,
+"workflow_node_id": "MRI_NP_ROUTE",
+"tool_calls": [
+{
+"tool_name": "notify_condition_1_met",
+"params_as_json": {}
+}
+]
+},
+{
+"role": "agent",
+"time_in_call_secs": 115,
+"workflow_node_id": "MRI_NP_ROUTE",
+"tool_results": [
+{
+"tool_name": "notify_condition_1_met",
+"result_value": {
+"steps": [
+{
+"type": "edge",
+"edge_id": "e676_MRI_NP_ROUTE_MRI_INTAKE",
+"target_node_id": "MRI_INTAKE"
+},
+{
+"type": "nested_tools",
+"node_id": "MRI_INTAKE",
+"requests": [
+{
+"tool_name": "transfer_to_agent",
+"params_as_json": {
+"reason": "Transferring to agent as part of a workflow route.",
+"agent_number": 0,
+"agent_id": "[agent]"
+}
+}
+],
+"results": [
+{
+"tool_name": "transfer_to_agent",
+"result_value": {
+"result_type": "transfer_to_agent_success",
+"status": "success"
+},
+"is_error": false,
+"error_type": "",
+"raw_error_message": ""
+}
+]
+}
+]
+}
+}
+]
+},
+{
+"role": "agent",
+"time_in_call_secs": 115,
+"message": "Certainly, I'd be happy to help arrange that for you. Before we schedule your MRI, do you have a referral from your doctor, consultant, physiotherapist, or healthcare provider?",
+"workflow_node_id": "MRI_INTAKE"
+},
+{
+"role": "user",
+"time_in_call_secs": 130,
+"message": "Yes, I do."
+},
+{
+"role": "agent",
+"time_in_call_secs": 132,
+"workflow_node_id": "MRI_INTAKE",
+"tool_calls": [
+{
+"tool_name": "progress_workflow",
+"params_as_json": {}
+}
+]
+}
+]
+}

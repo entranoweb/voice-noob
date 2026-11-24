@@ -143,3 +143,36 @@ jobs:
       # that actually gates deployability.
       - name: Build
         run: npm run build
+
+  # The caller package has its own lock and no dependency on the backend, so it
+  # is checked on its own. No test here touches the network.
+  caller:
+    name: Caller
+    runs-on: ${{ vars.USE_SELF_HOSTED == 'true' && fromJSON('["self-hosted", "linux", "x64"]') || 'ubuntu-latest' }}
+    defaults:
+      run:
+        working-directory: caller
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: caller/uv.lock
+
+      - name: Install dependencies
+        run: uv sync --all-extras --frozen
+
+      - name: Lint
+        run: uv run ruff check src tests
+
+      - name: Format check
+        run: uv run ruff format --check src tests
+
+      - name: Type check
+        run: uv run mypy
+
+      - name: Test
+        run: uv run pytest
