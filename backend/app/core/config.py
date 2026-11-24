@@ -293,7 +293,6 @@ class Settings(BaseSettings):
     RETENTION_SWEEP_ENABLED: bool = True
     RETENTION_SWEEP_INTERVAL_HOURS: int = 24
 
-
     @property
     def public_signup_allowed(self) -> bool:
         """Whether /auth/register accepts a stranger."""

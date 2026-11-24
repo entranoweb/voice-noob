@@ -143,12 +143,22 @@ async def register(
             detail="Sign-up is closed. Ask the administrator for an account.",
         )
 
-    user = await _create_user(payload, db)
+    user = await _create_user(payload, db, request=request)
     return UserResponse.from_user(user)
 
 
-async def _create_user(payload: RegisterRequest, db: AsyncSession) -> User:
-    """Create an account from a registration payload; 400 when the email is taken."""
+async def _create_user(
+    payload: RegisterRequest,
+    db: AsyncSession,
+    *,
+    request: Request,
+    created_by: User | None = None,
+) -> User:
+    """Create an account from a registration payload; 400 when the email is taken.
+
+    `created_by` is the administrator when one made the account; without it the
+    account is the person signing themselves up.
+    """
     log = logger.bind(username=payload.username)
     log.info("registering_user")
 
@@ -170,8 +180,8 @@ async def _create_user(payload: RegisterRequest, db: AsyncSession) -> User:
     await db.flush()
     await record_audit(
         db,
-        AuditAction.REGISTER,
-        actor_user_id=user.id,
+        AuditAction.ACCOUNT_CREATE if created_by else AuditAction.REGISTER,
+        actor_user_id=created_by.id if created_by else user.id,
         target_type="user",
         target_id=str(user.id),
         request=request,
@@ -276,17 +286,18 @@ class AccountStatusResponse(BaseModel):
 @router.post("/users", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
 async def create_account(
     payload: RegisterRequest,
+    request: Request,
     admin: SuperUser,
     db: AsyncSession = Depends(get_db),
 ) -> UserResponse:
     """Create an account. This is how accounts are made while sign-up is closed."""
-    user = await _create_user(payload, db)
+    user = await _create_user(payload, db, request=request, created_by=admin)
     logger.warning("account_created_by_admin", admin_id=admin.id, user_id=user.id)
     return UserResponse.from_user(user)
 
 
 async def _set_account_active(
-    user_id: int, active: bool, admin: User, db: AsyncSession
+    user_id: int, active: bool, admin: User, db: AsyncSession, request: Request
 ) -> AccountStatusResponse:
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
@@ -298,7 +309,19 @@ async def _set_account_active(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="An administrator cannot disable their own account",
         )
+    was_active = user.is_active
     user.is_active = active
+    # Who switched whose account off, and when: the one administrative action
+    # that takes a customer's access away has to be answerable afterwards.
+    await record_audit(
+        db,
+        AuditAction.ACCOUNT_ENABLE if active else AuditAction.ACCOUNT_DISABLE,
+        actor_user_id=admin.id,
+        target_type="user",
+        target_id=str(user.id),
+        details={"was_active": was_active},
+        request=request,
+    )
     await db.commit()
     logger.warning(
         "account_enabled" if active else "account_disabled",
@@ -311,20 +334,22 @@ async def _set_account_active(
 @router.post("/users/{user_id}/disable", response_model=AccountStatusResponse)
 async def disable_account(
     user_id: int,
+    request: Request,
     admin: SuperUser,
     db: AsyncSession = Depends(get_db),
 ) -> AccountStatusResponse:
     """Switch an account off. Takes effect on that account's next request:
     every authenticated request re-reads the account, so an unexpired token
     stops working at once."""
-    return await _set_account_active(user_id, False, admin, db)
+    return await _set_account_active(user_id, False, admin, db, request)
 
 
 @router.post("/users/{user_id}/enable", response_model=AccountStatusResponse)
 async def enable_account(
     user_id: int,
+    request: Request,
     admin: SuperUser,
     db: AsyncSession = Depends(get_db),
 ) -> AccountStatusResponse:
     """Switch a disabled account back on."""
-    return await _set_account_active(user_id, True, admin, db)
+    return await _set_account_active(user_id, True, admin, db, request)

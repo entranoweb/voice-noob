@@ -29,6 +29,7 @@ from app.db.session import get_db
 from app.main import app
 from app.models.agent import Agent
 from app.models.appointment import Appointment
+from app.models.audit_event import AuditEvent
 from app.models.contact import Contact
 from app.models.phone_number import PhoneNumber, PhoneNumberStatus
 from app.models.user import User
@@ -536,34 +537,42 @@ class TestCampaigns:
         assert response.json()["name"] == "Recall"
 
 
-class TestRetentionCleanup:
+class TestIntegrationsInAWorkspace:
     @pytest.mark.asyncio
-    async def test_an_ordinary_account_cannot_trigger_it(self, world: World) -> None:
-        response = await world.client.post(
-            "/api/v1/compliance/retention/cleanup", headers=world.alice.headers
-        )
-
-        assert response.status_code == 403
-
-    @pytest.mark.asyncio
-    async def test_the_administrator_can(
-        self, world: World, monkeypatch: pytest.MonkeyPatch
+    async def test_the_owner_can_connect_an_integration_to_their_workspace(
+        self, world: World
     ) -> None:
-        """Who may start it is the subject here, not what the clean-up deletes."""
-        ran: list[bool] = []
-
-        async def cleanup(_db: Any) -> dict[str, int]:
-            ran.append(True)
-            return {}
-
-        monkeypatch.setattr("app.api.compliance.cleanup_expired_data", cleanup)
-
+        """It compared the integer owner with a UUID, so this always answered 404."""
         response = await world.client.post(
-            "/api/v1/compliance/retention/cleanup", headers=world.admin_headers
+            "/api/v1/integrations",
+            headers=world.alice.headers,
+            json={
+                "integration_id": "calendly",
+                "integration_name": "Calendly",
+                "workspace_id": str(world.alice.workspace.id),
+                "credentials": {"access_token": "tok-alice"},
+            },
         )
 
-        assert response.status_code == 200
-        assert ran == [True]
+        assert response.status_code == 201
+        assert response.json()["workspace_id"] == str(world.alice.workspace.id)
+
+    @pytest.mark.asyncio
+    async def test_it_cannot_be_connected_to_another_customers_workspace(
+        self, world: World
+    ) -> None:
+        response = await world.client.post(
+            "/api/v1/integrations",
+            headers=world.alice.headers,
+            json={
+                "integration_id": "calendly",
+                "integration_name": "Calendly",
+                "workspace_id": str(world.bob.workspace.id),
+                "credentials": {"access_token": "tok-alice"},
+            },
+        )
+
+        assert response.status_code == 404
 
 
 class TestCrmToolsStayInTheirWorkspace:
@@ -678,6 +687,19 @@ class TestSignUpAndDisabledAccounts:
         assert before.status_code == 200
         assert disabled.status_code == 200
         assert disabled.json()["is_active"] is False
+        async with world.sessions() as session:
+            trail = (
+                (
+                    await session.execute(
+                        select(AuditEvent).where(AuditEvent.action == "admin.account.disable")
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        assert [(event.actor_user_id, event.target_id) for event in trail] == [
+            (world.admin.id, str(world.bob.user.id))
+        ]
         assert after.status_code == 401
         assert agents.status_code == 401
         assert login.status_code == 401

@@ -16,7 +16,7 @@ record, then run the upgrade again. The check prints record ids and owner ids
 only, never the phone numbers themselves.
 
 Revision ID: d2f5a8c31b47
-Revises: b83d1c4f7a90
+Revises: d2f6a81c5e37
 Create Date: 2026-11-25 09:00:00.000000
 
 """
@@ -28,7 +28,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision: str = 'd2f5a8c31b47'
-down_revision: Union[str, Sequence[str], None] = 'b83d1c4f7a90'
+down_revision: Union[str, Sequence[str], None] = 'd2f6a81c5e37'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

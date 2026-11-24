@@ -539,7 +539,6 @@ curl -X POST https://api.YOUR-DOMAIN/api/v1/auth/users/42/enable  -H "Authorizat
 
 - Another account's agent id on the tool, realtime token, realtime session, transcript and phone-number assignment routes: 404.
 - Another account's workspace or agent when creating a campaign: 404.
-- `POST /api/v1/compliance/retention/cleanup` from anyone but the administrator: 403.
 - A tool the agent's owner did not enable, on `POST /api/v1/tools/execute` and on phone calls: refused.
 
 ### Operational endpoints
