@@ -158,6 +158,24 @@ def reset_rate_limiter() -> Generator[None, None, None]:
     limiter.reset()
 
 
+@pytest.fixture(autouse=True)
+def stream_token_claim_store(monkeypatch: pytest.MonkeyPatch) -> Any:
+    """Give every test its own in-memory store for single-use stream tokens.
+
+    A media-stream socket claims its token in Redis before it admits the stream
+    (``app.core.stream_token_use``) and refuses the stream when Redis cannot be
+    reached. Without this, every socket test would depend on a real Redis being
+    up, and claims would leak from one test into the next.
+    """
+    store = fakeredis.FakeAsyncRedis(decode_responses=True)
+
+    async def _store() -> Any:
+        return store
+
+    monkeypatch.setattr("app.core.stream_token_use._store", _store)
+    return store
+
+
 @pytest_asyncio.fixture
 async def test_redis() -> Any:
     """Create fake async Redis client for testing.

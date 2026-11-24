@@ -25,11 +25,11 @@ What the token binds, and why each part is there:
     The carrier connects within a second or two of receiving the document. Two
     minutes is generous for that and short for anything else.
 
-What it does not do: it is not single-use. A token is valid until it expires, so
-whoever holds one inside that window can connect with it. It travels only between
-this process and the carrier, over TLS, so that is the accepted residual risk;
-closing it would need shared state that a failed Redis would then turn into
-dropped calls.
+What it does not do on its own: it is not single-use. A token verifies until it
+expires. Single use needs shared state, and lives next door in
+``app.core.stream_token_use``, which the media-stream sockets call once a token
+has verified here. That module fails closed: a Redis outage refuses streams
+instead of reopening the replay window.
 
 Only the standard library is used, deliberately: this is on the path of every
 call and must not acquire a dependency that can move underneath it.
