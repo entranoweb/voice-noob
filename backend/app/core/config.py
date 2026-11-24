@@ -128,6 +128,10 @@ class Settings(BaseSettings):
 
     # Rate Limiting
     RATE_LIMIT_PER_MINUTE: int = 60
+    # Where rate-limit counts are kept (app.core.limiter). Unset: Redis, at
+    # REDIS_URL, so every worker shares one count. "memory://" counts per
+    # process, which is only right for a single-process deployment.
+    RATE_LIMIT_STORAGE_URI: str | None = None
 
     # Default Admin User (created on first startup if no users exist)
     # IMPORTANT: Change these in production via environment variables!

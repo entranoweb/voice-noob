@@ -15,6 +15,7 @@ from app.core.config import settings
 from app.core.embed_session import (
     DIRECT,
     embedding_site,
+    frame_ancestors,
     mint_embed_session,
     session_rate_key,
     site_allowed,
@@ -149,3 +150,32 @@ class TestToolsSwitch:
         monkeypatch.setattr(settings, "EMBED_TOOLS_DEFAULT_ENABLED", True)
         assert tools_allowed({}) is True
         assert tools_allowed({"allow_tools": False}) is False
+
+
+class TestFrameAncestors:
+    """An allow-list entry ends up in a response header, so only hosts get there."""
+
+    def test_an_entry_that_is_not_a_host_is_dropped_not_escaped(self) -> None:
+        entries = [
+            "good.example",
+            "evil.example; script-src *",
+            "https://scheme.example",
+            "space d.example",
+            "quote'.example",
+            "path.example/x",
+            "port.example:8443",
+            "new\nline.example",
+        ]
+
+        assert frame_ancestors(entries) == "'self' https://good.example"
+
+    def test_a_list_of_only_bad_entries_admits_nobody_else(self) -> None:
+        assert frame_ancestors(["*", "https://*"]) == "'self'"
+
+    def test_loopback_is_allowed_over_http_for_development(self) -> None:
+        assert frame_ancestors(["localhost"]) == "'self' https://localhost http://localhost:*"
+
+    def test_entries_are_normalised_and_not_repeated(self) -> None:
+        assert frame_ancestors([" Shop.Example.com ", "shop.example.com", ""]) == (
+            "'self' https://shop.example.com"
+        )

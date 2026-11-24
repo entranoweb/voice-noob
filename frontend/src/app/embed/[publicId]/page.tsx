@@ -28,7 +28,6 @@ interface TokenResponse {
   agent: {
     name: string;
     voice: string;
-    instructions: string;
     language: string;
     initial_greeting: string | null;
   };
@@ -546,9 +545,10 @@ export default function EmbedPage() {
         setStatus("connected");
         setAgentState("listening");
 
-        // Build session config with tools
+        // The agent's instructions are not here: the backend gave them to the
+        // model provider when it minted this session, and never sends them to
+        // the page. An update without them leaves them as minted.
         const sessionConfig: Record<string, unknown> = {
-          instructions: tokenData.agent.instructions,
           voice: tokenData.agent.voice,
           input_audio_transcription: {
             model: "whisper-1",

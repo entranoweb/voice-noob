@@ -75,11 +75,32 @@ services:
       # the call connects, the row lands, the caller hears silence.
       # See docs/HANDOFF.md 7.2.
       PUBLIC_URL: ${PUBLIC_URL:?set PUBLIC_URL to the backend's public origin, e.g. https://api.synthiqvoice.com}
-      # Webhook signature verification. Unset, every webhook is refused 403,
-      # whatever DEBUG says.
-      TELNYX_PUBLIC_KEY: ${TELNYX_PUBLIC_KEY:?set TELNYX_PUBLIC_KEY from the Telnyx portal}
+      # Webhook signature verification. A webhook is checked against the key of
+      # the workspace that owns the number or call it is about (set per
+      # workspace in the app), then against the platform-wide key here. With
+      # neither, the webhook is refused 403, whatever DEBUG says.
+      #
+      # Set these only when every number runs on one platform carrier account.
+      # Where workspaces bring their own accounts, leave them empty: while one
+      # is set, a webhook signed by that account is accepted for any workspace.
+      TELNYX_PUBLIC_KEY: ${TELNYX_PUBLIC_KEY:-}
+      TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:-}
+      TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-}
+      # Accepts carrier webhooks with no verified signature. Leave false on
+      # anything a real number points at.
+      ALLOW_UNSIGNED_WEBHOOKS: ${ALLOW_UNSIGNED_WEBHOOKS:-false}
       # Outbound calls and buying numbers only; inbound never reads it.
       TELNYX_API_KEY: ${TELNYX_API_KEY:-}
+      # Embeddable widget. An agent with no allowed sites can be embedded by no
+      # other site unless the first of these is true; a session is cut off after
+      # the second; tools run for embedded sessions only when the agent's owner
+      # turns them on, unless the third is true.
+      EMBED_ALLOW_ANY_ORIGIN_WHEN_UNSET: ${EMBED_ALLOW_ANY_ORIGIN_WHEN_UNSET:-false}
+      EMBED_SESSION_MAX_SECONDS: ${EMBED_SESSION_MAX_SECONDS:-900}
+      EMBED_TOOLS_DEFAULT_ENABLED: ${EMBED_TOOLS_DEFAULT_ENABLED:-false}
+      # Where rate-limit counts are kept. Empty: the Redis above, shared by
+      # every worker. "memory://" counts per process.
+      RATE_LIMIT_STORAGE_URI: ${RATE_LIMIT_STORAGE_URI:-}
       DEBUG: ${DEBUG:-false}
       # Optional. A trace carries transcripts, so cleartext to a non-loopback
       # host is refused.

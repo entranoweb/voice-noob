@@ -156,6 +156,24 @@ async def twilio_auth_token_for_agent(agent: Agent | None, db: AsyncSession) -> 
     return (user_settings.twilio_auth_token or None) if user_settings else None
 
 
+async def telnyx_public_key_for_agent(agent: Agent | None, db: AsyncSession) -> str | None:
+    """The Telnyx public key of the workspace that owns ``agent``, if it has one.
+
+    What a Telnyx webhook about that agent's number or call is verified against.
+    As with Twilio, the agent comes from the webhook's target, never from what
+    the request says about its sender.
+    """
+    if agent is None:
+        return None
+    workspace_id = await get_agent_workspace_id(agent.id, db)
+    if workspace_id is None:
+        return None
+    user_settings = await get_user_api_keys(
+        user_id_to_uuid(agent.user_id), db, workspace_id=workspace_id
+    )
+    return (user_settings.telnyx_public_key or None) if user_settings else None
+
+
 async def _agent_by_id(agent_id: str | uuid.UUID | None, db: AsyncSession) -> Agent | None:
     try:
         agent_uuid = agent_id if isinstance(agent_id, uuid.UUID) else uuid.UUID(str(agent_id))
@@ -1080,14 +1098,17 @@ async def telnyx_voice_webhook(
     This webhook is called when a call comes in to a Telnyx phone number.
     It returns TeXML to connect the call to our WebSocket for AI handling.
     """
-    # Validate Telnyx signature
-    await verify_telnyx_webhook(request)
-
     # Accepts both the TeXML (form-encoded) and Call Control (JSON) shapes. A
     # number attached to a TeXML application — which is what the purchase flow
     # configures, and the only mode in which returning a document does anything —
     # posts the form-encoded one.
+    #
+    # Read before it is verified, and only to learn which number it is for: the
+    # number decides whose Telnyx account should have signed it. Nothing is
+    # logged, stored or answered from it until the signature has been checked.
     event = await parse_telnyx_webhook(request)
+    agent = await get_agent_by_phone_number(event.to_number, db)
+    await verify_telnyx_webhook(request, await telnyx_public_key_for_agent(agent, db))
 
     log = logger.bind(
         webhook="telnyx_voice",
@@ -1099,8 +1120,6 @@ async def telnyx_voice_webhook(
     )
     log.info("telnyx_incoming_call")
 
-    # Find agent by phone number
-    agent = await get_agent_by_phone_number(event.to_number, db)
     agent_id = str(agent.id) if agent else None
 
     if not agent:
@@ -1150,14 +1169,17 @@ async def telnyx_voice_webhook(
 async def telnyx_answer_webhook(
     request: Request,
     agent_id: str = Query(default=""),
+    db: AsyncSession = Depends(get_db),
 ) -> Response:
     """Handle Telnyx outbound call connection.
 
     Called when an outbound call is answered by the recipient.
     Returns TeXML to connect to our WebSocket.
     """
-    # Validate Telnyx signature
-    await verify_telnyx_webhook(request)
+    # The agent named in the path decides whose Telnyx account should have
+    # signed this.
+    owner = await _agent_by_id(agent_id, db)
+    await verify_telnyx_webhook(request, await telnyx_public_key_for_agent(owner, db))
 
     event = await parse_telnyx_webhook(request)
 
@@ -1189,10 +1211,15 @@ async def telnyx_status_callback(
 
     Called when call events occur (call.initiated, call.answered, call.hangup, etc).
     """
-    # Validate Telnyx signature
-    await verify_telnyx_webhook(request)
-
+    # Find the call record first: the call it reports on decides whose Telnyx
+    # account should have signed this. Nothing is changed until that is verified.
     event = await parse_telnyx_webhook(request)
+    result = await db.execute(
+        select(CallRecord).where(CallRecord.provider_call_id == event.call_id)
+    )
+    call_record = result.scalar_one_or_none()
+    owner = await _agent_by_id(call_record.agent_id, db) if call_record else None
+    await verify_telnyx_webhook(request, await telnyx_public_key_for_agent(owner, db))
 
     log = logger.bind(
         webhook="telnyx_status",
@@ -1201,12 +1228,6 @@ async def telnyx_status_callback(
         wire_format=event.wire_format.value,
     )
     log.info("telnyx_status_update")
-
-    # Find and update call record
-    result = await db.execute(
-        select(CallRecord).where(CallRecord.provider_call_id == event.call_id)
-    )
-    call_record = result.scalar_one_or_none()
 
     if call_record:
         new_status = event.resolved_status()

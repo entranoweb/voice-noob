@@ -214,11 +214,29 @@ async def verify_twilio_webhook(request: Request, workspace_auth_token: str | No
     raise HTTPException(status_code=403, detail="Invalid Twilio signature")
 
 
-async def verify_telnyx_webhook(request: Request) -> bool:
+async def verify_telnyx_webhook(request: Request, workspace_public_key: str | None = None) -> bool:
     """Verify Telnyx webhook signature from request.
+
+    Telnyx signs with the key pair of the account the number belongs to. Where
+    each workspace brings its own Telnyx account, that is the workspace's public
+    key, not this instance's global one, so the caller passes the key of the
+    workspace that owns what the webhook is about (the number it was sent to,
+    the agent it names, the call it reports on).
+
+    As with Twilio, the caller resolves that from the target and never from
+    anything the request says about who sent it. A webhook genuinely signed by
+    one tenant's Telnyx account (a call they placed to another tenant's number,
+    say) is then checked against the other tenant's key and refused.
+
+    The global key remains a fallback, so a deployment that runs every number on
+    one platform account keeps working. A deployment where tenants bring their
+    own accounts should leave ``TELNYX_PUBLIC_KEY`` unset: while it is set, a
+    webhook signed by the platform account is accepted for any workspace.
 
     Args:
         request: FastAPI request object
+        workspace_public_key: Telnyx public key of the workspace the webhook's
+            target belongs to, when it has one
 
     Returns:
         True if the signature is valid, or if ALLOW_UNSIGNED_WEBHOOKS is set
@@ -229,6 +247,17 @@ async def verify_telnyx_webhook(request: Request) -> bool:
     if unsigned_webhooks_allowed():
         logger.critical("telnyx_webhook_accepted_unverified")
         return True
+
+    candidates: list[tuple[str, str]] = []
+    if workspace_public_key:
+        candidates.append(("workspace", workspace_public_key))
+    if settings.TELNYX_PUBLIC_KEY and workspace_public_key != settings.TELNYX_PUBLIC_KEY:
+        candidates.append(("global", settings.TELNYX_PUBLIC_KEY))
+    if not candidates:
+        # Refused, not a server error: with no key there is no telling a genuine
+        # webhook from a forged one, and the answer to both is no.
+        logger.error("telnyx_public_key_not_configured")
+        raise HTTPException(status_code=403, detail="Telnyx webhook verification is not configured")
 
     # Get signature headers
     signature = request.headers.get("telnyx-signature-ed25519", "")
@@ -242,11 +271,13 @@ async def verify_telnyx_webhook(request: Request) -> bool:
     body = await request.body()
 
     # Validate signature
-    if not validate_telnyx_signature(signature, timestamp, body):
-        logger.warning("invalid_telnyx_signature")
-        raise HTTPException(status_code=403, detail="Invalid Telnyx signature")
+    for source, public_key in candidates:
+        if validate_telnyx_signature(signature, timestamp, body, public_key):
+            logger.debug("telnyx_signature_verified", credential=source)
+            return True
 
-    return True
+    logger.warning("invalid_telnyx_signature", tried=[source for source, _ in candidates])
+    raise HTTPException(status_code=403, detail="Invalid Telnyx signature")
 
 
 def require_twilio_signature(func: Any) -> Any:
