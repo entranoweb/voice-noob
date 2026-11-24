@@ -1,0 +1,70 @@
+{
+  "name": "Existing patient gives a wrong date of birth, then the right one",
+  "mutates": "registers",
+  "requires": "Claire Collins is registered with date of birth 4 Jan 1993 and postcode C5 6EF. The first, wrong answer spends an identity attempt.",
+  "persona": {
+    "facts": {
+      "name": "claire collins",
+      "date_of_birth": "1993-01-04",
+      "postcode": "C56EF"
+    }
+  },
+  "max_seconds": 360,
+  "hangup_after": "that would be with|upcoming appointments|have a lovely day|take care|goodbye",
+  "steps": [
+    {
+      "when": "how can i help",
+      "clips": [
+        "2026-11-23T123843Z_mfmr_01_opener"
+      ],
+      "intended": "Sophie, can you book an appointment for me?",
+      "max_uses": 2
+    },
+    {
+      "when": "full name|your name|registered under",
+      "clips": [
+        "2026-11-23T123843Z_mfmr_02_name"
+      ],
+      "intended": "It's Claire Collins.",
+      "max_uses": 2,
+      "field": "name"
+    },
+    {
+      "when": "what's your date of birth|your date of birth, please",
+      "clips": [
+        "2026-11-23T123843Z_mfmr_03_dob"
+      ],
+      "intended": "First January nineteen ninety-three.",
+      "max_uses": 1
+    },
+    {
+      "when": "post ?code",
+      "clips": [
+        "2026-11-23T123843Z_mfmr_04_postcode"
+      ],
+      "intended": "C-five-six-E-F.",
+      "max_uses": 2,
+      "field": "postcode"
+    },
+    {
+      "when": "date of birth, including the year|date of birth again|once more",
+      "clips": [
+        "2026-11-23T123843Z_mfmr_06_dob"
+      ],
+      "intended": "Four January nineteen ninety-three.",
+      "max_uses": 2,
+      "field": "date_of_birth"
+    }
+  ],
+  "expect": {
+    "tools": [
+      {
+        "name_contains": "verify_identity"
+      }
+    ],
+    "fields": [],
+    "agent_never_says": [
+      "can't seem to match"
+    ]
+  }
+}

@@ -1,0 +1,187 @@
+{
+  "name": "New patient books an MRI: insured, referral 'from my doctor', not yet sent",
+  "description": "The opener and the last four answers are borrowed from other calls by the same caller; the source call's own opener overlaps the agent.",
+  "mutates": "books",
+  "persona": {
+    "facts": {
+      "name": "alfie adam",
+      "date_of_birth": "1992-12-02",
+      "phone": "07839478",
+      "postcode": "S150AD"
+    }
+  },
+  "max_seconds": 360,
+  "hangup_after": "have a lovely day|take care|goodbye",
+  "steps": [
+    {
+      "when": "how can i help",
+      "clips": [
+        "2026-11-13T093013Z_cqfx_01_opener"
+      ],
+      "intended": "Sophie, can you book an MRI appointment for me?",
+      "max_uses": 2
+    },
+    {
+      "when": "i have the name|that's the name",
+      "clips": [
+        "2026-11-13T090842Z_1b0m_10_confirm_details"
+      ],
+      "intended": "Correct.",
+      "max_uses": 2
+    },
+    {
+      "when": "full name|your name|registered under",
+      "clips": [
+        "2026-11-13T090842Z_1b0m_02_name"
+      ],
+      "intended": "It's Alfie Adam.",
+      "max_uses": 2,
+      "field": "name"
+    },
+    {
+      "when": "been to see us before|visited us before|been to the clinic|been here before",
+      "clips": [
+        "2026-11-13T090842Z_1b0m_03_been_before"
+      ],
+      "intended": "No, I haven't.",
+      "max_uses": 2
+    },
+    {
+      "when": "which insurer",
+      "clips": [
+        "2026-11-13T090842Z_1b0m_09_insurer"
+      ],
+      "intended": "Bupa.",
+      "max_uses": 2
+    },
+    {
+      "when": "health insurance|paying yourself|paying privately",
+      "clips": [
+        "2026-11-13T090842Z_1b0m_08_insurance"
+      ],
+      "intended": "Health insurance.",
+      "max_uses": 2
+    },
+    {
+      "when": "already been sent|how to submit|online form",
+      "clips": [
+        "2026-11-13T090842Z_1b0m_12_referral_sent"
+      ],
+      "intended": "I haven't sent it yet. Can you please let me know how to?",
+      "max_uses": 2
+    },
+    {
+      "when": "do you have a referral|referral letter",
+      "clips": [
+        "2026-11-13T090842Z_1b0m_11_referral"
+      ],
+      "intended": "From my doctor.",
+      "max_uses": 2
+    },
+    {
+      "when": "which part of the body",
+      "clips": [
+        "2026-11-13T090842Z_1b0m_13_body_part"
+      ],
+      "intended": "Shoulder.",
+      "max_uses": 2
+    },
+    {
+      "when": "mobility|getting around",
+      "clips": [
+        "2026-11-13T090842Z_1b0m_14_mobility"
+      ],
+      "intended": "That's all.",
+      "max_uses": 2
+    },
+    {
+      "when": "mobile number|phone number",
+      "clips": [
+        "2026-11-13T090842Z_1b0m_06_phone"
+      ],
+      "intended": "Zero seven eight three nine four seven eight.",
+      "max_uses": 2,
+      "field": "phone"
+    },
+    {
+      "when": "post ?code",
+      "clips": [
+        "2026-11-13T090842Z_1b0m_07_postcode"
+      ],
+      "intended": "S one five zero A D.",
+      "max_uses": 2,
+      "field": "postcode"
+    },
+    {
+      "when": "date of birth",
+      "clips": [
+        "2026-11-13T090842Z_1b0m_05_dob"
+      ],
+      "intended": "Second of December, nineteen ninety-two.",
+      "max_uses": 2,
+      "field": "date_of_birth"
+    },
+    {
+      "when": "bringing you in|knee or shoulder",
+      "clips": [
+        "2026-11-13T090842Z_1b0m_04_reason"
+      ],
+      "intended": "Having shoulder pain.",
+      "max_uses": 2
+    },
+    {
+      "when": "when would suit|particular day|earliest available|soonest we have",
+      "clips": [
+        "2026-11-20T112751Z_2ttj_15_when"
+      ],
+      "intended": "Any Wednesday.",
+      "max_uses": 2
+    },
+    {
+      "when": "which suits you|which one would suit|which of those",
+      "clips": [
+        "2026-11-20T112751Z_2ttj_17_slot"
+      ],
+      "intended": "Ten o'clock.",
+      "max_uses": 2
+    },
+    {
+      "when": "read that back|that's a consultation|that's an mri|moving you|go ahead",
+      "clips": [
+        "2026-11-20T112751Z_2ttj_18_confirm_booking"
+      ],
+      "intended": "Yep.",
+      "max_uses": 2
+    },
+    {
+      "when": "anything else",
+      "clips": [
+        "2026-11-20T112751Z_2ttj_19_anything_else"
+      ],
+      "intended": "That's it at the moment. Thank you.",
+      "max_uses": 2
+    },
+    {
+      "when": "before you go|preferred",
+      "clips": [
+        "2026-11-13T093013Z_cqfx_03_been_before"
+      ],
+      "intended": "No.",
+      "max_uses": 2
+    }
+  ],
+  "expect": {
+    "tools": [
+      {
+        "name_contains": "v2_register_patient"
+      },
+      {
+        "name_contains": "v2_book_"
+      }
+    ],
+    "fields": [
+      "name",
+      "date_of_birth"
+    ]
+  }
+}

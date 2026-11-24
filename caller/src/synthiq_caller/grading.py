@@ -273,6 +273,22 @@ def grade(scenario: Scenario, record: RunRecord, trace: Trace | None) -> Grade:
             )
         )
 
+    agent_lines = [str(e.get("text", "")) for e in record.timeline if e.get("kind") == "agent"]
+    for pattern in scenario.expect.agent_says:
+        result.checks.append(
+            Check(
+                f"the agent says /{pattern.pattern}/",
+                any(pattern.search(line) for line in agent_lines),
+            )
+        )
+    for pattern in scenario.expect.agent_never_says:
+        result.checks.append(
+            Check(
+                f"the agent never says /{pattern.pattern}/",
+                not any(pattern.search(line) for line in agent_lines),
+            )
+        )
+
     if not result.checks:
         return result  # nothing was asked of this call, so nothing can be claimed
     result.outcome = "passed" if all(c.passed for c in result.checks) else "failed"

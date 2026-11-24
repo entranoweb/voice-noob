@@ -1,0 +1,102 @@
+{
+  "name": "Existing patient moves an appointment (Ashley Arnold)",
+  "mutates": "moves",
+  "requires": "Ashley Arnold is registered with the stated date of birth and postcode and has one upcoming appointment.",
+  "persona": {
+    "facts": {
+      "name": "ashley arnold",
+      "date_of_birth": "2000-10-20",
+      "postcode": "A45CD"
+    }
+  },
+  "max_seconds": 360,
+  "hangup_after": "have a lovely day|take care|goodbye",
+  "steps": [
+    {
+      "when": "one you'd like to (?:move|cancel)",
+      "clips": [
+        "2026-11-20T120313Z_8sbd_05_confirm_choice"
+      ],
+      "intended": "Yes, please.",
+      "max_uses": 2
+    },
+    {
+      "when": "read that back|that's a consultation|that's an mri|moving you|go ahead",
+      "clips": [
+        "2026-11-20T120313Z_8sbd_08_confirm_booking"
+      ],
+      "intended": "Yes, please.",
+      "max_uses": 2
+    },
+    {
+      "when": "how can i help",
+      "clips": [
+        "2026-11-20T120313Z_8sbd_01_opener"
+      ],
+      "intended": "Sophie, can you rearrange my appointment?",
+      "max_uses": 2
+    },
+    {
+      "when": "full name|your name|registered under",
+      "clips": [
+        "2026-11-20T120313Z_8sbd_02_name"
+      ],
+      "intended": "Ashley Arnold.",
+      "max_uses": 2,
+      "field": "name"
+    },
+    {
+      "when": "post ?code",
+      "clips": [
+        "2026-11-20T120313Z_8sbd_04_postcode"
+      ],
+      "intended": "A-four-five-C-D.",
+      "max_uses": 2,
+      "field": "postcode"
+    },
+    {
+      "when": "date of birth",
+      "clips": [
+        "2026-11-20T120313Z_8sbd_03_dob"
+      ],
+      "intended": "20 October two thousand.",
+      "max_uses": 2,
+      "field": "date_of_birth"
+    },
+    {
+      "when": "which suits you|which one would suit|which of those",
+      "clips": [
+        "2026-11-20T120313Z_8sbd_07_slot"
+      ],
+      "intended": "Four o'clock.",
+      "max_uses": 2
+    },
+    {
+      "when": "when would suit|particular day|earliest available|soonest we have",
+      "clips": [
+        "2026-11-20T120313Z_8sbd_06_when"
+      ],
+      "intended": "As soon as possible, please.",
+      "max_uses": 2
+    },
+    {
+      "when": "anything else",
+      "clips": [
+        "2026-11-20T120313Z_8sbd_09_anything_else"
+      ],
+      "intended": "That's it at the moment. Thank you.",
+      "max_uses": 2
+    }
+  ],
+  "expect": {
+    "tools": [
+      {
+        "name_contains": "verify_identity"
+      },
+      {
+        "name_contains": "v2_reschedule_"
+      }
+    ],
+    "fields": []
+  }
+}

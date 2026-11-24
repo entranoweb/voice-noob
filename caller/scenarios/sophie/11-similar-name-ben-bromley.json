@@ -1,0 +1,49 @@
+{
+  "name": "New caller Ben Bromley when Ben Bradley is on file",
+  "mutates": "none",
+  "requires": "A patient named Ben Bradley exists and no Ben Bromley does.",
+  "persona": {
+    "facts": {
+      "name": "ben bromley"
+    }
+  },
+  "max_seconds": 360,
+  "hangup_after": "date of birth|been to see us before|been to the clinic|different name",
+  "steps": [
+    {
+      "when": "how can i help",
+      "clips": [
+        "2026-11-23T100704Z_x54y_01_opener"
+      ],
+      "intended": "Can you book an appointment for me?",
+      "max_uses": 2
+    },
+    {
+      "when": "full name|your name|registered under",
+      "clips": [
+        "2026-11-23T100704Z_x54y_02_name"
+      ],
+      "intended": "Ben Bromley.",
+      "max_uses": 2,
+      "field": "name"
+    }
+  ],
+  "expect": {
+    "tools": [
+      {
+        "name_contains": "identify"
+      },
+      {
+        "name_contains": "verify_identity",
+        "called": false
+      }
+    ],
+    "fields": [],
+    "agent_says": [
+      "been to (see us|the clinic) before"
+    ],
+    "agent_never_says": [
+      "i've got you"
+    ]
+  }
+}

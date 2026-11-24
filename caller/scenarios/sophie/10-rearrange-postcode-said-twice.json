@@ -1,0 +1,74 @@
+{
+  "name": "Existing patient asks to move an appointment and gives the postcode twice",
+  "mutates": "registers",
+  "requires": "Alice Wonderland is registered with date of birth 20 Feb 2002 and postcode A5 6TB. A failed check spends an identity attempt on her record.",
+  "persona": {
+    "facts": {
+      "name": "alice wonderland",
+      "date_of_birth": "2002-02-20",
+      "postcode": "A56TB"
+    }
+  },
+  "max_seconds": 360,
+  "hangup_after": "which appointment|one you'd like to move|upcoming appointments|have a lovely day|take care|goodbye",
+  "steps": [
+    {
+      "when": "how can i help",
+      "clips": [
+        "2026-11-20T120746Z_0zz1_01_opener"
+      ],
+      "intended": "Can you rearrange my appointment?",
+      "max_uses": 2
+    },
+    {
+      "when": "full name|your name|registered under",
+      "clips": [
+        "2026-11-20T120746Z_0zz1_02_name"
+      ],
+      "intended": "Alice Wonderland.",
+      "max_uses": 2,
+      "field": "name"
+    },
+    {
+      "when": "date of birth",
+      "clips": [
+        "2026-11-20T120746Z_0zz1_03_dob"
+      ],
+      "intended": "20th February 2002.",
+      "max_uses": 2,
+      "field": "date_of_birth"
+    },
+    {
+      "when": "finally, your post ?code|your post ?code, please",
+      "clips": [
+        "2026-11-20T120746Z_0zz1_04_postcode"
+      ],
+      "intended": "A five six three B.",
+      "max_uses": 1,
+      "field": "postcode"
+    },
+    {
+      "when": "give it to me again|post ?code again|once more",
+      "clips": [
+        "2026-11-20T120746Z_0zz1_05_postcode"
+      ],
+      "intended": "A five six D B.",
+      "max_uses": 2,
+      "field": "postcode"
+    }
+  ],
+  "expect": {
+    "tools": [
+      {
+        "name_contains": "verify_identity"
+      }
+    ],
+    "fields": [
+      "postcode"
+    ],
+    "agent_never_says": [
+      "can't seem to match",
+      "not able to check your details"
+    ]
+  }
+}

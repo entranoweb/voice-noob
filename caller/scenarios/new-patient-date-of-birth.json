@@ -1,5 +1,6 @@
 {
   "name": "new patient gives name and date of birth, caller hangs up before registration",
+  "mutates": "none",
   "persona": {
     "facts": {
       "name": "Alice Wonderland",

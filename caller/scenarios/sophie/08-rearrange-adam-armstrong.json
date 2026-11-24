@@ -1,0 +1,92 @@
+{
+  "name": "Existing patient moves an appointment (Adam Armstrong)",
+  "mutates": "moves",
+  "requires": "Adam Armstrong is registered with the stated date of birth and postcode and has one upcoming appointment.",
+  "persona": {
+    "facts": {
+      "name": "adam armstrong",
+      "date_of_birth": "1995-01-01"
+    }
+  },
+  "max_seconds": 360,
+  "hangup_after": "have a lovely day|take care|goodbye",
+  "steps": [
+    {
+      "when": "one you'd like to (?:move|cancel)",
+      "clips": [
+        "2026-11-20T120849Z_j3sh_04_confirm_choice"
+      ],
+      "intended": "Yes, please.",
+      "max_uses": 2
+    },
+    {
+      "when": "read that back|that's a consultation|that's an mri|moving you|go ahead",
+      "clips": [
+        "2026-11-20T120849Z_j3sh_07_confirm_booking"
+      ],
+      "intended": "Yes, please.",
+      "max_uses": 2
+    },
+    {
+      "when": "how can i help",
+      "clips": [
+        "2026-11-20T120849Z_j3sh_01_opener"
+      ],
+      "intended": "Can you rearrange my appointment, please?",
+      "max_uses": 2
+    },
+    {
+      "when": "full name|your name|registered under",
+      "clips": [
+        "2026-11-20T120849Z_j3sh_02_name"
+      ],
+      "intended": "It's Adam Armstrong.",
+      "max_uses": 2,
+      "field": "name"
+    },
+    {
+      "when": "date of birth",
+      "clips": [
+        "2026-11-20T120849Z_j3sh_03_dob"
+      ],
+      "intended": "First January, nineteen ninety-five.",
+      "max_uses": 2,
+      "field": "date_of_birth"
+    },
+    {
+      "when": "which suits you|which one would suit|which of those",
+      "clips": [
+        "2026-11-20T120849Z_j3sh_06_slot"
+      ],
+      "intended": "Midday, please.",
+      "max_uses": 2
+    },
+    {
+      "when": "when would suit|particular day|earliest available|soonest we have",
+      "clips": [
+        "2026-11-20T120849Z_j3sh_05_when"
+      ],
+      "intended": "Any Monday.",
+      "max_uses": 2
+    },
+    {
+      "when": "anything else",
+      "clips": [
+        "2026-11-20T120849Z_j3sh_08_anything_else"
+      ],
+      "intended": "That's it at the moment. Thank you.",
+      "max_uses": 2
+    }
+  ],
+  "expect": {
+    "tools": [
+      {
+        "name_contains": "verify_identity"
+      },
+      {
+        "name_contains": "v2_reschedule_"
+      }
+    ],
+    "fields": []
+  }
+}

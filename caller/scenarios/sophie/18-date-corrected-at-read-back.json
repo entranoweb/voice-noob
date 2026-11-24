@@ -1,0 +1,130 @@
+{
+  "name": "New patient corrects the date of birth at read-back",
+  "description": "On the phone the date was heard as 4 March, the caller corrected it, and the call was handed to reception after a second correction.",
+  "mutates": "registers",
+  "persona": {
+    "facts": {
+      "name": "natalie norman",
+      "date_of_birth": "1986-03-03"
+    }
+  },
+  "max_seconds": 360,
+  "hangup_after": "you're all set up|that would be with|reception will finish|have a lovely day|take care|goodbye",
+  "steps": [
+    {
+      "when": "i have the name|that's the name",
+      "clips": [
+        "2026-11-17T103835Z_s9yk_11_correction"
+      ],
+      "intended": "Uh, no. It's third March.",
+      "max_uses": 1
+    },
+    {
+      "when": "date of birth once more|name and date of birth",
+      "clips": [
+        "2026-11-17T103835Z_s9yk_13_correction"
+      ],
+      "intended": "No, it's Natalie Norman, third March, nineteen eighty-six.",
+      "max_uses": 2,
+      "field": "date_of_birth"
+    },
+    {
+      "when": "fee is|self-pay fee|pounds",
+      "clips": [
+        "2026-11-17T103835Z_s9yk_10_confirm_fee"
+      ],
+      "intended": "That's fine.",
+      "max_uses": 2
+    },
+    {
+      "when": "how can i help",
+      "clips": [
+        "2026-11-17T103835Z_s9yk_01_opener"
+      ],
+      "intended": "Can you book an appointment for me?",
+      "max_uses": 2
+    },
+    {
+      "when": "full name|your name|registered under",
+      "clips": [
+        "2026-11-17T103835Z_s9yk_02_name"
+      ],
+      "intended": "Natalie Norman.",
+      "max_uses": 2,
+      "field": "name"
+    },
+    {
+      "when": "been to see us before|visited us before|been to the clinic|been here before",
+      "clips": [
+        "2026-11-17T103835Z_s9yk_03_been_before"
+      ],
+      "intended": "No.",
+      "max_uses": 2
+    },
+    {
+      "when": "health insurance|paying yourself|paying privately",
+      "clips": [
+        "2026-11-17T103835Z_s9yk_09_insurance"
+      ],
+      "intended": "Paying myself.",
+      "max_uses": 2
+    },
+    {
+      "when": "mobile number|phone number",
+      "clips": [
+        "2026-11-17T103835Z_s9yk_07_phone"
+      ],
+      "intended": "Zero three one two three four five six seven.",
+      "max_uses": 2,
+      "field": "phone"
+    },
+    {
+      "when": "post ?code",
+      "clips": [
+        "2026-11-17T103835Z_s9yk_08_postcode"
+      ],
+      "intended": "N seven eight P Q.",
+      "max_uses": 2,
+      "field": "postcode"
+    },
+    {
+      "when": "date of birth",
+      "clips": [
+        "2026-11-17T103835Z_s9yk_06_dob"
+      ],
+      "intended": "Third March, nineteen eighty-six.",
+      "max_uses": 2,
+      "field": "date_of_birth"
+    },
+    {
+      "when": "bringing you in",
+      "clips": [
+        "2026-11-17T103835Z_s9yk_04_reason"
+      ],
+      "intended": "Knee pain.",
+      "max_uses": 2
+    },
+    {
+      "when": "knee or shoulder",
+      "clips": [
+        "2026-11-17T103835Z_s9yk_05_reason"
+      ],
+      "intended": "Knee problem.",
+      "max_uses": 2
+    }
+  ],
+  "expect": {
+    "tools": [
+      {
+        "name_contains": "v2_register_patient"
+      }
+    ],
+    "fields": [
+      "name",
+      "date_of_birth"
+    ],
+    "agent_never_says": [
+      "reception will finish setting this up"
+    ]
+  }
+}

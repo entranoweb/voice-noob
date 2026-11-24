@@ -1,0 +1,147 @@
+{
+  "name": "New patient books a consultation: one slot offered, answers 'Yes. That's fine.'",
+  "mutates": "books",
+  "requires": "The diary offers exactly one slot for 'as soon as possible'.",
+  "persona": {
+    "facts": {
+      "name": "john black",
+      "phone": "07782298782",
+      "postcode": "B458HT",
+      "date_of_birth": "1974-01-01"
+    }
+  },
+  "max_seconds": 360,
+  "hangup_after": "have a lovely day|take care|goodbye",
+  "steps": [
+    {
+      "when": "fee is|self-pay fee|pounds",
+      "clips": [
+        "2026-11-24T095122Z_xecc_11_confirm_fee"
+      ],
+      "intended": "Yes. Thank you.",
+      "max_uses": 2
+    },
+    {
+      "when": "i have the name|that's the name",
+      "clips": [
+        "2026-11-24T095122Z_xecc_12_confirm_details"
+      ],
+      "intended": "Yes.",
+      "max_uses": 2
+    },
+    {
+      "when": "that would be with",
+      "clips": [
+        "2026-11-24T095122Z_xecc_13_confirm_practitioner"
+      ],
+      "intended": "Yes.",
+      "max_uses": 2
+    },
+    {
+      "when": "how can i help",
+      "clips": [
+        "2026-11-24T095122Z_xecc_01_opener"
+      ],
+      "intended": "Sophie, can you book me a new appointment, please?",
+      "max_uses": 2
+    },
+    {
+      "when": "full name|your name|registered under",
+      "clips": [
+        "2026-11-24T095122Z_xecc_04_name"
+      ],
+      "intended": "John Black.",
+      "max_uses": 2,
+      "field": "name"
+    },
+    {
+      "when": "been to see us before|visited us before|been to the clinic|been here before",
+      "clips": [
+        "2026-11-24T095122Z_xecc_05_been_before"
+      ],
+      "intended": "No, I haven't.",
+      "max_uses": 2
+    },
+    {
+      "when": "health insurance|paying yourself|paying privately",
+      "clips": [
+        "2026-11-24T095122Z_xecc_10_insurance"
+      ],
+      "intended": "Paying myself.",
+      "max_uses": 2
+    },
+    {
+      "when": "mobile number|phone number",
+      "clips": [
+        "2026-11-24T095122Z_xecc_08_phone"
+      ],
+      "intended": "Zero seven seven eight two two nine eight seven eight two.",
+      "max_uses": 2,
+      "field": "phone"
+    },
+    {
+      "when": "post ?code",
+      "clips": [
+        "2026-11-24T095122Z_xecc_09_postcode"
+      ],
+      "intended": "B forty-five eight HT.",
+      "max_uses": 2,
+      "field": "postcode"
+    },
+    {
+      "when": "date of birth",
+      "clips": [
+        "2026-11-24T095122Z_xecc_07_dob"
+      ],
+      "intended": "It is one one nineteen seven four.",
+      "max_uses": 2,
+      "field": "date_of_birth"
+    },
+    {
+      "when": "bringing you in|knee or shoulder",
+      "clips": [
+        "2026-11-24T095122Z_xecc_06_reason"
+      ],
+      "intended": "I have knee pain.",
+      "max_uses": 2
+    },
+    {
+      "when": "which suits you|which one would suit|which of those",
+      "clips": [
+        "2026-11-24T095122Z_xecc_15_slot"
+      ],
+      "intended": "Yes. That's fine.",
+      "max_uses": 2
+    },
+    {
+      "when": "when would suit|particular day|earliest available|soonest we have",
+      "clips": [
+        "2026-11-24T095122Z_xecc_14_when"
+      ],
+      "intended": "As soon as possible.",
+      "max_uses": 2
+    },
+    {
+      "when": "before you go|preferred",
+      "clips": [
+        "2026-11-13T093013Z_cqfx_03_been_before"
+      ],
+      "intended": "No.",
+      "max_uses": 2
+    }
+  ],
+  "expect": {
+    "tools": [
+      {
+        "name_contains": "v2_register_patient"
+      },
+      {
+        "name_contains": "v2_book_"
+      }
+    ],
+    "fields": [
+      "name",
+      "date_of_birth"
+    ]
+  }
+}

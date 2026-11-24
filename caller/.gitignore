@@ -4,3 +4,9 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 runs/
+# Recorded voices never go in the repository: a clip bank lives outside it.
+clips/
+clips-*/
+*.wav
+*.mp3
+*.stt.json
