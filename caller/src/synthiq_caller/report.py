@@ -17,6 +17,9 @@ class FieldTally:
     misheard: int = 0
     mis_stored: int = 0
     not_stored: int = 0
+    # How many of the stored values were fetched from the system under test,
+    # rather than taken from what the agent's tool was sent.
+    read_back: int = 0
 
 
 @dataclass
@@ -37,6 +40,9 @@ class Summary:
     fields: dict[str, FieldTally] = field(default_factory=dict)
     failures: list[Failure] = field(default_factory=list)
     blocked: list[dict[str, Any]] = field(default_factory=list)
+    # Chains graded as one unit: name -> [passed, graded, proved nothing].
+    chains: dict[str, list[int]] = field(default_factory=dict)
+    chain_failures: list[str] = field(default_factory=list)
 
 
 def failing_step(payload: dict[str, Any]) -> str:
@@ -92,6 +98,20 @@ def summarise(directory: str | Path) -> Summary:
                 field_tally.mis_stored += 1
             if row["heard_matches"] is False:
                 field_tally.misheard += 1
+            if row.get("stored_source") == "read back":
+                field_tally.read_back += 1
+    for path in sorted(root.glob("chain-*.json")):
+        chain = json.loads(path.read_text(encoding="utf-8"))
+        chain_tally = summary.chains.setdefault(chain["chain"], [0, 0, 0])
+        if chain["outcome"] == "passed":
+            chain_tally[0] += 1
+            chain_tally[1] += 1
+        elif chain["outcome"] == "failed":
+            chain_tally[1] += 1
+            failed = next((c["id"] for c in chain["calls"] if c["outcome"] == "failed"), "?")
+            summary.chain_failures.append(f"{path.name}  {chain['chain']}: call '{failed}' failed")
+        else:
+            chain_tally[2] += 1
     batch = root / "batch.json"
     if batch.exists():
         summary.blocked = list(json.loads(batch.read_text(encoding="utf-8")).get("blocked", []))
@@ -112,13 +132,27 @@ def render(summary: Summary) -> str:
         lines.append("\nsaid, heard, stored (per field, all calls)")
         lines.append(
             f"  {'field':<14} {'answered':>8} {'stored ok':>10} {'misheard':>9} "
-            f"{'mis-stored':>11} {'not stored':>11}"
+            f"{'mis-stored':>11} {'not stored':>11} {'read back':>10}"
         )
         for name, t in sorted(summary.fields.items()):
             lines.append(
                 f"  {name:<14} {t.answered:>8} {t.stored_correctly:>10} {t.misheard:>9} "
-                f"{t.mis_stored:>11} {t.not_stored:>11}"
+                f"{t.mis_stored:>11} {t.not_stored:>11} {t.read_back:>10}"
             )
+        stored = sum(t.answered - t.not_stored for t in summary.fields.values())
+        fetched = sum(t.read_back for t in summary.fields.values())
+        lines.append(
+            f"  'stored' was read back from the system in {fetched} of {stored} cases; "
+            "the rest is what the agent's tool was sent"
+        )
+
+    if summary.chains:
+        lines.append("\nchains (each graded as one unit)")
+        for name, (passed, total, unproven) in sorted(summary.chains.items()):
+            note = f"  [{unproven} proved nothing: not run or ungraded]" if unproven else ""
+            lines.append(f"  {describe(passed, total):<52} {name}{note}")
+        for chain_failure in summary.chain_failures:
+            lines.append(f"    {chain_failure}")
 
     if summary.failures:
         lines.append("\nfailures")

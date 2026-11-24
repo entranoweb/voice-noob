@@ -13,6 +13,12 @@ Wire facts this module depends on (checked against a live agent, Nov 2026):
 * ``audio`` frames keep arriving while the agent is silent.
 * The ``user_transcript`` event carries its text under ``user_transcription_event``.
 * ``ping`` must be answered with ``pong`` and the same ``event_id``.
+
+Keypad digits. The socket carries no tones. The published message schema (read
+Nov 2026) lets a client ``user_message`` carry ``"source_medium": "dtmf"``, and
+that is what ``keypad_as_message=True`` sends. It is off by default because it
+has NOT been checked against a live agent: the schema lists the value without
+saying what the agent does with it. Real tones need the phone leg.
 """
 
 from __future__ import annotations
@@ -39,10 +45,13 @@ def _rate(fmt: str) -> int:
 
 
 class ElevenLabsSocketLeg:
-    def __init__(self, api_key: str, agent_id: str, *, api: str = API) -> None:
+    def __init__(
+        self, api_key: str, agent_id: str, *, api: str = API, keypad_as_message: bool = False
+    ) -> None:
         self._key = api_key
         self._agent_id = agent_id
         self._api = api
+        self._keypad_as_message = keypad_as_message
         self._ws: Any = None
         self._call_ref: str | None = None
         self._in_fmt = "pcm_16000"
@@ -82,7 +91,16 @@ class ElevenLabsSocketLeg:
             return
 
     async def send_dtmf(self, digits: str) -> None:
-        raise NotImplementedError("the conversation websocket has no keypad channel")
+        if not self._keypad_as_message:
+            raise NotImplementedError(
+                "the conversation websocket carries no tones; pass keypad_as_message=True to "
+                "send the digits as a message marked as keypad input, or use the phone leg"
+            )
+        if self._ws is None:
+            return
+        await self._ws.send(
+            json.dumps({"type": "user_message", "text": digits, "source_medium": "dtmf"})
+        )
 
     def _decode_audio(self, b64: str) -> AgentAudio:
         raw = base64.b64decode(b64)

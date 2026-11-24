@@ -20,6 +20,7 @@ from datetime import date
 from typing import Any
 
 from synthiq_caller.director import RunRecord
+from synthiq_caller.readback import READ_BACK, TOOL_CALL
 from synthiq_caller.scenario import Scenario
 from synthiq_caller.traces.base import Trace
 
@@ -186,6 +187,10 @@ class FieldRow:
     heard_matches: bool | None
     stored_matches: bool | None
     verdict: str
+    # Where ``stored`` came from: "read back" (fetched from the system under test
+    # after the call) or "tool call" (what the agent's tool was sent). Empty when
+    # nothing was stored.
+    stored_source: str = ""
 
 
 @dataclass
@@ -217,7 +222,21 @@ def _stored_value(trace: Trace, keys: tuple[str, ...]) -> str | None:
     return found
 
 
-def field_rows(scenario: Scenario, record: RunRecord, trace: Trace | None) -> list[FieldRow]:
+def _carries(arguments: dict[str, Any], wanted: dict[str, str]) -> bool:
+    """Whether a tool call's arguments hold every wanted value."""
+    for key, value in wanted.items():
+        got = arguments.get(key)
+        if got is None or str(got).strip().casefold() != value.strip().casefold():
+            return False
+    return True
+
+
+def field_rows(
+    scenario: Scenario,
+    record: RunRecord,
+    trace: Trace | None,
+    read_back: dict[str, str] | None = None,
+) -> list[FieldRow]:
     rows: list[FieldRow] = []
     for name, fact in scenario.facts.items():
         answers = [said for said in record.said if said.field == name]
@@ -226,25 +245,40 @@ def field_rows(scenario: Scenario, record: RunRecord, trace: Trace | None) -> li
         heard_all = [text for said in answers for text in said.heard]
         heard = heard_all[-1] if heard_all else None
         keys = scenario.stored_keys.get(name) or DEFAULT_STORED_KEYS[name]
-        stored = _stored_value(trace, keys) if trace is not None else None
+        # The system's own record wins; what the tool was sent is the fallback.
+        stored = (read_back or {}).get(name) or None
+        source = READ_BACK if stored is not None else ""
+        if stored is None and trace is not None:
+            stored = _stored_value(trace, keys)
+            source = TOOL_CALL if stored is not None else ""
         heard_ok = same(name, fact, heard) if heard is not None else None
         stored_ok = same(name, fact, stored) if stored is not None else None
         if stored_ok:
             verdict = "stored correctly"
         elif stored is None:
-            verdict = "not stored" if trace is not None else "no trace"
+            verdict = "not stored" if (trace is not None or read_back is not None) else "no trace"
         elif heard_ok:
             verdict = "heard correctly, stored wrongly"
         elif heard is None:
             verdict = "stored wrongly"
         else:
             verdict = "misheard, stored wrongly"
-        rows.append(FieldRow(name, fact, heard, stored, heard_ok, stored_ok, verdict))
+        rows.append(FieldRow(name, fact, heard, stored, heard_ok, stored_ok, verdict, source))
     return rows
 
 
-def grade(scenario: Scenario, record: RunRecord, trace: Trace | None) -> Grade:
-    rows = field_rows(scenario, record, trace)
+def grade(
+    scenario: Scenario,
+    record: RunRecord,
+    trace: Trace | None,
+    read_back: dict[str, str] | None = None,
+) -> Grade:
+    """Grade one call. ``read_back`` is what the system under test held afterwards.
+
+    None means no read-back was made (none configured, or it failed); "stored"
+    then comes from what the agent's tools were sent, and says so.
+    """
+    rows = field_rows(scenario, record, trace, read_back)
     result = Grade(
         scenario=scenario.name, call_ref=record.call_ref, outcome="ungraded", fields=rows
     )
@@ -252,17 +286,21 @@ def grade(scenario: Scenario, record: RunRecord, trace: Trace | None) -> Grade:
         return result
 
     for expected in scenario.expect.tools:
-        matching = [c for c in trace.tool_calls if expected.name_contains.lower() in c.name.lower()]
+        matching = [
+            c
+            for c in trace.tool_calls
+            if expected.name_contains.lower() in c.name.lower()
+            and _carries(c.arguments, expected.arguments)
+        ]
+        label = f"tool '{expected.name_contains}'"
+        if expected.arguments:
+            label += " with " + ", ".join(f"{k}={v}" for k, v in expected.arguments.items())
         if not expected.called:
-            result.checks.append(
-                Check(f"tool '{expected.name_contains}' is not called", not matching)
-            )
+            result.checks.append(Check(f"{label} is not called", not matching))
             continue
         wanted = "succeeds" if expected.ok else "is refused"
         passed = any(c.ok == expected.ok for c in matching)
-        result.checks.append(
-            Check(f"tool '{expected.name_contains}' is called and {wanted}", passed)
-        )
+        result.checks.append(Check(f"{label} is called and {wanted}", passed))
 
     by_field = {row.field: row for row in rows}
     for name in scenario.expect.fields:
@@ -289,7 +327,22 @@ def grade(scenario: Scenario, record: RunRecord, trace: Trace | None) -> Grade:
             )
         )
 
+    unchecked = False
+    for key, wanted in scenario.expect.read_back.items():
+        if read_back is None:
+            unchecked = True
+            result.checks.append(
+                Check(f"the system holds {key}={wanted} (NOT CHECKED: no read-back)", False)
+            )
+            continue
+        got = read_back.get(key)
+        held = got is not None and got.strip().casefold() == wanted.strip().casefold()
+        result.checks.append(Check(f"the system holds {key}={wanted} (read back)", held))
+
     if not result.checks:
         return result  # nothing was asked of this call, so nothing can be claimed
+    if unchecked and all(c.passed for c in result.checks if "NOT CHECKED" not in c.what):
+        # Everything the agent reported is right, but its word is all there is.
+        return result
     result.outcome = "passed" if all(c.passed for c in result.checks) else "failed"
     return result

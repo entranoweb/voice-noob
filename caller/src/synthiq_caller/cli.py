@@ -7,6 +7,8 @@
         --clips <dir> --repeats 3 --out runs/        (runs lookup-only scenarios)
     synthiq-caller validate scenarios/sophie --clips <dir>
     synthiq-caller regrade runs/ --scenarios scenarios/sophie   (no calls placed)
+    synthiq-caller baseline runs/ --out baseline.json
+    synthiq-caller compare runs-new/ --baseline baseline.json --fail-on beyond-noise
     synthiq-caller clipbank build --recordings <dir> --out <dir outside any repo>
     synthiq-caller clipbank scenario --clips <dir> --call <call id>
 
@@ -29,16 +31,28 @@ from synthiq_caller.batch import (
     NameBudget,
     NoHooks,
     ShellHooks,
+    load_chains,
     load_scenarios,
     regrade,
+    regrade_chains,
     reread_missing_traces,
     run_batch,
 )
+from synthiq_caller.chain import variables_in
 from synthiq_caller.clips import ClipBank
+from synthiq_caller.compare import (
+    compare,
+    load_baseline,
+    make_baseline,
+    render_comparison,
+    save_baseline,
+)
 from synthiq_caller.director import Director, RunRecord
 from synthiq_caller.grading import Grade, grade
 from synthiq_caller.leg import Leg
+from synthiq_caller.readback import CommandReadBack, HttpReadBack, NoReadBack, ReadBack
 from synthiq_caller.report import render, summarise
+from synthiq_caller.reset import CommandReset, HttpReset, NoReset, Reset
 from synthiq_caller.scenario import Scenario, load_scenario
 from synthiq_caller.traces.base import Trace, TraceReader
 
@@ -63,7 +77,10 @@ def _build(args: argparse.Namespace) -> tuple[Leg, TraceReader | None]:
         if not args.agent:
             raise SystemExit("--agent is required for the elevenlabs-socket leg")
         key = _secret("ELEVENLABS_API_KEY", args.env_file)
-        return ElevenLabsSocketLeg(key, args.agent), ElevenLabsTraceReader(key)
+        leg = ElevenLabsSocketLeg(
+            key, args.agent, keypad_as_message=getattr(args, "keypad_as_message", False)
+        )
+        return leg, ElevenLabsTraceReader(key)
     raise SystemExit(f"unknown or unbuilt leg: {args.leg}")
 
 
@@ -95,15 +112,19 @@ def _print_grade(index: int, payload: dict[str, Any]) -> None:
     for check in g["checks"]:
         print(f"  [{'pass' if check['passed'] else 'FAIL'}] {check['what']}")
     if g["fields"]:
-        print(f"  {'field':<14} {'said':<22} {'heard':<26} {'stored':<24} verdict")
+        print(
+            f"  {'field':<14} {'said':<22} {'heard':<26} {'stored':<24} {'stored from':<12} verdict"
+        )
         for row in g["fields"]:
             print(
                 f"  {row['field']:<14} {str(row['said'])[:21]:<22} "
                 f"{str(row['heard'] or '-')[:25]:<26} {str(row['stored'] or '-')[:23]:<24} "
-                f"{row['verdict']}"
+                f"{(row.get('stored_source') or '-'):<12} {row['verdict']}"
             )
     if payload.get("trace_error"):
         print(f"  trace could not be read: {payload['trace_error']}")
+    if payload.get("read_back_error"):
+        print(f"  read-back failed, tool calls used for 'stored': {payload['read_back_error']}")
 
 
 def report(directory: str, *, details: bool = True) -> int:
@@ -142,7 +163,72 @@ def validate(directory: str, clips_dir: str | None) -> int:
             f"{file:<44} mutates={scenario.mutates:<10} "
             f"steps={len(scenario.steps):<3} {state}{note}"
         )
+    for file, chain in load_chains(directory):
+        missing = []
+        if bank is not None:
+            for call in chain.calls:
+                for step in call.raw.get("steps", ()):
+                    for clip in step.get("clips", ()):
+                        if variables_in(clip) or (
+                            str(clip).startswith("missing/") and call.missing_clips
+                        ):
+                            continue  # chosen at run time, or declared as not yet recorded
+                        try:
+                            bank.path(str(clip))
+                        except FileNotFoundError:
+                            missing.append(str(clip))
+        state = "ok" if not missing else f"CLIPS NOT IN BANK: {missing}"
+        problems += bool(missing)
+        calls = " > ".join(f"{call.id}({call.mutates})" for call in chain.calls)
+        print(
+            f"{file:<44} mutates={chain.mutates:<10} chain "
+            f"clean_state={'yes' if chain.clean_state else 'no'}  {calls}  {state}"
+        )
     return 1 if problems else 0
+
+
+def _named_secret(env_name: str, env_file: str | None) -> str:
+    return _secret(env_name, env_file) if env_name else ""
+
+
+def _reset(args: argparse.Namespace) -> Reset | None:
+    """The batch's reset. None means scenarios that need a clean state are not run."""
+    if args.reset == "none":
+        return NoReset()
+    if args.reset == "command":
+        if not args.reset_command:
+            raise SystemExit("--reset command needs --reset-command")
+        return CommandReset(args.reset_command, timeout_s=args.reset_timeout)
+    if args.reset == "http":
+        if not args.reset_url:
+            raise SystemExit("--reset http needs --reset-url")
+        return HttpReset(
+            args.reset_url,
+            secret=_named_secret(args.reset_secret_env, args.env_file),
+            header=args.reset_header,
+            timeout_s=args.reset_timeout,
+        )
+    return None
+
+
+def _read_back(args: argparse.Namespace) -> ReadBack | None:
+    """The batch's read-back. None means 'stored' is what the agent's tools were sent."""
+    if args.read_back == "none":
+        return NoReadBack()
+    if args.read_back == "command":
+        if not args.read_back_command:
+            raise SystemExit("--read-back command needs --read-back-command")
+        return CommandReadBack(args.read_back_command, timeout_s=args.read_back_timeout)
+    if args.read_back == "http":
+        if not args.read_back_url:
+            raise SystemExit("--read-back http needs --read-back-url")
+        return HttpReadBack(
+            args.read_back_url,
+            secret=_named_secret(args.read_back_secret_env, args.env_file),
+            header=args.read_back_header,
+            timeout_s=args.read_back_timeout,
+        )
+    return None
 
 
 def _clipbank(args: argparse.Namespace) -> int:
@@ -160,8 +246,10 @@ def _clipbank(args: argparse.Namespace) -> int:
 
 def _batch(args: argparse.Namespace) -> int:
     scenarios = load_scenarios(args.scenarios)
+    chains = load_chains(args.scenarios)
     if args.only:
         scenarios = [(f, s) for f, s in scenarios if any(o in f for o in args.only)]
+        chains = [(f, c) for f, c in chains if any(o in f for o in args.only)]
     hooks = (
         ShellHooks(before=args.before_call, after=args.after_call)
         if (args.before_call or args.after_call)
@@ -182,9 +270,12 @@ def _batch(args: argparse.Namespace) -> int:
             hooks=hooks,
             read_trace=not args.no_trace,
             settle_s=args.settle,
+            chains=chains,
+            reset=_reset(args),
+            read_back=_read_back(args),
         )
     )
-    print(f"ran {result.ran}, not run {len(result.blocked)}")
+    print(f"ran {result.ran}, not run {len(result.blocked)}, chains {result.chains}")
     print()
     return report(str(out), details=False)
 
@@ -224,6 +315,36 @@ def main(argv: list[str] | None = None) -> int:
     bat.add_argument("--settle", type=float, default=2.0, help="wait before reading a trace")
     bat.add_argument("--before-call", default="", help="command run before each call (reset)")
     bat.add_argument("--after-call", default="", help="command run after each call")
+    bat.add_argument(
+        "--reset",
+        choices=["none", "command", "http"],
+        default=None,
+        help="how to clean the system under test before a scenario or chain that asks for it; "
+        "'none' states it is already clean; left out, those scenarios are not run",
+    )
+    bat.add_argument("--reset-command", default="", help="exit code 0 means clean")
+    bat.add_argument("--reset-url", default="", help="any 2xx answer means clean")
+    bat.add_argument("--reset-secret-env", default="", help="variable holding the reset secret")
+    bat.add_argument("--reset-header", default="X-Synthiq-Secret")
+    bat.add_argument("--reset-timeout", type=float, default=120.0, help="seconds")
+    bat.add_argument(
+        "--read-back",
+        choices=["none", "command", "http"],
+        default=None,
+        help="how to fetch what the system under test holds after each call; left out or "
+        "'none', 'stored' is what the agent's tools were sent and is labelled so",
+    )
+    bat.add_argument("--read-back-command", default="", help="prints one JSON object")
+    bat.add_argument("--read-back-url", default="", help="answers with one JSON object")
+    bat.add_argument("--read-back-secret-env", default="", help="variable holding the secret")
+    bat.add_argument("--read-back-header", default="X-Synthiq-Secret")
+    bat.add_argument("--read-back-timeout", type=float, default=60.0, help="seconds")
+    bat.add_argument(
+        "--keypad-as-message",
+        action="store_true",
+        help="socket leg only: send keypad digits as a message marked as keypad input "
+        "(no tones are played; not checked against a live agent)",
+    )
 
     reg = sub.add_parser("regrade", help="grade stored runs again; places no calls")
     reg.add_argument("directory")
@@ -232,6 +353,20 @@ def main(argv: list[str] | None = None) -> int:
     reg.add_argument("--leg", choices=["elevenlabs-socket"], default="elevenlabs-socket")
     reg.add_argument("--agent", default="-")
     reg.add_argument("--env-file", default=None)
+
+    base = sub.add_parser("baseline", help="store a batch's pass counts to compare against")
+    base.add_argument("directory")
+    base.add_argument("--out", required=True)
+
+    cmp_ = sub.add_parser("compare", help="set a batch beside a stored baseline")
+    cmp_.add_argument("directory")
+    cmp_.add_argument("--baseline", required=True)
+    cmp_.add_argument(
+        "--fail-on",
+        choices=["never", "beyond-noise", "any"],
+        default="never",
+        help="exit 1 on a regression: only one beyond noise, or any drop at all",
+    )
 
     val = sub.add_parser("validate", help="check a directory of scenarios, and its clips")
     val.add_argument("scenarios")
@@ -259,10 +394,25 @@ def main(argv: list[str] | None = None) -> int:
                 fetched = asyncio.run(reread_missing_traces(Path(args.directory), reader))
                 print(f"traces fetched again: {fetched}")
         changed = regrade(Path(args.directory), load_scenarios(args.scenarios))
+        changed += regrade_chains(Path(args.directory), load_chains(args.scenarios))
         print(f"regraded: {changed} run(s) changed")
         return report(args.directory, details=False)
     if args.command == "validate":
         return validate(args.scenarios, args.clips)
+    if args.command == "baseline":
+        stored = make_baseline(summarise(args.directory), source=str(args.directory))
+        save_baseline(stored, args.out)
+        print(f"baseline of {len(stored.scenarios)} scenario(s), {len(stored.chains)} chain(s)")
+        return 0
+    if args.command == "compare":
+        baseline = load_baseline(args.baseline)
+        changes = compare(baseline, summarise(args.directory))
+        print(render_comparison(baseline, changes))
+        if args.fail_on == "any":
+            return 1 if any(c.regressed for c in changes) else 0
+        if args.fail_on == "beyond-noise":
+            return 1 if any(c.beyond_noise for c in changes) else 0
+        return 0
     if args.command == "clipbank":
         return _clipbank(args)
 
