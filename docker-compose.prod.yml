@@ -53,9 +53,15 @@ services:
       # Redis
       REDIS_URL: redis://:${REDIS_PASSWORD:-changeme_in_production}@redis:6379/0
       # Security
-      SECRET_KEY: ${SECRET_KEY:-generate_a_secure_key_here}
+      # Signs login tokens and the tokens that admit a carrier's media stream
+      # to an agent. No default: the app refuses to start on a placeholder,
+      # and failing here names the variable instead.
+      SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY to a long random string, e.g. openssl rand -hex 32}
       # CORS - Allow frontend domain
       CORS_ORIGINS: '["${FRONTEND_URL:-http://localhost:3000}"]'
+      # The origin the embed snippet points customers' sites at: the widget
+      # script and the embed page are served by the frontend.
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
       # Admin credentials
       ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@synthiq.io}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-changeme}
@@ -69,8 +75,8 @@ services:
       # the call connects, the row lands, the caller hears silence.
       # See docs/HANDOFF.md 7.2.
       PUBLIC_URL: ${PUBLIC_URL:?set PUBLIC_URL to the backend's public origin, e.g. https://api.synthiqvoice.com}
-      # Webhook signature verification. Unset, it falls back to DEBUG: false
-      # rejects every webhook 403, true accepts every webhook unverified.
+      # Webhook signature verification. Unset, every webhook is refused 403,
+      # whatever DEBUG says.
       TELNYX_PUBLIC_KEY: ${TELNYX_PUBLIC_KEY:?set TELNYX_PUBLIC_KEY from the Telnyx portal}
       # Outbound calls and buying numbers only; inbound never reads it.
       TELNYX_API_KEY: ${TELNYX_API_KEY:-}

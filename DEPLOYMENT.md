@@ -89,9 +89,9 @@ ADMIN_NAME=Admin
 PUBLIC_URL=https://api.synthiqvoice.com
 
 # Telnyx webhook signature verification. REQUIRED.
-# Unset, verification falls back to DEBUG: with DEBUG=false every webhook is
-# rejected 403 and no call ever reaches an agent; with DEBUG=true every webhook
-# is accepted unverified by anyone who finds the URL.
+# Unset, every webhook is refused 403 and no call ever reaches an agent,
+# whatever DEBUG says. The only way to accept an unsigned webhook is
+# ALLOW_UNSIGNED_WEBHOOKS=true, which must never be set here.
 TELNYX_PUBLIC_KEY=your_telnyx_public_key
 
 # Only needed for outbound calls and buying numbers. Inbound does not use it.

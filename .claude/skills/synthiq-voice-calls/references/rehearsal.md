@@ -128,8 +128,39 @@ asyncio.run(probe("00000000-0000-0000-0000-000000000000?direction=inbound"))
 EOF
 ```
 
-`4004 Agent not found` is success: the bridge resolved the route, accepted the
-upgrade and queried the database. That is the same signal the preflight uses.
+This one is refused at the handshake with **HTTP 403**, and that is now the
+expected result: the socket admits nobody without the stream token the
+answering webhook mints, and this probe carries none. It proves the door is
+shut.
+
+To see the bridge answer, present a token. The process that mints it must
+share the instance's `SECRET_KEY`, which the exports above arrange:
+
+```bash
+uv run python - <<'EOF'
+import asyncio, uuid, websockets
+from websockets.exceptions import ConnectionClosed
+from app.core.stream_token import mint_stream_token
+async def probe():
+    agent = str(uuid.uuid4())
+    token = mint_stream_token(provider="telnyx", agent_id=agent, call_id="")
+    url = f"ws://127.0.0.1:8000/ws/telephony/telnyx/{agent}?direction=inbound&token={token}"
+    try:
+        async with websockets.connect(url) as ws:
+            print(await asyncio.wait_for(ws.recv(), timeout=8))
+    except ConnectionClosed as c:
+        print("closed", c.rcvd.code if c.rcvd else "?", c.rcvd.reason if c.rcvd else "")
+asyncio.run(probe())
+EOF
+```
+
+`4004 Agent not found` is success: the bridge verified the token, accepted the
+upgrade, resolved the route and queried the database. That is the same signal
+the preflight uses, and the preflight mints its token the same way.
+
+For a real agent, do not build the URL by hand: take the `<Stream url=...>`
+from the answer document in step 5. Its token is bound to that call's
+identifier and expires two minutes after the webhook answered.
 
 A real agent id closes without a code and logs `workspace_missing_settings` —
 correct, and the boundary of this rehearsal. Past that point you need a real
