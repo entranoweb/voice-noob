@@ -61,12 +61,18 @@ A tool can answer at the transport level and still have refused: an identity che
 ```json
 "tool_outcomes": {
   "sophie_v2_verify_identity": {"path": "verified", "success": ["true"]},
-  "sophie_v2_book": {"path": "outcome", "success": ["BOOKED"]},
-  "sophie_v2_register_patient": {"path": "mutationRef", "success": ["*"]}
+  "sophie_v2_book": {"path": "bookOutcome", "success": ["BOOKED"]},
+  "sophie_v2_register_patient": {"path": "newPatientRegistered", "success": ["true"]}
 }
 ```
 
-With a rule, a tool "succeeds" only when its reply holds one of the `success` values at `path` (`*` accepts any value). A reply that does not carry the path leaves the check unknown and the call `ungradeable`. A tool with no rule is read by the platform's own success flag.
+With a rule, a tool "succeeds" only when it reported one of the `success` values at `path` (`*` accepts any value). The value is looked for in what the engine recorded the tool as reporting (`ToolCall.outputs`, see `TRACE-CHECKS-SCORECARD.md`) and then in the tool's reply. When neither carries the path the check is unknown and the call `ungradeable`. A tool with no rule is read by the platform's own success flag.
+
+A tool expectation's `outputs` (`{"status": "not_found"}`) is checked the same way: when the tool ran and the trace does not carry that name at all, the check is unknown, not failed.
+
+## Prerequisites
+
+Given a checker (`--check-requires-command` or `--check-requires-url`, as for `validate`), a batch asks it about each scenario or chain that has a `requires`. An answer of unmet holds the scenario back as "not run: prerequisite unmet". An error, or no checker, lets it run: the report cannot then tell a fixture gap from an agent fault.
 
 A tool expectation can name a tool exactly with `name`, or by fragment with `name_contains`.
 

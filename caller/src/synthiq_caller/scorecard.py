@@ -35,7 +35,8 @@ from synthiq_caller.jsonio import write_json
 from synthiq_caller.report import FieldTally, Summary, failing_step, summarise
 from synthiq_caller.stats import describe, wilson_interval
 
-FAULT_CLASSES = ("agent", "scenario", "fixture", "rig", "unclassified")
+# "unknown": the call was not answered, died or ran out of time; nobody can say whose doing.
+FAULT_CLASSES = ("agent", "scenario", "fixture", "rig", "unknown", "unclassified")
 NO_STEP = "(no step recorded)"
 _DATA = re.compile(r'<script type="application/json" id="scorecard-data">(.*?)</script>', re.DOTALL)
 
@@ -48,6 +49,12 @@ def merged(summaries: list[Summary]) -> Summary:
         total.passed += one.passed
         total.failed += one.failed
         total.ungraded += one.ungraded
+        total.void += one.void
+        total.ungradeable += one.ungradeable
+        total.synthetic_calls += one.synthetic_calls
+        total.excluded += one.excluded
+        for who, count in one.faults.items():
+            total.faults[who] = total.faults.get(who, 0) + count
         for name, (passed, graded) in one.by_scenario.items():
             tally = total.by_scenario.setdefault(name, [0, 0])
             tally[0] += passed
@@ -72,10 +79,11 @@ def _last_step(payload: dict[str, Any]) -> str:
 
 
 def _fault(key: str, payload: dict[str, Any], faults: dict[str, str]) -> str:
-    chosen = faults.get(key) or payload.get("fault") or ""
+    # A person's ruling first, then what the grader charged the call to.
+    chosen = faults.get(key) or payload.get("fault") or payload["grade"].get("fault") or ""
     if chosen:
         return str(chosen)
-    if payload["grade"]["outcome"] == "ungraded":
+    if payload["grade"]["outcome"] not in ("passed", "failed"):
         if payload.get("trace_error") or not payload.get("trace"):
             return "rig"
         return "scenario"  # a trace, and nothing in the scenario that could be checked
@@ -83,6 +91,8 @@ def _fault(key: str, payload: dict[str, Any], faults: dict[str, str]) -> str:
 
 
 def _why_ungraded(payload: dict[str, Any]) -> str:
+    if payload["grade"].get("reason"):
+        return f"{payload['grade']['outcome']}: {payload['grade']['reason']}"
     if payload.get("trace_error"):
         return str(payload["trace_error"])
     if not payload.get("trace"):
@@ -114,7 +124,8 @@ def build(
             payload = json.loads(path.read_text(encoding="utf-8"))
             grade = payload["grade"]
             name, key = grade["scenario"], f"{root.name}/{path.name}"
-            if grade["outcome"] == "ungraded":
+            if grade["outcome"] not in ("passed", "failed"):
+                # void, ungradeable and ungraded: placed, and in neither count.
                 scenario_ungraded[name] = scenario_ungraded.get(name, 0) + 1
                 not_graded.append(
                     {
@@ -172,7 +183,12 @@ def build(
         "calls": summary.runs,
         "passed": summary.passed,
         "failed": summary.failed,
-        "ungraded": summary.ungraded,
+        "ungraded": summary.ungraded + summary.void + summary.ungradeable,
+        "void": summary.void,
+        "ungradeable": summary.ungradeable,
+        "attempted": summary.runs,
+        "failed_by_fault": dict(sorted(summary.faults.items())),
+        "synthetic_calls": summary.synthetic_calls,
         "graded": graded,
         "rate": summary.passed / graded if graded else 0.0,
         "interval": list(wilson_interval(summary.passed, graded)),
