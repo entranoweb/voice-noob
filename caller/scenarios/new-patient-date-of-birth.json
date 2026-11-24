@@ -1,0 +1,51 @@
+{
+  "name": "new patient gives name and date of birth, caller hangs up before registration",
+  "persona": {
+    "facts": {
+      "name": "Alice Wonderland",
+      "date_of_birth": "2002-02-20"
+    }
+  },
+  "max_seconds": 110,
+  "hangup_after": "mobile number|phone number|postcode|is that right",
+  "steps": [
+    {
+      "when": "how can i help",
+      "clips": ["2026-11-20T094342Z_505e_01_opener.wav"],
+      "intended": "Sophie, can you book an appointment for me, please?",
+      "max_uses": 2
+    },
+    {
+      "when": "full name|your name",
+      "clips": ["2026-11-20T094342Z_505e_02_name.wav"],
+      "intended": "It's Alice Wonderland.",
+      "field": "name",
+      "max_uses": 2
+    },
+    {
+      "when": "been to see us before|visited us before|been to the clinic|been here before",
+      "clips": ["2026-11-20T094342Z_505e_03_been_before.wav"],
+      "intended": "No, I haven't."
+    },
+    {
+      "when": "bringing you in|knee or shoulder",
+      "clips": ["2026-11-20T094342Z_505e_04_reason.wav"],
+      "intended": "I'm having knee pain."
+    },
+    {
+      "when": "date of birth",
+      "clips": ["2026-11-20T094342Z_505e_05_dob.wav"],
+      "intended": "It's twentieth of February, two thousand and two.",
+      "field": "date_of_birth",
+      "max_uses": 2
+    }
+  ],
+  "expect": {
+    "tools": [
+      {"name_contains": "new_patient_check"},
+      {"name_contains": "register_patient", "called": false},
+      {"name_contains": "book", "called": false}
+    ],
+    "fields": ["name", "date_of_birth"]
+  }
+}
