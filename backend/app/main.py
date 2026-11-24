@@ -1,15 +1,5 @@
 """Main FastAPI application entry point."""
 
-# Fix passlib bcrypt version detection issue FIRST before any imports
-# passlib tries to access bcrypt.__about__.__version__ which doesn't exist in newer bcrypt
-# This must be done before passlib is imported anywhere
-from types import SimpleNamespace
-
-import bcrypt as _bcrypt_module
-
-if not hasattr(_bcrypt_module, "__about__"):
-    _bcrypt_module.__about__ = SimpleNamespace(__version__=_bcrypt_module.__version__)  # type: ignore[attr-defined]
-
 import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager

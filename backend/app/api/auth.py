@@ -2,11 +2,11 @@
 
 from datetime import UTC, datetime, timedelta
 
+import bcrypt
+import jwt
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordRequestForm
-from jose import jwt
-from passlib.context import CryptContext
 from pydantic import BaseModel, EmailStr
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,7 +20,11 @@ from app.models.user import User
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 logger = structlog.get_logger()
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# bcrypt only reads the first 72 bytes of a password. passlib, which this module
+# used until November 2026, cut longer passwords to that length without saying so;
+# bcrypt 5 raises instead. The cut is made here, explicitly, so every hash passlib
+# wrote still verifies and a long password behaves exactly as it did before.
+BCRYPT_MAX_PASSWORD_BYTES = 72
 
 
 # =============================================================================
@@ -63,14 +67,27 @@ class UserResponse(BaseModel):
 # =============================================================================
 
 
+def _password_bytes(password: str) -> bytes:
+    """UTF-8 bytes of a password, cut to the length bcrypt actually reads."""
+    return password.encode("utf-8")[:BCRYPT_MAX_PASSWORD_BYTES]
+
+
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """Verify a password against its hash."""
-    return pwd_context.verify(plain_password, hashed_password)
+    """Verify a password against its bcrypt hash.
+
+    A stored value that is not a bcrypt hash, or a password bcrypt cannot take
+    (one containing a NUL byte), is a failed match rather than an error: a login
+    attempt must answer "wrong password", never a 500.
+    """
+    try:
+        return bcrypt.checkpw(_password_bytes(plain_password), hashed_password.encode("utf-8"))
+    except ValueError:
+        return False
 
 
 def get_password_hash(password: str) -> str:
-    """Hash a password."""
-    return pwd_context.hash(password)
+    """Hash a password with bcrypt (``$2b$``, the cost passlib used: 12)."""
+    return bcrypt.hashpw(_password_bytes(password), bcrypt.gensalt(rounds=12)).decode("utf-8")
 
 
 def create_access_token(subject: str | int, expires_delta: timedelta | None = None) -> str:
