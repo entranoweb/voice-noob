@@ -45,20 +45,147 @@ You need:
 - For scenario-driven calls, `DEEPGRAM_API_KEY`, or a file of agent lines.
 - ffmpeg on the path if the clip bank is not already 8000 Hz.
 
-Then:
+- A list of the numbers this caller may dial (next section).
+
+### Only listed numbers are dialled
+
+A real call is placed only to a number the operator has listed beforehand. A
+mistyped digit reaches a stranger; a copied command can reach a live line. The
+list is a file with one number per line (`#` starts a comment), or a
+comma-separated value, given with `--allowed-numbers`; the
+`SYNTHIQ_CALLER_ALLOWED_NUMBERS` variable adds to it. The match is on exact
+digits. With no list, nothing is dialled: not by `batch`, not by the single-call
+command, and not by the leg itself.
+
+### Check first, without a call
 
 ```
-export TWILIO_ACCOUNT_SID=... TWILIO_AUTH_TOKEN=... DEEPGRAM_API_KEY=...
+export TWILIO_ACCOUNT_SID=... TWILIO_AUTH_TOKEN=... DEEPGRAM_API_KEY=... ELEVENLABS_API_KEY=...
+synthiq-caller preflight --leg phone \
+  --public-url https://caller.example.com \
+  --from +44XXXXXXXXXX --to +44XXXXXXXXXX \
+  --allowed-numbers allowed.txt --port 8765
+```
+
+It places no call. It checks that:
+
+| Check | How |
+| --- | --- |
+| The credentials and keys are set | Reads the environment; prints names, never values |
+| Both numbers are written in full | `+<country><number>` |
+| The number to dial is on the list | Exact digits |
+| The caller number is on the account | One read of the account's numbers from Twilio. A caller ID that was only verified is not looked up and fails this check |
+| The public address reaches this process | Starts the listening server and asks the public address for a probe only this process can answer |
+| The public address carries a media stream | Opens a websocket through it to the same probe. This is what catches a proxy that does not forward upgrades |
+
+One more line is a warning, not a failure: whether the caller number's own
+voice webhook points at this caller. An outbound call does not use that
+webhook (the stream address travels in the call's TwiML). It matters only if
+something rings the caller's number back.
+
+The exit code is 1 when any check failed.
+
+### One call
+
+```
 synthiq-caller-phone \
   --public-url https://caller.example.com \
   --from +44XXXXXXXXXX --to +44XXXXXXXXXX \
+  --allowed-numbers allowed.txt \
   --scenario scenarios/new-patient-date-of-birth.json \
   --clips <clip bank directory> \
   --out runs/ --port 8765
 ```
 
 Rehearse the same command with `--dry-run` first. It places no call, needs no
-credentials, and prints the TwiML and the audio that would be sent.
+credentials, and prints the TwiML and the audio that would be sent. This
+command writes `phone-run-NNN.json`, which is not graded; use `batch` for a
+graded call.
+
+## A batch of calls, graded
+
+```
+synthiq-caller batch scenarios/sophie --leg phone \
+  --public-url https://caller.example.com \
+  --from +44XXXXXXXXXX --to +44XXXXXXXXXX \
+  --allowed-numbers allowed.txt \
+  --agent <agent id> \
+  --clips <clip bank directory> --out runs/phone \
+  --only 11-similar-name --repeats 1 --fail-under 95
+synthiq-caller report runs/phone
+```
+
+This is the same batch as over a socket: the same scenario files, the mutation
+guard (`--allow-mutating`), the name budget, reset, read-back and chains, and
+run files of the same shape, so `report`, `regrade`, `baseline` and `compare`
+read them unchanged. What differs:
+
+- **One server for the whole batch.** It listens once; each call registers its
+  own token and is handed only the requests that carry it.
+- **One call at a time.** `--max-parallel` above 1 is refused.
+- **Each run says how it travelled.** `leg` is `phone`, and `phone` holds the
+  numbers, the carrier's log and the times the call was dialled, answered and
+  ended. The report prints calls per line.
+- **`record.call_ref` is the carrier's call id**; `trace.call_ref` is the agent
+  platform's id for the same call.
+
+`--fail-under <percent>` on `batch` and `report` makes the exit code 1 when
+fewer than that share of the calls placed passed. A call that could not be
+graded counts against it, so a batch cannot clear the gate by losing its
+traces. With no calls placed the exit code is 1.
+
+A call that is not answered still stops the batch with an error, as it does on
+the socket leg.
+
+### Finding the call's trace
+
+The caller holds the carrier's id for its own outbound leg. The agent's
+platform files the call under another id, for the inbound leg it answered, so
+the trace has to be looked for.
+
+For ElevenLabs the lookup lists conversations that started within
+`--trace-window` seconds (default 120) either side of the call, limited to
+`--agent` when given, and keeps those whose `metadata.phone_call` shows an
+inbound call to the dialled number (`agent_number`) from the caller's number
+(`external_number`). `--trace-ignore-caller-number` drops the last condition,
+for a line that withholds the caller's number.
+
+Exactly one conversation must match. None, or more than one, and the call is
+**ungraded: trace not found**. It is never passed, never failed, and never
+matched to the nearest call. The report lists it with that reason. When the
+platform lists the call later:
+
+```
+synthiq-caller regrade runs/phone --scenarios scenarios/sophie --reread --leg phone --agent <agent id>
+```
+
+`--no-trace` places calls without looking; every one is then ungraded.
+
+Other platforms are not built. The expected equivalents are below; they are
+written from memory of each platform's call-listing API, so check every field
+name against the current reference before building one:
+
+| Platform | Equivalent lookup |
+| --- | --- |
+| Retell | List calls filtered by `to_number`, `from_number` and a `start_timestamp` range, then read the one call with the Retell trace adapter |
+| Vapi | List calls created inside the time range for the phone number's id, match `customer.number` to the caller's number, then read the one call with the Vapi trace adapter |
+
+Each is one class beside `ElevenLabsNumberTimeFinder` in `traces/lookup.py`.
+
+### Each side of the call, as its own file
+
+Every call in a phone batch writes two files under the run directory, and the
+run file points at them under `audio`:
+
+- `audio/<carrier call id>.agent.wav`: the audio that arrived from the far end,
+  placed by the carrier's own timestamp on each frame.
+- `audio/<carrier call id>.caller.wav`: the audio this process released, placed
+  by when it was released.
+
+Both are 8000 Hz, 16-bit, mono, the same length, and start when the media
+stream started, so a time in one is the same time in the other. Neither is
+what the other side heard; the network and the carrier sit in between. For
+that, use the carrier's own two-channel recording. `--no-audio` keeps neither.
 
 ### Check in this order
 
@@ -130,6 +257,15 @@ Nothing here has touched a carrier. Specifically:
   assumed to be accepted; the reference page read on 24 Nov 2026 did not list it.
 - Calling a UK number from a UK caller ID, and anything about answering-machine
   detection, spam labelling or rate limits on repeated calls.
+- The trace lookup against a real account: that an inbound phone conversation
+  is listed inside the time window, and that `metadata.phone_call.agent_number`
+  and `external_number` hold the two numbers in a form the comparison accepts.
+  Field names are from the API reference read on 25 November 2026.
+- That the carrier stamps each inbound frame in milliseconds from the start of
+  the stream. The agent's recording is placed by that stamp.
+- The preflight against a real account and a real public address. Its probe has
+  only been asked for over localhost.
+- Several calls in a row through one listening server on a real line.
 
 ## Sources
 
@@ -139,4 +275,5 @@ Read on 24 November 2026.
 - Twilio call resource (create, update, recordings): https://www.twilio.com/docs/voice/api/call-resource
 - Twilio request signatures: https://www.twilio.com/docs/usage/webhooks/webhooks-security
 - Deepgram live transcription: https://developers.deepgram.com/reference/speech-to-text/listen-streaming
+- ElevenLabs conversation list and detail (read 25 November 2026): https://elevenlabs.io/docs/api-reference/conversations/list and https://elevenlabs.io/docs/api-reference/conversations/get
 - Pipecat Twilio serializer: https://docs.pipecat.ai/server/services/serializers/twilio
