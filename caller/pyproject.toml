@@ -17,8 +17,13 @@ dev = [
     "mypy>=1.13.0",
 ]
 
+# The phone leg needs nothing beyond the core dependencies: it speaks Twilio's
+# and Deepgram's protocols directly over websockets and httpx.
+phone = []
+
 [project.scripts]
 synthiq-caller = "synthiq_caller.cli:main"
+synthiq-caller-phone = "synthiq_caller.phone_server:main"
 
 [build-system]
 requires = ["hatchling"]
