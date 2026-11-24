@@ -8,3 +8,60 @@
 # Do not add a line to make a red build green. A new line means a model and a
 # migration disagree, and the tests cannot see it because they build their
 # schema from the models.
+#
+# What is in here, most serious first:
+#
+# 1. Columns the migrations made ARRAY or JSONB and the models declare JSON
+#    (modify_type). Two are arrays (campaigns.calling_days, test_scenarios.tags):
+#    the tests write to a JSON column, production writes to an array column.
+# 2. Unique indexes that exist only in the database (remove_index ... unique):
+#    contacts by (user_id, email) and (user_id, phone_number), and
+#    user_integrations by (user_id, integration_id). The tests cannot hit them.
+# 3. Foreign keys that cascade on delete in the database and not in the models
+#    (remove_fk ... ondelete=CASCADE paired with add_fk ... ondelete=None).
+# 4. Plain indexes and one unique constraint the migrations created and the
+#    models do not declare (remove_index, remove_constraint). Harmless at run
+#    time, but autogenerate would drop them.
+
+add_fk appointments(contact_id) -> contacts.id ondelete=None
+add_fk call_interactions(contact_id) -> contacts.id ondelete=None
+add_fk contacts(user_id) -> users.id ondelete=None
+modify_type agents.enabled_tools: JSONB(astext_type=Text()) -> JSON()
+modify_type campaigns.calling_days: ARRAY(INTEGER()) -> JSON(astext_type=Text())
+modify_type test_runs.actual_tool_calls: JSONB(astext_type=Text()) -> JSON(astext_type=Text())
+modify_type test_runs.actual_transcript: JSONB(astext_type=Text()) -> JSON(astext_type=Text())
+modify_type test_runs.behavior_matches: JSONB(astext_type=Text()) -> JSON(astext_type=Text())
+modify_type test_runs.criteria_results: JSONB(astext_type=Text()) -> JSON(astext_type=Text())
+modify_type test_runs.error_details: JSONB(astext_type=Text()) -> JSON(astext_type=Text())
+modify_type test_runs.issues_found: JSONB(astext_type=Text()) -> JSON(astext_type=Text())
+modify_type test_runs.recommendations: JSONB(astext_type=Text()) -> JSON(astext_type=Text())
+modify_type test_scenarios.caller_persona: JSONB(astext_type=Text()) -> JSON(astext_type=Text())
+modify_type test_scenarios.conversation_flow: JSONB(astext_type=Text()) -> JSON(astext_type=Text())
+modify_type test_scenarios.expected_behaviors: JSONB(astext_type=Text()) -> JSON(astext_type=Text())
+modify_type test_scenarios.expected_tool_calls: JSONB(astext_type=Text()) -> JSON(astext_type=Text())
+modify_type test_scenarios.success_criteria: JSONB(astext_type=Text()) -> JSON(astext_type=Text())
+modify_type test_scenarios.tags: ARRAY(VARCHAR(length=50)) -> JSON(astext_type=Text())
+remove_constraint agents_public_id_key on agents(public_id)
+remove_fk appointments(contact_id) -> contacts.id ondelete=CASCADE
+remove_fk call_interactions(contact_id) -> contacts.id ondelete=CASCADE
+remove_fk contacts(user_id) -> users.id ondelete=CASCADE
+remove_index ix_appointments_contact_id_scheduled_at on appointments(contact_id,scheduled_at)
+remove_index ix_appointments_contact_id_status on appointments(contact_id,status)
+remove_index ix_call_evaluations_agent_created on call_evaluations(agent_id,created_at)
+remove_index ix_call_evaluations_workspace_created on call_evaluations(workspace_id,created_at)
+remove_index ix_call_interactions_contact_id_call_started_at on call_interactions(contact_id,call_started_at)
+remove_index ix_call_records_user_id_started_at on call_records(user_id,started_at)
+remove_index ix_call_records_user_id_status on call_records(user_id,status)
+remove_index ix_call_records_user_started_at on call_records(user_id,started_at)
+remove_index ix_call_records_workspace_id_started_at on call_records(workspace_id,started_at)
+remove_index ix_contacts_created_at on contacts(created_at)
+remove_index ix_contacts_user_id_created_at on contacts(user_id,created_at)
+remove_index ix_contacts_user_id_email_unique on contacts(user_id,email) unique
+remove_index ix_contacts_user_id_phone_unique on contacts(user_id,phone_number) unique
+remove_index ix_contacts_user_id_status on contacts(user_id,status)
+remove_index ix_contacts_workspace_id_created_at on contacts(workspace_id,created_at)
+remove_index ix_phone_numbers_user_id_created_at on phone_numbers(user_id,created_at)
+remove_index ix_test_runs_agent_created on test_runs(agent_id,created_at)
+remove_index ix_user_integrations_user_integration on user_integrations(user_id,integration_id) unique
+remove_index ix_user_settings_user_id_workspace_id on user_settings(user_id,workspace_id)
+remove_index ix_workspaces_is_default on workspaces(is_default)
