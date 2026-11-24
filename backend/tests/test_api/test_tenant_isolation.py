@@ -546,12 +546,24 @@ class TestRetentionCleanup:
         assert response.status_code == 403
 
     @pytest.mark.asyncio
-    async def test_the_administrator_can(self, world: World) -> None:
+    async def test_the_administrator_can(
+        self, world: World, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Who may start it is the subject here, not what the clean-up deletes."""
+        ran: list[bool] = []
+
+        async def cleanup(_db: Any) -> dict[str, int]:
+            ran.append(True)
+            return {}
+
+        monkeypatch.setattr("app.api.compliance.cleanup_expired_data", cleanup)
+
         response = await world.client.post(
             "/api/v1/compliance/retention/cleanup", headers=world.admin_headers
         )
 
         assert response.status_code == 200
+        assert ran == [True]
 
 
 class TestCrmToolsStayInTheirWorkspace:
