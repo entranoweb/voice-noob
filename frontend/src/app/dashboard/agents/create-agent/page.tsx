@@ -186,13 +186,16 @@ const agentFormSchema = z.object({
     .default([]),
 });
 
-type AgentFormValues = z.infer<typeof agentFormSchema>;
+// What the form holds while it is being edited, and what the schema hands back once
+// its defaults are applied. They differ wherever the schema has a `.default()`.
+type AgentFormInput = z.input<typeof agentFormSchema>;
+type AgentFormValues = z.output<typeof agentFormSchema>;
 
 export default function CreateAgentPage() {
   const [step, setStep] = useState(1);
   const router = useRouter();
 
-  const form = useForm<AgentFormValues>({
+  const form = useForm<AgentFormInput, unknown, AgentFormValues>({
     resolver: zodResolver(agentFormSchema),
     defaultValues: {
       name: "",
@@ -213,12 +216,14 @@ export default function CreateAgentPage() {
     },
   });
 
-  const pricingTier = useWatch({ control: form.control, name: "pricingTier" });
-  const enabledTools = useWatch({ control: form.control, name: "enabledTools" });
+  // The form holds the schema's input type, where a field with a `.default()` may be
+  // undefined; each fallback below is the value the schema itself would apply.
+  const pricingTier = useWatch({ control: form.control, name: "pricingTier" }) ?? "premium";
+  const enabledTools = useWatch({ control: form.control, name: "enabledTools" }) ?? [];
   const enabledToolIds = useWatch({ control: form.control, name: "enabledToolIds" });
   const agentName = useWatch({ control: form.control, name: "name" });
   const systemPrompt = useWatch({ control: form.control, name: "systemPrompt" });
-  const currentLanguage = useWatch({ control: form.control, name: "language" });
+  const currentLanguage = useWatch({ control: form.control, name: "language" }) ?? "en-US";
 
   const selectedTier = useMemo(
     () => PRICING_TIERS.find((t) => t.id === pricingTier),
