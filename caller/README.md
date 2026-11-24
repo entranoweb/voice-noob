@@ -35,7 +35,10 @@ A new engine is one leg and one trace reader. Nothing else changes.
   timeline. It does not judge.
 - **Grading** (`grading.py`): pass or fail from tool results only, plus the
   **said / heard / stored** table for each fact the caller gave.
-- **Legs**: `elevenlabs_socket` (works, verified live), `fake` (tests).
+- **Legs**: `elevenlabs_socket` (works, verified live), `twilio_media` (the
+  phone leg: built and tested against a stand-in for Twilio, no real call
+  placed yet; see [docs/PHONE-LEG.md](docs/PHONE-LEG.md)), `fake` and
+  `fake_twilio` (tests).
 - **Traces**: `elevenlabs` (workflow and plain agents).
 - **Statistics** (`stats.py`): pass rate with a Wilson interval.
 - **Batch runner** (`batch.py`): a directory of scenarios, several times each,
@@ -79,7 +82,30 @@ The shipped scenario hangs up before anything is registered or booked. A
 scenario that lets the agent register, book, move or cancel changes real data in
 whatever system the agent is connected to. Point those at a test system only.
 
+## Call over a phone line
+
+```
+uv run synthiq-caller-phone --dry-run \
+    --public-url https://caller.example.com \
+    --from +44XXXXXXXXXX --to +44XXXXXXXXXX \
+    --scenario scenarios/new-patient-date-of-birth.json \
+    --clips <clip bank dir> --out runs/ --port 8765
+```
+
+`synthiq-caller-phone` dials through Twilio and plays the clips over the call,
+so the audio passes the telephone codec the socket leg skips. `--dry-run`
+places no call and needs no credentials. Drop it for a real call, which needs
+a Twilio account and number, an address Twilio can reach, and a transcriber
+for the agent's side (a carrier gives audio, not text).
+[docs/PHONE-LEG.md](docs/PHONE-LEG.md) has the requirements, the checks to make
+in order on the first call, and what is still unverified.
+
 ## Run a batch
+
+Four commands cover a set of scenarios: `validate` checks every scenario parses
+and names clips that exist, `batch` places the calls, `report` reads the
+stored runs, and `regrade` grades stored runs again after a scenario is
+corrected, without calling.
 
 ```
 uv run synthiq-caller validate scenarios/sophie --clips <clip bank dir>
@@ -90,7 +116,8 @@ uv run synthiq-caller regrade runs/ --scenarios scenarios/sophie      # after fi
 
 Three guards run before every call.
 
-- **Mutation guard.** Each scenario states what it can change on the system the
+- **Mutation guard.** Each scenario states, in its `mutates` field, what it can
+  change on the system the
   agent is connected to: `none` (lookups only, hangs up before anything is
   written), `registers`, `books` or `moves`. A scenario that does not say is
   `unknown` and is treated as the most dangerous. `batch` runs only `none`
@@ -225,19 +252,21 @@ conversations in `tests/fixtures/` (synthetic test callers).
 
 ## What is not built
 
-- **The phone leg.** `legs/twilio_media.py` is a stub that raises
-  `NotImplementedError`; its docstring holds the plan (Pipecat with a carrier
-  media stream, then SIP).
+- **A real phone call.** The phone leg is built, but no call has been placed
+  with it; everything about a real carrier is unverified until the first one
+  ([docs/PHONE-LEG.md](docs/PHONE-LEG.md), "Not verified").
 - **Resetting the system under test** between calls (diary, records, locks).
   The hook points exist; no reset does.
 - **Setting up what a scenario requires** (a patient on file, an appointment to
   move). `requires` is a note for people, not something the runner acts on.
 - **Chains of calls** that share state (register, ring back, get locked out).
-- **A referee recogniser.** `Heard` is whatever the engine reports. An engine
-  that reports nothing leaves that column empty.
-- **Agent text on a phone leg.** A carrier gives audio only, so steps keyed on
-  the agent's words will need the referee recogniser.
-- **Keypad digits on the socket leg.** The websocket has no keypad channel.
+- **A referee recogniser for what the agent heard.** `Heard` is whatever the
+  engine reports. An engine that reports nothing leaves that column empty, and
+  the phone leg never emits it: read it afterwards from the engine's trace.
+  (The agent's own words on a phone call do have a transcriber; see the phone
+  leg guide.)
+- **Keypad digits on the socket leg.** The websocket has no keypad channel. The
+  phone leg plays the keypad tones as audio in the call.
 
 ## Honest limits
 
@@ -245,7 +274,7 @@ conversations in `tests/fixtures/` (synthetic test callers).
   carrier and the telephone codec. In five socket runs the recorded clip
   "5th July 1987" was heard correctly five times, although the same words on
   the phone were heard as "6th July" and stored that way. Phone-only mishearing
-  needs the phone leg.
+  needs the phone leg, which has not yet placed a real call.
 - **A clip's transcript can be wrong.** Persona facts taken from the manifest's
   `value` column are only as good as the transcript behind them, and no clip
   has had a human listen. One of three scenarios run live had a wrong date of

@@ -1,7 +1,23 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@/test/test-utils";
+import { http, HttpResponse } from "msw";
+import { render, screen, server, waitFor } from "@/test/test-utils";
 import userEvent from "@testing-library/user-event";
 import IntegrationsPage from "../page";
+
+// The page asks for the connected integrations as soon as it mounts. With no
+// handler the request left MSW for a real socket on :8000, was refused some
+// time later, and the client logged that refusal. When the refusal landed
+// after the last test had finished, the log arrived while the worker was
+// shutting down and vitest failed the whole run with "Closing rpc while
+// onUserConsoleLog was pending", with every test green. Answering the request
+// here means nothing is still in flight when the file ends.
+beforeEach(() => {
+  server.use(
+    http.get("http://localhost:8000/api/v1/integrations", () =>
+      HttpResponse.json({ integrations: [], total: 0 })
+    )
+  );
+});
 
 describe("IntegrationsPage", () => {
   beforeEach(() => {

@@ -10,6 +10,12 @@ capability the code does not have. Every external claim is marked **SOURCED** wi
 its page, or **INFERRED** when it is a judgement from sourced facts. Pages that
 could not be read are listed in [Sources](#sources).
 
+A third mark was added the same evening: **RESEARCH**. It means "from research
+read 24 Nov 2026, not tested hands-on". Those findings came back from a separate
+research session after this document was first written and correct several
+claims in it. Their source links are in that session's report and were not
+re-fetched here, so treat each as a lead to verify, not as a fact.
+
 The owner's direction, stated 24 November 2026:
 
 1. The voice engine is self-hosted and runs on Azure in the UK, with Deepgram for
@@ -23,18 +29,24 @@ The owner's direction, stated 24 November 2026:
 
 | Question | Decision proposed | Main risk |
 | --- | --- | --- |
-| Engine | A cascaded pipeline on Pipecat: Deepgram speech recognition, a text model on Azure OpenAI in a regional deployment, region-pinned speech synthesis | We have never run it; latency and turn-taking must be measured on real calls before anything is promised |
+| Engine | A cascaded pipeline: Deepgram speech recognition, a text model on Azure OpenAI in a regional deployment, region-pinned speech synthesis. **Framework not decided:** Pipecat is the leading candidate and LiveKit Agents runs beside it on the same clips | We have never run either; latency and turn-taking must be measured on real calls before anything is promised |
 | Flow control | A server-side state machine (Pipecat Flows, programmatic) decides every step; the model only extracts values; spoken lines are fixed text wherever a line carries policy or data | Discipline: one prose-judged branch added "just this once" recreates the failure this replaces |
 | Telephony, engine | SIP trunk into the engine, carrier chosen per customer; Twilio media streams while the trunk is being set up | UK number onboarding time on a new carrier |
-| Telephony, test caller | Twilio now (account exists), SIP later so customers bring their own carrier | Repeated calls from one number being rate-limited or flagged |
+| Telephony, test caller | Twilio now (account exists), SIP later so customers bring their own carrier | Repeated calls from one number being rate-limited or flagged. Twilio media streams do not run in the UK (RESEARCH), so this leg cannot carry a UK-only claim |
 | Testing | A five-layer pyramid ending in production calls mined into tests | The audio layers need recordings and consent |
-| Product | Sell the realism layer: real recorded voices, reset of the system under test, chains of calls, said/heard/stored per field, outcome from tool results | **Licence: the upstream README declares AGPL-3.0.** See [Licence](#licence-a-blocker-for-selling) |
+| Product | Sell the combination, since no single part is unique (section 4): clips chosen in reaction to the agent, grading against what the customer's real system stored, cleanup of that system, UK hosting | **Licence: the upstream README declares AGPL-3.0.** See [Licence](#licence-a-blocker-for-selling) |
 
 ## 1. Engine decision
 
-**Conclusion: move from the speech-to-speech bridge to a cascaded pipeline on
-Pipecat.** The reason is not quality. It is that the current engine cannot be
-pinned to the UK, and cannot run a deterministic flow.
+**Conclusion: move from the speech-to-speech bridge to a cascaded pipeline.
+Pipecat is the candidate framework, not a decision.** The reason for a cascade
+is not quality. It is that the current engine cannot be pinned to the UK, and
+cannot run a deterministic flow. Which framework carries the cascade is settled
+by a side-by-side: the same flow on Pipecat and on LiveKit Agents, driven by the
+same recorded clips from the test caller, compared on the numbers in "Main risk"
+below. (RESEARCH: from research read 24 Nov 2026, not tested hands-on, which
+found the case for Pipecat over LiveKit Agents weaker than this section first
+stated.)
 
 ### What exists today
 
@@ -60,7 +72,7 @@ pinned to the UK, and cannot run a deterministic flow.
 | Migration from today | None | Replace `gpt_realtime.py` and the two bridges; keep `AudioTurnRecorder`, the trace emitter, the tools registry and the database | Larger: the bridge, transport and deployment all change |
 | Licence | n/a | BSD-2 (as recorded in `SYNTHIQ_PLAN.md` §7; not re-fetched) | Apache-2.0 (same caveat) |
 
-### Why B
+### Why B is the first candidate
 
 1. **Residency.** A UK healthcare buyer will ask where audio is processed. Option
    A cannot answer "in the UK" on Azure today (SOURCED [1]).
@@ -76,9 +88,9 @@ pinned to the UK, and cannot run a deterministic flow.
 
 | Stage | First choice | UK position | Not verified |
 | --- | --- | --- | --- |
-| Speech recognition | Deepgram Flux (`flux-general-en`) for turn-taking; Nova-3 as the independent referee transcript | Managed endpoint is `api.deepgram.com`; the page names no regional endpoint. Self-hosting on Docker or Kubernetes needs an Enterprise plan (SOURCED [4], [9]) | Whether Flux is available self-hosted; whether an EU or UK managed endpoint exists; accuracy on UK accents and on spelled-out postcodes |
+| Speech recognition | Deepgram Flux (`flux-general-en`) for turn-taking; Nova-3 as the independent referee transcript | Managed endpoint is `api.deepgram.com`; the page names no regional endpoint. Self-hosting on Docker or Kubernetes needs an Enterprise plan (SOURCED [4], [9]) | Whether Flux is available self-hosted; whether an EU or UK managed endpoint exists. Accuracy: one practitioner report has Nova-3 getting UK postcodes right 63.7% of the time on 248 real UK phone calls (RESEARCH: single unreplicated source, read 24 Nov 2026, not tested hands-on). So no recogniser is trusted with a postcode: read-back and keypad entry are designed into every flow that takes one |
 | Text model | Azure OpenAI, regional (not global) deployment | Regional "Standard" deployments exist for text models (SOURCED [10]) | **Which text models are offered as a regional deployment in UK South.** Check the region table before committing |
-| Speech synthesis | Decide by listening test | ElevenLabs residency is EU, India or Singapore, Enterprise only, **no UK region**, and "processing may occur elsewhere" unless zero-retention mode and the API are used (SOURCED [11]) | Azure Speech neural voices in UK South; Deepgram Aura self-hosted; Cartesia regional hosting. None were fetched |
+| Speech synthesis | Decide by listening test | ElevenLabs residency is EU, India or Singapore, Enterprise only, **no UK region**, and "processing may occur elsewhere" unless zero-retention mode and the API are used (SOURCED [11]). A private deployment in the customer's own cloud exists, by quote (RESEARCH: read 24 Nov 2026, not tested hands-on; no price or terms seen) | Azure Speech neural voices in UK South; Deepgram Aura self-hosted; Cartesia regional hosting. None were fetched |
 | Turn detection | Flux end-of-turn, with a silence floor | n/a | Behaviour on callers who pause mid-answer |
 
 **Main risk.** This pipeline has never run here. The honest sequence is: build it
@@ -147,12 +159,18 @@ moving.** The engine and the test caller are separate decisions.
 - **jambonz:** not now. It is worth it only if we need to operate carrier
   routing ourselves. INFERRED.
 - Media anchoring in the UK or EU was **not verified** for any carrier.
+- **Twilio media streams run in the United States, Ireland and Australia**
+  (RESEARCH: from research read 24 Nov 2026, not tested hands-on). There is no
+  UK option, so call audio on the Twilio phone leg leaves the UK. That leg is
+  for reach and speed; a UK-only claim needs the SIP leg anchored in the UK,
+  and must not be made for the test caller until that exists.
 
 ## 4. Testing
 
 **Conclusion: grade from the system's own tool results and stored data, on real
-recorded voices, across chains of calls. That is where every existing product
-stops.**
+recorded voices, across chains of calls.** An earlier version of this line said
+every existing product stops there. That was wrong; see "What the market does
+and does not do".
 
 ### The pyramid
 
@@ -181,11 +199,35 @@ stops.**
 From [`COMPETITIVE_LANDSCAPE.md`](COMPETITIVE_LANDSCAPE.md) and the vendors' own
 pages read on 24 November 2026: Hamming, Coval and Cekura all place real calls
 with synthetic personas, accents, noise and interruptions, check tool calls, and
-offer schedules and release gates (SOURCED [16], [17], [18]). On the pages read,
-none replays a specific person's recorded utterances as the caller, none resets
-the system under test between calls (Hamming's guide tells the customer to build
-fixtures; SOURCED [19]), and none documents state carried from one call to the
-next. INFERRED from absence in their documentation, not from a hands-on trial.
+offer schedules and release gates (SOURCED [16], [17], [18]).
+
+This section first claimed that nobody replays real audio, resets the system
+under test, or tests state carried between calls. Each of those was inferred
+from absence on the few pages read, and each is withdrawn. All of the following
+is RESEARCH: from research read 24 Nov 2026, not tested hands-on.
+
+| Capability | Who already has it, or says so |
+| --- | --- |
+| Supplied audio files as the caller | Bespoken, Sipfront and Cyara accept them |
+| Replay of a call's original audio | Hamming claims it, and possibly Cekura. Unverified: the sources disagree |
+| Several calls that share state | Bluejay ships multi-call "Customer Journeys" |
+| Reset between calls | Hamming's guide tells the customer to build fixtures (SOURCED [19]). Not established for the others either way |
+
+So the wedge is not any one of these. It is the combination, and it stays a
+claim about us, not about what others lack:
+
+1. **Clips chosen in reaction to the agent.** The caller listens and picks the
+   recorded answer to the question actually asked, so a re-ask, a read-back or a
+   changed order is followed, not broken.
+2. **Grading against what the customer's real system stored.** Read the record
+   back after the call. A tool returning 200 is not the outcome.
+3. **Cleanup of that real system** after each call, with the cleanup checked.
+4. **UK hosting** of the tool and the recordings. Not true of the Twilio phone
+   leg (section 3).
+
+Whether any competitor also does all four was not established. Of the four,
+only the first is built today; grading currently reads the agent's tool
+results, not the customer's stored record, and no cleanup exists.
 
 One finding from the prototype worth keeping: the same recorded opener, played
 five times, was transcribed three different ways by the agent's live speech
@@ -193,6 +235,8 @@ model. A synthetic persona cannot expose that; a recorded clip can, and repeat
 runs measure it.
 
 ### Staying ahead: five capabilities, in order
+
+None of these is claimed as exclusive (see the table above).
 
 1. **Clip replay with said, heard, stored.** For every name, date, postcode and
    number: what the caller said, what the agent's speech model heard, what the
@@ -219,8 +263,11 @@ production, UK healthcare first. Do not sell anything until the licence question
 is settled.**
 
 - **Positioning.** "Your synthetic test caller passes. Your customers still fail.
-  We replay your real callers, reset your system between calls, and tell you
-  field by field what was said, heard and stored."
+  We answer your agent with your real callers' recorded words, read back what
+  your own system stored, field by field, clean up after every call, and keep
+  it in the UK." Do not say "only we" about replay, call chains or reset:
+  others have each of those (section 4). UK hosting may be said only of the
+  parts where it is true.
 - **Who buys.** Teams running a voice agent on any platform who have recordings
   and a backend they can seed. Regulated buyers who need evidence that a change
   did not make things worse.
@@ -277,10 +324,11 @@ Owners are blank on purpose.
 | | Batch runner: N scenarios by k repeats, Wilson intervals, one command | |
 | | Dependency and security hygiene closed: websocket token, signature check fails closed, call-back host from configuration | |
 | 23 Jan 2027 | Pipecat pipeline beside the current bridge: Deepgram Flux, regional Azure text model, one speech-synthesis option; first real call through it | |
-| | Side-by-side numbers on real calls for both engines: first-audio time, barge-in, word error rate | |
-| | One flow rebuilt as a programmatic state machine with fixed lines; emergency pre-check per turn | |
+| | The same flow on LiveKit Agents, driven by the same clips, for the framework side-by-side | |
+| | Side-by-side numbers on real calls for the current bridge and both candidate frameworks: first-audio time, barge-in, word error rate | |
+| | One flow rebuilt as a programmatic state machine with fixed lines; emergency pre-check per turn; read-back and keypad entry for postcodes and other digits | |
 | | Reset hooks and call chains in the caller | |
-| 22 Feb 2027 | Engine decision confirmed or reversed on the measured numbers; speech-to-speech path removed or kept as an option | |
+| 22 Feb 2027 | Framework chosen (Pipecat or LiveKit Agents) on the measured numbers; speech-to-speech path removed or kept as an option | |
 | | SIP leg for engine and caller | |
 | | Production mining: failed call to scenario, with consent and retention handling for clips | |
 | | Second trace adapter; schedules and release gating | |
@@ -292,8 +340,8 @@ Owners are blank on purpose.
 | --- | --- |
 | Licence route | Take advice now. Keep the test product in separate, clean code so it is not bound by the upstream declaration |
 | Whether this fork stays public | Decide deliberately; it is public today |
-| Engine | Cascaded pipeline on Pipecat, built beside the current bridge and confirmed by measurement before the old path is removed |
-| Speech synthesis vendor | Choose by listening test among options that can be pinned to the UK; ElevenLabs has no UK region |
+| Engine | Cascaded pipeline, built beside the current bridge. Pipecat first as the candidate, LiveKit Agents beside it on the same clips; choose on measurement before the old path is removed |
+| Speech synthesis vendor | Choose by listening test among options that can be pinned to the UK. ElevenLabs has no managed UK region; ask for a quote on its private deployment in our own cloud before ruling it out (RESEARCH) |
 | Deepgram: managed or self-hosted | Managed to start; open the Enterprise conversation early if UK-only processing is a sales requirement |
 | The unwired pricing tiers | Delete them until the cascaded engine makes them true ([`DECISIONS.md`](DECISIONS.md) §36) |
 | First paying customer profile | A UK team with an agent in production and recordings they are allowed to use |

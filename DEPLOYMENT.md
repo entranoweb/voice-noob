@@ -118,6 +118,44 @@ not list never reaches the app — which is why `PUBLIC_URL` and
 naming the missing variable rather than starting a server that cannot take a
 call.
 
+#### Settings that changed behaviour in November 2026
+
+Names and defaults are from `backend/app/core/config.py`.
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| `SECRET_KEY` | none usable | Signs login tokens, call stream tokens and embedded widget sessions. The app refuses to start on an empty value or on any placeholder shipped in this repository, unless `DEBUG=true`. Every backend instance must share one value |
+| `PUBLIC_URL` | unset | The backend's public origin. Used for the media stream URL the carrier dials, for the webhook addresses given to carriers, and as the URL a Twilio signature is checked against. Required by the compose file |
+| `ALLOW_UNSIGNED_WEBHOOKS` | `false` | `true` accepts carrier webhooks with no verified signature. For a local rehearsal with no carrier key only. It logs at critical on startup and on every webhook it admits, and the preflight fails on it |
+| `FRONTEND_URL` | unset | Origin the embed snippet points other sites at. Falls back to the first CORS origin, then `PUBLIC_URL` |
+| `EMBED_ALLOW_ANY_ORIGIN_WHEN_UNSET` | `false` | An agent with no allowed domains can be embedded by no other site. `true` restores the old meaning, every site, and logs a warning each time it is the reason a request was served |
+| `EMBED_SESSION_MAX_SECONDS` | `900` | Longest an embedded session can run, and the lifetime of its signed token. The session is closed when it is reached |
+| `EMBED_TOOLS_DEFAULT_ENABLED` | `false` | Whether embedded sessions may call tools when the agent does not say. The per-agent switch is `embed_settings.allow_tools`, set through the agent's embed settings API; the dashboard has no control for it yet |
+| `TWILIO_AUTH_TOKEN` | unset | Fallback for Twilio signature checks. See below |
+
+Three things follow that are not settings.
+
+- **Redis is part of the call path.** Each call's stream token is claimed in
+  Redis so it can be used once. While Redis is unreachable every carrier media
+  stream is refused, by design: the log line is
+  `stream_token_claim_store_unavailable`, and a replayed token logs as
+  `replayed`. All backend instances must share one Redis.
+- **Twilio webhooks are verified per workspace.** The signature is checked
+  against the Twilio auth token of the workspace that owns the number, agent or
+  call the webhook is about (Settings > Workspace API Keys), then against the
+  global `TWILIO_AUTH_TOKEN` if one is set. With neither, the webhook is
+  refused 403. Telnyx still uses the one global `TELNYX_PUBLIC_KEY`.
+- **Deploy the frontend with the backend.** The widget page must send the
+  signed session the backend now requires; an older page gets no tools and no
+  transcript.
+
+`docker-compose.prod.yml` passes the backend `SECRET_KEY`, `PUBLIC_URL`,
+`FRONTEND_URL`, `TELNYX_PUBLIC_KEY`, `TELNYX_API_KEY` and `DEBUG` from this
+table's neighbourhood. It does **not** pass `ALLOW_UNSIGNED_WEBHOOKS`, the three
+`EMBED_*` settings or the `TWILIO_*` pair, so on that deployment they keep their
+defaults whatever is set in Coolify, until they are added to the backend's
+`environment:` block.
+
 Migrations run themselves. `docker-entrypoint.sh` waits for Postgres and Redis,
 runs `alembic upgrade head`, then starts gunicorn — there is no manual migration
 step.
