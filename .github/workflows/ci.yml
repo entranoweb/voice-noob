@@ -102,9 +102,10 @@ jobs:
       # The tests build their schema from the models, not from the migrations,
       # so a model change with no migration passes every test and then breaks
       # the next deployment. This compares the migrated database with the
-      # models and fails, listing the differences, when they disagree.
+      # models. Differences that predate the check are listed in
+      # migrations/drift-baseline.txt; anything else fails the build.
       - name: Models and migrations agree
-        run: uv run alembic check
+        run: uv run python scripts/check_migration_drift.py
 
       - name: Test
         run: uv run pytest --cov=app --cov-report=term-missing --cov-report=xml

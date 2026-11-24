@@ -1,0 +1,10 @@
+# Differences between the models and the migrated database that existed when
+# the drift check was added (25 November 2026). See app/db/migration_drift.py.
+#
+# The check fails on any difference NOT listed here, and on any line here that
+# no longer matches. So this file can only shrink: fix a difference with a
+# migration (or by correcting the model), then delete its line.
+#
+# Do not add a line to make a red build green. A new line means a model and a
+# migration disagree, and the tests cannot see it because they build their
+# schema from the models.
