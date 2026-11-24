@@ -439,7 +439,7 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.8.0" },
     { name = "websockets", specifier = ">=14.1" },
 ]
-provides-extras = ["dev"]
+provides-extras = ["dev", "phone"]
 
 [[package]]
 name = "typing-extensions"
