@@ -57,6 +57,8 @@ jobs:
       REDIS_HOST: localhost
       REDIS_PORT: "6379"
       SECRET_KEY: ci-secret-not-used-outside-ci
+      # A fixed, public key: it encrypts only what the test run itself writes.
+      CREDENTIAL_ENCRYPTION_KEYS: ci:Y2ktb25seS1rZXktMDEyMzQ1Njc4OWFiY2RlZiEhISE=
 
     steps:
       - uses: actions/checkout@v4

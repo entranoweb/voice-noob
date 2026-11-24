@@ -7,6 +7,7 @@ from sqlalchemy import DateTime, ForeignKey, String, Text, UniqueConstraint, Uui
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
+from app.db.encrypted_types import EncryptedText
 
 
 class UserSettings(Base):
@@ -31,15 +32,23 @@ class UserSettings(Base):
         comment="Workspace this setting belongs to (null = user-level default)",
     )
 
-    # Voice & AI API Keys (encrypted at rest in production)
+    # Secrets below are encrypted at rest (app.db.encrypted_types). Identifiers
+    # and public values (endpoint, deployment name, account SID, Telnyx public
+    # key) are not secrets and stay readable.
     openai_api_key: Mapped[str | None] = mapped_column(
-        Text, nullable=True, comment="OpenAI API key for GPT Realtime"
+        EncryptedText("user_settings.openai_api_key"),
+        nullable=True,
+        comment="OpenAI API key for GPT Realtime",
     )
     deepgram_api_key: Mapped[str | None] = mapped_column(
-        Text, nullable=True, comment="Deepgram API key for STT"
+        EncryptedText("user_settings.deepgram_api_key"),
+        nullable=True,
+        comment="Deepgram API key for STT",
     )
     elevenlabs_api_key: Mapped[str | None] = mapped_column(
-        Text, nullable=True, comment="ElevenLabs API key for TTS"
+        EncryptedText("user_settings.elevenlabs_api_key"),
+        nullable=True,
+        comment="ElevenLabs API key for TTS",
     )
 
     # Azure OpenAI Configuration (alternative to direct OpenAI)
@@ -47,7 +56,9 @@ class UserSettings(Base):
         Text, nullable=True, comment="Azure OpenAI endpoint URL"
     )
     azure_openai_api_key: Mapped[str | None] = mapped_column(
-        Text, nullable=True, comment="Azure OpenAI API key"
+        EncryptedText("user_settings.azure_openai_api_key"),
+        nullable=True,
+        comment="Azure OpenAI API key",
     )
     azure_openai_deployment_name: Mapped[str | None] = mapped_column(
         String(255), nullable=True, comment="Azure OpenAI deployment name (e.g., gpt-realtime)"
@@ -58,7 +69,7 @@ class UserSettings(Base):
 
     # Telephony API Keys
     telnyx_api_key: Mapped[str | None] = mapped_column(
-        Text, nullable=True, comment="Telnyx API key"
+        EncryptedText("user_settings.telnyx_api_key"), nullable=True, comment="Telnyx API key"
     )
     telnyx_public_key: Mapped[str | None] = mapped_column(
         Text, nullable=True, comment="Telnyx public key"
@@ -67,7 +78,7 @@ class UserSettings(Base):
         String(255), nullable=True, comment="Twilio Account SID"
     )
     twilio_auth_token: Mapped[str | None] = mapped_column(
-        Text, nullable=True, comment="Twilio Auth Token"
+        EncryptedText("user_settings.twilio_auth_token"), nullable=True, comment="Twilio Auth Token"
     )
 
     # Timestamps

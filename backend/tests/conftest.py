@@ -13,6 +13,12 @@ os.environ.setdefault("SECRET_KEY", "test-only-signing-key-never-used-outside-th
 # a run needs no Redis and limits cannot leak between runs sharing one; the
 # shared-store behaviour has its own tests (tests/unit/test_rate_limit_store.py).
 os.environ.setdefault("RATE_LIMIT_STORAGE_URI", "memory://")
+# Settings also refuse to load without a key for customer credentials. A fixed,
+# public test key: nothing it encrypts outlives a test.
+os.environ.setdefault(
+    "CREDENTIAL_ENCRYPTION_KEYS",
+    "test:dGVzdC1vbmx5LWtleS0wMTIzNDU2Nzg5YWJjZGVmISE=",
+)
 
 # Test database URL (using temp file SQLite for tests)
 import tempfile

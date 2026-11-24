@@ -13,6 +13,7 @@ from sqlalchemy import func, select
 
 from app.api import (
     agents,
+    audit,
     auth,
     calls,
     campaigns,
@@ -32,6 +33,7 @@ from app.api import (
 )
 from app.api import settings as settings_api
 from app.api.auth import get_password_hash
+from app.core.audit import AuditAction, record_audit
 from app.core.config import settings
 from app.core.limiter import limiter
 from app.db.redis import close_redis, get_redis
@@ -43,6 +45,7 @@ from app.monitoring import get_metrics_router, loop_lag
 from app.monitoring.tracing import configure_tracing, shutdown_tracing
 from app.services.call_registry import set_shutting_down, wait_for_calls_to_drain
 from app.services.campaign_worker import start_campaign_worker, stop_campaign_worker
+from app.services.data_protection import start_retention_worker, stop_retention_worker
 
 # Configure structured logging with async processors
 structlog.configure(
@@ -103,6 +106,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:  # noqa: PLR0912
                     is_superuser=True,
                 )
                 db.add(admin_user)
+                await db.flush()
+                await record_audit(
+                    db,
+                    AuditAction.ADMIN_BOOTSTRAP,
+                    target_type="user",
+                    target_id=str(admin_user.id),
+                    details={"reason": "first start with no users"},
+                )
                 await db.commit()
                 logger.info(
                     "Created default admin user",
@@ -137,6 +148,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:  # noqa: PLR0912
     except Exception:
         logger.exception("Failed to start campaign worker - campaigns will not process")
 
+    # Start the retention sweep (non-fatal). It deletes call data past each
+    # account's retention period; without it the period is only a number.
+    if settings.RETENTION_SWEEP_ENABLED:
+        try:
+            await start_retention_worker()
+            logger.info("Retention worker started")
+        except Exception:
+            logger.exception("Failed to start retention worker - retention will not run")
+
     # Event-loop lag gauge: the saturation signal for real-time audio.
     # Cheap (one 100ms-interval task) and safe to run everywhere.
     loop_lag.start()
@@ -167,6 +187,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:  # noqa: PLR0912
                 )
         except Exception:
             logger.exception("connection_draining_error")
+
+    # Stop retention worker
+    try:
+        await stop_retention_worker()
+    except Exception:
+        logger.exception("Error stopping retention worker")
 
     # Stop campaign worker
     try:
@@ -241,6 +267,7 @@ app.include_router(campaigns.router, prefix=settings.API_V1_PREFIX)  # Campaigns
 app.include_router(phone_numbers.router)  # Phone numbers API
 app.include_router(auth.router)  # Authentication API
 app.include_router(compliance.router)  # Compliance API (GDPR/CCPA)
+app.include_router(audit.router)  # Audit trail (read only)
 app.include_router(integrations.router)  # Integrations API (external tools)
 app.include_router(embed.router)  # Public embed API (unauthenticated)
 app.include_router(embed.ws_router)  # Public embed WebSocket

@@ -1,6 +1,6 @@
 """Compliance API routes for GDPR and CCPA."""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import structlog
 from fastapi import APIRouter, Depends, Request
@@ -8,16 +8,43 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.audit import AuditAction, record_audit
 from app.core.auth import CurrentUser, user_id_to_uuid
+from app.core.config import settings as app_settings
+from app.core.secret_box import get_box
 from app.db.session import get_db
 from app.models.agent import Agent
 from app.models.appointment import Appointment
 from app.models.call_interaction import CallInteraction
 from app.models.call_record import CallRecord
+from app.models.campaign import Campaign
+from app.models.compliance_run import (
+    KIND_ERASURE,
+    KIND_EXPORT,
+    KIND_RETENTION,
+    STATUS_SUCCEEDED,
+    TRIGGER_SCHEDULE,
+    TRIGGER_USER,
+    ComplianceRun,
+)
 from app.models.contact import Contact
+from app.models.phone_number import PhoneNumber
 from app.models.privacy_settings import ConsentRecord, PrivacySettings
+from app.models.user_integration import UserIntegration
 from app.models.user_settings import UserSettings
 from app.models.workspace import Workspace
+from app.services.data_protection import (
+    call_record_owner_filter,
+    contact_owner_filter,
+    erase_account_data,
+    finish_run,
+    latest_run,
+    owned_agent_ids,
+    owned_workspace_ids,
+    record_failed_run,
+    run_retention,
+    start_run,
+)
 
 router = APIRouter(prefix="/api/v1/compliance", tags=["compliance"])
 logger = structlog.get_logger()
@@ -118,6 +145,9 @@ class DataExportResponse(BaseModel):
     call_records: list[dict[str, object]]
     call_interactions: list[dict[str, object]]
     consent_records: list[dict[str, object]]
+    phone_numbers: list[dict[str, object]] = []
+    campaigns: list[dict[str, object]] = []
+    integrations: list[dict[str, object]] = []
     exported_at: datetime
 
 
@@ -164,6 +194,75 @@ async def get_user_settings(user_id: int, db: AsyncSession) -> UserSettings | No
     return result.scalar_one_or_none()
 
 
+def _run_check(
+    check_id: str,
+    label: str,
+    run: ComplianceRun | None,
+    *,
+    never: str,
+    succeeded: str,
+    failed: str,
+) -> ComplianceCheckItem:
+    """A check whose status is what the last recorded run actually did."""
+    if run is None:
+        return ComplianceCheckItem(id=check_id, label=label, description=never, status="warning")
+    when = run.started_at.date().isoformat()
+    if run.status == STATUS_SUCCEEDED:
+        return ComplianceCheckItem(
+            id=check_id, label=label, description=f"{succeeded} {when}", status="complete"
+        )
+    return ComplianceCheckItem(
+        id=check_id, label=label, description=f"{failed} {when}", status="incomplete"
+    )
+
+
+def _retention_check(retention_days: int, last_sweep: ComplianceRun | None) -> ComplianceCheckItem:
+    """Retention is in force only if the scheduled sweep has run recently."""
+    label = "Data Retention Policy"
+    period = f"Data retained for {retention_days} days."
+    if not app_settings.RETENTION_SWEEP_ENABLED:
+        return ComplianceCheckItem(
+            id="data_retention",
+            label=label,
+            description=f"{period} The retention sweep is switched off, so nothing is deleted.",
+            status="incomplete",
+        )
+    if last_sweep is None:
+        return ComplianceCheckItem(
+            id="data_retention",
+            label=label,
+            description=f"{period} The retention sweep has not run yet.",
+            status="incomplete",
+        )
+    when = last_sweep.started_at.date().isoformat()
+    if last_sweep.status != STATUS_SUCCEEDED:
+        return ComplianceCheckItem(
+            id="data_retention",
+            label=label,
+            description=f"{period} The last retention sweep failed on {when}.",
+            status="incomplete",
+        )
+    started = last_sweep.started_at
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=UTC)
+    overdue = datetime.now(UTC) - started > timedelta(
+        hours=2 * max(1, app_settings.RETENTION_SWEEP_INTERVAL_HOURS)
+    )
+    if overdue:
+        return ComplianceCheckItem(
+            id="data_retention",
+            label=label,
+            description=f"{period} The retention sweep last ran on {when} and is overdue.",
+            status="warning",
+        )
+    return ComplianceCheckItem(
+        id="data_retention",
+        label=label,
+        description=f"{period} Last retention sweep ran on {when}.",
+        status="complete" if retention_days <= MAX_COMPLIANT_RETENTION_DAYS else "warning",
+    )
+
+
 # =============================================================================
 # Compliance Status Endpoints
 # =============================================================================
@@ -208,13 +307,31 @@ async def get_compliance_status(
         latest_recording_consent is not None and latest_recording_consent.granted
     )
 
+    # What was actually run, not what the code is able to do.
+    last_export = await latest_run(db, KIND_EXPORT, user_id=current_user.id)
+    last_erasure = await latest_run(db, KIND_ERASURE, user_id=current_user.id)
+    last_sweep = await latest_run(db, KIND_RETENTION, trigger=TRIGGER_SCHEDULE)
+    public_url = app_settings.PUBLIC_URL or ""
+    served_over_tls = public_url.lower().startswith("https://")
+    credentials_encrypted = get_box() is not None
+
     # GDPR Checks
     gdpr_checks: list[ComplianceCheckItem] = [
         ComplianceCheckItem(
             id="encryption_transit",
             label="Encryption in Transit",
-            description="All data transmitted over HTTPS/WSS",
-            status="complete",
+            description="The public address is served over HTTPS/WSS"
+            if served_over_tls
+            else "No HTTPS public address is configured (PUBLIC_URL), so this cannot be confirmed",
+            status="complete" if served_over_tls else "warning",
+        ),
+        ComplianceCheckItem(
+            id="encryption_at_rest",
+            label="Credentials Encrypted at Rest",
+            description="Provider and integration credentials are stored encrypted"
+            if credentials_encrypted
+            else "No credential key is configured; credentials are stored in plain text",
+            status="complete" if credentials_encrypted else "incomplete",
         ),
         ComplianceCheckItem(
             id="user_authentication",
@@ -249,25 +366,22 @@ async def get_compliance_status(
             status="complete" if privacy_settings.privacy_policy_url else "incomplete",
             action_label="Add Policy URL" if not privacy_settings.privacy_policy_url else None,
         ),
-        ComplianceCheckItem(
-            id="data_retention",
-            label="Data Retention Policy",
-            description=f"Data retained for {privacy_settings.data_retention_days} days",
-            status="complete"
-            if privacy_settings.data_retention_days <= MAX_COMPLIANT_RETENTION_DAYS
-            else "warning",
+        _retention_check(privacy_settings.data_retention_days, last_sweep),
+        _run_check(
+            "data_export",
+            "Data Export",
+            last_export,
+            never="Export has not been run for this account yet",
+            succeeded="Last export succeeded on",
+            failed="Last export failed on",
         ),
-        ComplianceCheckItem(
-            id="data_export",
-            label="Data Export Available",
-            description="Users can export their data",
-            status="complete",
-        ),
-        ComplianceCheckItem(
-            id="data_deletion",
-            label="Data Deletion Available",
-            description="Users can request data deletion",
-            status="complete",
+        _run_check(
+            "data_deletion",
+            "Data Deletion",
+            last_erasure,
+            never="Deletion has not been run for this account yet",
+            succeeded="Last deletion succeeded on",
+            failed="Last deletion failed on",
         ),
         ComplianceCheckItem(
             id="consent_withdrawal",
@@ -365,17 +479,21 @@ async def get_compliance_status(
             else "User has not opted out",
             status="complete" if privacy_settings.ccpa_opt_out else "warning",
         ),
-        ComplianceCheckItem(
-            id="data_access",
-            label="Data Access Right",
-            description="Users can request access to their data",
-            status="complete",
+        _run_check(
+            "data_access",
+            "Data Access Right",
+            last_export,
+            never="Export has not been run for this account yet",
+            succeeded="Last export succeeded on",
+            failed="Last export failed on",
         ),
-        ComplianceCheckItem(
-            id="data_deletion_ccpa",
-            label="Deletion Right",
-            description="Users can request deletion of their data",
-            status="complete",
+        _run_check(
+            "data_deletion_ccpa",
+            "Deletion Right",
+            last_erasure,
+            never="Deletion has not been run for this account yet",
+            succeeded="Last deletion succeeded on",
+            failed="Last deletion failed on",
         ),
         ComplianceCheckItem(
             id="non_discrimination",
@@ -517,6 +635,15 @@ async def record_consent(
         user_agent=http_request.headers.get("user-agent"),
     )
     db.add(consent)
+    await record_audit(
+        db,
+        AuditAction.CONSENT_UPDATE,
+        actor_user_id=current_user.id,
+        target_type="consent",
+        target_id=request.consent_type,
+        details={"granted": request.granted},
+        request=http_request,
+    )
     await db.commit()
 
     logger.info(
@@ -536,23 +663,67 @@ async def record_consent(
 
 @router.get("/export", response_model=DataExportResponse)
 async def export_user_data(
+    http_request: Request,
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> DataExportResponse:
-    """Export all user data for GDPR/CCPA compliance."""
-    now = datetime.now(UTC)
+    """Export all user data for GDPR/CCPA compliance.
 
-    # User data
-    user_data = {
-        "id": current_user.id,
+    Each attempt is recorded, including one that fails, so the status page
+    reports whether export works and not merely that the route exists.
+    """
+    user_id = current_user.id
+    try:
+        response = await _build_export(current_user, db)
+        run = await start_run(db, KIND_EXPORT, trigger=TRIGGER_USER, user_id=user_id)
+        counts = {
+            "agents": len(response.agents),
+            "workspaces": len(response.workspaces),
+            "contacts": len(response.contacts),
+            "appointments": len(response.appointments),
+            "call_records": len(response.call_records),
+            "call_interactions": len(response.call_interactions),
+            "consent_records": len(response.consent_records),
+            "phone_numbers": len(response.phone_numbers),
+            "campaigns": len(response.campaigns),
+            "integrations": len(response.integrations),
+        }
+        finish_run(run, counts)
+        await record_audit(
+            db,
+            AuditAction.DATA_EXPORT,
+            actor_user_id=user_id,
+            target_type="account",
+            target_id=str(user_id),
+            details={"exported": counts},
+            request=http_request,
+        )
+        await db.commit()
+    except Exception as exc:
+        await db.rollback()
+        await record_failed_run(db, KIND_EXPORT, trigger=TRIGGER_USER, user_id=user_id, error=exc)
+        raise
+
+    logger.info("data_exported", user_id=user_id)
+    return response
+
+
+async def _build_export(current_user: CurrentUser, db: AsyncSession) -> DataExportResponse:
+    """Collect everything the account holds. Credentials are reported as set or not."""
+    now = datetime.now(UTC)
+    user_id = current_user.id
+    user_uuid = user_id_to_uuid(user_id)
+
+    user_data: dict[str, object] = {
+        "id": user_id,
         "email": current_user.email,
         "full_name": current_user.full_name,
         "created_at": current_user.created_at.isoformat() if current_user.created_at else None,
     }
 
-    # User settings (mask API keys)
-    user_settings = await get_user_settings(current_user.id, db)
-    settings_data = None
+    # User settings (never the keys themselves)
+    user_settings = await get_user_settings(user_id, db)
+    settings_data: dict[str, object] | None = None
     if user_settings:
         settings_data = {
             "openai_api_key_set": bool(user_settings.openai_api_key),
@@ -564,9 +735,8 @@ async def export_user_data(
             "updated_at": user_settings.updated_at.isoformat(),
         }
 
-    # Privacy settings
-    privacy_settings = await get_or_create_privacy_settings(current_user.id, db)
-    privacy_data = {
+    privacy_settings = await get_or_create_privacy_settings(user_id, db)
+    privacy_data: dict[str, object] = {
         "privacy_policy_url": privacy_settings.privacy_policy_url,
         "data_retention_days": privacy_settings.data_retention_days,
         "ccpa_opt_out": privacy_settings.ccpa_opt_out,
@@ -576,10 +746,9 @@ async def export_user_data(
         "elevenlabs_dpa_signed": privacy_settings.elevenlabs_dpa_signed,
     }
 
-    # Agents - note: requires UUID conversion for user_id
-    user_uuid = user_id_to_uuid(current_user.id)
-    agents_result = await db.execute(select(Agent).where(Agent.user_id == user_uuid))
-    agents_data = [
+    # Agents and workspaces are keyed by the integer user id.
+    agents_result = await db.execute(select(Agent).where(Agent.user_id == user_id))
+    agents_data: list[dict[str, object]] = [
         {
             "id": str(a.id),
             "name": a.name,
@@ -589,11 +758,8 @@ async def export_user_data(
         for a in agents_result.scalars().all()
     ]
 
-    # Workspaces
-    workspaces_result = await db.execute(
-        select(Workspace).where(Workspace.user_id == current_user.id)
-    )
-    workspaces_data = [
+    workspaces_result = await db.execute(select(Workspace).where(Workspace.user_id == user_id))
+    workspaces_data: list[dict[str, object]] = [
         {
             "id": str(w.id),
             "name": w.name,
@@ -603,98 +769,74 @@ async def export_user_data(
         for w in workspaces_result.scalars().all()
     ]
 
-    # Get workspace IDs for user
-    workspace_ids = [w.id for w in workspaces_result.scalars().all()]
+    workspace_ids = await owned_workspace_ids(db, user_id)
+    agent_ids = await owned_agent_ids(db, user_id)
+    contact_filter = contact_owner_filter(user_id, workspace_ids)
+    owned_contacts = select(Contact.id).where(contact_filter)
 
-    # Re-query since we consumed the result
-    workspaces_result = await db.execute(
-        select(Workspace).where(Workspace.user_id == current_user.id)
+    contacts_result = await db.execute(select(Contact).where(contact_filter))
+    contacts_data: list[dict[str, object]] = [
+        {
+            "id": str(c.id),
+            "first_name": c.first_name,
+            "last_name": c.last_name,
+            "email": c.email,
+            "phone_number": c.phone_number,
+            "company_name": c.company_name,
+            "created_at": c.created_at.isoformat() if c.created_at else None,
+        }
+        for c in contacts_result.scalars().all()
+    ]
+
+    appointments_result = await db.execute(
+        select(Appointment).where(Appointment.contact_id.in_(owned_contacts))
     )
-    workspace_ids = [w.id for w in workspaces_result.scalars().all()]
+    appointments_data: list[dict[str, object]] = [
+        {
+            "id": str(a.id),
+            "scheduled_at": a.scheduled_at.isoformat() if a.scheduled_at else None,
+            "duration_minutes": a.duration_minutes,
+            "status": a.status,
+            "service_type": a.service_type,
+            "created_at": a.created_at.isoformat() if a.created_at else None,
+        }
+        for a in appointments_result.scalars().all()
+    ]
 
-    # Contacts
-    contacts_data: list[dict[str, object]] = []
-    if workspace_ids:
-        contacts_result = await db.execute(
-            select(Contact).where(Contact.workspace_id.in_(workspace_ids))
-        )
-        contacts_data = [
-            {
-                "id": str(c.id),
-                "first_name": c.first_name,
-                "last_name": c.last_name,
-                "email": c.email,
-                "phone_number": c.phone_number,
-                "company_name": c.company_name,
-                "created_at": c.created_at.isoformat() if c.created_at else None,
-            }
-            for c in contacts_result.scalars().all()
-        ]
-
-    # Appointments
-    appointments_data: list[dict[str, object]] = []
-    if workspace_ids:
-        appointments_result = await db.execute(
-            select(Appointment).where(Appointment.workspace_id.in_(workspace_ids))
-        )
-        appointments_data = [
-            {
-                "id": str(a.id),
-                "scheduled_at": a.scheduled_at.isoformat() if a.scheduled_at else None,
-                "duration_minutes": a.duration_minutes,
-                "status": a.status,
-                "service_type": a.service_type,
-                "created_at": a.created_at.isoformat() if a.created_at else None,
-            }
-            for a in appointments_result.scalars().all()
-        ]
-
-    # Call records (Agent.user_id is UUID, reuse user_uuid from above)
-    agent_ids_result = await db.execute(select(Agent.id).where(Agent.user_id == user_uuid))
-    agent_ids = list(agent_ids_result.scalars().all())
-
-    call_records_data: list[dict[str, object]] = []
-    if agent_ids:
-        call_records_result = await db.execute(
-            select(CallRecord).where(CallRecord.agent_id.in_(agent_ids))
-        )
-        call_records_data = [
-            {
-                "id": str(cr.id),
-                "direction": cr.direction,
-                "status": cr.status,
-                "from_number": cr.from_number,
-                "to_number": cr.to_number,
-                "duration_seconds": cr.duration_seconds,
-                "started_at": cr.started_at.isoformat() if cr.started_at else None,
-                "ended_at": cr.ended_at.isoformat() if cr.ended_at else None,
-            }
-            for cr in call_records_result.scalars().all()
-        ]
-
-    # Call interactions
-    call_interactions_data: list[dict[str, object]] = []
-    if workspace_ids:
-        interactions_result = await db.execute(
-            select(CallInteraction).where(CallInteraction.workspace_id.in_(workspace_ids))
-        )
-        call_interactions_data = [
-            {
-                "id": str(ci.id),
-                "agent_name": ci.agent_name,
-                "outcome": ci.outcome,
-                "duration_seconds": ci.duration_seconds,
-                "sentiment_score": ci.sentiment_score,
-                "call_started_at": (ci.call_started_at.isoformat() if ci.call_started_at else None),
-            }
-            for ci in interactions_result.scalars().all()
-        ]
-
-    # Consent records
-    consent_result = await db.execute(
-        select(ConsentRecord).where(ConsentRecord.user_id == current_user.id)
+    call_records_result = await db.execute(
+        select(CallRecord).where(call_record_owner_filter(user_id, agent_ids, workspace_ids))
     )
-    consent_data = [
+    call_records_data: list[dict[str, object]] = [
+        {
+            "id": str(cr.id),
+            "direction": cr.direction,
+            "status": cr.status,
+            "from_number": cr.from_number,
+            "to_number": cr.to_number,
+            "duration_seconds": cr.duration_seconds,
+            "started_at": cr.started_at.isoformat() if cr.started_at else None,
+            "ended_at": cr.ended_at.isoformat() if cr.ended_at else None,
+        }
+        for cr in call_records_result.scalars().all()
+    ]
+
+    interactions_result = await db.execute(
+        select(CallInteraction).where(CallInteraction.contact_id.in_(owned_contacts))
+    )
+    call_interactions_data: list[dict[str, object]] = [
+        {
+            "id": str(ci.id),
+            "agent_name": ci.agent_name,
+            "outcome": ci.outcome,
+            "duration_seconds": ci.duration_seconds,
+            "sentiment_score": ci.sentiment_score,
+            "call_started_at": (ci.call_started_at.isoformat() if ci.call_started_at else None),
+        }
+        for ci in interactions_result.scalars().all()
+    ]
+
+    consent_result = await db.execute(select(ConsentRecord).where(ConsentRecord.user_id == user_id))
+    consent_data: list[dict[str, object]] = [
         {
             "id": str(cr.id),
             "consent_type": cr.consent_type,
@@ -704,12 +846,53 @@ async def export_user_data(
         for cr in consent_result.scalars().all()
     ]
 
-    # Update last export time
+    # These three are keyed by the UUID derived from the user id.
+    numbers_result = await db.execute(select(PhoneNumber).where(PhoneNumber.user_id == user_uuid))
+    phone_numbers_data: list[dict[str, object]] = [
+        {
+            "id": str(n.id),
+            "phone_number": n.phone_number,
+            "provider": n.provider,
+            "created_at": n.created_at.isoformat() if n.created_at else None,
+        }
+        for n in numbers_result.scalars().all()
+    ]
+
+    campaigns_result = await db.execute(
+        select(Campaign.id, Campaign.name, Campaign.status, Campaign.created_at).where(
+            Campaign.user_id == user_uuid
+        )
+    )
+    campaigns_data: list[dict[str, object]] = [
+        {
+            "id": str(row.id),
+            "name": row.name,
+            "status": row.status,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+        }
+        for row in campaigns_result.all()
+    ]
+
+    integrations_result = await db.execute(
+        select(
+            UserIntegration.integration_id,
+            UserIntegration.integration_name,
+            UserIntegration.is_active,
+            UserIntegration.created_at,
+        ).where(UserIntegration.user_id == user_uuid)
+    )
+    integrations_data: list[dict[str, object]] = [
+        {
+            "integration_id": row.integration_id,
+            "integration_name": row.integration_name,
+            "is_active": row.is_active,
+            "connected_at": row.created_at.isoformat() if row.created_at else None,
+        }
+        for row in integrations_result.all()
+    ]
+
     privacy_settings.last_data_export_at = now
     privacy_settings.last_data_export_requested_at = now
-    await db.commit()
-
-    logger.info("data_exported", user_id=current_user.id)
 
     return DataExportResponse(
         user=user_data,
@@ -722,6 +905,9 @@ async def export_user_data(
         call_records=call_records_data,
         call_interactions=call_interactions_data,
         consent_records=consent_data,
+        phone_numbers=phone_numbers_data,
+        campaigns=campaigns_data,
+        integrations=integrations_data,
         exported_at=now,
     )
 
@@ -785,6 +971,15 @@ async def withdraw_consent(
         user_agent=http_request.headers.get("user-agent"),
     )
     db.add(consent)
+    await record_audit(
+        db,
+        AuditAction.CONSENT_UPDATE,
+        actor_user_id=current_user.id,
+        target_type="consent",
+        target_id=request.consent_type,
+        details={"granted": False},
+        request=http_request,
+    )
     await db.commit()
 
     logger.info(
@@ -803,6 +998,7 @@ async def withdraw_consent(
 
 @router.delete("/data", response_model=DataDeletionResponse)
 async def delete_user_data(
+    http_request: Request,
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> DataDeletionResponse:
@@ -812,90 +1008,36 @@ async def delete_user_data(
     GDPR Article 17 - Right to erasure ('right to be forgotten')
     CCPA - Right to Delete
 
-    This deletes:
-    - All agents and their configurations
-    - All workspaces
-    - All contacts within workspaces
-    - All appointments
-    - All call records and interactions
-    - All consent records
-    - Privacy settings
-    - User settings (API keys)
+    Deletes agents, workspaces, contacts, appointments, call records and their
+    evaluations, call interactions, campaigns, phone numbers, test scenarios
+    and runs, integration credentials, provider keys, consent records and
+    privacy settings.
 
-    Note: The user account itself is NOT deleted. Use a separate
-    account deletion endpoint for that.
+    What stays: the login itself, the audit trail, and the record that this
+    erasure ran. Each attempt is recorded, including one that fails.
     """
-    from sqlalchemy import delete
-
+    user_id = current_user.id
     now = datetime.now(UTC)
-    deleted_counts: dict[str, int] = {}
-
-    # Convert user_id to UUID for Agent queries (Agent.user_id is UUID)
-    user_uuid = user_id_to_uuid(current_user.id)
-
-    # Get workspace IDs for cascade deletion (Workspace.user_id is Integer)
-    workspaces_result = await db.execute(
-        select(Workspace.id).where(Workspace.user_id == current_user.id)
-    )
-    workspace_ids = list(workspaces_result.scalars().all())
-
-    # Get agent IDs for cascade deletion (Agent.user_id is UUID)
-    agents_result = await db.execute(select(Agent.id).where(Agent.user_id == user_uuid))
-    agent_ids = list(agents_result.scalars().all())
-
-    # Delete call interactions (workspace-based)
-    if workspace_ids:
-        result = await db.execute(
-            delete(CallInteraction).where(CallInteraction.workspace_id.in_(workspace_ids))
+    try:
+        run = await start_run(db, KIND_ERASURE, trigger=TRIGGER_USER, user_id=user_id)
+        deleted_counts = await erase_account_data(db, user_id)
+        finish_run(run, deleted_counts)
+        await record_audit(
+            db,
+            AuditAction.DATA_ERASURE,
+            actor_user_id=user_id,
+            target_type="account",
+            target_id=str(user_id),
+            details={"deleted": deleted_counts},
+            request=http_request,
         )
-        deleted_counts["call_interactions"] = result.rowcount or 0  # type: ignore[attr-defined]
+        await db.commit()
+    except Exception as exc:
+        await db.rollback()
+        await record_failed_run(db, KIND_ERASURE, trigger=TRIGGER_USER, user_id=user_id, error=exc)
+        raise
 
-    # Delete call records (agent-based)
-    if agent_ids:
-        result = await db.execute(delete(CallRecord).where(CallRecord.agent_id.in_(agent_ids)))
-        deleted_counts["call_records"] = result.rowcount or 0  # type: ignore[attr-defined]
-
-    # Delete appointments (workspace-based)
-    if workspace_ids:
-        result = await db.execute(
-            delete(Appointment).where(Appointment.workspace_id.in_(workspace_ids))
-        )
-        deleted_counts["appointments"] = result.rowcount or 0  # type: ignore[attr-defined]
-
-    # Delete contacts (workspace-based)
-    if workspace_ids:
-        result = await db.execute(delete(Contact).where(Contact.workspace_id.in_(workspace_ids)))
-        deleted_counts["contacts"] = result.rowcount or 0  # type: ignore[attr-defined]
-
-    # Delete agents (Agent.user_id is UUID)
-    result = await db.execute(delete(Agent).where(Agent.user_id == user_uuid))
-    deleted_counts["agents"] = result.rowcount or 0  # type: ignore[attr-defined]
-
-    # Delete workspaces
-    result = await db.execute(delete(Workspace).where(Workspace.user_id == current_user.id))
-    deleted_counts["workspaces"] = result.rowcount or 0  # type: ignore[attr-defined]
-
-    # Delete consent records
-    result = await db.execute(delete(ConsentRecord).where(ConsentRecord.user_id == current_user.id))
-    deleted_counts["consent_records"] = result.rowcount or 0  # type: ignore[attr-defined]
-
-    # Delete privacy settings
-    result = await db.execute(
-        delete(PrivacySettings).where(PrivacySettings.user_id == current_user.id)
-    )
-    deleted_counts["privacy_settings"] = result.rowcount or 0  # type: ignore[attr-defined]
-
-    # Delete user settings (UserSettings.user_id is UUID, reuse user_uuid from above)
-    result = await db.execute(delete(UserSettings).where(UserSettings.user_id == user_uuid))
-    deleted_counts["user_settings"] = result.rowcount or 0  # type: ignore[attr-defined]
-
-    await db.commit()
-
-    logger.info(
-        "user_data_deleted",
-        user_id=current_user.id,
-        deleted_counts=deleted_counts,
-    )
+    logger.warning("user_data_deleted", user_id=user_id, deleted_counts=deleted_counts)
 
     return DataDeletionResponse(
         deleted_counts=deleted_counts,
@@ -904,77 +1046,8 @@ async def delete_user_data(
 
 
 # =============================================================================
-# Data Retention Cleanup (for scheduled jobs)
+# Data Retention
 # =============================================================================
-
-
-async def cleanup_expired_data(db: AsyncSession) -> dict[str, int]:
-    """
-    Delete data that has exceeded retention period.
-
-    This should be called by a scheduled job (e.g., daily cron).
-    Returns counts of deleted records by type.
-    """
-    from sqlalchemy import delete
-
-    deleted_counts: dict[str, int] = {}
-    now = datetime.now(UTC)
-
-    # Get all privacy settings with retention periods
-    settings_result = await db.execute(select(PrivacySettings))
-    all_settings = settings_result.scalars().all()
-
-    for settings in all_settings:
-        retention_days = settings.data_retention_days
-        cutoff_date = now - __import__("datetime").timedelta(days=retention_days)
-
-        # Get user's workspace IDs
-        workspaces_result = await db.execute(
-            select(Workspace.id).where(Workspace.user_id == settings.user_id)
-        )
-        workspace_ids = list(workspaces_result.scalars().all())
-
-        # Get user's agent IDs
-        agents_result = await db.execute(select(Agent.id).where(Agent.user_id == settings.user_id))
-        agent_ids = list(agents_result.scalars().all())
-
-        # Delete old call interactions
-        if workspace_ids:
-            result = await db.execute(
-                delete(CallInteraction)
-                .where(CallInteraction.workspace_id.in_(workspace_ids))
-                .where(CallInteraction.created_at < cutoff_date)
-            )
-            deleted_counts["call_interactions"] = (
-                deleted_counts.get("call_interactions", 0) + (result.rowcount or 0)  # type: ignore[attr-defined]
-            )
-
-        # Delete old call records
-        if agent_ids:
-            result = await db.execute(
-                delete(CallRecord)
-                .where(CallRecord.agent_id.in_(agent_ids))
-                .where(CallRecord.created_at < cutoff_date)
-            )
-            deleted_counts["call_records"] = (
-                deleted_counts.get("call_records", 0) + (result.rowcount or 0)  # type: ignore[attr-defined]
-            )
-
-        # Delete old consent records (keep most recent per type)
-        result = await db.execute(
-            delete(ConsentRecord)
-            .where(ConsentRecord.user_id == settings.user_id)
-            .where(ConsentRecord.created_at < cutoff_date)
-        )
-        deleted_counts["consent_records"] = (
-            deleted_counts.get("consent_records", 0) + (result.rowcount or 0)  # type: ignore[attr-defined]
-        )
-
-    await db.commit()
-
-    logger.info("retention_cleanup_completed", deleted_counts=deleted_counts)
-
-    return deleted_counts
 
 
 @router.post("/retention/cleanup")
@@ -982,14 +1055,14 @@ async def trigger_retention_cleanup(
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, object]:
-    """
-    Manually trigger data retention cleanup.
+    """Apply the retention period to the caller's own data now.
 
-    In production, this should be called by a scheduled job.
-    This endpoint allows manual triggering for testing.
+    The scheduled sweep (app.services.data_protection) covers every account;
+    this covers only the signed-in account, so one customer cannot trigger
+    deletion in another's data.
     """
-    deleted_counts = await cleanup_expired_data(db)
+    run = await run_retention(db, trigger=TRIGGER_USER, user_id=current_user.id)
     return {
         "message": "Retention cleanup completed",
-        "deleted_counts": deleted_counts,
+        "deleted_counts": run.counts or {},
     }

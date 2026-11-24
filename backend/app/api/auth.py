@@ -11,6 +11,7 @@ from pydantic import BaseModel, EmailStr
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.audit import AuditAction, record_audit
 from app.core.auth import CurrentUser
 from app.core.config import settings
 from app.core.limiter import limiter
@@ -151,6 +152,15 @@ async def register(
         hashed_password=get_password_hash(payload.password),
     )
     db.add(user)
+    await db.flush()
+    await record_audit(
+        db,
+        AuditAction.REGISTER,
+        actor_user_id=user.id,
+        target_type="user",
+        target_id=str(user.id),
+        request=request,
+    )
     await db.commit()
     await db.refresh(user)
 
@@ -183,6 +193,18 @@ async def login(
 
     if not user or not verify_password(form_data.password, user.hashed_password):
         log.warning("login_failed")
+        # The account the attempt was aimed at, when there is one, so its owner
+        # can see failed attempts in their own trail. Never the password.
+        await record_audit(
+            db,
+            AuditAction.LOGIN_FAILED,
+            actor_user_id=user.id if user else None,
+            target_type="user",
+            target_id=str(user.id) if user else None,
+            success=False,
+            request=request,
+            commit=True,
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",
@@ -190,6 +212,15 @@ async def login(
         )
 
     access_token = create_access_token(user.id)
+    await record_audit(
+        db,
+        AuditAction.LOGIN_SUCCESS,
+        actor_user_id=user.id,
+        target_type="user",
+        target_id=str(user.id),
+        request=request,
+        commit=True,
+    )
     log.info("login_success", user_id=user.id)
 
     return TokenResponse(access_token=access_token)
