@@ -129,9 +129,10 @@ jobs:
         working-directory: frontend
         run: npm audit --package-lock-only --audit-level=critical
 
-      # Report only, deliberately, until the known high advisories are cleared
-      # (vite, happy-dom, zod 3, follow-redirects, brace-expansion, source-map-js
-      # as of 24 Nov 2026). Make this blocking by 8 Dec 2026 or delete it.
+      # Report only, deliberately, while one high advisory remains: zod 3. Its fix
+      # is zod 4, which also needs @hookform/resolvers 5 and touches four form
+      # schemas, so it is its own change. Everything else was cleared on
+      # 24 Nov 2026. Make this blocking by 8 Dec 2026 or delete it.
       - name: Frontend advisories (high, report only)
         working-directory: frontend
         continue-on-error: true
