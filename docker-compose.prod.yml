@@ -57,6 +57,14 @@ services:
       # to an agent. No default: the app refuses to start on a placeholder,
       # and failing here names the variable instead.
       SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY to a long random string, e.g. openssl rand -hex 32}
+      # Encrypts the provider keys and integration credentials customers store.
+      # "<id>:<base64 32-byte key>"; the first entry encrypts, every entry can
+      # decrypt. No default: the app refuses to start without it. Keep a copy
+      # off this server: losing it loses every stored credential.
+      CREDENTIAL_ENCRYPTION_KEYS: ${CREDENTIAL_ENCRYPTION_KEYS:?set CREDENTIAL_ENCRYPTION_KEYS, see DEPLOYMENT.md}
+      # Daily deletion of call data past each account's retention period.
+      RETENTION_SWEEP_ENABLED: ${RETENTION_SWEEP_ENABLED:-true}
+      RETENTION_SWEEP_INTERVAL_HOURS: ${RETENTION_SWEEP_INTERVAL_HOURS:-24}
       # CORS - Allow frontend domain
       CORS_ORIGINS: '["${FRONTEND_URL:-http://localhost:3000}"]'
       # The origin the embed snippet points customers' sites at: the widget

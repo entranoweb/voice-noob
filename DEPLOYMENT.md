@@ -75,6 +75,10 @@ REDIS_PASSWORD=YourSecureRedisPassword456!
 # Generate: python -c "import secrets; print(secrets.token_hex(32))"
 SECRET_KEY=your_64_character_hex_string_here
 
+# Encrypts stored customer credentials (REQUIRED - generate one, keep a copy off the server)
+# Generate: python -c "import secrets,base64;print('k1:'+base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())"
+CREDENTIAL_ENCRYPTION_KEYS=k1:your_base64_key_here
+
 # Admin User (REQUIRED - change these!)
 ADMIN_EMAIL=admin@synthiqvoice.com
 ADMIN_PASSWORD=YourSecureAdminPassword789!
@@ -125,6 +129,9 @@ Names and defaults are from `backend/app/core/config.py`.
 | Setting | Default | What it does |
 | --- | --- | --- |
 | `SECRET_KEY` | none usable | Signs login tokens, call stream tokens and embedded widget sessions. The app refuses to start on an empty value or on any placeholder shipped in this repository, unless `DEBUG=true`. Every backend instance must share one value |
+| `CREDENTIAL_ENCRYPTION_KEYS` | none | Encrypts the provider keys and integration credentials customers store. `<id>:<base64 32-byte key>`, comma separated: the first entry encrypts, every entry can decrypt. The app refuses to start without it unless `DEBUG=true`, and refuses a malformed value always. Every backend instance must share one value. Losing it loses every stored credential |
+| `RETENTION_SWEEP_ENABLED` | `true` | Runs the sweep that deletes call data older than each account's retention period. Off, the compliance page reports retention as not in force |
+| `RETENTION_SWEEP_INTERVAL_HOURS` | `24` | How often the sweep runs. One process at a time holds a Redis lock, so several workers do not sweep at once |
 | `PUBLIC_URL` | unset | The backend's public origin. Used for the media stream URL the carrier dials, for the webhook addresses given to carriers, and as the URL a Twilio signature is checked against. Required by the compose file |
 | `ALLOW_UNSIGNED_WEBHOOKS` | `false` | `true` accepts carrier webhooks with no verified signature. For a local rehearsal with no carrier key only. It logs at critical on startup and on every webhook it admits, and the preflight fails on it |
 | `FRONTEND_URL` | unset | Origin the embed snippet points other sites at. Falls back to the first CORS origin, then `PUBLIC_URL` |
@@ -148,6 +155,28 @@ Three things follow that are not settings.
 - **Deploy the frontend with the backend.** The widget page must send the
   signed session the backend now requires; an older page gets no tools and no
   transcript.
+
+### Credential encryption key
+
+Provider keys and integration credentials are stored encrypted. Three things an
+operator needs to know:
+
+- **First deploy with this version.** Set `CREDENTIAL_ENCRYPTION_KEYS` before
+  deploying. The migration then encrypts every credential already stored. Check
+  with `uv run python scripts/rotate_credential_keys.py --check` from `backend/`;
+  it lists how many stored values sit under each key and should show none as
+  `plain`.
+- **Rotating the key.** Put a new key first and keep the old one behind it
+  (`k2:<new>,k1:<old>`), restart, run `scripts/rotate_credential_keys.py`, and
+  only when it reports nothing left under `k1` remove `k1` and restart again.
+  Removing a key while rows still name it makes those credentials unreadable.
+- **Backups.** A database backup is useless for credentials without this key,
+  and the key is useless without the backup. Store them apart.
+
+The audit trail (`audit_events`) and the record of each export, erasure and
+retention sweep (`compliance_runs`) are created by the same migration. Audit
+events are also written to the log as JSON lines with `"logger": "audit"`,
+whatever the application's log level.
 
 `docker-compose.prod.yml` passes the backend `SECRET_KEY`, `PUBLIC_URL`,
 `FRONTEND_URL`, `TELNYX_PUBLIC_KEY`, `TELNYX_API_KEY` and `DEBUG` from this
@@ -420,6 +449,8 @@ git add -A && git commit -m "Clean build" && git push
 # Run this to generate secrets
 import secrets
 print(f"SECRET_KEY={secrets.token_hex(32)}")
+import base64
+print(f"CREDENTIAL_ENCRYPTION_KEYS=k1:{base64.urlsafe_b64encode(secrets.token_bytes(32)).decode()}")
 print(f"POSTGRES_PASSWORD={secrets.token_urlsafe(24)}")
 print(f"REDIS_PASSWORD={secrets.token_urlsafe(24)}")
 print(f"ADMIN_PASSWORD={secrets.token_urlsafe(16)}")
