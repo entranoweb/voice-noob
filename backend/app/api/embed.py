@@ -44,6 +44,7 @@ from app.core.embed_session import (
     EMBED_SESSION_REJECTED,
     EmbedSessionCheck,
     embedding_site,
+    frame_ancestors,
     mint_embed_session,
     session_rate_key,
     site_allowed,
@@ -117,6 +118,34 @@ def _require_session(
     return check
 
 
+def embed_model_session_config(
+    *, model: str, voice: str, instructions: str, tools: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """The session this server asks the model provider to mint for a widget.
+
+    The instructions and tools are fixed here, server to server. The browser
+    receives the short-lived client secret for the session and nothing that
+    describes how the agent was told to behave.
+    """
+    config: dict[str, Any] = {
+        "model": model,
+        "modalities": ["audio", "text"],
+        "voice": voice,
+        "instructions": instructions,
+        "input_audio_transcription": {"model": "whisper-1"},
+        "turn_detection": {
+            "type": "server_vad",
+            "threshold": 0.5,
+            "prefix_padding_ms": 300,
+            "silence_duration_ms": 200,
+        },
+    }
+    if tools:
+        config["tools"] = tools
+        config["tool_choice"] = "auto"
+    return config
+
+
 async def get_agent_by_public_id(
     public_id: str,
     db: AsyncSession,
@@ -174,6 +203,37 @@ async def get_embed_config(
         language=agent.language,
         voice=agent.voice,
     )
+
+
+class EmbedFramePolicyResponse(BaseModel):
+    """Which sites may put the widget page in a frame."""
+
+    frame_ancestors: str
+
+
+@router.get("/{public_id}/frame-policy", response_model=EmbedFramePolicyResponse)
+@limiter.limit("600/minute")
+async def get_embed_frame_policy(
+    public_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> EmbedFramePolicyResponse:
+    """The ``frame-ancestors`` value for this agent's widget page.
+
+    Asked for by the web app's own server each time it serves the widget page,
+    which sends the answer as that page's Content-Security-Policy. The browser
+    then refuses to draw the page inside a site the agent's owner did not list,
+    whatever the framing site's scripts claim about themselves.
+
+    An agent that does not exist, is inactive or is not embeddable gets the same
+    answer as one with an empty allow-list: this deployment's own pages only.
+    Nothing here is secret; the value is sent to every browser that loads the
+    widget.
+    """
+    agent = await get_agent_by_public_id(public_id, db)
+    if not agent or not agent.embed_enabled or not agent.is_active:
+        return EmbedFramePolicyResponse(frame_ancestors=frame_ancestors(None, embeddable=False))
+    return EmbedFramePolicyResponse(frame_ancestors=frame_ancestors(agent.allowed_domains))
 
 
 @router.post("/{public_id}/session", response_model=EmbedSessionResponse)
@@ -531,13 +591,56 @@ async def get_embed_ephemeral_token(  # noqa: PLR0915
         else "gpt-realtime-2025-08-28"
     )
 
-    # Build session configuration
+    # Everything the model session needs is decided here and sent to the model
+    # provider by this server when the session is minted. The agent's
+    # instructions used to be returned to the browser so the page could send
+    # them on itself, which handed the owner's system prompt to anyone who asked
+    # this endpoint for a token.
+    ws_query_result = await db.execute(
+        select(Workspace).where(Workspace.id == agent_workspace.workspace_id)
+    )
+    ws_obj = ws_query_result.scalar_one_or_none()
+    workspace_timezone = (
+        ws_obj.settings.get("timezone", "UTC") if ws_obj and ws_obj.settings else "UTC"
+    )
+    instructions = build_instructions_with_language(
+        agent.system_prompt or "You are a helpful voice assistant.",
+        agent.language,
+        timezone=workspace_timezone,
+    )
+
+    # Tool definitions exist only when the owner has allowed tools for embedded
+    # sessions; /tool-call refuses on the same rule. Execution still happens
+    # through /tool-call, with the owner's credentials, never in the browser.
+    from app.services.tools.registry import ToolRegistry
+
+    workspace_id = agent_workspace.workspace_id
+    integrations = await get_workspace_integrations(
+        user_id_to_uuid(agent.user_id), workspace_id, db
+    )
+    tool_registry = ToolRegistry(
+        db=db,
+        user_id=agent.user_id,
+        integrations=integrations,
+        workspace_id=workspace_id,
+    )
+    tools = (
+        tool_registry.get_all_tool_definitions(agent.enabled_tools or [], agent.enabled_tool_ids)
+        if tools_allowed(agent.embed_settings)
+        else []
+    )
+    log.info(
+        "tools_prepared",
+        tool_count=len(tools),
+        enabled_tools=agent.enabled_tools,
+        enabled_tool_ids=agent.enabled_tool_ids,
+        tool_names=[t.get("name") for t in tools],
+    )
+
     agent_voice = agent.voice or "marin"
-    session_config: dict[str, Any] = {
-        "model": realtime_model,
-        "modalities": ["audio", "text"],
-        "voice": agent_voice,
-    }
+    session_config = embed_model_session_config(
+        model=realtime_model, voice=agent_voice, instructions=instructions, tools=tools
+    )
 
     log.info("requesting_ephemeral_token", model=realtime_model)
 
@@ -553,96 +656,44 @@ async def get_embed_ephemeral_token(  # noqa: PLR0915
                 json=session_config,
                 timeout=30.0,
             )
-
-            if not response.is_success:
-                log.error(
-                    "openai_token_error",
-                    status_code=response.status_code,
-                    response_text=response.text,
-                )
-                raise HTTPException(
-                    status_code=response.status_code,
-                    detail=f"OpenAI API error: {response.text}",
-                )
-
-            token_data = response.json()
-            log.info("ephemeral_token_created")
-
-            # Get workspace timezone for proper time handling
-            ws_query_result = await db.execute(
-                select(Workspace).where(Workspace.id == agent_workspace.workspace_id)
-            )
-            ws_obj = ws_query_result.scalar_one_or_none()
-            workspace_timezone = (
-                ws_obj.settings.get("timezone", "UTC") if ws_obj and ws_obj.settings else "UTC"
-            )
-
-            # Build instructions for the frontend with timezone context
-            system_prompt = agent.system_prompt or "You are a helpful voice assistant."
-            instructions = build_instructions_with_language(
-                system_prompt, agent.language, timezone=workspace_timezone
-            )
-
-            # Get tool definitions for this agent (matching realtime.py implementation)
-            # Note: For embed widgets, we include tool definitions but execution
-            # happens via the /tool-call endpoint
-            from app.services.tools.registry import ToolRegistry
-
-            # agent.user_id is now directly the integer user ID
-            user_id_int = agent.user_id
-
-            # Get integration credentials for the workspace
-            workspace_id = agent_workspace.workspace_id
-            integrations = await get_workspace_integrations(
-                user_id_to_uuid(agent.user_id), workspace_id, db
-            )
-
-            tool_registry = ToolRegistry(
-                db=db,
-                user_id=user_id_int,
-                integrations=integrations,
-                workspace_id=workspace_id,
-            )
-            # Tool definitions go to the browser only when the owner has allowed
-            # tools for embedded sessions; /tool-call refuses on the same rule.
-            embed_tools_on = tools_allowed(agent.embed_settings)
-            tools = (
-                tool_registry.get_all_tool_definitions(
-                    agent.enabled_tools or [], agent.enabled_tool_ids
-                )
-                if embed_tools_on
-                else []
-            )
-            embed_session = mint_embed_session(agent_id=str(agent.id), site=site)
-
-            log.info(
-                "tools_prepared",
-                tool_count=len(tools),
-                enabled_tools=agent.enabled_tools,
-                enabled_tool_ids=agent.enabled_tool_ids,
-                tool_names=[t.get("name") for t in tools],
-            )
-
-            return {
-                "client_secret": token_data.get("client_secret", {}),
-                "agent": {
-                    "name": agent.name,
-                    "voice": agent_voice,
-                    "instructions": instructions,
-                    "language": agent.language,
-                    "initial_greeting": agent.initial_greeting,
-                },
-                "model": realtime_model,
-                "tools": tools,
-                # Every later call from this widget (/tool-call, /transcript)
-                # must send this back in the X-Embed-Session header.
-                "session_token": embed_session.token,
-                "session_expires_in": embed_session.expires_in,
-            }
-
     except httpx.RequestError as e:
         log.exception("openai_token_request_error", error=str(e))
         raise HTTPException(status_code=500, detail=f"Failed to connect to OpenAI: {e!s}") from e
+
+    if not response.is_success:
+        log.error(
+            "openai_token_error",
+            status_code=response.status_code,
+            response_text=response.text,
+        )
+        # The provider's own words stay in the log. Its error can quote the
+        # request back, and the request now carries the agent's instructions.
+        raise HTTPException(status_code=502, detail="The voice provider refused to start a session")
+
+    token_data = response.json()
+    log.info("ephemeral_token_created")
+
+    embed_session = mint_embed_session(agent_id=str(agent.id), site=site)
+
+    return {
+        "client_secret": token_data.get("client_secret", {}),
+        # What the page shows and says first. Not the instructions: those went
+        # to the model provider with the session above.
+        "agent": {
+            "name": agent.name,
+            "voice": agent_voice,
+            "language": agent.language,
+            "initial_greeting": agent.initial_greeting,
+        },
+        "model": realtime_model,
+        # Names and argument shapes only, so the page can route a tool call to
+        # /tool-call. Empty unless the owner allowed tools for embedded sessions.
+        "tools": tools,
+        # Every later call from this widget (/tool-call, /transcript)
+        # must send this back in the X-Embed-Session header.
+        "session_token": embed_session.token,
+        "session_expires_in": embed_session.expires_in,
+    }
 
 
 class ToolCallRequest(BaseModel):

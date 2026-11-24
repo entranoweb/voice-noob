@@ -9,6 +9,10 @@ import os
 # with DEBUG off because that is what production runs with. CI sets its own
 # value; this only fills the gap for a local run.
 os.environ.setdefault("SECRET_KEY", "test-only-signing-key-never-used-outside-the-test-suite")
+# The application's rate limiter counts in Redis. The suite counts in memory so
+# a run needs no Redis and limits cannot leak between runs sharing one; the
+# shared-store behaviour has its own tests (tests/unit/test_rate_limit_store.py).
+os.environ.setdefault("RATE_LIMIT_STORAGE_URI", "memory://")
 
 # Test database URL (using temp file SQLite for tests)
 import tempfile

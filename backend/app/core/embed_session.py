@@ -26,6 +26,7 @@ tool switch are for, and why none of them trusts the origin.
 from __future__ import annotations
 
 import fnmatch
+import re
 import secrets
 from dataclasses import dataclass
 from typing import Any
@@ -129,6 +130,52 @@ def site_allowed(site: str, allowed_domains: list[str] | None) -> bool:
     return False
 
 
+# A host or "*.host" and nothing else. An allow-list entry becomes part of a
+# response header, so anything that is not plainly a host name is dropped rather
+# than escaped: no spaces, semicolons, quotes, schemes, paths or ports.
+_HOST_PATTERN = re.compile(
+    r"^(\*\.)?[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$"
+)
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1"})
+FRAME_ANCESTORS_SELF = "'self'"
+
+
+def frame_ancestors(allowed_domains: list[str] | None, *, embeddable: bool = True) -> str:
+    """The Content-Security-Policy ``frame-ancestors`` sources for an agent's widget page.
+
+    This is the half of the allow-list a browser enforces by itself. The API
+    checks (``site_allowed``) rely on the page reporting the site around it; a
+    hostile framing site cannot change what the browser does with this header.
+
+    ``'self'`` is always present: the widget page is framed by this deployment's
+    own dashboard preview. Each allowed domain is added as an ``https://``
+    source, because a page framed by an insecure site cannot use the microphone
+    anyway; a loopback entry also gets ``http://`` on any port, for development.
+
+    An empty list means this deployment only, matching ``site_allowed``, and
+    ``EMBED_ALLOW_ANY_ORIGIN_WHEN_UNSET`` widens that to every site in the same
+    way. ``embeddable=False`` is for an agent that is missing, inactive or not
+    embed-enabled: this deployment only, whatever the override says.
+    """
+    if not embeddable:
+        return FRAME_ANCESTORS_SELF
+
+    hosts = [p.strip().lower() for p in (allowed_domains or []) if p and p.strip()]
+    if not hosts:
+        return "*" if settings.EMBED_ALLOW_ANY_ORIGIN_WHEN_UNSET else FRAME_ANCESTORS_SELF
+
+    sources = [FRAME_ANCESTORS_SELF]
+    for host in hosts:
+        if not _HOST_PATTERN.fullmatch(host):
+            logger.warning("embed_allowed_domain_not_a_host", entry=host[:80])
+            continue
+        candidates = [f"https://{host}"]
+        if host in _LOOPBACK_HOSTS:
+            candidates.append(f"http://{host}:*")
+        sources.extend(source for source in candidates if source not in sources)
+    return " ".join(sources)
+
+
 def tools_allowed(embed_settings: dict[str, Any] | None) -> bool:
     """Whether embedded sessions for this agent may call its tools.
 
@@ -210,11 +257,13 @@ __all__ = [
     "DIRECT",
     "EMBED_SESSION_EXPIRED",
     "EMBED_SESSION_REJECTED",
+    "FRAME_ANCESTORS_SELF",
     "PARENT_ORIGIN_HEADER",
     "SESSION_HEADER",
     "EmbedSession",
     "EmbedSessionCheck",
     "embedding_site",
+    "frame_ancestors",
     "mint_embed_session",
     "session_rate_key",
     "site_allowed",
