@@ -4,11 +4,12 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.audit import AuditAction, record_audit
 from app.core.auth import CurrentUser, user_id_to_uuid
 from app.db.session import get_db
 from app.models.user_integration import UserIntegration
@@ -201,6 +202,7 @@ async def get_integration(
 @router.post("", status_code=status.HTTP_201_CREATED, response_model=IntegrationResponse)
 async def connect_integration(
     request: ConnectIntegrationRequest,
+    http_request: Request,
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> IntegrationResponse:
@@ -269,6 +271,16 @@ async def connect_integration(
     )
 
     db.add(integration)
+    await record_audit(
+        db,
+        AuditAction.INTEGRATION_CONNECT,
+        actor_user_id=current_user.id,
+        workspace_id=workspace_uuid,
+        target_type="integration",
+        target_id=request.integration_id,
+        details={"fields": sorted(request.credentials.keys())},
+        request=http_request,
+    )
     await db.commit()
     await db.refresh(integration)
 
@@ -290,6 +302,7 @@ async def connect_integration(
 async def update_integration(
     integration_id: str,
     request: UpdateIntegrationRequest,
+    http_request: Request,
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
     workspace_id: str | None = None,
@@ -337,15 +350,16 @@ async def update_integration(
 
     # Update fields
     if request.credentials is not None:
-        # Merge with existing credentials (partial update)
-        existing_creds = integration.credentials or {}
-        existing_creds.update(request.credentials)
-        integration.credentials = existing_creds
+        # Merge with existing credentials (partial update). A new dict, not the
+        # loaded one changed in place: assigning the same object back is not
+        # seen as a change, and the update would silently not be saved.
+        integration.credentials = {**(integration.credentials or {}), **request.credentials}
 
     if request.metadata is not None:
-        existing_meta = integration.integration_metadata or {}
-        existing_meta.update(request.metadata)
-        integration.integration_metadata = existing_meta
+        integration.integration_metadata = {
+            **(integration.integration_metadata or {}),
+            **request.metadata,
+        }
 
     if request.is_active is not None:
         integration.is_active = request.is_active
@@ -353,6 +367,19 @@ async def update_integration(
     integration.updated_at = datetime.now(UTC)
 
     db.add(integration)
+    await record_audit(
+        db,
+        AuditAction.INTEGRATION_UPDATE,
+        actor_user_id=current_user.id,
+        workspace_id=integration.workspace_id,
+        target_type="integration",
+        target_id=integration_id,
+        details={
+            "fields": sorted(request.credentials.keys()) if request.credentials else [],
+            "is_active": request.is_active,
+        },
+        request=http_request,
+    )
     await db.commit()
     await db.refresh(integration)
 
@@ -373,6 +400,7 @@ async def update_integration(
 @router.delete("/{integration_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def disconnect_integration(
     integration_id: str,
+    http_request: Request,
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
     workspace_id: str | None = None,
@@ -414,6 +442,15 @@ async def disconnect_integration(
             detail=f"Integration '{integration_id}' not connected",
         )
 
+    await record_audit(
+        db,
+        AuditAction.INTEGRATION_DISCONNECT,
+        actor_user_id=current_user.id,
+        workspace_id=integration.workspace_id,
+        target_type="integration",
+        target_id=integration_id,
+        request=http_request,
+    )
     await db.delete(integration)
     await db.commit()
 

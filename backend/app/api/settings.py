@@ -2,11 +2,12 @@
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.audit import AuditAction, record_audit
 from app.core.auth import CurrentUser, user_id_to_uuid
 from app.db.session import get_db
 from app.models.user_settings import UserSettings
@@ -132,6 +133,7 @@ async def get_settings(
 @router.post("", status_code=status.HTTP_200_OK)
 async def update_settings(  # noqa: PLR0912
     request: UpdateSettingsRequest,
+    http_request: Request,
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
     workspace_id: str | None = None,
@@ -208,6 +210,22 @@ async def update_settings(  # noqa: PLR0912
         )
         db.add(settings)
 
+    # Which fields were sent, and whether each was set or cleared. Never a value.
+    sent = request.model_dump(exclude_none=True)
+    changed = {
+        "set": sorted(field for field, value in sent.items() if value),
+        "cleared": sorted(field for field, value in sent.items() if not value),
+    }
+    await record_audit(
+        db,
+        AuditAction.CREDENTIAL_UPDATE,
+        actor_user_id=current_user.id,
+        workspace_id=workspace_uuid,
+        target_type="provider_settings",
+        target_id=str(workspace_uuid) if workspace_uuid else "account",
+        details=changed,
+        request=http_request,
+    )
     await db.commit()
 
     return {"message": "Settings updated successfully"}

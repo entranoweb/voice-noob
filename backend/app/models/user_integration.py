@@ -4,10 +4,11 @@ import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import JSON, DateTime, ForeignKey, String, Text, Uuid
+from sqlalchemy import JSON, DateTime, ForeignKey, String, Uuid
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
+from app.db.encrypted_types import EncryptedJSON, EncryptedText
 
 if TYPE_CHECKING:
     from app.models.workspace import Workspace
@@ -16,7 +17,8 @@ if TYPE_CHECKING:
 class UserIntegration(Base):
     """User's connected integration credentials.
 
-    Stores encrypted credentials for external integrations (OAuth tokens, API keys, etc.)
+    Credentials for external integrations (OAuth tokens, API keys, etc.), encrypted
+    at rest by the column types.
     """
 
     __tablename__ = "user_integrations"
@@ -46,7 +48,9 @@ class UserIntegration(Base):
 
     # Credentials storage (encrypted at rest)
     credentials: Mapped[dict[str, Any]] = mapped_column(
-        JSON, nullable=False, comment="Encrypted credentials (access_token, api_key, etc.)"
+        EncryptedJSON("user_integrations.credentials"),
+        nullable=False,
+        comment="Encrypted credentials (access_token, api_key, etc.)",
     )
 
     # Connection metadata
@@ -64,7 +68,9 @@ class UserIntegration(Base):
 
     # OAuth refresh (if applicable)
     refresh_token: Mapped[str | None] = mapped_column(
-        Text, nullable=True, comment="OAuth refresh token (encrypted)"
+        EncryptedText("user_integrations.refresh_token"),
+        nullable=True,
+        comment="OAuth refresh token (encrypted)",
     )
 
     # Additional metadata

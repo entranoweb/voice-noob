@@ -101,6 +101,13 @@ class Settings(BaseSettings):
     # is a deliberate, named choice instead of a side effect of DEBUG. With it on,
     # anyone who can reach the webhook can post a call to this instance.
     ALLOW_UNSIGNED_WEBHOOKS: bool = False
+    # Keys that encrypt customer credentials at rest (app.core.secret_box):
+    # "<id>:<base64 32-byte key>", comma separated. The first entry encrypts;
+    # every entry can decrypt, which is how a key is rotated: put the new key
+    # first, keep the old one behind it, run scripts/rotate_credential_keys.py,
+    # then drop the old one. Removing a key while rows still name it makes those
+    # credentials unreadable. Required outside DEBUG.
+    CREDENTIAL_ENCRYPTION_KEYS: str | None = None
 
     # Public embed widget (app.core.embed_session).
     # An agent with no allowed domains can be embedded by no other site. This
@@ -237,6 +244,12 @@ class Settings(BaseSettings):
     CALL_REGISTRY_TTL: int = 1800  # 30 minutes TTL for call entries
     MAX_CALL_QUEUE_SIZE: int = 1000  # Max queued calls (Sprint 2)
 
+    # Data retention sweep (app.services.retention). Deletes call data older
+    # than each account's retention period. One process at a time holds the
+    # lock, so several workers do not sweep at once.
+    RETENTION_SWEEP_ENABLED: bool = True
+    RETENTION_SWEEP_INTERVAL_HOURS: int = 24
+
 
 class InsecureSecretKeyError(RuntimeError):
     """The application was started on a signing key anyone can read."""
@@ -270,5 +283,41 @@ def refuse_placeholder_secret_key(candidate: Settings) -> None:
         raise InsecureSecretKeyError(message)
 
 
+class MissingCredentialKeyError(RuntimeError):
+    """The application was started with no key to encrypt customer credentials."""
+
+
+def refuse_missing_credential_keys(candidate: Settings) -> None:
+    """Refuse to start outside DEBUG without a usable credential key ring.
+
+    Without a key, customers' model, carrier and CRM keys would be written to
+    the database in plain text while the dashboard says they are protected. A
+    malformed ring is refused in every mode: a typo here must not silently turn
+    encryption off.
+
+    A plain check for the same reason as the signing-key check above: a pydantic
+    validation error prints the value it rejected.
+    """
+    from app.core.secret_box import CredentialKeyError, parse_key_ring
+
+    try:
+        keys = parse_key_ring(candidate.CREDENTIAL_ENCRYPTION_KEYS)
+    except CredentialKeyError as exc:
+        raise MissingCredentialKeyError(str(exc)) from None
+    if keys or candidate.DEBUG:
+        return
+    message = (
+        "CREDENTIAL_ENCRYPTION_KEYS is not set. It encrypts the provider and "
+        "integration credentials customers store, so the application will not "
+        "start without it. Set it to '<id>:<key>', for example "
+        "`python -c \"import secrets,base64;print('k1:' + "
+        'base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())"`, and keep '
+        "a copy somewhere safe: losing it loses every stored credential. For a "
+        "throwaway local run only, DEBUG=true skips this check."
+    )
+    raise MissingCredentialKeyError(message)
+
+
 settings = Settings()
 refuse_placeholder_secret_key(settings)
+refuse_missing_credential_keys(settings)

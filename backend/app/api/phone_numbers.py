@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.audit import AuditAction, record_audit
 from app.core.auth import CurrentUser, user_id_to_uuid
 from app.core.limiter import limiter
 from app.db.session import get_db
@@ -396,11 +397,28 @@ async def update_phone_number(
         else:
             phone_number.workspace_id = None
     if update_request.assigned_agent_id is not None:
+        previous_agent = phone_number.assigned_agent_id
         phone_number.assigned_agent_id = (
             uuid.UUID(update_request.assigned_agent_id)
             if update_request.assigned_agent_id
             else None
         )
+        if phone_number.assigned_agent_id != previous_agent:
+            await record_audit(
+                db,
+                AuditAction.PHONE_NUMBER_ASSIGN,
+                actor_user_id=current_user.id,
+                workspace_id=phone_number.workspace_id,
+                target_type="phone_number",
+                target_id=str(phone_number.id),
+                details={
+                    "from_agent": str(previous_agent) if previous_agent else None,
+                    "to_agent": str(phone_number.assigned_agent_id)
+                    if phone_number.assigned_agent_id
+                    else None,
+                },
+                request=request,
+            )
     if update_request.status is not None:
         phone_number.status = update_request.status
     if update_request.notes is not None:

@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.audit import AuditAction, record_audit
 from app.core.auth import CurrentUser
 from app.core.limiter import limiter
 from app.core.public_id import generate_public_id
@@ -167,6 +168,16 @@ async def create_agent(
     )
 
     db.add(agent)
+    await db.flush()
+    await record_audit(
+        db,
+        AuditAction.AGENT_CREATE,
+        actor_user_id=current_user.id,
+        target_type="agent",
+        target_id=str(agent.id),
+        details={"phone_number_id": agent.phone_number_id},
+        request=request,
+    )
     await db.commit()
     await db.refresh(agent)
 
@@ -283,6 +294,14 @@ async def delete_agent(
             detail="Agent not found",
         )
 
+    await record_audit(
+        db,
+        AuditAction.AGENT_DELETE,
+        actor_user_id=current_user.id,
+        target_type="agent",
+        target_id=str(agent.id),
+        request=request,
+    )
     await db.delete(agent)
     await db.commit()
 
@@ -326,7 +345,30 @@ async def update_agent(
         )
 
     # Apply updates from request
+    previous_number = agent.phone_number_id
     _apply_agent_updates(agent, update_request)
+
+    # Which fields were sent. Not their values: a system prompt can hold
+    # anything the owner pasted into it.
+    await record_audit(
+        db,
+        AuditAction.AGENT_UPDATE,
+        actor_user_id=current_user.id,
+        target_type="agent",
+        target_id=str(agent.id),
+        details={"fields": sorted(update_request.model_dump(exclude_none=True).keys())},
+        request=request,
+    )
+    if agent.phone_number_id != previous_number:
+        await record_audit(
+            db,
+            AuditAction.PHONE_NUMBER_ASSIGN,
+            actor_user_id=current_user.id,
+            target_type="agent",
+            target_id=str(agent.id),
+            details={"from": previous_number, "to": agent.phone_number_id},
+            request=request,
+        )
 
     await db.commit()
     await db.refresh(agent)
