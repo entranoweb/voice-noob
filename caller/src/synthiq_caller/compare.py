@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from synthiq_caller.jsonio import write_json
 from synthiq_caller.report import Summary
 from synthiq_caller.stats import wilson_interval
 
@@ -47,7 +48,7 @@ def make_baseline(summary: Summary, source: str = "") -> Baseline:
 
 
 def save_baseline(baseline: Baseline, path: str | Path) -> None:
-    Path(path).write_text(json.dumps(baseline.to_json(), indent=1), encoding="utf-8")
+    write_json(Path(path), baseline.to_json())
 
 
 def load_baseline(path: str | Path) -> Baseline:

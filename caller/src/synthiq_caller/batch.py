@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import subprocess
 import time
 from collections.abc import Awaitable, Callable
@@ -46,6 +47,7 @@ from synthiq_caller.chain import (
 from synthiq_caller.clips import ClipBank
 from synthiq_caller.director import Director, RunRecord
 from synthiq_caller.grading import Grade, grade
+from synthiq_caller.jsonio import write_json
 from synthiq_caller.leg import Leg
 from synthiq_caller.readback import ReadBack, ReadBackContext
 from synthiq_caller.reset import Reset, ResetContext, ResetFailed
@@ -62,10 +64,29 @@ ALLOWED: dict[str, tuple[str, ...]] = {
 }
 
 
+@dataclass(frozen=True)
+class CallInfo:
+    """The call an ``after_call`` hook is being run for."""
+
+    # The engine's own reference for the call (a conversation id); "" when the leg gave none.
+    call_ref: str
+    # The stored run: "run-003.json", already written when the hook runs.
+    run_file: str
+    out: str
+    # "passed", "failed" or "ungraded".
+    outcome: str
+
+    @property
+    def run_id(self) -> str:
+        return Path(self.run_file).stem
+
+
 class Hooks(Protocol):
     async def before_call(self, scenario_file: str, scenario: Scenario, repeat: int) -> None: ...
 
-    async def after_call(self, scenario_file: str, scenario: Scenario, repeat: int) -> None: ...
+    async def after_call(
+        self, scenario_file: str, scenario: Scenario, repeat: int, call: CallInfo | None = None
+    ) -> None: ...
 
 
 class NoHooks:
@@ -74,8 +95,14 @@ class NoHooks:
     async def before_call(self, scenario_file: str, scenario: Scenario, repeat: int) -> None:
         return None
 
-    async def after_call(self, scenario_file: str, scenario: Scenario, repeat: int) -> None:
+    async def after_call(
+        self, scenario_file: str, scenario: Scenario, repeat: int, call: CallInfo | None = None
+    ) -> None:
         return None
+
+
+_PLACEHOLDER = re.compile(r"\{(call_ref|run_file|run_id|scenario_file|repeat)\}")
+_SAFE_WORD = re.compile(r"[A-Za-z0-9._:\-]+")
 
 
 @dataclass
@@ -85,13 +112,29 @@ class ShellHooks:
     The command gets the scenario in its environment: ``SYNTHIQ_SCENARIO_FILE``,
     ``SYNTHIQ_SCENARIO_NAME``, ``SYNTHIQ_MUTATES``, ``SYNTHIQ_REPEAT`` and
     ``SYNTHIQ_PHASE`` (``before`` or ``after``).
+
+    The ``after`` command also gets the call: ``SYNTHIQ_CALL_REF`` (the engine's
+    conversation id), ``SYNTHIQ_RUN_FILE``, ``SYNTHIQ_RUN_ID``, ``SYNTHIQ_OUT_DIR``
+    and ``SYNTHIQ_OUTCOME``. The same values can be written into the command as
+    ``{call_ref}``, ``{run_file}``, ``{run_id}``, ``{scenario_file}`` and
+    ``{repeat}``, for a program that takes them as arguments. A value is only
+    put on the command line if it is made of letters, digits and ``. _ - :``; a
+    command that names a value the call does not have is not run.
     """
 
     before: str = ""
     after: str = ""
     timeout_s: float = 120.0
 
-    async def _run(self, command: str, phase: str, file: str, scenario: Scenario, n: int) -> None:
+    async def _run(
+        self,
+        command: str,
+        phase: str,
+        file: str,
+        scenario: Scenario,
+        n: int,
+        call: CallInfo | None = None,
+    ) -> None:
         if not command:
             return
         import os
@@ -104,6 +147,27 @@ class ShellHooks:
             "SYNTHIQ_REPEAT": str(n),
             "SYNTHIQ_PHASE": phase,
         }
+        words = {"scenario_file": file, "repeat": str(n)}
+        if call is not None:
+            env.update(
+                {
+                    "SYNTHIQ_CALL_REF": call.call_ref,
+                    "SYNTHIQ_RUN_FILE": call.run_file,
+                    "SYNTHIQ_RUN_ID": call.run_id,
+                    "SYNTHIQ_OUT_DIR": call.out,
+                    "SYNTHIQ_OUTCOME": call.outcome,
+                }
+            )
+            words.update(call_ref=call.call_ref, run_file=call.run_file, run_id=call.run_id)
+        for word in _PLACEHOLDER.findall(command):
+            value = words.get(word, "")
+            if not _SAFE_WORD.fullmatch(value):
+                raise RuntimeError(
+                    f"{phase}_call hook names {{{word}}}, which this call does not have"
+                    if not value
+                    else f"{phase}_call hook: {{{word}}} is not safe to put on a command line"
+                )
+            command = command.replace(f"{{{word}}}", value)
         done = await asyncio.to_thread(
             subprocess.run,
             command,
@@ -112,6 +176,8 @@ class ShellHooks:
             timeout=self.timeout_s,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
         if done.returncode != 0:
             raise RuntimeError(f"{phase}_call hook exited {done.returncode}: {done.stderr[-200:]}")
@@ -119,8 +185,10 @@ class ShellHooks:
     async def before_call(self, scenario_file: str, scenario: Scenario, repeat: int) -> None:
         await self._run(self.before, "before", scenario_file, scenario, repeat)
 
-    async def after_call(self, scenario_file: str, scenario: Scenario, repeat: int) -> None:
-        await self._run(self.after, "after", scenario_file, scenario, repeat)
+    async def after_call(
+        self, scenario_file: str, scenario: Scenario, repeat: int, call: CallInfo | None = None
+    ) -> None:
+        await self._run(self.after, "after", scenario_file, scenario, repeat, call)
 
 
 @dataclass
@@ -325,11 +393,6 @@ async def run_batch(
             except Exception as error:  # noqa: BLE001 - recorded; the grader falls back
                 read_back_error = str(error) or repr(error)
         graded = grade(scenario, record, trace, held)
-        hook_error = ""
-        try:
-            await hooks.after_call(file, scenario, repeat)
-        except Exception as error:  # noqa: BLE001 - recorded, never hidden
-            hook_error = f"after hook: {error}"
         payload: dict[str, Any] = {
             "scenario_file": file,
             "mutates": scenario.mutates,
@@ -340,7 +403,7 @@ async def run_batch(
             # None: no read-back was made. An object: what the system held afterwards.
             "read_back": held,
             "read_back_error": read_back_error,
-            "hook_error": hook_error,
+            "hook_error": "",
             "grade": graded.to_json(),
             **extra,
         }
@@ -349,7 +412,19 @@ async def run_batch(
             index = counter
             result.ran += 1
         name = f"run-{index:03d}.json"
-        (out / name).write_text(json.dumps(payload, indent=1), encoding="utf-8")
+        write_json(out / name, payload)
+        # The run is stored first, so the hook can be told which call this was
+        # (and read the file); a hook that fails is then written into it.
+        try:
+            await hooks.after_call(
+                file,
+                scenario,
+                repeat,
+                CallInfo(record.call_ref or "", name, str(out), graded.outcome),
+            )
+        except Exception as error:  # noqa: BLE001 - recorded, never hidden
+            payload["hook_error"] = f"after hook: {error}"
+            write_json(out / name, payload)
         return Placed(name, graded, record, trace, held)
 
     async def one(file: str, scenario: Scenario, repeat: int) -> None:
@@ -361,6 +436,10 @@ async def run_batch(
             return
         if scenario.missing_clips:
             block(f"missing clips: {list(scenario.missing_clips)}")
+            return
+        excluded = clips.excluded_in([clip for step in scenario.steps for clip in step.clips])
+        if excluded:
+            block(f"excluded clips: {excluded}")
             return
         async with gate:
             try:
@@ -455,22 +534,19 @@ async def run_batch(
                 outcome = "ungraded"  # the call passed but did not show what the next one needs
             chain_counter += 1
             result.chains += 1
-            (out / f"chain-{chain_counter:03d}.json").write_text(
-                json.dumps(
-                    {
-                        "chain_file": file,
-                        "chain": chain.name,
-                        "repeat": repeat,
-                        "mutates": chain.mutates,
-                        "outcome": outcome,
-                        "uncaptured": uncaptured,
-                        "reason": reason,
-                        "calls": rows,
-                        "variables": variables,
-                    },
-                    indent=1,
-                ),
-                encoding="utf-8",
+            write_json(
+                out / f"chain-{chain_counter:03d}.json",
+                {
+                    "chain_file": file,
+                    "chain": chain.name,
+                    "repeat": repeat,
+                    "mutates": chain.mutates,
+                    "outcome": outcome,
+                    "uncaptured": uncaptured,
+                    "reason": reason,
+                    "calls": rows,
+                    "variables": variables,
+                },
             )
 
     jobs = [
@@ -482,23 +558,31 @@ async def run_batch(
         one_chain(file, chain, repeat) for repeat in range(1, repeats + 1) for file, chain in chains
     ]
     await asyncio.gather(*jobs)
-    (out / "batch.json").write_text(json.dumps(result.to_json(), indent=1), encoding="utf-8")
+    write_json(out / "batch.json", result.to_json())
     return result
 
 
-async def reread_missing_traces(out: Path, reader: TraceReader) -> int:
-    """Fetch again the trace of every stored run that has none, or an empty one."""
+async def reread_missing_traces(out: Path, reader: TraceReader, *, every: bool = False) -> int:
+    """Fetch again the trace of every stored run that has none, or an empty one.
+
+    ``every`` fetches all of them again, for runs stored before the reader
+    learned to keep something (a tool's reported values, for one). A trace that
+    is already stored is never replaced by a failed fetch.
+    """
     fetched = 0
     for path in sorted(out.glob("run-*.json")):
         payload = json.loads(path.read_text(encoding="utf-8"))
         record = RunRecord.from_json(payload["record"])
         old = Trace.from_json(payload["trace"]) if payload.get("trace") else None
-        if old is not None and not looks_unfinished(old, record):
+        usable = old is not None and not looks_unfinished(old, record)
+        if usable and not every:
             continue
         trace, error = await read_trace_when_ready(reader, record, attempts=2)
+        if trace is None and usable:
+            continue  # keep what is there
         payload["trace"] = trace.to_json() if trace else None
         payload["trace_error"] = error
-        path.write_text(json.dumps(payload, indent=1), encoding="utf-8")
+        write_json(path, payload)
         fetched += trace is not None
     return fetched
 
@@ -523,7 +607,7 @@ def regrade(out: Path, scenarios: list[tuple[str, Scenario]]) -> int:
         fresh = grade(scenario, record, trace, payload.get("read_back")).to_json()
         if fresh != payload["grade"]:
             payload["grade"] = fresh
-            path.write_text(json.dumps(payload, indent=1), encoding="utf-8")
+            write_json(path, payload)
             changed += 1
     return changed
 
@@ -554,7 +638,7 @@ def regrade_chains(out: Path, chains: list[tuple[str, Chain]]) -> int:
         fresh = grade(scenario, record, trace, payload.get("read_back")).to_json()
         if fresh != payload["grade"]:
             payload["grade"] = fresh
-            path.write_text(json.dumps(payload, indent=1), encoding="utf-8")
+            write_json(path, payload)
             changed += 1
     for path in sorted(out.glob("chain-*.json")):
         stored = json.loads(path.read_text(encoding="utf-8"))
@@ -567,5 +651,5 @@ def regrade_chains(out: Path, chains: list[tuple[str, Chain]]) -> int:
             outcome = "ungraded"
         if outcome != stored["outcome"]:
             stored["outcome"] = outcome
-        path.write_text(json.dumps(stored, indent=1), encoding="utf-8")
+        write_json(path, stored)
     return changed

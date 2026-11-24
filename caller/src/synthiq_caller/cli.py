@@ -5,7 +5,8 @@
     synthiq-caller report runs/
     synthiq-caller batch scenarios/sophie --leg elevenlabs-socket --agent <id> \
         --clips <dir> --repeats 3 --out runs/        (runs lookup-only scenarios)
-    synthiq-caller validate scenarios/sophie --clips <dir>
+    synthiq-caller validate scenarios/sophie --clips <dir> [--check-requires-command "..."]
+    synthiq-caller scorecard runs/a runs/b --out card.html [--previous last.html]
     synthiq-caller regrade runs/ --scenarios scenarios/sophie   (no calls placed)
     synthiq-caller baseline runs/ --out baseline.json
     synthiq-caller compare runs-new/ --baseline baseline.json --fail-on beyond-noise
@@ -38,7 +39,6 @@ from synthiq_caller.batch import (
     reread_missing_traces,
     run_batch,
 )
-from synthiq_caller.chain import variables_in
 from synthiq_caller.clips import ClipBank
 from synthiq_caller.compare import (
     compare,
@@ -49,12 +49,16 @@ from synthiq_caller.compare import (
 )
 from synthiq_caller.director import Director, RunRecord
 from synthiq_caller.grading import Grade, grade
+from synthiq_caller.jsonio import utf8_console, write_json
 from synthiq_caller.leg import Leg
+from synthiq_caller.prereq import CommandChecker, HttpChecker, PrereqChecker
 from synthiq_caller.readback import CommandReadBack, HttpReadBack, NoReadBack, ReadBack
 from synthiq_caller.report import render, summarise
 from synthiq_caller.reset import CommandReset, HttpReset, NoReset, Reset
 from synthiq_caller.scenario import Scenario, load_scenario
+from synthiq_caller.stats import describe
 from synthiq_caller.traces.base import Trace, TraceReader
+from synthiq_caller.validation import validate_directory
 
 
 def _secret(name: str, env_file: str | None) -> str:
@@ -101,7 +105,7 @@ async def _run_once(scenario: Scenario, args: argparse.Namespace, index: int, ou
         "trace_error": trace_error,
         "grade": result.to_json(),
     }
-    (out / f"run-{index:03d}.json").write_text(json.dumps(payload, indent=1), encoding="utf-8")
+    write_json(out / f"run-{index:03d}.json", payload)
     return result
 
 
@@ -140,51 +144,46 @@ def report(directory: str, *, details: bool = True) -> int:
     return 0
 
 
-def validate(directory: str, clips_dir: str | None) -> int:
-    """Parse every scenario and, given a clip bank, check each clip it names exists."""
-    bank = ClipBank(clips_dir) if clips_dir else None
-    problems = 0
-    for file, scenario in load_scenarios(directory):
-        missing: list[str] = []
-        if bank is not None:
-            for step in scenario.steps:
-                for clip in step.clips:
-                    if clip.startswith("missing/") and scenario.missing_clips:
-                        continue  # declared as not yet recorded; a batch will not run it
-                    try:
-                        bank.path(clip)
-                    except FileNotFoundError:
-                        missing.append(clip)
-        count = len(scenario.missing_clips)
-        note = f"  needs {count} recording(s), will not run" if count else ""
-        state = "ok" if not missing else f"CLIPS NOT IN BANK: {missing}"
-        problems += bool(missing)
-        print(
-            f"{file:<44} mutates={scenario.mutates:<10} "
-            f"steps={len(scenario.steps):<3} {state}{note}"
+def validate(args: argparse.Namespace) -> int:
+    """Parse every scenario and chain; check clips against a bank and prerequisites if asked.
+
+    A prerequisite is "unchecked" unless a checker was given: this command has no
+    way of its own to look inside the system under test.
+    """
+    checker: PrereqChecker | None = None
+    if args.check_requires_command:
+        checker = CommandChecker(args.check_requires_command, timeout_s=args.check_requires_timeout)
+    elif args.check_requires_url:
+        checker = HttpChecker(
+            args.check_requires_url,
+            secret=_named_secret(args.check_requires_secret_env, args.env_file),
+            header=args.check_requires_header,
+            timeout_s=args.check_requires_timeout,
         )
-    for file, chain in load_chains(directory):
-        missing = []
-        if bank is not None:
-            for call in chain.calls:
-                for step in call.raw.get("steps", ()):
-                    for clip in step.get("clips", ()):
-                        if variables_in(clip) or (
-                            str(clip).startswith("missing/") and call.missing_clips
-                        ):
-                            continue  # chosen at run time, or declared as not yet recorded
-                        try:
-                            bank.path(str(clip))
-                        except FileNotFoundError:
-                            missing.append(str(clip))
-        state = "ok" if not missing else f"CLIPS NOT IN BANK: {missing}"
-        problems += bool(missing)
-        calls = " > ".join(f"{call.id}({call.mutates})" for call in chain.calls)
+    rows = validate_directory(args.scenarios, ClipBank(args.clips) if args.clips else None, checker)
+    for row in rows:
+        print(row.line())
+    unchecked = sum(row.requires_state == "unchecked" for row in rows)
+    if unchecked:
         print(
-            f"{file:<44} mutates={chain.mutates:<10} chain "
-            f"clean_state={'yes' if chain.clean_state else 'no'}  {calls}  {state}"
+            f"\n{unchecked} file(s) require something of the system under test that was not "
+            "checked (--check-requires-command or --check-requires-url)."
         )
-    return 1 if problems else 0
+    return 1 if any(row.problem for row in rows) else 0
+
+
+def _scorecard(args: argparse.Namespace) -> int:
+    from synthiq_caller import scorecard
+
+    card = scorecard.build(
+        [Path(d) for d in args.directories],
+        faults=scorecard.load_faults(args.faults) if args.faults else None,
+        previous=scorecard.load_previous(args.previous) if args.previous else None,
+        title=args.title,
+    )
+    out = scorecard.write(card, args.out)
+    print(f"{describe(card['passed'], card['graded'])}  ->  {out}")
+    return 0
 
 
 def _named_secret(env_name: str, env_file: str | None) -> str:
@@ -350,6 +349,11 @@ def main(argv: list[str] | None = None) -> int:
     reg.add_argument("directory")
     reg.add_argument("--scenarios", required=True)
     reg.add_argument("--reread", action="store_true", help="fetch missing or empty traces again")
+    reg.add_argument(
+        "--reread-all",
+        action="store_true",
+        help="fetch every trace again, for runs stored by an older version of the reader",
+    )
     reg.add_argument("--leg", choices=["elevenlabs-socket"], default="elevenlabs-socket")
     reg.add_argument("--agent", default="-")
     reg.add_argument("--env-file", default=None)
@@ -371,6 +375,29 @@ def main(argv: list[str] | None = None) -> int:
     val = sub.add_parser("validate", help="check a directory of scenarios, and its clips")
     val.add_argument("scenarios")
     val.add_argument("--clips", default=None)
+    val.add_argument("--env-file", default=None)
+    val.add_argument(
+        "--check-requires-command",
+        default="",
+        help="run per file that has a 'requires': exit 0 means met, 1 unmet, else an error",
+    )
+    val.add_argument(
+        "--check-requires-url",
+        default="",
+        help='asked per file that has a "requires"; answers {"met": true|false, "detail": "..."}',
+    )
+    val.add_argument("--check-requires-secret-env", default="", help="variable holding the secret")
+    val.add_argument("--check-requires-header", default="X-Synthiq-Secret")
+    val.add_argument("--check-requires-timeout", type=float, default=60.0, help="seconds")
+
+    card = sub.add_parser("scorecard", help="one HTML page for one or more run directories")
+    card.add_argument("directories", nargs="+")
+    card.add_argument("--out", required=True, help="the page to write; its data goes beside it")
+    card.add_argument(
+        "--previous", default="", help="an earlier scorecard page, its .json, or a baseline file"
+    )
+    card.add_argument("--faults", default="", help='JSON: {"<directory>/<run file>": "<class>"}')
+    card.add_argument("--title", default="")
 
     bank = sub.add_parser("clipbank", help="build a clip bank, or a scenario from a recorded call")
     bank_sub = bank.add_subparsers(dest="clipbank_command", required=True)
@@ -383,22 +410,27 @@ def main(argv: list[str] | None = None) -> int:
     bank_scn.add_argument("--call", required=True)
 
     args = parser.parse_args(argv)
+    utf8_console()
     if args.command == "report":
         return report(args.directory, details=not args.summary_only)
     if args.command == "batch":
         return _batch(args)
     if args.command == "regrade":
-        if args.reread:
+        if args.reread or args.reread_all:
             _, reader = _build(args)
             if reader is not None:
-                fetched = asyncio.run(reread_missing_traces(Path(args.directory), reader))
+                fetched = asyncio.run(
+                    reread_missing_traces(Path(args.directory), reader, every=args.reread_all)
+                )
                 print(f"traces fetched again: {fetched}")
         changed = regrade(Path(args.directory), load_scenarios(args.scenarios))
         changed += regrade_chains(Path(args.directory), load_chains(args.scenarios))
         print(f"regraded: {changed} run(s) changed")
         return report(args.directory, details=False)
     if args.command == "validate":
-        return validate(args.scenarios, args.clips)
+        return validate(args)
+    if args.command == "scorecard":
+        return _scorecard(args)
     if args.command == "baseline":
         stored = make_baseline(summarise(args.directory), source=str(args.directory))
         save_baseline(stored, args.out)

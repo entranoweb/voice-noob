@@ -47,6 +47,10 @@ async def run_command(command: str | Sequence[str], env: dict[str, str], timeout
             timeout=timeout_s,
             capture_output=True,
             text=True,
+            # Not the platform's legacy code page: a "£" or a typographic
+            # apostrophe printed as UTF-8 must come back as itself.
+            encoding="utf-8",
+            errors="replace",
         )
     except subprocess.TimeoutExpired as error:
         raise ExternalFailed(f"command ran past {timeout_s:.0f}s") from error

@@ -301,6 +301,9 @@ def grade(
         wanted = "succeeds" if expected.ok else "is refused"
         passed = any(c.ok == expected.ok for c in matching)
         result.checks.append(Check(f"{label} is called and {wanted}", passed))
+        for key, value in expected.outputs.items():
+            reported = any(_carries(c.outputs, {key: value}) for c in matching)
+            result.checks.append(Check(f"{label} reports {key}={value}", reported))
 
     by_field = {row.field: row for row in rows}
     for name in scenario.expect.fields:

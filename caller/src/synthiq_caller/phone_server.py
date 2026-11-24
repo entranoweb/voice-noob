@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 import os
 import sys
 from collections.abc import Mapping
@@ -28,6 +27,7 @@ from urllib.parse import urlsplit
 
 from synthiq_caller.clips import ClipBank
 from synthiq_caller.director import Director, RunRecord
+from synthiq_caller.jsonio import write_json
 from synthiq_caller.legs.fake_twilio import FakeTwilio
 from synthiq_caller.legs.twilio_media import CallNotConnected, PhoneConfig, TwilioMediaLeg
 from synthiq_caller.scenario import Scenario, load_scenario
@@ -94,7 +94,7 @@ def _write(out: Path, payload: dict[str, Any]) -> Path:
     out.mkdir(parents=True, exist_ok=True)
     index = len(list(out.glob("phone-run-*.json"))) + 1
     path = out / f"phone-run-{index:03d}.json"
-    path.write_text(json.dumps(payload, indent=1), encoding="utf-8")
+    write_json(path, payload)
     return path
 
 
