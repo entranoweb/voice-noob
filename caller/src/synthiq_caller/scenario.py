@@ -59,6 +59,9 @@ class ToolExpectation:
     ok: bool = True
     # False means the tool must NOT have been called.
     called: bool = True
+    # Argument values the call must have carried, compared as trimmed text
+    # without regard to case. Empty means any arguments will do.
+    arguments: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -70,6 +73,10 @@ class Expectations:
     # own words: for outcomes no tool records, such as "told to call 999".
     agent_says: tuple[re.Pattern[str], ...] = ()
     agent_never_says: tuple[re.Pattern[str], ...] = ()
+    # Values the system under test must hold after the call, as fetched by the
+    # batch's read-back (``readback.py``). With no read-back these cannot be
+    # checked and the call is left ungraded rather than passed on the agent's word.
+    read_back: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -89,6 +96,8 @@ class Scenario:
     # Utterances the scenario needs that no recorded clip exists for.
     missing_clips: tuple[str, ...] = ()
     description: str = ""
+    # The system under test must be reset before this call (see ``reset.py``).
+    clean_state: bool = False
 
 
 class ScenarioError(ValueError):
@@ -145,12 +154,14 @@ def parse_scenario(data: dict[str, Any]) -> Scenario:
                 name_contains=str(t["name_contains"]),
                 ok=bool(t.get("ok", True)),
                 called=bool(t.get("called", True)),
+                arguments={str(k): str(v) for k, v in (t.get("arguments") or {}).items()},
             )
             for t in raw_expect.get("tools", ())
         ),
         fields=tuple(str(f) for f in raw_expect.get("fields", ())),
         agent_says=tuple(_pattern(str(p)) for p in raw_expect.get("agent_says", ())),
         agent_never_says=tuple(_pattern(str(p)) for p in raw_expect.get("agent_never_says", ())),
+        read_back={str(k): str(v) for k, v in (raw_expect.get("read_back") or {}).items()},
     )
     for name in expect.fields:
         if name not in facts:
@@ -175,10 +186,12 @@ def parse_scenario(data: dict[str, Any]) -> Scenario:
         requires=str(data.get("requires", "")),
         missing_clips=tuple(str(m) for m in data.get("missing_clips", ())),
         description=str(data.get("description", "")),
+        clean_state=bool(data.get("clean_state", False)),
     )
 
 
-def load_scenario(path: str | Path) -> Scenario:
+def read_scenario_file(path: str | Path) -> dict[str, Any]:
+    """The object a scenario file holds, before anything is made of it."""
     path = Path(path)
     text = path.read_text(encoding="utf-8")
     if path.suffix.lower() in (".yaml", ".yml"):
@@ -191,4 +204,11 @@ def load_scenario(path: str | Path) -> Scenario:
         data = json.loads(text)
     if not isinstance(data, dict):
         raise ScenarioError("a scenario file must hold one object")
+    return data
+
+
+def load_scenario(path: str | Path) -> Scenario:
+    data = read_scenario_file(path)
+    if "chain" in data:
+        raise ScenarioError("this file declares a chain of calls; load it with load_chain")
     return parse_scenario(data)
