@@ -30,6 +30,7 @@ from synthiq_caller.director import Director, RunRecord
 from synthiq_caller.jsonio import write_json
 from synthiq_caller.legs.fake_twilio import FakeTwilio
 from synthiq_caller.legs.twilio_media import CallNotConnected, PhoneConfig, TwilioMediaLeg
+from synthiq_caller.numbers import ALLOWED_ENV, allowed_numbers, is_allowed
 from synthiq_caller.scenario import Scenario, load_scenario
 from synthiq_caller.transcribe import (
     DeepgramTranscriber,
@@ -113,6 +114,12 @@ def _summary(record: RunRecord, leg: TwilioMediaLeg) -> list[str]:
 
 async def run_real(args: argparse.Namespace, scenario: Scenario, env: Mapping[str, str]) -> int:
     credentials = Credentials.from_env(env)
+    allowed = allowed_numbers(args.allowed_numbers, env)
+    if not is_allowed(args.to, allowed):
+        raise UsageError(
+            f"{args.to} is not on the list of numbers this caller may dial. List them with "
+            f"--allowed-numbers (a file, or a comma-separated list) or {ALLOWED_ENV}"
+        )
     public_url = check_public_url(args.public_url or "")
     transcriber = build_transcriber(args, env)
     rest = TwilioRest(credentials)
@@ -124,6 +131,7 @@ async def run_real(args: argparse.Namespace, scenario: Scenario, env: Mapping[st
             listen_host=args.host,
             listen_port=args.port,
             record=not args.no_record,
+            allowed_to=allowed,
         ),
         rest,
         auth_token=credentials.auth_token,
@@ -200,6 +208,12 @@ def main(argv: list[str] | None = None, env: Mapping[str, str] | None = None) ->
     parser.add_argument("--public-url", default="")
     parser.add_argument("--from", dest="from_number", default="")
     parser.add_argument("--to", default="")
+    parser.add_argument(
+        "--allowed-numbers",
+        default="",
+        help="the only numbers that may be dialled: a file, one per line, or a comma-separated "
+        "list. A real call is not placed without it",
+    )
     parser.add_argument("--host", default="0.0.0.0")  # noqa: S104 - the carrier connects in
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument(
