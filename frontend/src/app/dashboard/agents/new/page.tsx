@@ -76,7 +76,10 @@ const agentFormSchema = z.object({
   enabledToolIds: z.record(z.string(), z.array(z.string())).default({}),
 });
 
-type AgentFormValues = z.infer<typeof agentFormSchema>;
+// What the form holds while it is being edited, and what the schema hands back once
+// its defaults are applied. They differ wherever the schema has a `.default()`.
+type AgentFormInput = z.input<typeof agentFormSchema>;
+type AgentFormValues = z.output<typeof agentFormSchema>;
 
 // Get integrations that have tools defined
 const INTEGRATIONS_WITH_TOOLS = AVAILABLE_INTEGRATIONS.filter((i) => i.tools && i.tools.length > 0);
@@ -128,7 +131,7 @@ export default function NewAgentPage() {
   const router = useRouter();
   const queryClient = useQueryClient();
 
-  const form = useForm<AgentFormValues>({
+  const form = useForm<AgentFormInput, unknown, AgentFormValues>({
     resolver: zodResolver(agentFormSchema),
     defaultValues,
   });
@@ -665,7 +668,7 @@ export default function NewAgentPage() {
                                               .map((t) => t.id) ?? [];
                                           if (defaultTools.length > 0) {
                                             const currentToolIds =
-                                              form.getValues("enabledToolIds") || {};
+                                              form.getValues("enabledToolIds") ?? {};
                                             form.setValue("enabledToolIds", {
                                               ...currentToolIds,
                                               [integration.id]: defaultTools,
@@ -677,7 +680,7 @@ export default function NewAgentPage() {
                                           );
                                           // Clear tool selection when integration is disabled
                                           const currentToolIds =
-                                            form.getValues("enabledToolIds") || {};
+                                            form.getValues("enabledToolIds") ?? {};
                                           const { [integration.id]: _removed, ...rest } =
                                             currentToolIds;
                                           form.setValue("enabledToolIds", rest);
@@ -704,7 +707,7 @@ export default function NewAgentPage() {
                                     <Button variant="ghost" size="sm">
                                       <ChevronDown className="h-4 w-4" />
                                       <span className="ml-1">
-                                        {form.watch(`enabledToolIds.${integration.id}`)?.length ||
+                                        {form.watch(`enabledToolIds.${integration.id}`)?.length ??
                                           0}{" "}
                                         / {integration.tools.length} tools
                                       </span>
@@ -728,7 +731,7 @@ export default function NewAgentPage() {
                                             const allToolIds =
                                               integration.tools?.map((t) => t.id) ?? [];
                                             const currentToolIds =
-                                              form.getValues("enabledToolIds") || {};
+                                              form.getValues("enabledToolIds") ?? {};
                                             form.setValue("enabledToolIds", {
                                               ...currentToolIds,
                                               [integration.id]: allToolIds,
@@ -743,7 +746,7 @@ export default function NewAgentPage() {
                                           size="sm"
                                           onClick={() => {
                                             const currentToolIds =
-                                              form.getValues("enabledToolIds") || {};
+                                              form.getValues("enabledToolIds") ?? {};
                                             form.setValue("enabledToolIds", {
                                               ...currentToolIds,
                                               [integration.id]: [],

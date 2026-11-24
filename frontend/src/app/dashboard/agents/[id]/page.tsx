@@ -198,7 +198,10 @@ const agentFormSchema = z.object({
     .default("Talk to us"),
 });
 
-type AgentFormValues = z.infer<typeof agentFormSchema>;
+// What the form holds while it is being edited, and what the schema hands back once
+// its defaults are applied. They differ wherever the schema has a `.default()`.
+type AgentFormInput = z.input<typeof agentFormSchema>;
+type AgentFormValues = z.output<typeof agentFormSchema>;
 
 // Map fields to their respective tabs for error tracking
 const TAB_FIELDS: Record<string, (keyof AgentFormValues)[]> = {
@@ -315,7 +318,7 @@ export default function EditAgentPage({ params }: EditAgentPageProps) {
     enabled: !!agentId && !!agent && !isDeleting,
   });
 
-  const form = useForm<AgentFormValues>({
+  const form = useForm<AgentFormInput, unknown, AgentFormValues>({
     resolver: zodResolver(agentFormSchema),
     defaultValues: {
       name: "",
@@ -405,7 +408,9 @@ export default function EditAgentPage({ params }: EditAgentPageProps) {
   }, [embedSettings]);
 
   // Get selected workspaces for phone number fetching
-  const selectedWorkspaces = form.watch("selectedWorkspaces");
+  // The form holds the schema's input type, where a field with a `.default()` may be
+  // undefined; fall back to the same value the schema would apply.
+  const selectedWorkspaces = form.watch("selectedWorkspaces") ?? [];
   const telephonyProvider = form.watch("telephonyProvider");
 
   // Fetch phone numbers from the first selected workspace
