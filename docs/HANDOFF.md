@@ -10,6 +10,25 @@ document is the state of play and the next move.
 
 ---
 
+## 0. Update, 24 November 2026
+
+Work resumed on 24 November 2026 after a pause since 5 September. Read this
+before the sections below, which describe the state on 29 August.
+
+- **The rename is done.** Item 10 in §4 is stale: the packages and API were
+  renamed to Synthiq Voice on 5 September.
+- **Nothing is merged from upstream.** Since the fork point (December 2025)
+  upstream has shipped README edits only. The daily sync that pushed straight to
+  `main` is being made manual and pull-request only.
+- **A test caller is being added under `caller/`.** It plays a real caller's
+  recorded answers into an agent and grades from the agent's own tool results.
+  It tests agents this repository did not build, which the harness in
+  `backend/app/services/qa/` was never designed to do.
+- **Still true:** no call has gone through a carrier from this codebase.
+- **The December 2025 plans** moved to [`archive/2025-12/`](archive/2025-12/README.md).
+- **Where this is going:** [`ROADMAP-2027.md`](ROADMAP-2027.md). It also records
+  an unresolved licence question that blocks selling.
+
 ## 1. Where the code is
 
 | Fact | Value |

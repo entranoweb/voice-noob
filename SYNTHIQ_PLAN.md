@@ -5,7 +5,7 @@
 **Status:** four phases done, audio metrics written but unfed; no real call yet
 **Handoff:** [`docs/HANDOFF.md`](docs/HANDOFF.md)
 
-This supersedes `VOICENOOB_QA_IMPLEMENTATION_PLAN.md` (December 2025) as the
+This supersedes `docs/archive/2025-12/VOICENOOB_QA_IMPLEMENTATION_PLAN.md` (December 2025) as the
 working plan. That document is kept for history, but read it with a caveat: it
 assessed the framework as *"85% production-ready, ~1.5 hours of P0 fixes
 remain."* The application did not import. The evaluation model had been retired
