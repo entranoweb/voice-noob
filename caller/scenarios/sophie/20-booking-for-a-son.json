@@ -1,0 +1,34 @@
+{
+  "name": "Caller asks to book for their son",
+  "mutates": "none",
+  "missing_clips": [
+    "'Can you book an appointment for my son?' The only recording (17 Nov 133109_3j9a) overlaps the agent's voice in all four pieces."
+  ],
+  "persona": {
+    "facts": {}
+  },
+  "max_seconds": 90,
+  "hangup_after": "put you through|reception now|have a lovely day|take care|goodbye",
+  "steps": [
+    {
+      "when": "how can i help",
+      "clips": [
+        "missing/book-for-my-son"
+      ],
+      "intended": "Sophie, can you help me book an appointment for my son?",
+      "max_uses": 2
+    }
+  ],
+  "expect": {
+    "tools": [
+      {
+        "name_contains": "identify",
+        "called": false
+      }
+    ],
+    "fields": [],
+    "agent_says": [
+      "patient themselves|privacy"
+    ]
+  }
+}

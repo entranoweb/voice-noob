@@ -1,0 +1,161 @@
+{
+  "name": "New patient books a consultation: knee, self-pay, picks a time",
+  "mutates": "books",
+  "persona": {
+    "facts": {
+      "name": "alice wonderland",
+      "date_of_birth": "2002-02-20",
+      "postcode": "A56TB"
+    }
+  },
+  "max_seconds": 360,
+  "hangup_after": "have a lovely day|take care|goodbye",
+  "steps": [
+    {
+      "when": "fee is|self-pay fee|pounds",
+      "clips": [
+        "2026-11-20T094342Z_505e_09_confirm_fee"
+      ],
+      "intended": "That's fine.",
+      "max_uses": 2
+    },
+    {
+      "when": "i have the name|that's the name",
+      "clips": [
+        "2026-11-20T094342Z_505e_10_confirm_details"
+      ],
+      "intended": "Correct.",
+      "max_uses": 2
+    },
+    {
+      "when": "that would be with",
+      "clips": [
+        "2026-11-20T094342Z_505e_11_confirm_practitioner"
+      ],
+      "intended": "Correct.",
+      "max_uses": 2
+    },
+    {
+      "when": "read that back|that's a consultation|that's an mri|moving you|go ahead",
+      "clips": [
+        "2026-11-20T094342Z_505e_14_confirm_booking"
+      ],
+      "intended": "Yes, please.",
+      "max_uses": 2
+    },
+    {
+      "when": "how can i help",
+      "clips": [
+        "2026-11-20T094342Z_505e_01_opener"
+      ],
+      "intended": "Sophie, can you book an appointment for me, please?",
+      "max_uses": 2
+    },
+    {
+      "when": "full name|your name|registered under",
+      "clips": [
+        "2026-11-20T094342Z_505e_02_name"
+      ],
+      "intended": "It's Alice Wonderland.",
+      "max_uses": 2,
+      "field": "name"
+    },
+    {
+      "when": "been to see us before|visited us before|been to the clinic|been here before",
+      "clips": [
+        "2026-11-20T094342Z_505e_03_been_before"
+      ],
+      "intended": "No, I haven't.",
+      "max_uses": 2
+    },
+    {
+      "when": "health insurance|paying yourself|paying privately",
+      "clips": [
+        "2026-11-20T094342Z_505e_08_insurance"
+      ],
+      "intended": "Paying myself.",
+      "max_uses": 2
+    },
+    {
+      "when": "mobile number|phone number",
+      "clips": [
+        "2026-11-20T094342Z_505e_06_phone"
+      ],
+      "intended": "Seven-- zero seven eight one three nine five three nine five.",
+      "max_uses": 2,
+      "field": "phone"
+    },
+    {
+      "when": "post ?code",
+      "clips": [
+        "2026-11-20T094342Z_505e_07_postcode"
+      ],
+      "intended": "It's A five six T B.",
+      "max_uses": 2,
+      "field": "postcode"
+    },
+    {
+      "when": "date of birth",
+      "clips": [
+        "2026-11-20T094342Z_505e_05_dob"
+      ],
+      "intended": "It's twentieth of February, two thousand and two.",
+      "max_uses": 2,
+      "field": "date_of_birth"
+    },
+    {
+      "when": "bringing you in|knee or shoulder",
+      "clips": [
+        "2026-11-20T094342Z_505e_04_reason"
+      ],
+      "intended": "I'm having knee pain.",
+      "max_uses": 2
+    },
+    {
+      "when": "which suits you|which one would suit|which of those",
+      "clips": [
+        "2026-11-20T094342Z_505e_13_slot"
+      ],
+      "intended": "Half past twelve.",
+      "max_uses": 2
+    },
+    {
+      "when": "when would suit|particular day|earliest available|soonest we have",
+      "clips": [
+        "2026-11-20T094342Z_505e_12_when"
+      ],
+      "intended": "As soon as possible.",
+      "max_uses": 2
+    },
+    {
+      "when": "anything else",
+      "clips": [
+        "2026-11-20T094342Z_505e_15_anything_else"
+      ],
+      "intended": "No.",
+      "max_uses": 2
+    },
+    {
+      "when": "before you go|preferred",
+      "clips": [
+        "2026-11-13T093013Z_cqfx_03_been_before"
+      ],
+      "intended": "No.",
+      "max_uses": 2
+    }
+  ],
+  "expect": {
+    "tools": [
+      {
+        "name_contains": "v2_register_patient"
+      },
+      {
+        "name_contains": "v2_book_"
+      }
+    ],
+    "fields": [
+      "name",
+      "date_of_birth"
+    ]
+  }
+}

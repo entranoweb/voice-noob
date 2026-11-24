@@ -1,0 +1,115 @@
+{
+  "name": "New patient declines the fee",
+  "description": "The fee answer is a plain 'No.' from another call by the same caller; the recorded decline in the source call was transcribed two different ways. The date of birth is 16 June 1996: the clip bank's transcript of this clip ('Sixth in June') is wrong, which a first live run showed.",
+  "mutates": "none",
+  "persona": {
+    "facts": {
+      "name": "elliot elon",
+      "date_of_birth": "1996-06-16",
+      "phone": "07123456456",
+      "postcode": "E01ZA"
+    }
+  },
+  "max_seconds": 360,
+  "hangup_after": "anything else|have a lovely day|take care|goodbye",
+  "steps": [
+    {
+      "when": "fee is|self-pay fee|pounds",
+      "clips": [
+        "2026-11-13T093013Z_cqfx_03_been_before"
+      ],
+      "intended": "No.",
+      "max_uses": 2
+    },
+    {
+      "when": "how can i help",
+      "clips": [
+        "2026-11-19T102904Z_9aan_01_opener"
+      ],
+      "intended": "Oh, book an appointment for me, please.",
+      "max_uses": 2
+    },
+    {
+      "when": "full name|your name|registered under",
+      "clips": [
+        "2026-11-19T102904Z_9aan_02_name"
+      ],
+      "intended": "Elliot Elon.",
+      "max_uses": 2,
+      "field": "name"
+    },
+    {
+      "when": "been to see us before|visited us before|been to the clinic|been here before",
+      "clips": [
+        "2026-11-19T102904Z_9aan_03_been_before"
+      ],
+      "intended": "No.",
+      "max_uses": 2
+    },
+    {
+      "when": "health insurance|paying yourself|paying privately",
+      "clips": [
+        "2026-11-19T102904Z_9aan_08_insurance"
+      ],
+      "intended": "Paying myself.",
+      "max_uses": 2
+    },
+    {
+      "when": "mobile number|phone number",
+      "clips": [
+        "2026-11-19T102904Z_9aan_06_phone"
+      ],
+      "intended": "Zero seven one two three four five six four five six.",
+      "max_uses": 2,
+      "field": "phone"
+    },
+    {
+      "when": "post ?code",
+      "clips": [
+        "2026-11-19T102904Z_9aan_07_postcode"
+      ],
+      "intended": "E-zero-one-Z-A.",
+      "max_uses": 2,
+      "field": "postcode"
+    },
+    {
+      "when": "date of birth",
+      "clips": [
+        "2026-11-19T102904Z_9aan_05_dob"
+      ],
+      "intended": "Sixth in June nineteen ninety-six.",
+      "max_uses": 2,
+      "field": "date_of_birth"
+    },
+    {
+      "when": "bringing you in|knee or shoulder",
+      "clips": [
+        "2026-11-19T102904Z_9aan_04_reason"
+      ],
+      "intended": "I'm having knee pain.",
+      "max_uses": 2
+    }
+  ],
+  "expect": {
+    "tools": [
+      {
+        "name_contains": "new_patient_check"
+      },
+      {
+        "name_contains": "v2_register_patient",
+        "called": false
+      },
+      {
+        "name_contains": "v2_book_",
+        "called": false
+      }
+    ],
+    "fields": [
+      "name",
+      "date_of_birth"
+    ],
+    "agent_never_says": [
+      "you're all set up"
+    ]
+  }
+}
