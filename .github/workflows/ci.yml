@@ -108,6 +108,48 @@ jobs:
           path: backend/coverage.xml
           if-no-files-found: ignore
 
+  # Reads the two lock files and asks the advisory databases about them. Nothing
+  # is installed from the project, so this is cheap and cannot be broken by a
+  # failing build.
+  dependency-audit:
+    name: Dependency audit
+    # Hosted unless the repository variable opts in to a self-hosted runner.
+    runs-on: ${{ vars.USE_SELF_HOSTED == 'true' && fromJSON('["self-hosted", "linux", "x64"]') || 'ubuntu-latest' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # Blocking. A critical advisory in the frontend lock fails the build: the
+      # pinned Next.js carried one (remote code execution) for weeks unnoticed.
+      - name: Frontend advisories (critical blocks)
+        working-directory: frontend
+        run: npm audit --package-lock-only --audit-level=critical
+
+      # Report only, deliberately, until the known high advisories are cleared
+      # (vite, happy-dom, zod 3, follow-redirects, brace-expansion, source-map-js
+      # as of 24 Nov 2026). Make this blocking by 8 Dec 2026 or delete it.
+      - name: Frontend advisories (high, report only)
+        working-directory: frontend
+        continue-on-error: true
+        run: npm audit --package-lock-only --audit-level=high
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      # Report only, deliberately, until the backend bumps and the python-jose
+      # replacement land (85 advisories in 12 packages on 24 Nov 2026, two with
+      # no fixed version). Make this blocking by 8 Dec 2026 or delete it.
+      - name: Backend advisories (report only)
+        working-directory: backend
+        continue-on-error: true
+        run: |
+          uv export --frozen --no-hashes --no-emit-project -o /tmp/requirements.txt
+          uvx pip-audit -r /tmp/requirements.txt --disable-pip --no-deps
+
   frontend:
     name: Frontend
     runs-on: ubuntu-latest

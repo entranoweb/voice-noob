@@ -1,9 +1,10 @@
 name: Sync from Upstream
 
+# Manual only. The daily schedule was removed on 24 Nov 2026: a clean merge was
+# pushed straight to main with no tests run, and upstream has shipped nothing but
+# README edits since the fork point (Dec 2025). A sync now always arrives as a
+# pull request, so CI gates it like any other change.
 on:
-  schedule:
-    # Run daily at 00:00 UTC
-    - cron: '0 0 * * *'
   workflow_dispatch:
     inputs:
       sync_dev_branch:
@@ -76,9 +77,20 @@ jobs:
             echo "merge_success=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Push if merge succeeded
+      # Never push a merge to main from here: open a pull request so CI runs first.
+      - name: Open PR if merge succeeded
         if: steps.merge.outputs.merge_success == 'true'
-        run: git push origin main
+        run: |
+          BRANCH_NAME="sync-upstream-main-$(date +%Y%m%d-%H%M%S)"
+          git checkout -b $BRANCH_NAME
+          git push origin $BRANCH_NAME
+          gh pr create \
+            --title "[main] Upstream sync (clean merge)" \
+            --body "Clean merge of upstream (KenKaiii/voice-noob) into main. Merge only when CI is green." \
+            --base main \
+            --head $BRANCH_NAME
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create PR if merge has conflicts
         if: steps.merge.outputs.merge_success == 'false'
@@ -184,9 +196,20 @@ jobs:
             echo "merge_success=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Push if merge succeeded
+      # Same rule for the dev branch: a pull request, never a direct push.
+      - name: Open PR if merge succeeded
         if: steps.merge_dev.outputs.merge_success == 'true'
-        run: git push origin synthiqvoice
+        run: |
+          BRANCH_NAME="sync-main-to-dev-$(date +%Y%m%d-%H%M%S)"
+          git checkout -b $BRANCH_NAME
+          git push origin $BRANCH_NAME
+          gh pr create \
+            --title "[synthiqvoice] Sync from main (clean merge)" \
+            --body "Clean merge of main into synthiqvoice. Merge only when CI is green." \
+            --base synthiqvoice \
+            --head $BRANCH_NAME
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create PR if merge has conflicts
         if: steps.merge_dev.outputs.merge_success == 'false'
