@@ -3,6 +3,12 @@
     synthiq-caller run scenario.json --leg elevenlabs-socket --agent <id> \\
         --clips <dir> --repeats 3 --out runs/
     synthiq-caller report runs/
+    synthiq-caller batch scenarios/sophie --leg elevenlabs-socket --agent <id> \
+        --clips <dir> --repeats 3 --out runs/        (runs lookup-only scenarios)
+    synthiq-caller validate scenarios/sophie --clips <dir>
+    synthiq-caller regrade runs/ --scenarios scenarios/sophie   (no calls placed)
+    synthiq-caller clipbank build --recordings <dir> --out <dir outside any repo>
+    synthiq-caller clipbank scenario --clips <dir> --call <call id>
 
 Engine credentials are read from the environment (or an env file named with
 ``--env-file``) and are never printed or written to the output.
@@ -18,12 +24,21 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from synthiq_caller.batch import (
+    ALLOWED,
+    NameBudget,
+    NoHooks,
+    ShellHooks,
+    load_scenarios,
+    regrade,
+    run_batch,
+)
 from synthiq_caller.clips import ClipBank
 from synthiq_caller.director import Director, RunRecord
 from synthiq_caller.grading import Grade, grade
 from synthiq_caller.leg import Leg
+from synthiq_caller.report import render, summarise
 from synthiq_caller.scenario import Scenario, load_scenario
-from synthiq_caller.stats import describe
 from synthiq_caller.traces.base import Trace, TraceReader
 
 
@@ -90,21 +105,87 @@ def _print_grade(index: int, payload: dict[str, Any]) -> None:
         print(f"  trace could not be read: {payload['trace_error']}")
 
 
-def report(directory: str) -> int:
+def report(directory: str, *, details: bool = True) -> int:
     files = sorted(Path(directory).glob("run-*.json"))
-    if not files:
+    if not files and not (Path(directory) / "batch.json").exists():
         print("no runs found")
         return 1
-    outcomes: list[str] = []
-    for index, path in enumerate(files, start=1):
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        outcomes.append(payload["grade"]["outcome"])
-        _print_grade(index, payload)
-    graded = [o for o in outcomes if o != "ungraded"]
-    print(f"\npassed: {describe(graded.count('passed'), len(graded))}")
-    if len(graded) != len(outcomes):
-        print(f"ungraded runs (no trace or no expectations): {len(outcomes) - len(graded)}")
+    if details:
+        for index, path in enumerate(files, start=1):
+            _print_grade(index, json.loads(path.read_text(encoding="utf-8")))
+        print()
+    print(render(summarise(directory)))
     return 0
+
+
+def validate(directory: str, clips_dir: str | None) -> int:
+    """Parse every scenario and, given a clip bank, check each clip it names exists."""
+    bank = ClipBank(clips_dir) if clips_dir else None
+    problems = 0
+    for file, scenario in load_scenarios(directory):
+        missing: list[str] = []
+        if bank is not None:
+            for step in scenario.steps:
+                for clip in step.clips:
+                    if clip.startswith("missing/") and scenario.missing_clips:
+                        continue  # declared as not yet recorded; a batch will not run it
+                    try:
+                        bank.path(clip)
+                    except FileNotFoundError:
+                        missing.append(clip)
+        count = len(scenario.missing_clips)
+        note = f"  needs {count} recording(s), will not run" if count else ""
+        state = "ok" if not missing else f"CLIPS NOT IN BANK: {missing}"
+        problems += bool(missing)
+        print(
+            f"{file:<44} mutates={scenario.mutates:<10} "
+            f"steps={len(scenario.steps):<3} {state}{note}"
+        )
+    return 1 if problems else 0
+
+
+def _clipbank(args: argparse.Namespace) -> int:
+    if args.clipbank_command == "build":
+        from synthiq_caller.clipbank.build import build
+
+        summary = build(Path(args.recordings), Path(args.out), pad_s=args.pad)
+        print(json.dumps(summary, indent=1))
+        return 0
+    from synthiq_caller.clipbank.from_call import scenario_from_call
+
+    print(json.dumps(scenario_from_call(Path(args.clips), args.call), indent=2))
+    return 0
+
+
+def _batch(args: argparse.Namespace) -> int:
+    scenarios = load_scenarios(args.scenarios)
+    if args.only:
+        scenarios = [(f, s) for f, s in scenarios if any(o in f for o in args.only)]
+    hooks = (
+        ShellHooks(before=args.before_call, after=args.after_call)
+        if (args.before_call or args.after_call)
+        else NoHooks()
+    )
+    budget = NameBudget(limit=args.name_budget, window_s=args.name_window)
+    out = Path(args.out)
+    result = asyncio.run(
+        run_batch(
+            scenarios,
+            lambda: _build(args),
+            ClipBank(args.clips),
+            out,
+            repeats=args.repeats,
+            max_parallel=args.max_parallel,
+            allow_mutating=args.allow_mutating,
+            budget=budget,
+            hooks=hooks,
+            read_trace=not args.no_trace,
+            settle_s=args.settle,
+        )
+    )
+    print(f"ran {result.ran}, not run {len(result.blocked)}")
+    print()
+    return report(str(out), details=False)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -123,10 +204,57 @@ def main(argv: list[str] | None = None) -> int:
 
     rep = sub.add_parser("report", help="summarise a directory of runs")
     rep.add_argument("directory")
+    rep.add_argument("--summary-only", action="store_true", help="skip the per-call detail")
+
+    bat = sub.add_parser("batch", help="run a directory of scenarios with the safety guards on")
+    bat.add_argument("scenarios")
+    bat.add_argument("--leg", required=True, choices=["elevenlabs-socket"])
+    bat.add_argument("--agent", default="")
+    bat.add_argument("--clips", required=True)
+    bat.add_argument("--repeats", type=int, default=1)
+    bat.add_argument("--max-parallel", type=int, default=1)
+    bat.add_argument("--allow-mutating", choices=sorted(ALLOWED), default="none")
+    bat.add_argument("--out", required=True)
+    bat.add_argument("--env-file", default=None)
+    bat.add_argument("--no-trace", action="store_true")
+    bat.add_argument("--only", action="append", default=[], help="run files whose name contains")
+    bat.add_argument("--name-budget", type=int, default=6, help="calls per name; 0 switches off")
+    bat.add_argument("--name-window", type=float, default=900.0, help="seconds")
+    bat.add_argument("--settle", type=float, default=2.0, help="wait before reading a trace")
+    bat.add_argument("--before-call", default="", help="command run before each call (reset)")
+    bat.add_argument("--after-call", default="", help="command run after each call")
+
+    reg = sub.add_parser("regrade", help="grade stored runs again; places no calls")
+    reg.add_argument("directory")
+    reg.add_argument("--scenarios", required=True)
+
+    val = sub.add_parser("validate", help="check a directory of scenarios, and its clips")
+    val.add_argument("scenarios")
+    val.add_argument("--clips", default=None)
+
+    bank = sub.add_parser("clipbank", help="build a clip bank, or a scenario from a recorded call")
+    bank_sub = bank.add_subparsers(dest="clipbank_command", required=True)
+    bank_build = bank_sub.add_parser("build")
+    bank_build.add_argument("--recordings", required=True)
+    bank_build.add_argument("--out", required=True)
+    bank_build.add_argument("--pad", type=float, default=0.15)
+    bank_scn = bank_sub.add_parser("scenario")
+    bank_scn.add_argument("--clips", required=True)
+    bank_scn.add_argument("--call", required=True)
 
     args = parser.parse_args(argv)
     if args.command == "report":
-        return report(args.directory)
+        return report(args.directory, details=not args.summary_only)
+    if args.command == "batch":
+        return _batch(args)
+    if args.command == "regrade":
+        changed = regrade(Path(args.directory), load_scenarios(args.scenarios))
+        print(f"regraded: {changed} run(s) changed")
+        return report(args.directory, details=False)
+    if args.command == "validate":
+        return validate(args.scenarios, args.clips)
+    if args.command == "clipbank":
+        return _clipbank(args)
 
     scenario = load_scenario(args.scenario)
     out = Path(args.out)

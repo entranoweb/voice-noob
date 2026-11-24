@@ -25,6 +25,10 @@ from pathlib import Path
 from typing import Any
 
 KNOWN_FIELDS = ("name", "date_of_birth", "postcode", "phone")
+# What a scenario can change in the system the agent is connected to, in rising
+# order. "unknown" is the default for a scenario that does not say, and is
+# treated as the most dangerous.
+MUTATION_LEVELS = ("none", "registers", "books", "moves", "unknown")
 
 
 @dataclass(frozen=True)
@@ -62,6 +66,10 @@ class Expectations:
     tools: tuple[ToolExpectation, ...] = ()
     # Persona fields whose stored value (what a tool received) must equal the fact.
     fields: tuple[str, ...] = ()
+    # Lines the agent must, or must never, speak. Plain patterns over the agent's
+    # own words: for outcomes no tool records, such as "told to call 999".
+    agent_says: tuple[re.Pattern[str], ...] = ()
+    agent_never_says: tuple[re.Pattern[str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -74,6 +82,13 @@ class Scenario:
     expect: Expectations = field(default_factory=Expectations)
     # Tool-argument names that carry each field, when the defaults do not fit.
     stored_keys: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    # What running this can change on the system under test (MUTATION_LEVELS).
+    mutates: str = "unknown"
+    # What must already be true on the system under test (free text, for people).
+    requires: str = ""
+    # Utterances the scenario needs that no recorded clip exists for.
+    missing_clips: tuple[str, ...] = ()
+    description: str = ""
 
 
 class ScenarioError(ValueError):
@@ -134,10 +149,16 @@ def parse_scenario(data: dict[str, Any]) -> Scenario:
             for t in raw_expect.get("tools", ())
         ),
         fields=tuple(str(f) for f in raw_expect.get("fields", ())),
+        agent_says=tuple(_pattern(str(p)) for p in raw_expect.get("agent_says", ())),
+        agent_never_says=tuple(_pattern(str(p)) for p in raw_expect.get("agent_never_says", ())),
     )
     for name in expect.fields:
         if name not in facts:
             raise ScenarioError(f"expect.fields names {name!r} but the persona has no such fact")
+
+    mutates = str(data.get("mutates", "unknown"))
+    if mutates not in MUTATION_LEVELS:
+        raise ScenarioError(f"mutates must be one of {MUTATION_LEVELS}, not {mutates!r}")
 
     hangup = data.get("hangup_after")
     return Scenario(
@@ -150,6 +171,10 @@ def parse_scenario(data: dict[str, Any]) -> Scenario:
         stored_keys={
             str(k): tuple(str(x) for x in v) for k, v in (data.get("stored_keys") or {}).items()
         },
+        mutates=mutates,
+        requires=str(data.get("requires", "")),
+        missing_clips=tuple(str(m) for m in data.get("missing_clips", ())),
+        description=str(data.get("description", "")),
     )
 
 
