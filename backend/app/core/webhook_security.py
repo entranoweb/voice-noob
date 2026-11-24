@@ -1,4 +1,13 @@
-"""Webhook signature validation for Twilio and Telnyx."""
+"""Webhook signature validation for Twilio and Telnyx.
+
+A webhook that cannot be verified is refused. That used to depend on ``DEBUG``:
+with no key configured, a debug instance accepted every webhook unverified and a
+production one rejected every webhook, and neither said so. ``DEBUG`` controls
+logging and reloading; it is not a statement about who may post calls to this
+instance. The only way to accept an unsigned webhook now is the explicit
+``ALLOW_UNSIGNED_WEBHOOKS`` setting, which is off by default and announces itself
+when it is on.
+"""
 
 import hashlib
 import hmac
@@ -9,8 +18,34 @@ import structlog
 from fastapi import HTTPException, Request
 
 from app.core.config import settings
+from app.core.public_url import public_request_url
 
 logger = structlog.get_logger()
+
+
+def unsigned_webhooks_allowed() -> bool:
+    """Whether the operator has explicitly opted out of signature verification."""
+    return bool(settings.ALLOW_UNSIGNED_WEBHOOKS)
+
+
+def warn_if_unsigned_webhooks_allowed() -> bool:
+    """Say so, loudly. Called at import and by the application at startup."""
+    if not unsigned_webhooks_allowed():
+        return False
+    logger.critical(
+        "unsigned_webhooks_allowed",
+        detail=(
+            "ALLOW_UNSIGNED_WEBHOOKS is true: carrier webhooks are accepted "
+            "without a verified signature, so anyone who can reach this host "
+            "can post a call to it. Never set this on an instance a real "
+            "number points at."
+        ),
+    )
+    return True
+
+
+# This module is imported when the telephony routes are, which is at startup.
+warn_if_unsigned_webhooks_allowed()
 
 
 def validate_twilio_signature(
@@ -80,10 +115,11 @@ def validate_telnyx_signature(
     # Use provided key or fall back to settings
     key = public_key or settings.TELNYX_PUBLIC_KEY
     if not key:
+        # Nothing to verify against, so nothing is verified: refuse. The explicit
+        # override is honoured by the callers below, not here, so this function
+        # only ever returns True for a signature it actually checked.
         logger.warning("telnyx_public_key_not_configured")
-        # If no key is configured, skip validation in development
-        # In production, this should always fail
-        return settings.DEBUG
+        return False
 
     try:
         import base64
@@ -120,31 +156,32 @@ async def verify_twilio_webhook(request: Request) -> bool:
         request: FastAPI request object
 
     Returns:
-        True if signature is valid or validation is skipped in debug mode
+        True if the signature is valid, or if ALLOW_UNSIGNED_WEBHOOKS is set
 
     Raises:
-        HTTPException: If signature validation fails in production
+        HTTPException: If the signature is missing, invalid or cannot be checked
     """
+    if unsigned_webhooks_allowed():
+        logger.critical("twilio_webhook_accepted_unverified")
+        return True
+
     # Get auth token from settings
     auth_token = settings.TWILIO_AUTH_TOKEN
     if not auth_token:
-        if settings.DEBUG:
-            logger.warning("twilio_auth_token_not_configured_debug_mode")
-            return True
+        # Refused, not a server error: an instance with no token cannot tell a
+        # genuine webhook from a forged one, and the answer to both is no.
         logger.error("twilio_auth_token_not_configured")
-        raise HTTPException(status_code=500, detail="Twilio not configured")
+        raise HTTPException(status_code=403, detail="Twilio webhook verification is not configured")
 
     # Get signature from header
     signature = request.headers.get("X-Twilio-Signature", "")
     if not signature:
-        if settings.DEBUG:
-            logger.warning("missing_twilio_signature_debug_mode")
-            return True
         logger.warning("missing_twilio_signature")
         raise HTTPException(status_code=403, detail="Missing Twilio signature")
 
-    # Get URL and params
-    url = str(request.url)
+    # Twilio signs the URL it posted to, which behind a proxy is not the URL this
+    # process sees.
+    url = public_request_url(request)
     params = await get_twilio_webhook_params(request)
 
     # Validate signature
@@ -162,19 +199,20 @@ async def verify_telnyx_webhook(request: Request) -> bool:
         request: FastAPI request object
 
     Returns:
-        True if signature is valid or validation is skipped in debug mode
+        True if the signature is valid, or if ALLOW_UNSIGNED_WEBHOOKS is set
 
     Raises:
-        HTTPException: If signature validation fails in production
+        HTTPException: If the signature is missing, invalid or cannot be checked
     """
+    if unsigned_webhooks_allowed():
+        logger.critical("telnyx_webhook_accepted_unverified")
+        return True
+
     # Get signature headers
     signature = request.headers.get("telnyx-signature-ed25519", "")
     timestamp = request.headers.get("telnyx-timestamp", "")
 
     if not signature or not timestamp:
-        if settings.DEBUG:
-            logger.warning("missing_telnyx_signature_debug_mode")
-            return True
         logger.warning("missing_telnyx_signature")
         raise HTTPException(status_code=403, detail="Missing Telnyx signature")
 

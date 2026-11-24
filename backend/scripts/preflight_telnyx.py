@@ -39,6 +39,7 @@ E164 = re.compile(r"^\+[1-9]\d{1,14}$")
 # agent. Reaching it proves TLS, the proxy's websocket upgrade, routing and the
 # app's database session all work, without touching a real agent.
 AGENT_NOT_FOUND = 4004
+HTTP_FORBIDDEN = 403
 
 
 class Level(str, Enum):
@@ -82,17 +83,28 @@ def check_credentials() -> list[Result]:
     if settings.TELNYX_PUBLIC_KEY:
         results.append(ok("TELNYX_PUBLIC_KEY", "set"))
     else:
-        results.append(fail("TELNYX_PUBLIC_KEY", "unset — see DEBUG below"))
-
-    if settings.DEBUG and not settings.TELNYX_PUBLIC_KEY:
         results.append(
             fail(
-                "DEBUG",
-                "true with no TELNYX_PUBLIC_KEY: webhook signatures are not "
-                "verified and anyone can post a call to this instance",
+                "TELNYX_PUBLIC_KEY",
+                "unset — every webhook is refused 403, so no call reaches an agent",
             )
         )
-    elif settings.DEBUG:
+
+    # Verification no longer depends on DEBUG. The only way to accept an
+    # unsigned webhook is this setting, and it is never right for an instance
+    # a real number points at.
+    if settings.ALLOW_UNSIGNED_WEBHOOKS:
+        results.append(
+            fail(
+                "ALLOW_UNSIGNED_WEBHOOKS",
+                "true: webhook signatures are not verified and anyone who can "
+                "reach this host can post a call to it",
+            )
+        )
+    else:
+        results.append(ok("ALLOW_UNSIGNED_WEBHOOKS", "false"))
+
+    if settings.DEBUG:
         results.append(warn("DEBUG", "true — turn it off before a real number points here"))
     else:
         results.append(ok("DEBUG", "false"))
@@ -327,9 +339,17 @@ async def check_stream_url(url: str) -> list[Result]:
     it loads any config or opens a realtime session, so this proves the whole
     path — TLS, the proxy's websocket upgrade, routing, the app's database
     session — without touching a real agent or leaving anything behind.
+
+    The socket admits nobody without a stream token, so this mints one for that
+    random agent with this host's ``SECRET_KEY``. That makes the probe a check
+    of one more thing: that the host running the preflight and the deployment
+    share a signing key. If they do not, the deployment refuses the token at
+    the handshake with HTTP 403, which is reported as such.
     """
     import websockets
     from websockets.exceptions import ConnectionClosed, InvalidStatus
+
+    from app.core.stream_token import mint_stream_token
 
     origin = url.rstrip("/")
     if _is_loopback(origin):
@@ -338,7 +358,13 @@ async def check_stream_url(url: str) -> list[Result]:
         # what the answer document will carry and what Telnyx will dial.
         origin = origin.replace("http://", "ws://")
     origin = origin.replace("http://", "wss://").replace("https://", "wss://")
-    stream_url = f"{origin}/ws/telephony/telnyx/{uuid.uuid4()}?direction=inbound"
+    probe_agent_id = str(uuid.uuid4())
+    token = mint_stream_token(provider="telnyx", agent_id=probe_agent_id, call_id="")
+    # The token is left out of everything reported below: it is short-lived and
+    # opens nothing but a random agent id, but a credential does not belong in
+    # the output of a diagnostic.
+    shown_url = f"{origin}/ws/telephony/telnyx/{probe_agent_id}?direction=inbound"
+    stream_url = f"{shown_url}&token={token}"
 
     try:
         async with websockets.connect(stream_url, open_timeout=10) as socket:
@@ -346,19 +372,28 @@ async def check_stream_url(url: str) -> list[Result]:
                 await asyncio.wait_for(socket.recv(), timeout=10)
             except ConnectionClosed as closed:
                 if closed.rcvd and closed.rcvd.code == AGENT_NOT_FOUND:
-                    return [ok("media stream", f"{stream_url} → 4004 (the bridge answered)")]
+                    return [ok("media stream", f"{shown_url} → 4004 (the bridge answered)")]
                 code = closed.rcvd.code if closed.rcvd else "no close frame"
                 return [warn("media stream", f"connected but closed with {code}")]
     except InvalidStatus as exc:
+        status = exc.response.status_code
+        if status == HTTP_FORBIDDEN:
+            return [
+                fail(
+                    "media stream",
+                    f"{shown_url} → HTTP 403: the bridge refused this host's stream "
+                    "token, so SECRET_KEY here differs from the deployment's — or a "
+                    "proxy in front is refusing the websocket upgrade",
+                )
+            ]
         return [
             fail(
                 "media stream",
-                f"{stream_url} → HTTP {exc.response.status_code}: the proxy is not "
-                "forwarding the websocket upgrade",
+                f"{shown_url} → HTTP {status}: the proxy is not forwarding the websocket upgrade",
             )
         ]
     except Exception as exc:  # any failure here is a failed check
-        return [fail("media stream", f"{stream_url}: {type(exc).__name__}: {exc}")]
+        return [fail("media stream", f"{shown_url}: {type(exc).__name__}")]
 
     return [warn("media stream", "connected and stayed open, which 4004 should have prevented")]
 

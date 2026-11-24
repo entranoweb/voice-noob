@@ -155,6 +155,7 @@ class TestCredentials:
         monkeypatch.setattr(settings, "TELNYX_API_KEY", None)
         monkeypatch.setattr(settings, "TELNYX_PUBLIC_KEY", None)
         monkeypatch.setattr(settings, "DEBUG", False)
+        monkeypatch.setattr(settings, "ALLOW_UNSIGNED_WEBHOOKS", False)
         return settings
 
     def _by_check(self, results: list[Any], name: str) -> Any:
@@ -169,13 +170,27 @@ class TestCredentials:
         """Inbound never reads it, so failing the run on it would be wrong."""
         assert self._by_check(preflight.check_credentials(), "TELNYX_API_KEY").level is Level.WARN
 
-    def test_debug_without_a_public_key_is_an_open_door(
+    def test_allowing_unsigned_webhooks_is_an_open_door(
         self, settings: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Verification falls back to DEBUG, so this accepts any webhook at all."""
+        """The one setting that accepts any webhook at all is fatal here."""
+        monkeypatch.setattr(settings, "ALLOW_UNSIGNED_WEBHOOKS", True)
+
+        assert (
+            self._by_check(preflight.check_credentials(), "ALLOW_UNSIGNED_WEBHOOKS").level
+            is Level.FAIL
+        )
+
+    def test_debug_alone_no_longer_opens_the_door(
+        self, settings: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """DEBUG used to switch verification off when no key was set. It is now
+        only a warning: the missing key is what fails, and it fails closed."""
         monkeypatch.setattr(settings, "DEBUG", True)
 
-        assert self._by_check(preflight.check_credentials(), "DEBUG").level is Level.FAIL
+        results = preflight.check_credentials()
+        assert self._by_check(results, "DEBUG").level is Level.WARN
+        assert self._by_check(results, "TELNYX_PUBLIC_KEY").level is Level.FAIL
 
     def test_the_environment_openai_key_is_not_checked(self) -> None:
         """The call reads the workspace key; an env check here would be a lie."""
