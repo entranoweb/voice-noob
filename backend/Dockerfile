@@ -34,6 +34,14 @@ COPY . .
 # Make entrypoint executable
 RUN chmod +x /app/scripts/docker-entrypoint.sh
 
+# Run as an unprivileged user. The server binds port 8000, writes its logs to
+# stdout and needs nothing a root process has; a flaw in the application or a
+# dependency should not hand out root inside the container.
+RUN groupadd --system --gid 10001 app \
+    && useradd --system --uid 10001 --gid app --home-dir /app --no-create-home app \
+    && chown -R app:app /app
+USER app
+
 # Set environment variables
 ENV PATH="/app/.venv/bin:$PATH"
 ENV PYTHONUNBUFFERED=1

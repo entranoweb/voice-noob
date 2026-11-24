@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.auth import CurrentUser, user_id_to_uuid
+from app.core.ownership import get_owned_agent, get_owned_workspace
 from app.db.session import get_db
 from app.models.agent import Agent
 from app.models.campaign import (
@@ -430,19 +431,17 @@ async def create_campaign(
     """Create a new campaign."""
     user_uuid = user_id_to_uuid(current_user.id)
 
-    # Verify agent exists and belongs to user
-    agent_uuid = uuid.UUID(data.agent_id)
-    result = await db.execute(
-        select(Agent).where(Agent.id == agent_uuid, Agent.user_id == user_uuid)
-    )
-    agent = result.scalar_one_or_none()
-    if not agent:
-        raise HTTPException(status_code=404, detail="Agent not found")
+    # The agent and the workspace both come from the client and both must be
+    # the caller's own. (The agent lookup compared the owner's integer id with a
+    # UUID, which matches nothing; the workspace id was not checked at all.)
+    agent = await get_owned_agent(db, data.agent_id, current_user)
+    agent_uuid = agent.id
+    workspace = await get_owned_workspace(db, data.workspace_id, current_user)
 
     # Create campaign
     campaign = Campaign(
         user_id=user_uuid,
-        workspace_id=uuid.UUID(data.workspace_id),
+        workspace_id=workspace.id,
         agent_id=agent_uuid,
         name=data.name,
         description=data.description,
@@ -468,7 +467,7 @@ async def create_campaign(
         result = await db.execute(
             select(Contact).where(
                 Contact.id.in_(data.contact_ids),
-                Contact.user_id == user_uuid,  # Ensure user owns contacts
+                Contact.user_id == current_user.id,  # Ensure user owns contacts
             )
         )
         contacts = result.scalars().all()

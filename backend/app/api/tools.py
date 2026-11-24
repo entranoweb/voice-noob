@@ -6,13 +6,12 @@ from typing import Any
 import structlog
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.integrations import get_workspace_integrations
 from app.core.auth import CurrentUser, user_id_to_uuid
+from app.core.ownership import get_owned_agent, owned_agent_workspace_id
 from app.db.session import get_db
-from app.models.workspace import AgentWorkspace
 from app.services.tools.registry import ToolRegistry
 
 router = APIRouter(prefix="/api/v1/tools", tags=["tools"])
@@ -57,21 +56,13 @@ async def execute_tool(
 
     tool_logger.info("tool_execution_requested", arguments=request.arguments)
 
-    try:
-        # Get workspace for the agent (for proper CRM scoping)
-        workspace_id: uuid.UUID | None = None
-        if request.agent_id:
-            try:
-                agent_uuid = uuid.UUID(request.agent_id)
-                workspace_result = await db.execute(
-                    select(AgentWorkspace).where(AgentWorkspace.agent_id == agent_uuid).limit(1)
-                )
-                agent_workspace = workspace_result.scalar_one_or_none()
-                if agent_workspace:
-                    workspace_id = agent_workspace.workspace_id
-            except ValueError:
-                tool_logger.warning("invalid_agent_id_format", agent_id=request.agent_id)
+    # The agent id comes from the client. It selects whose contacts, bookings
+    # and integration credentials the tool acts on, so it has to be the
+    # caller's own agent: get_owned_agent answers 404 for anyone else's.
+    agent = await get_owned_agent(db, request.agent_id, current_user)
+    workspace_id: uuid.UUID | None = await owned_agent_workspace_id(db, agent, current_user)
 
+    try:
         # Get integration credentials for the workspace
         integrations: dict[str, dict[str, Any]] = {}
         if workspace_id:
@@ -82,12 +73,24 @@ async def execute_tool(
         tool_registry = ToolRegistry(
             db, user_id, integrations=integrations, workspace_id=workspace_id
         )
+
+        # Only a tool the agent's owner switched on may run. Without this the
+        # route is a general-purpose executor for every tool in the registry.
+        allowed = tool_registry.enabled_tool_names(
+            agent.enabled_tools or [], agent.enabled_tool_ids
+        )
+        if request.tool_name not in allowed:
+            tool_logger.warning("tool_not_enabled_for_agent")
+            raise HTTPException(status_code=403, detail="Tool is not enabled for this agent")
+
         result = await tool_registry.execute_tool(request.tool_name, request.arguments)
 
         tool_logger.info("tool_execution_completed", success=result.get("success", False))
 
         return result
 
+    except HTTPException:
+        raise
     except Exception as e:
         tool_logger.exception("tool_execution_failed", error=str(e))
-        raise HTTPException(status_code=500, detail=f"Tool execution failed: {e!s}") from e
+        raise HTTPException(status_code=500, detail="Tool execution failed") from e

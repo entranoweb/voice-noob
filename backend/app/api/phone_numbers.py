@@ -7,13 +7,15 @@ import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 from sqlalchemy import desc, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import AuditAction, record_audit
 from app.core.auth import CurrentUser, user_id_to_uuid
 from app.core.limiter import limiter
+from app.core.ownership import get_owned_agent, number_variants
 from app.db.session import get_db
-from app.models.phone_number import PhoneNumber
+from app.models.phone_number import PhoneNumber, PhoneNumberStatus
 from app.models.workspace import Workspace
 
 router = APIRouter(prefix="/api/v1/phone-numbers", tags=["phone-numbers"])
@@ -309,9 +311,22 @@ async def create_phone_number(
             create_request.workspace_id, current_user.id, db
         )
 
+    # One number, one owner. Inbound routing looks a dialled number up across
+    # every account, so a second account registering the same number would
+    # either take the first one's calls or kill its line.
+    number = create_request.phone_number.strip()
+    taken = await db.execute(
+        select(PhoneNumber.id).where(
+            PhoneNumber.phone_number.in_(number_variants(number)),
+            PhoneNumber.status != PhoneNumberStatus.RELEASED.value,
+        )
+    )
+    if taken.first() is not None:
+        raise HTTPException(status_code=409, detail="That phone number is already registered")
+
     phone_number = PhoneNumber(
         user_id=user_uuid,
-        phone_number=create_request.phone_number,
+        phone_number=number,
         friendly_name=create_request.friendly_name,
         provider=create_request.provider,
         provider_id=create_request.provider_id,
@@ -324,7 +339,14 @@ async def create_phone_number(
     )
 
     db.add(phone_number)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        # Two registrations of one number racing each other: the index decides.
+        await db.rollback()
+        raise HTTPException(
+            status_code=409, detail="That phone number is already registered"
+        ) from exc
     await db.refresh(phone_number)
 
     return PhoneNumberResponse(
@@ -398,11 +420,13 @@ async def update_phone_number(
             phone_number.workspace_id = None
     if update_request.assigned_agent_id is not None:
         previous_agent = phone_number.assigned_agent_id
-        phone_number.assigned_agent_id = (
-            uuid.UUID(update_request.assigned_agent_id)
-            if update_request.assigned_agent_id
-            else None
-        )
+        if update_request.assigned_agent_id:
+            # The agent must be the caller's own: assigning routes this number's
+            # calls to it, and the response names it.
+            agent = await get_owned_agent(db, update_request.assigned_agent_id, current_user)
+            phone_number.assigned_agent_id = agent.id
+        else:
+            phone_number.assigned_agent_id = None
         if phone_number.assigned_agent_id != previous_agent:
             await record_audit(
                 db,
@@ -424,7 +448,14 @@ async def update_phone_number(
     if update_request.notes is not None:
         phone_number.notes = update_request.notes
 
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        # Bringing a released number back when another account now holds it.
+        await db.rollback()
+        raise HTTPException(
+            status_code=409, detail="That phone number is already registered"
+        ) from exc
     await db.refresh(phone_number)
 
     workspace_name = None

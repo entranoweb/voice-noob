@@ -20,6 +20,30 @@ PLACEHOLDER_SECRET_KEYS = frozenset(
     }
 )
 
+# Passwords the repository has shipped for the database and for Redis, in the
+# compose file and the example environment files. Each is public. A production
+# start on any of them is refused, the same way a placeholder SECRET_KEY is.
+# ("postgres", the development default, is not listed: the production compose
+# file no longer has a default at all, and CI runs on it.)
+PLACEHOLDER_SERVICE_PASSWORDS = frozenset(
+    {
+        "changeme",
+        "changeme_in_production",
+        "change_this_password",
+        "your_secure_postgres_password_here",
+        "your_secure_redis_password_here",
+    }
+)
+
+# Passwords the repository has shipped for the first administrator. Kept in
+# their original spelling because start-up tests stored hashes against them.
+SHIPPED_ADMIN_PASSWORDS = (
+    "changeme",
+    "CHANGE_ME_IN_PRODUCTION",
+    "CHANGE_ME_BEFORE_RUNNING",
+    "your_secure_admin_password",
+)
+
 
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
@@ -108,6 +132,25 @@ class Settings(BaseSettings):
     # then drop the old one. Removing a key while rows still name it makes those
     # credentials unreadable. Required outside DEBUG.
     CREDENTIAL_ENCRYPTION_KEYS: str | None = None
+    # How old a signed Telnyx webhook may be, in seconds. The timestamp is part
+    # of what Telnyx signs; without an age limit a captured webhook can be
+    # replayed for ever, and the reply to an inbound one carries a fresh token
+    # that admits the sender to the agent. Telnyx recommends five minutes.
+    TELNYX_WEBHOOK_MAX_AGE_SECONDS: int = 300
+    # Host names this server may call even though they resolve to a private
+    # address (app.core.safe_http). Empty by default. For an operator's own
+    # private endpoint only; never a value a customer supplies.
+    OUTBOUND_ALLOW_PRIVATE_HOSTS: list[str] = []
+    # Whether anyone may create an account at /api/v1/auth/register. Unset, it
+    # follows DEBUG: open on a development machine, closed in production, where
+    # the administrator creates accounts (POST /api/v1/auth/users).
+    ALLOW_PUBLIC_SIGNUP: bool | None = None
+    # Serve /docs, /redoc and /openapi.json. Unset, it follows DEBUG.
+    ENABLE_API_DOCS: bool | None = None
+    # Bearer token a scraper must present to read /metrics outside DEBUG. The
+    # metrics carry agent ids as labels. Unset in production, /metrics answers
+    # 404 rather than serving them to anyone who asks.
+    METRICS_TOKEN: str | None = None
 
     # Public embed widget (app.core.embed_session).
     # An agent with no allowed domains can be embedded by no other site. This
@@ -143,7 +186,7 @@ class Settings(BaseSettings):
     # Default Admin User (created on first startup if no users exist)
     # IMPORTANT: Change these in production via environment variables!
     ADMIN_EMAIL: str = "admin@example.com"
-    ADMIN_PASSWORD: str = "CHANGE_ME_IN_PRODUCTION"
+    ADMIN_PASSWORD: str = "CHANGE_ME_IN_PRODUCTION"  # noqa: S105 - refused at start-up outside DEBUG
     ADMIN_NAME: str = "Admin"
 
     # Voice & AI Services
@@ -251,6 +294,21 @@ class Settings(BaseSettings):
     RETENTION_SWEEP_INTERVAL_HOURS: int = 24
 
 
+    @property
+    def public_signup_allowed(self) -> bool:
+        """Whether /auth/register accepts a stranger."""
+        if self.ALLOW_PUBLIC_SIGNUP is None:
+            return self.DEBUG
+        return self.ALLOW_PUBLIC_SIGNUP
+
+    @property
+    def api_docs_enabled(self) -> bool:
+        """Whether the interactive API documentation is served."""
+        if self.ENABLE_API_DOCS is None:
+            return self.DEBUG
+        return self.ENABLE_API_DOCS
+
+
 class InsecureSecretKeyError(RuntimeError):
     """The application was started on a signing key anyone can read."""
 
@@ -318,6 +376,71 @@ def refuse_missing_credential_keys(candidate: Settings) -> None:
     raise MissingCredentialKeyError(message)
 
 
+class InsecureDefaultCredentialsError(RuntimeError):
+    """The application was started on a credential shipped in the repository."""
+
+
+def _password_in_url(url: str | None) -> str | None:
+    """The password part of a connection URL, if it has one."""
+    if not url:
+        return None
+    from urllib.parse import unquote, urlsplit
+
+    try:
+        password = urlsplit(str(url)).password
+    except ValueError:
+        return None
+    return unquote(password) if password else None
+
+
+def is_placeholder_service_password(value: str | None) -> bool:
+    """Whether a database or Redis password is one the repository has shipped."""
+    if value is None:
+        return False
+    return value.strip().lower() in PLACEHOLDER_SERVICE_PASSWORDS
+
+
+def is_shipped_admin_password(value: str | None) -> bool:
+    """Whether an administrator password is one the repository has shipped."""
+    if value is None:
+        return False
+    return value.strip().lower() in {p.lower() for p in SHIPPED_ADMIN_PASSWORDS}
+
+
+def refuse_default_credentials(candidate: Settings) -> None:
+    """Refuse to start outside DEBUG on a shipped database or Redis password.
+
+    The production compose file used to fall back to a fixed password for both
+    when none was set, so a deployment that skipped the step ran on a value
+    anyone can read in the repository.
+
+    The administrator's password is checked separately, at start-up rather
+    than at import (`app.core.first_admin`): it only matters to a process that
+    is about to serve requests, and that check also needs the database.
+
+    The message names the settings and never their values, for the reason given
+    on `refuse_placeholder_secret_key`.
+    """
+    if candidate.DEBUG:
+        return
+    offending: list[str] = []
+    if is_placeholder_service_password(_password_in_url(str(candidate.DATABASE_URL))):
+        offending.append("the database password (POSTGRES_PASSWORD / DATABASE_URL)")
+    if is_placeholder_service_password(
+        _password_in_url(str(candidate.REDIS_URL))
+    ) or is_placeholder_service_password(candidate.REDIS_PASSWORD):
+        offending.append("the Redis password (REDIS_PASSWORD / REDIS_URL)")
+    if offending:
+        message = (
+            "Refusing to start on a default credential shipped in the repository: "
+            + "; ".join(offending)
+            + ". Set each to a value of your own. For a throwaway local run only, "
+            "DEBUG=true skips this check."
+        )
+        raise InsecureDefaultCredentialsError(message)
+
+
 settings = Settings()
 refuse_placeholder_secret_key(settings)
 refuse_missing_credential_keys(settings)
+refuse_default_credentials(settings)
