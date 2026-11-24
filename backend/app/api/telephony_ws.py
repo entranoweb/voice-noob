@@ -2,6 +2,24 @@
 
 These WebSocket endpoints handle the audio streams from Twilio and Telnyx,
 connecting them to our AI voice agent pipeline.
+
+Neither endpoint serves a connection that cannot present the stream token the
+answering webhook minted for this agent and this call (``app.core.stream_token``).
+Before that, knowing an agent's UUID was enough to open a conversation with it,
+tools included. The check runs before the agent is loaded, before any database
+read, and before a realtime session is opened, so a refused connection costs
+nothing and learns nothing — not even whether the agent exists.
+
+The two carriers deliver the token differently, so the two endpoints check it
+at different moments:
+
+* **Telnyx** keeps the stream URL's query string, so the token is there and the
+  connection is refused before it is accepted.
+* **Twilio** drops the query string and delivers custom values in the start
+  frame, so the socket has to be accepted first; the token is then required in
+  the first start frame, within a deadline, before anything else happens.
+
+Both refusals close with 4401.
 """
 
 import asyncio
@@ -17,6 +35,7 @@ from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.stream_token import STREAM_TOKEN_REJECTED, verify_stream_token
 from app.db.session import get_db
 from app.models.agent import Agent
 from app.models.call_record import CallRecord
@@ -38,6 +57,73 @@ logger = structlog.get_logger()
 
 # Constants for event logging
 EVENT_LOG_THRESHOLD = 20  # Log first N events, then every 100th
+
+# How long an accepted Twilio socket may stay silent before its start frame.
+# Twilio sends `connected` and `start` back to back on connect; anything slower
+# than this is not a carrier, and an unauthenticated socket should not be held
+# open waiting for one.
+STREAM_START_DEADLINE_S = 10.0
+
+
+async def _authorise_twilio_stream(
+    websocket: WebSocket,
+    agent_id: str,
+    log: Any,
+) -> dict[str, Any] | None:
+    """Read up to the start frame and admit the stream only on a valid token.
+
+    Returns the start frame, which the bridge still needs (it carries the
+    stream and call identifiers), or None once the socket has been closed.
+
+    Twilio gives no way to authenticate at the handshake: it strips the query
+    string from a ``<Stream>`` URL and sends custom values as
+    ``start.customParameters``. So the token is checked on the first start
+    frame, against the ``callSid`` that frame announces — the same CallSid the
+    signed webhook minted it for. Anything other than `connected` arriving
+    before a start frame is refused: audio is not accepted from a stream that
+    has not said who it is.
+    """
+    reason = "no_start_frame"
+    try:
+        async with asyncio.timeout(STREAM_START_DEADLINE_S):
+            while True:
+                data = json.loads(await websocket.receive_text())
+                if not isinstance(data, dict):
+                    reason = "malformed"
+                    break
+                event = data.get("event", "")
+                if event == "connected":
+                    continue
+                if event != "start":
+                    reason = "frame_before_start"
+                    break
+                start = data.get("start")
+                start = start if isinstance(start, dict) else {}
+                params = start.get("customParameters")
+                token = params.get("token") if isinstance(params, dict) else None
+                result = verify_stream_token(
+                    token if isinstance(token, str) else None,
+                    provider="twilio",
+                    agent_id=agent_id,
+                    call_id=str(start.get("callSid", "")),
+                )
+                if result.ok:
+                    return data
+                reason = result.verdict.value
+                break
+    except TimeoutError:
+        reason = "no_start_frame"
+    except WebSocketDisconnect:
+        log.info("twilio_websocket_disconnected_before_start")
+        return None
+    except ValueError:
+        # json.JSONDecodeError is a ValueError: a frame that is not JSON.
+        reason = "malformed"
+
+    log.warning("twilio_stream_token_rejected", reason=reason)
+    with contextlib.suppress(RuntimeError):
+        await websocket.close(code=STREAM_TOKEN_REJECTED, reason="Stream token rejected")
+    return None
 
 
 def _emit_call_trace(
@@ -398,6 +484,12 @@ async def twilio_media_stream(  # noqa: PLR0915
         await websocket.close(code=1012, reason="Server is shutting down")
         return
 
+    # Nothing below runs for a stream that cannot present the token the
+    # answering webhook minted: no agent lookup, no realtime session.
+    start_frame = await _authorise_twilio_stream(websocket, agent_id, log)
+    if start_frame is None:
+        return
+
     stream_sid: str = ""
     call_sid: str = ""
     call_start_time: float = time.time()
@@ -468,6 +560,7 @@ async def twilio_media_stream(  # noqa: PLR0915
                 log=log,
                 enable_transcript=agent.enable_transcript,
                 on_call_start=on_call_start,
+                initial_start=start_frame,
             )
 
             # Save transcript to call record if enabled
@@ -508,6 +601,7 @@ async def _handle_twilio_stream(  # noqa: PLR0915
     log: Any,
     enable_transcript: bool = False,
     on_call_start: Any | None = None,
+    initial_start: dict[str, Any] | None = None,
 ) -> str:
     """Handle Twilio Media Stream messages.
 
@@ -517,6 +611,9 @@ async def _handle_twilio_stream(  # noqa: PLR0915
         log: Logger instance
         enable_transcript: Whether to capture transcript
         on_call_start: Optional callback when call starts (receives call_sid)
+        initial_start: The start frame the endpoint already read off the socket
+            in order to authenticate the stream. It is processed here first, so
+            the identifiers it carries are not lost by having been consumed.
 
     Returns:
         The call_sid for transcript saving
@@ -524,6 +621,7 @@ async def _handle_twilio_stream(  # noqa: PLR0915
     stream_sid = ""
     call_sid = ""
     should_end_call = False  # Flag to signal call should end
+    already_read: list[dict[str, Any]] = [initial_start] if initial_start else []
 
     async def twilio_to_realtime() -> None:
         """Forward audio from Twilio to GPT Realtime."""
@@ -531,8 +629,11 @@ async def _handle_twilio_stream(  # noqa: PLR0915
 
         try:
             while not should_end_call:
-                message = await websocket.receive_text()
-                data = json.loads(message)
+                if already_read:
+                    data = already_read.pop(0)
+                else:
+                    message = await websocket.receive_text()
+                    data = json.loads(message)
                 event = data.get("event", "")
 
                 if event == "connected":
@@ -761,6 +862,22 @@ async def telnyx_media_stream(  # noqa: PLR0915
         webhook_call_id=webhook_call_id,
         direction=direction.value,
     )
+
+    # The token rides in the stream URL beside the call identifier it is bound
+    # to, so this is decided before the connection is accepted and before the
+    # database is touched. Bound to `call_id` as well as the agent: without
+    # that, a token for one call could be presented beside another call's
+    # identifier to reach that call's row (DECISIONS §33).
+    token_result = verify_stream_token(
+        websocket.query_params.get("token"),
+        provider="telnyx",
+        agent_id=agent_id,
+        call_id=webhook_call_id,
+    )
+    if not token_result.ok:
+        log.warning("telnyx_stream_token_rejected", reason=token_result.verdict.value)
+        await websocket.close(code=STREAM_TOKEN_REJECTED, reason="Stream token rejected")
+        return
 
     await websocket.accept()
     log.info("telnyx_websocket_connected")

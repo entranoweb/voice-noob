@@ -26,6 +26,7 @@ import base64
 import time
 import uuid
 from typing import Any, ClassVar, Self
+from urllib.parse import parse_qsl, quote, urlencode, urlsplit
 from xml.etree import ElementTree as ET
 
 import fakeredis
@@ -41,6 +42,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import settings
+from app.core.stream_token import STREAM_TOKEN_REJECTED, mint_stream_token
 from app.db.redis import get_redis
 from app.db.session import get_db
 from app.main import app
@@ -109,8 +111,12 @@ class _FakeRealtimeSession:
     """Stands in for GPTRealtimeSession, recording the audio it was handed."""
 
     script: ClassVar[list[Any]] = []
+    # How many sessions were opened. A refused connection must open none: a
+    # realtime session is the paid, tool-bearing thing the token protects.
+    opened: ClassVar[int] = 0
 
     def __init__(self, **_: Any) -> None:
+        type(self).opened += 1
         self.connection = _FakeRealtimeConnection(list(self.script))
         self.audio_in: list[bytes] = []
         self.tools_called: list[str] = []
@@ -221,6 +227,7 @@ async def inbound_call_env(test_engine: Any, monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr(settings, "DEBUG", False)
     monkeypatch.setattr("app.api.telephony_ws.GPTRealtimeSession", _FakeRealtimeSession)
     _FakeRealtimeSession.script = _call_script()
+    _FakeRealtimeSession.opened = 0
 
     redis = fakeredis.FakeAsyncRedis(decode_responses=True)
 
@@ -317,6 +324,8 @@ class TestInboundCallEndToEnd:
         assert str(inbound_call_env["agent"].id) in url
         # The call identifier travels to the bridge so it can find this row.
         assert "call_id=" in url
+        # And the token that admits the stream travels with it.
+        assert "token=" in url
 
     @pytest.mark.asyncio
     async def test_the_call_lands_a_row(self, inbound_call_env: dict[str, Any]) -> None:
@@ -338,13 +347,13 @@ class TestInboundCallEndToEnd:
     @pytest.mark.asyncio
     async def test_audio_flows_both_ways(self, inbound_call_env: dict[str, Any]) -> None:
         """Caller µ-law reaches the model and agent µ-law reaches the carrier."""
-        await _place_webhook(inbound_call_env)
+        query = await _place_webhook(inbound_call_env)
         agent_id = str(inbound_call_env["agent"].id)
 
         async with ASGIWebSocketClient(
             app,
             f"/ws/telephony/telnyx/{agent_id}",
-            query_string=f"call_id={CALL_SID}",
+            query_string=query,
         ) as ws:
             assert ws.accepted
             await ws.send_json(
@@ -370,8 +379,7 @@ class TestInboundCallEndToEnd:
         self,
         inbound_call_env: dict[str, Any],
     ) -> None:
-        await _place_webhook(inbound_call_env)
-        await _run_stream(inbound_call_env)
+        await _run_stream(inbound_call_env, await _place_webhook(inbound_call_env))
 
         async with inbound_call_env["session_maker"]() as session:
             result = await session.execute(
@@ -411,8 +419,7 @@ class TestInboundCallEndToEnd:
         inbound_call_env: dict[str, Any],
         captured_spans: InMemorySpanExporter,
     ) -> None:
-        await _place_webhook(inbound_call_env)
-        await _run_stream(inbound_call_env)
+        await _run_stream(inbound_call_env, await _place_webhook(inbound_call_env))
 
         spans = captured_spans.get_finished_spans()
         call_spans = [s for s in spans if s.name == schema.SPAN_CALL]
@@ -453,12 +460,17 @@ class TestInboundCallEndToEnd:
         """
         await _place_webhook(inbound_call_env)
 
+        # A token minted for this unknown id, so the connection gets past the
+        # door and is turned away at the agent lookup, which is the case under
+        # test. Without one it would never reach that branch.
+        unknown_agent = str(uuid.uuid4())
         async with ASGIWebSocketClient(
             app,
-            f"/ws/telephony/telnyx/{uuid.uuid4()}",
-            query_string=f"call_id={CALL_SID}",
+            f"/ws/telephony/telnyx/{unknown_agent}",
+            query_string=_minted_query(unknown_agent, CALL_SID),
         ) as ws:
             await ws.drain(deadline_s=1.0)
+            assert ws.close_code == 4004
 
         assert [s for s in captured_spans.get_finished_spans() if s.name == schema.SPAN_CALL] == []
 
@@ -475,13 +487,13 @@ class TestInboundCallEndToEnd:
         counted by every dashboard that counts calls.
         """
         _FakeRealtimeSession.script = [_Event("session.updated")]
-        await _place_webhook(inbound_call_env)
+        query = await _place_webhook(inbound_call_env)
         agent_id = str(inbound_call_env["agent"].id)
 
         async with ASGIWebSocketClient(
             app,
             f"/ws/telephony/telnyx/{agent_id}",
-            query_string=f"call_id={CALL_SID}",
+            query_string=query,
         ) as ws:
             assert ws.accepted
             await ws.drain(deadline_s=0.5)
@@ -515,13 +527,18 @@ class TestInboundCallEndToEnd:
             await session.commit()
             victim_id = victim.id
 
-        # The connection names a call belonging to nobody it serves.
+        # The connection names a call belonging to nobody it serves. It carries
+        # a token genuinely minted for that pairing, which the webhook would
+        # never issue: the stream token now refuses this at the door (see
+        # TestStreamAdmission), and this test keeps the predicate behind the
+        # door honest for the day something else gets past it.
         agent_id = str(inbound_call_env["agent"].id)
         async with ASGIWebSocketClient(
             app,
             f"/ws/telephony/telnyx/{agent_id}",
-            query_string="call_id=v3:someone-elses-call",
+            query_string=_minted_query(agent_id, "v3:someone-elses-call"),
         ) as ws:
+            assert ws.accepted
             await ws.send_json(
                 {"event": "start", "stream_id": "s", "start": {"call_control_id": "x"}},
             )
@@ -554,8 +571,7 @@ class TestInboundCallEndToEnd:
             _Event("response.done", response=_Response("completed")),
         ]
 
-        await _place_webhook(inbound_call_env)
-        await _run_stream(inbound_call_env)
+        await _run_stream(inbound_call_env, await _place_webhook(inbound_call_env))
 
         finished = captured_spans.get_finished_spans()
         tools = [s for s in finished if s.name == schema.SPAN_TOOL_CALL]
@@ -584,8 +600,7 @@ class TestInboundCallEndToEnd:
         Without it on the record, nothing downstream can know — and inferring it
         from the call's status would be a fabrication.
         """
-        await _place_webhook(inbound_call_env)
-        await _run_stream(inbound_call_env)
+        await _run_stream(inbound_call_env, await _place_webhook(inbound_call_env))
 
         async with inbound_call_env["session_maker"]() as session:
             result = await session.execute(
@@ -609,13 +624,13 @@ class TestInboundCallEndToEnd:
     ) -> None:
         """Outbound calls share this endpoint, so the direction travels with the
         stream URL rather than being assumed."""
-        await _place_webhook(inbound_call_env)
+        query = await _place_webhook(inbound_call_env)
         agent_id = str(inbound_call_env["agent"].id)
 
         async with ASGIWebSocketClient(
             app,
             f"/ws/telephony/telnyx/{agent_id}",
-            query_string=f"call_id={CALL_SID}&direction=outbound",
+            query_string=_with(query, direction="outbound"),
         ) as ws:
             await ws.send_json(
                 {"event": "start", "stream_id": "s", "start": {"call_control_id": CALL_SID}},
@@ -659,7 +674,148 @@ class TestInboundCallEndToEnd:
         assert record.ended_at is not None
 
 
-async def _place_webhook(env: dict[str, Any]) -> None:
+class TestStreamAdmission:
+    """Nobody reaches an agent without the token its answering webhook minted.
+
+    Before this, knowing an agent's UUID was enough to open a conversation with
+    it, tools included. Each refusal below is checked three ways: the socket is
+    not accepted, it closes with the token code, and no realtime session — the
+    paid, tool-bearing thing being protected — was ever opened.
+    """
+
+    async def _refused(self, agent_id: str, query: str) -> None:
+        async with ASGIWebSocketClient(
+            app,
+            f"/ws/telephony/telnyx/{agent_id}",
+            query_string=query,
+        ) as ws:
+            assert not ws.accepted, "the socket accepted a connection it should have refused"
+            assert ws.close_code == STREAM_TOKEN_REJECTED
+        assert _FakeRealtimeSession.opened == 0, (
+            "a realtime session was opened for a refused stream"
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_webhooks_own_url_is_admitted(self, inbound_call_env: dict[str, Any]) -> None:
+        """The control: the query string from the answer document opens the socket."""
+        query = await _place_webhook(inbound_call_env)
+
+        async with ASGIWebSocketClient(
+            app,
+            f"/ws/telephony/telnyx/{inbound_call_env['agent'].id}",
+            query_string=query,
+        ) as ws:
+            assert ws.accepted
+            await ws.drain(deadline_s=0.5)
+        assert _FakeRealtimeSession.opened == 1
+
+    @pytest.mark.asyncio
+    async def test_knowing_the_agent_id_is_not_enough(
+        self, inbound_call_env: dict[str, Any]
+    ) -> None:
+        """The hole as it stood: a real agent id, a real call id, no token."""
+        query = await _place_webhook(inbound_call_env)
+
+        await self._refused(str(inbound_call_env["agent"].id), _without(query, "token"))
+
+    @pytest.mark.asyncio
+    async def test_a_tampered_token_is_refused(self, inbound_call_env: dict[str, Any]) -> None:
+        query = await _place_webhook(inbound_call_env)
+        token = dict(parse_qsl(query))["token"]
+        expires_at, signature = token.split(".")
+        forged = f"{expires_at}.{'A' if signature[0] != 'A' else 'B'}{signature[1:]}"
+
+        await self._refused(str(inbound_call_env["agent"].id), _with(query, token=forged))
+
+    @pytest.mark.asyncio
+    async def test_an_expired_token_is_refused(self, inbound_call_env: dict[str, Any]) -> None:
+        agent_id = str(inbound_call_env["agent"].id)
+        stale = mint_stream_token(
+            provider="telnyx", agent_id=agent_id, call_id=CALL_SID, now=time.time() - 3600
+        )
+
+        await self._refused(agent_id, f"call_id={quote(CALL_SID, safe='')}&token={stale}")
+
+    @pytest.mark.asyncio
+    async def test_another_agents_token_is_refused(self, inbound_call_env: dict[str, Any]) -> None:
+        """A token is good for the agent it was minted for and no other."""
+        other_agent = str(uuid.uuid4())
+        borrowed = mint_stream_token(provider="telnyx", agent_id=other_agent, call_id=CALL_SID)
+
+        await self._refused(
+            str(inbound_call_env["agent"].id),
+            f"call_id={quote(CALL_SID, safe='')}&token={borrowed}",
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_twilio_token_does_not_open_the_telnyx_socket(
+        self, inbound_call_env: dict[str, Any]
+    ) -> None:
+        agent_id = str(inbound_call_env["agent"].id)
+        wrong_carrier = mint_stream_token(provider="twilio", agent_id=agent_id, call_id=CALL_SID)
+
+        await self._refused(agent_id, f"call_id={quote(CALL_SID, safe='')}&token={wrong_carrier}")
+
+    @pytest.mark.asyncio
+    async def test_a_valid_url_cannot_be_pointed_at_another_call(
+        self, inbound_call_env: dict[str, Any]
+    ) -> None:
+        """Take a genuine stream URL and change only its call_id.
+
+        The identifier in the URL selects the row the bridge writes to, so a
+        token bound to the agent alone would leave that a write primitive
+        (DECISIONS §33). Bound to the call as well, editing it voids the token.
+        """
+        query = await _place_webhook(inbound_call_env)
+
+        await self._refused(
+            str(inbound_call_env["agent"].id),
+            _with(query, call_id="v3:someone-elses-call"),
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_refusal_does_not_reveal_whether_the_agent_exists(
+        self, inbound_call_env: dict[str, Any]
+    ) -> None:
+        """4003 and 4004 used to answer "is this a real agent id?" for anyone
+        who asked. Without a token the answer is the same for both."""
+        await _place_webhook(inbound_call_env)
+
+        await self._refused(str(uuid.uuid4()), f"call_id={quote(CALL_SID, safe='')}")
+        await self._refused(
+            str(inbound_call_env["agent"].id), f"call_id={quote(CALL_SID, safe='')}"
+        )
+
+
+def _minted_query(agent_id: str, call_id: str, *, direction: str = "inbound") -> str:
+    """A stream query string carrying a token this process would have minted.
+
+    For the tests that are about what happens *behind* the token — an unknown
+    agent, another call's identifier — and so need to get past it legitimately.
+    The tests that are about the token take the query string from the answer
+    document instead, which is what a carrier does.
+    """
+    token = mint_stream_token(provider="telnyx", agent_id=agent_id, call_id=call_id)
+    return f"call_id={quote(call_id, safe='')}&direction={direction}&token={quote(token, safe='')}"
+
+
+def _with(query: str, **changes: str) -> str:
+    """The same query string with some parameters replaced."""
+    params = dict(parse_qsl(query, keep_blank_values=True))
+    params.update(changes)
+    return urlencode(params)
+
+
+def _without(query: str, name: str) -> str:
+    return urlencode([(k, v) for k, v in parse_qsl(query, keep_blank_values=True) if k != name])
+
+
+async def _place_webhook(env: dict[str, Any]) -> str:
+    """Post the signed webhook and return the stream URL's query string.
+
+    That query string is what the carrier would dial back with, token included,
+    so a test that connects with it is using the credential the way it travels.
+    """
     body = (
         f"CallSid={CALL_SID}&AccountSid=acct&From={CALLER_NUMBER.replace('+', '%2B')}"
         f"&To={AGENT_NUMBER.replace('+', '%2B')}&CallStatus=ringing&Direction=inbound"
@@ -675,15 +831,19 @@ async def _place_webhook(env: dict[str, Any]) -> None:
             },
         )
     assert response.status_code == 200
+    stream = ET.fromstring(response.text).find("./Connect/Stream")  # noqa: S314
+    assert stream is not None, "no <Stream> in the answer document"
+    return urlsplit(stream.attrib["url"]).query
 
 
-async def _run_stream(env: dict[str, Any]) -> None:
+async def _run_stream(env: dict[str, Any], query: str) -> None:
     agent_id = str(env["agent"].id)
     async with ASGIWebSocketClient(
         app,
         f"/ws/telephony/telnyx/{agent_id}",
-        query_string=f"call_id={CALL_SID}",
+        query_string=query,
     ) as ws:
+        assert ws.accepted
         await ws.send_json(
             {
                 "event": "start",

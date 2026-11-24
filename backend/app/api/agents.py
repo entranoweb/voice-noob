@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.auth import CurrentUser
 from app.core.limiter import limiter
 from app.core.public_id import generate_public_id
+from app.core.public_url import frontend_base_url
 from app.db.session import get_db
 from app.models.agent import Agent
 
@@ -491,6 +492,7 @@ class UpdateEmbedSettingsRequest(BaseModel):
 @router.get("/{agent_id}/embed", response_model=EmbedSettingsResponse)
 async def get_embed_settings(
     agent_id: str,
+    request: Request,
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> EmbedSettingsResponse:
@@ -533,9 +535,11 @@ async def get_embed_settings(
                 await db.refresh(agent)
                 break
 
-    # Build embed code snippets
-    # In production, replace with actual domain
-    base_url = "https://yourplatform.com"  # TODO: Get from config
+    # Build embed code snippets. The widget script and the embed page are
+    # frontend assets, so the snippet names the frontend's origin; it used to
+    # name a placeholder domain this project does not own, which a customer
+    # pasting it would have loaded a script from.
+    base_url = frontend_base_url(request)
     script_tag = f"""<script src="{base_url}/widget/v1/widget.js" defer></script>
 <voice-agent agent-id="{agent.public_id}"></voice-agent>"""
 
@@ -623,7 +627,7 @@ async def update_embed_settings(
     await db.refresh(agent)
 
     # Return via get_embed_settings to ensure consistency
-    return await get_embed_settings(agent_id, current_user, db)
+    return await get_embed_settings(agent_id, request, current_user, db)
 
 
 @router.post("/{agent_id}/embed/regenerate-id", response_model=EmbedSettingsResponse)
@@ -674,4 +678,4 @@ async def regenerate_public_id(
     await db.refresh(agent)
 
     # Return via get_embed_settings to ensure consistency
-    return await get_embed_settings(agent_id, current_user, db)
+    return await get_embed_settings(agent_id, request, current_user, db)

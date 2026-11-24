@@ -25,6 +25,8 @@ from app.api.settings import get_user_api_keys
 from app.core.auth import CurrentUser, user_id_to_uuid
 from app.core.config import settings
 from app.core.limiter import limiter
+from app.core.public_url import public_base_url, public_ws_base_url
+from app.core.stream_token import mint_stream_token
 from app.core.webhook_security import verify_telnyx_webhook, verify_twilio_webhook
 from app.db.session import get_db
 from app.models.agent import Agent
@@ -245,14 +247,44 @@ def build_telnyx_stream_url(
     to Telnyx, the stream never connects, and the caller hears silence while
     every log line reads healthy. The scheme is forced to ``wss`` either way; it
     is the host that goes wrong.
+
+    On the token: the socket this URL points at admits nobody without one
+    (``app.core.stream_token``). It is minted here, by the webhook that has
+    just verified the carrier's signature, and is bound to this agent and to
+    this ``call_id`` — so it cannot be carried to another agent's socket, nor
+    presented beside a different call's identifier to reach that call's row.
     """
-    configured = settings.PUBLIC_URL
-    base_url = (configured or str(request.base_url)).strip().rstrip("/")
-    ws_url = base_url.replace("http://", "wss://").replace("https://", "wss://")
-    query = f"direction={quote(direction, safe='')}"
+    ws_url = public_ws_base_url(request)
+    token = mint_stream_token(provider="telnyx", agent_id=str(agent_id), call_id=call_id)
+    query = f"direction={quote(direction, safe='')}&token={quote(token, safe='')}"
     if call_id:
         query = f"call_id={quote(call_id, safe='')}&{query}"
     return f"{ws_url}/ws/telephony/telnyx/{agent_id}?{query}"
+
+
+def build_twilio_stream_url(request: Request, agent_id: str | None) -> str:
+    """The wss:// URL a Twilio media stream should connect back to.
+
+    Same host rule as the Telnyx builder, for the same reason. It carries no
+    query string on purpose: Twilio drops query parameters from a ``<Stream>``
+    URL and delivers custom values as ``<Parameter>`` elements in the start
+    frame instead, so that is where this provider's stream token travels
+    (``TwilioService.generate_answer_response``).
+    """
+    return f"{public_ws_base_url(request)}/ws/telephony/twilio/{agent_id}"
+
+
+def build_answer_webhook_url(request: Request, provider: str, agent_id: str) -> str:
+    """The URL a carrier fetches when an outbound call is answered.
+
+    The carrier calls this from outside, so it needs the public host exactly
+    as the stream URL does. Built from ``request.base_url`` it named the
+    address the app is bound to whenever a proxy sat in front, and an
+    outbound call was answered into nothing.
+    """
+    return (
+        f"{public_base_url(request)}/webhooks/{provider}/answer?agent_id={quote(agent_id, safe='')}"
+    )
 
 
 async def update_campaign_contact_from_call(
@@ -711,9 +743,10 @@ async def initiate_call(
             detail="No telephony provider configured. Please add Twilio or Telnyx credentials in Settings.",
         )
 
-    # Build webhook URL
-    base_url = str(request.base_url).rstrip("/")
-    webhook_url = f"{base_url}/webhooks/{'telnyx' if telnyx_service else 'twilio'}/answer?agent_id={call_request.agent_id}"
+    # The carrier fetches this from outside when the call is answered.
+    webhook_url = build_answer_webhook_url(
+        request, "telnyx" if telnyx_service else "twilio", call_request.agent_id
+    )
 
     if telnyx_service:
         provider = "telnyx"
@@ -881,14 +914,15 @@ async def twilio_voice_webhook(
     await db.commit()
     log.info("call_record_created", record_id=str(call_record.id))
 
-    # Build WebSocket URL for media streaming
-    base_url = str(request.base_url).rstrip("/")
-    ws_url = base_url.replace("http://", "wss://").replace("https://", "wss://")
-    stream_url = f"{ws_url}/ws/telephony/twilio/{agent_id}"
+    # Build WebSocket URL for media streaming, and the token that admits this
+    # call's stream to this agent. Bound to the CallSid Twilio signed, which is
+    # the callSid its start frame will announce.
+    stream_url = build_twilio_stream_url(request, agent_id)
+    stream_token = mint_stream_token(provider="twilio", agent_id=str(agent_id), call_id=call_sid)
 
     # Generate TwiML to connect to our WebSocket
     twilio_service = TwilioService("", "")  # Just need TwiML generation
-    twiml = twilio_service.generate_answer_response(stream_url, agent_id)
+    twiml = twilio_service.generate_answer_response(stream_url, agent_id, stream_token=stream_token)
 
     log.info("twilio_twiml_generated", agent_id=agent_id)
 
@@ -983,16 +1017,19 @@ async def twilio_answer_webhook(
     # Validate Twilio signature
     await verify_twilio_webhook(request)
 
-    log = logger.bind(webhook="twilio_answer", agent_id=agent_id)
+    # Twilio posts the CallSid with the answer request; the stream's start
+    # frame announces the same one, and the token is bound to it.
+    form = await request.form()
+    call_sid = str(form.get("CallSid", ""))
+
+    log = logger.bind(webhook="twilio_answer", agent_id=agent_id, call_sid=call_sid)
     log.info("twilio_outbound_answered")
 
-    # Build WebSocket URL
-    base_url = str(request.base_url).rstrip("/")
-    ws_url = base_url.replace("http://", "wss://").replace("https://", "wss://")
-    stream_url = f"{ws_url}/ws/telephony/twilio/{agent_id}"
+    stream_url = build_twilio_stream_url(request, agent_id)
+    stream_token = mint_stream_token(provider="twilio", agent_id=agent_id, call_id=call_sid)
 
     twilio_service = TwilioService("", "")
-    twiml = twilio_service.generate_answer_response(stream_url, agent_id)
+    twiml = twilio_service.generate_answer_response(stream_url, agent_id, stream_token=stream_token)
 
     return Response(content=twiml, media_type="application/xml")
 
