@@ -34,6 +34,8 @@ interface TokenResponse {
   };
   model: string;
   tools?: ToolDefinition[];
+  // Signed session for this widget; sent back on every later call.
+  session_token?: string;
 }
 
 type ConnectionStatus = "idle" | "connecting" | "connected" | "error";
@@ -63,6 +65,27 @@ type TranscriptEntry = {
 
 // Number of bars in the audio visualizer
 const BAR_COUNT = 24;
+
+// The site this widget is embedded in, as the browser reports it. The backend
+// checks it against the agent's allowed domains and binds the session to it.
+// Empty when the page is opened on its own (for example the dashboard preview).
+function embedParentHeaders(): Record<string, string> {
+  if (typeof window === "undefined" || window.parent === window) {
+    return {};
+  }
+  let parentOrigin = "";
+  const ancestors = window.location.ancestorOrigins;
+  if (ancestors && ancestors.length > 0) {
+    parentOrigin = ancestors[0] ?? "";
+  } else if (document.referrer) {
+    try {
+      parentOrigin = new URL(document.referrer).origin;
+    } catch {
+      parentOrigin = "";
+    }
+  }
+  return parentOrigin ? { "X-Embed-Parent-Origin": parentOrigin } : {};
+}
 
 export default function EmbedPage() {
   const params = useParams();
@@ -104,6 +127,7 @@ export default function EmbedPage() {
   const transcriptRef = useRef<TranscriptEntry[]>([]);
   const currentAssistantTextRef = useRef<string>("");
   const sessionIdRef = useRef<string>("");
+  const sessionTokenRef = useRef<string>("");
   const sessionStartTimeRef = useRef<number>(0);
 
   // Autostart tracking (prevent multiple starts)
@@ -143,7 +167,7 @@ export default function EmbedPage() {
     async function fetchConfig() {
       try {
         const res = await fetch(`/api/public/embed/${publicId}/config`, {
-          headers: { Origin: window.location.origin },
+          headers: { Origin: window.location.origin, ...embedParentHeaders() },
         });
         if (!res.ok) {
           const data = await res.json();
@@ -286,6 +310,8 @@ export default function EmbedPage() {
         headers: {
           "Content-Type": "application/json",
           Origin: window.location.origin,
+          "X-Embed-Session": sessionTokenRef.current,
+          ...embedParentHeaders(),
         },
         body: JSON.stringify({
           session_id: sessionIdRef.current,
@@ -407,6 +433,7 @@ export default function EmbedPage() {
         headers: {
           "Content-Type": "application/json",
           Origin: window.location.origin,
+          ...embedParentHeaders(),
         },
         signal: abortController.signal,
       });
@@ -421,6 +448,7 @@ export default function EmbedPage() {
 
       const tokenData: TokenResponse = await tokenRes.json();
       const ephemeralKey = tokenData.client_secret.value;
+      sessionTokenRef.current = tokenData.session_token ?? "";
 
       // Check if cancelled before WebRTC setup
       if (abortController.signal.aborted) return;
@@ -571,6 +599,8 @@ export default function EmbedPage() {
             headers: {
               "Content-Type": "application/json",
               Origin: window.location.origin,
+              "X-Embed-Session": sessionTokenRef.current,
+              ...embedParentHeaders(),
             },
             body: JSON.stringify({
               tool_name: toolName,

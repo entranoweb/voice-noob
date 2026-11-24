@@ -8,6 +8,7 @@ from http import HTTPStatus
 from typing import Any
 
 import httpx
+import jwt
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response
@@ -21,6 +22,7 @@ from app.core.auth import CurrentUser, user_id_to_uuid
 from app.core.config import settings
 from app.db.session import get_db
 from app.models.agent import Agent
+from app.models.user import User
 from app.services.gpt_realtime import GPTRealtimeSession, build_instructions_with_language
 from app.services.tools.registry import ToolRegistry
 
@@ -94,8 +96,36 @@ def get_realtime_model_for_tier(pricing_tier: str) -> str:
     )
 
 
+# Close codes for a refused dashboard socket: who you are, then what you may reach.
+REALTIME_SOCKET_UNAUTHENTICATED = 4401
+REALTIME_SOCKET_FORBIDDEN = 4403
+
+
+async def _user_from_socket_token(token: str | None, db: AsyncSession) -> User | None:
+    """The signed-in user a socket's access token belongs to, or None.
+
+    The same check `get_current_user` makes for HTTP requests: a token this
+    application signed, not expired, naming a user that still exists and is
+    active.
+    """
+    if not token:
+        return None
+    try:
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        user_id = int(payload.get("sub") or 0)
+    except (jwt.PyJWTError, TypeError, ValueError):
+        return None
+    if not user_id:
+        return None
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if user is None or not user.is_active:
+        return None
+    return user
+
+
 @router.websocket("/realtime/{agent_id}")
-async def realtime_websocket(
+async def realtime_websocket(  # noqa: PLR0911, PLR0915
     websocket: WebSocket,
     agent_id: str,
     workspace_id: str,
@@ -124,22 +154,40 @@ async def realtime_websocket(
         session_id=session_id,
     )
 
-    await websocket.accept()
-    client_logger.info("websocket_connected")
+    # This socket is for a signed-in dashboard user talking to their own agent.
+    # It used to accept anyone: an agent id and a workspace id were enough to
+    # open a model session on the owner's key with the agent's tools. A browser
+    # cannot set an Authorization header on a websocket, so the user's access
+    # token travels as the `token` query parameter and is checked, along with
+    # ownership of the agent, before the connection is accepted.
+    user = await _user_from_socket_token(websocket.query_params.get("token"), db)
+    if user is None:
+        client_logger.warning("realtime_socket_rejected", reason="unauthenticated")
+        await websocket.close(code=REALTIME_SOCKET_UNAUTHENTICATED)
+        return
 
     try:
-        # Validate UUIDs first
-        try:
-            agent_uuid = uuid.UUID(agent_id)
-            workspace_uuid = uuid.UUID(workspace_id)
-        except ValueError:
-            client_logger.warning("invalid_uuid_format")
-            await websocket.send_json(
-                {"type": "error", "error": "Invalid agent or workspace ID format"}
-            )
-            await websocket.close(code=4000)
-            return
+        agent_uuid = uuid.UUID(agent_id)
+        workspace_uuid = uuid.UUID(workspace_id)
+    except ValueError:
+        client_logger.warning("invalid_uuid_format")
+        await websocket.close(code=4000)
+        return
 
+    owned = await db.execute(
+        select(Agent.id).where(Agent.id == agent_uuid, Agent.user_id == user.id)
+    )
+    if owned.scalar_one_or_none() is None:
+        # The same answer whether the agent does not exist or belongs to someone
+        # else, so the socket cannot be used to test which agent ids are real.
+        client_logger.warning("realtime_socket_rejected", reason="not_owner", user_id=user.id)
+        await websocket.close(code=REALTIME_SOCKET_FORBIDDEN)
+        return
+
+    await websocket.accept()
+    client_logger.info("websocket_connected", user_id=user.id)
+
+    try:
         # Load agent configuration with workspace verification
         from app.models.workspace import AgentWorkspace
 
