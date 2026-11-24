@@ -164,7 +164,7 @@ def test_the_real_call_fails_on_the_stored_date_of_birth() -> None:
     trace = load("elevenlabs_2ttj.json")
     result = grade(SCENARIO, record_with("6th July, 1987."), trace)
     rows = {row.field: row for row in result.fields}
-    assert rows["name"].verdict == "stored correctly"
+    assert rows["name"].verdict == "sent correctly, not confirmed stored"
     assert rows["date_of_birth"].said == "1987-07-05"
     assert rows["date_of_birth"].stored == "6th July, 1987"
     assert rows["date_of_birth"].verdict == "misheard, stored wrongly"

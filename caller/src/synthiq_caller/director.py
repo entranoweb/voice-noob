@@ -15,7 +15,7 @@ import asyncio
 import contextlib
 import time
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from dataclasses import field as dc_field
 from typing import Any
 
@@ -40,6 +40,12 @@ class Said:
     answering: str
     # What the agent's recogniser reported between this answer and the next.
     heard: list[str] = dc_field(default_factory=list)
+    # A clip in this answer has no label a person has confirmed.
+    labels_unverified: bool = False
+    # The scenario had no step for the question; this is its fallback answer.
+    fallback: bool = False
+    # Clips in this answer that are a synthetic voice, not a recorded caller.
+    synthetic_clips: list[str] = dc_field(default_factory=list)
 
 
 @dataclass
@@ -50,6 +56,9 @@ class RunRecord:
     duration_s: float = 0.0
     timeline: list[dict[str, Any]] = dc_field(default_factory=list)
     said: list[Said] = dc_field(default_factory=list)
+    # Questions from the agent the caller had nothing to say to. A call that
+    # goes wrong after one of these went wrong because of the test rig.
+    unanswered: list[str] = dc_field(default_factory=list)
 
     def to_json(self) -> dict[str, Any]:
         return asdict(self)
@@ -64,6 +73,7 @@ class RunRecord:
             duration_s=float(data.get("duration_s", 0.0)),
             timeline=list(data.get("timeline", [])),
             said=said,
+            unanswered=list(data.get("unanswered", [])),
         )
 
 
@@ -81,7 +91,12 @@ class Director:
         self.scenario = scenario
         self.leg = leg
         self.clips = clips
-        self.tracker = AgentTurnTracker(turn_settings)
+        settings = turn_settings or TurnSettings()
+        if getattr(leg, "text_follows_audio", False) and not settings.text_follows_audio:
+            # A leg that learns the agent's words from a transcriber hears them
+            # after they were spoken, not before.
+            settings = replace(settings, text_follows_audio=True)
+        self.tracker = AgentTurnTracker(settings)
         self.chunk_ms = chunk_ms
         self._clock = clock
         self._t0 = 0.0
@@ -98,7 +113,18 @@ class Director:
         self.record.timeline.append({"t": round(self._now(), 2), "kind": kind, **details})
 
     async def run(self) -> RunRecord:
-        await self.leg.connect()
+        self._t0 = self._clock()
+        try:
+            await self.leg.connect()
+        except Exception as refused:  # noqa: BLE001 - an unanswered call is a result, not a crash
+            # Refused, engaged, never picked up, over a concurrency limit: the
+            # caller dialled and nobody answered. Recorded as a call that failed.
+            self._note("not_answered", text=repr(refused))
+            self.record.ended = f"not answered: {refused!r}"
+            with contextlib.suppress(Exception):
+                await self.leg.close()
+            self.record.call_ref = self.leg.call_ref
+            return self.record
         self._t0 = self._clock()
         tasks = [
             asyncio.create_task(self._read()),
@@ -169,6 +195,35 @@ class Director:
                 return index, step
         return None
 
+    def _asked_together(self, text: str, first: tuple[int, Step]) -> list[tuple[int, Step]]:
+        """Every answer one agent turn asks for, in the order it asked.
+
+        "Could I take your date of birth and your postcode?" is two questions.
+        When the step that matched carries a persona fact, every other unused
+        step that carries a different fact and also matches the turn is answered
+        with it, in the order the turn names them. Steps that carry no fact (a
+        "yes", an opener) are never added: a read-back that mentions the date of
+        birth is a request to confirm it, not to say it again.
+        """
+        index, step = first
+        if not step.field or step.talk_over:
+            return [first]
+        found = [(step.when.search(text), index, step)]
+        fields = {step.field}
+        for other_index, other in enumerate(self.scenario.steps):
+            if other_index == index or not other.field or other.field in fields:
+                continue
+            if other.talk_over or other.stay_silent:
+                continue
+            if other.max_uses and self._uses.get(other_index, 0) >= other.max_uses:
+                continue
+            hit = other.when.search(text)
+            if hit:
+                found.append((hit, other_index, other))
+                fields.add(other.field)
+        found.sort(key=lambda item: item[0].start() if item[0] else 0)
+        return [(i, s) for _, i, s in found]
+
     async def _direct(self) -> None:
         scenario = self.scenario
         while self._now() < scenario.max_seconds:
@@ -196,17 +251,32 @@ class Director:
 
             self._pending.clear()
             if match is None:
-                # A line that asks nothing ("I'm sorry to hear that."). Nothing to say.
-                self._note("no_answer_needed", agent=text[-100:])
+                if "?" not in text:
+                    # A line that asks nothing ("I'm sorry to hear that."). Nothing to say.
+                    self._note("no_answer_needed", agent=text[-100:])
+                    continue
+                fallback = scenario.fallback
+                used = self._uses.get(-1, 0)
+                if fallback is not None and (not fallback.max_uses or used < fallback.max_uses):
+                    self._uses[-1] = used + 1
+                    await self._act(-1, fallback, text, fallback=True)
+                    continue
+                # A question the scenario has no answer for (reworded, or asked
+                # once too often). A person would answer; the caller cannot.
+                self.record.unanswered.append(text[-200:])
+                self._note("unanswered", agent=text[-200:])
                 continue
-            index, step = match
-            self._uses[index] = self._uses.get(index, 0) + 1
-            await self._act(index, step, text)
+            for index, step in self._asked_together(text, match):
+                self._uses[index] = self._uses.get(index, 0) + 1
+                await self._act(index, step, text)
         self.record.ended = self.record.ended or "caller hung up: time limit"
         self._note("hangup", on="time limit")
 
-    async def _act(self, index: int, step: Step, answering: str) -> None:
+    async def _act(self, index: int, step: Step, answering: str, *, fallback: bool = False) -> None:
         seconds = 0.0
+        self.tracker.answered()
+        unverified = any(not self.clips.verified(clip) for clip in step.clips)
+        synthetic = [clip for clip in step.clips if self.clips.synthetic(clip)]
         if step.stay_silent:
             self._note("silent", step=index)
         elif step.dtmf:
@@ -215,7 +285,9 @@ class Director:
         else:
             pcm = self.clips.joined(list(step.clips), self.leg.input_rate, step.gap_s)
             seconds = len(pcm) / 2 / self.leg.input_rate
-            self._queue = pcm
+            # Appended, not replaced: one turn can ask for two answers.
+            pause = b"\0" * (int(self.leg.input_rate * step.gap_s) * 2) if self._queue else b""
+            self._queue += pause + pcm
             self._note("said", step=index, clips=list(step.clips), seconds=round(seconds, 2))
         self.record.said.append(
             Said(
@@ -228,5 +300,8 @@ class Director:
                 seconds=round(seconds, 2),
                 talk_over=step.talk_over,
                 answering=answering[-140:],
+                labels_unverified=unverified,
+                fallback=fallback,
+                synthetic_clips=synthetic,
             )
         )

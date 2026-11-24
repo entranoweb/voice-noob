@@ -39,7 +39,7 @@
       "field": "date_of_birth"
     },
     {
-      "when": "finally, your post ?code|your post ?code, please",
+      "when": "finally, your post ?code|your post ?code, please|give me your post ?code|what(?:'s| is) your post ?code|and (?:your|the) post ?code|date of birth and (?:your )?post ?code",
       "clips": [
         "2026-11-20T120746Z_0zz1_04_postcode"
       ],
@@ -60,7 +60,7 @@
   "expect": {
     "tools": [
       {
-        "name_contains": "verify_identity"
+        "name": "sophie_v2_verify_identity"
       }
     ],
     "fields": [
@@ -70,5 +70,33 @@
       "can't seem to match",
       "not able to check your details"
     ]
-  }
+  },
+  "tool_outcomes": {
+    "sophie_v2_verify_identity": {
+      "path": "verified",
+      "success": [
+        "true"
+      ]
+    },
+    "sophie_v2_book": {
+      "path": "bookOutcome",
+      "success": [
+        "BOOKED"
+      ]
+    },
+    "sophie_v2_reschedule_appointment": {
+      "path": "rescheduleOutcome",
+      "success": [
+        "RESCHEDULED"
+      ]
+    },
+    "sophie_v2_register_patient": {
+      "path": "newPatientRegistered",
+      "success": [
+        "true"
+      ]
+    }
+  },
+  "identity_budget": 2,
+  "identity_attempts": 2
 }

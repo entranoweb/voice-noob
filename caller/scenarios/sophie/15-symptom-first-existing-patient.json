@@ -31,7 +31,10 @@
   "expect": {
     "tools": [
       {
-        "name_contains": "identify"
+        "name_contains": "identify",
+        "outputs": {
+          "status": "unique"
+        }
       }
     ],
     "fields": [
@@ -43,5 +46,32 @@
     "agent_never_says": [
       "different name"
     ]
-  }
+  },
+  "tool_outcomes": {
+    "sophie_v2_verify_identity": {
+      "path": "verified",
+      "success": [
+        "true"
+      ]
+    },
+    "sophie_v2_book": {
+      "path": "bookOutcome",
+      "success": [
+        "BOOKED"
+      ]
+    },
+    "sophie_v2_reschedule_appointment": {
+      "path": "rescheduleOutcome",
+      "success": [
+        "RESCHEDULED"
+      ]
+    },
+    "sophie_v2_register_patient": {
+      "path": "newPatientRegistered",
+      "success": [
+        "true"
+      ]
+    }
+  },
+  "identity_budget": 2
 }

@@ -41,6 +41,10 @@ class TurnSettings:
     audio_start_wait_s: float = 2.5
     # Never wait longer than this for one agent turn to end.
     max_turn_s: float = 45.0
+    # True on a leg whose agent text is a transcript of audio already received
+    # (a phone line with a transcriber): the words arrive after the speech, so
+    # the speech that came just before the text IS that line being spoken.
+    text_follows_audio: bool = False
 
 
 class AgentTurnTracker:
@@ -52,12 +56,20 @@ class AgentTurnTracker:
         self._speech_run_s = 0.0  # length of the current unbroken run of speech
         self._speech_end: float | None = None  # playhead time speech last ended
         self._spoke_since_mark = False
+        self._spoke_since_answer = False
         self._mark_time = 0.0
 
     def mark(self, now: float) -> None:
         """Start watching for a new agent turn (call when agent text arrives)."""
-        self._spoke_since_mark = False
+        # Where text trails the audio, speech heard since the caller last answered
+        # was this line: do not then wait ``audio_start_wait_s`` for audio that
+        # has already been. Speech from before that answer was an earlier line.
+        self._spoke_since_mark = self.settings.text_follows_audio and self._spoke_since_answer
         self._mark_time = now
+
+    def answered(self) -> None:
+        """The caller has started an answer: speech after this is a new agent line."""
+        self._spoke_since_answer = False
 
     def feed(self, pcm: bytes, rate: int, now: float) -> None:
         """Account for one frame of agent audio received at ``now``."""
@@ -69,6 +81,7 @@ class AgentTurnTracker:
             if self._speech_run_s >= self.settings.min_speech_s:
                 self._speech_end = self._playhead
                 self._spoke_since_mark = True
+                self._spoke_since_answer = True
         else:
             self._speech_run_s = 0.0
 

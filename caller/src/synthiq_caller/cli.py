@@ -10,6 +10,7 @@
     synthiq-caller regrade runs/ --scenarios scenarios/sophie   (no calls placed)
     synthiq-caller baseline runs/ --out baseline.json
     synthiq-caller compare runs-new/ --baseline baseline.json --fail-on beyond-noise
+    synthiq-caller gate runs/ --rate 0.95 --confidence 0.95
     synthiq-caller clipbank build --recordings <dir> --out <dir outside any repo>
     synthiq-caller clipbank scenario --clips <dir> --call <call id>
 
@@ -47,17 +48,16 @@ from synthiq_caller.compare import (
     render_comparison,
     save_baseline,
 )
-from synthiq_caller.director import Director, RunRecord
-from synthiq_caller.grading import Grade, grade
-from synthiq_caller.jsonio import utf8_console, write_json
+from synthiq_caller.director import RunRecord
+from synthiq_caller.jsonio import utf8_console
 from synthiq_caller.leg import Leg
 from synthiq_caller.prereq import CommandChecker, HttpChecker, PrereqChecker
 from synthiq_caller.readback import CommandReadBack, HttpReadBack, NoReadBack, ReadBack
-from synthiq_caller.report import render, summarise
+from synthiq_caller.report import render, scenario_level, summarise
 from synthiq_caller.reset import CommandReset, HttpReset, NoReset, Reset
-from synthiq_caller.scenario import Scenario, load_scenario
-from synthiq_caller.stats import describe
-from synthiq_caller.traces.base import Trace, TraceReader
+from synthiq_caller.scenario import load_scenario
+from synthiq_caller.stats import describe, gate
+from synthiq_caller.traces.base import TraceReader
 from synthiq_caller.validation import validate_directory
 
 
@@ -72,11 +72,33 @@ def _secret(name: str, env_file: str | None) -> str:
     return value
 
 
+TRACES = ("elevenlabs", "retell", "vapi")
+
+
+def _trace_reader(args: argparse.Namespace) -> TraceReader:
+    """The only place a trace source's name is turned into a reader.
+
+    The reader must belong to the platform the call reached: its call reference
+    is what the leg hands over.
+    """
+    choice = getattr(args, "trace", None) or "elevenlabs"
+    if choice == "retell":
+        from synthiq_caller.traces.retell import RetellTraceReader
+
+        return RetellTraceReader(_secret("RETELL_API_KEY", args.env_file))
+    if choice == "vapi":
+        from synthiq_caller.traces.vapi import VapiTraceReader
+
+        return VapiTraceReader(_secret("VAPI_API_KEY", args.env_file))
+    from synthiq_caller.traces.elevenlabs import ElevenLabsTraceReader
+
+    return ElevenLabsTraceReader(_secret("ELEVENLABS_API_KEY", args.env_file))
+
+
 def _build(args: argparse.Namespace) -> tuple[Leg, TraceReader | None]:
     """The only place a leg name is turned into engine-specific objects."""
     if args.leg == "elevenlabs-socket":
         from synthiq_caller.legs.elevenlabs_socket import ElevenLabsSocketLeg
-        from synthiq_caller.traces.elevenlabs import ElevenLabsTraceReader
 
         if not args.agent:
             raise SystemExit("--agent is required for the elevenlabs-socket leg")
@@ -84,35 +106,16 @@ def _build(args: argparse.Namespace) -> tuple[Leg, TraceReader | None]:
         leg = ElevenLabsSocketLeg(
             key, args.agent, keypad_as_message=getattr(args, "keypad_as_message", False)
         )
-        return leg, ElevenLabsTraceReader(key)
+        return leg, _trace_reader(args)
     raise SystemExit(f"unknown or unbuilt leg: {args.leg}")
-
-
-async def _run_once(scenario: Scenario, args: argparse.Namespace, index: int, out: Path) -> Grade:
-    leg, reader = _build(args)
-    record = await Director(scenario, leg, ClipBank(args.clips)).run()
-    trace: Trace | None = None
-    trace_error = ""
-    if reader is not None and record.call_ref and not args.no_trace:
-        try:
-            trace = await reader.read(record.call_ref)
-        except Exception as error:  # noqa: BLE001 - a missing trace must not lose the run
-            trace_error = repr(error)
-    result = grade(scenario, record, trace)
-    payload: dict[str, Any] = {
-        "record": record.to_json(),
-        "trace": trace.to_json() if trace else None,
-        "trace_error": trace_error,
-        "grade": result.to_json(),
-    }
-    write_json(out / f"run-{index:03d}.json", payload)
-    return result
 
 
 def _print_grade(index: int, payload: dict[str, Any]) -> None:
     g = payload["grade"]
     record = payload["record"]
     print(f"\nrun {index}: {g['outcome']}  ({record['duration_s']}s, {record['ended']})")
+    if g.get("fault") or g.get("reason"):
+        print(f"  fault: {g.get('fault') or '-'}  {g.get('reason', '')}")
     for check in g["checks"]:
         print(f"  [{'pass' if check['passed'] else 'FAIL'}] {check['what']}")
     if g["fields"]:
@@ -160,7 +163,7 @@ def validate(args: argparse.Namespace) -> int:
             header=args.check_requires_header,
             timeout_s=args.check_requires_timeout,
         )
-    rows = validate_directory(args.scenarios, ClipBank(args.clips) if args.clips else None, checker)
+    rows = validate_directory(args.scenarios, _bank(args) if args.clips else None, checker)
     for row in rows:
         print(row.line())
     unchecked = sum(row.requires_state == "unchecked" for row in rows)
@@ -184,6 +187,49 @@ def _scorecard(args: argparse.Namespace) -> int:
     out = scorecard.write(card, args.out)
     print(f"{describe(card['passed'], card['graded'])}  ->  {out}")
     return 0
+
+
+def _gate(directory: str, rate: float, confidence: float) -> int:
+    """Judge a batch against a claimed pass rate. Exit 0 only when it is demonstrated.
+
+    Two readings are printed. By call, every placed call that is not void counts
+    and anything not passed counts against. By scenario, a scenario counts once
+    and passes only if every one of its calls passed: the reading that does not
+    treat repeats of the same audio as independent evidence.
+    """
+    summary = summarise(directory)
+    counted = summary.runs - summary.void
+    met_calls, _, by_call = gate(summary.passed, counted, rate, confidence)
+    every, _, scenarios = scenario_level(summary)
+    unproven = sum(1 for p, t in summary.by_scenario.values() if not t)
+    met, _, by_scenario = gate(every, scenarios + unproven, rate, confidence)
+    print(f"by call:     {by_call}")
+    print(f"by scenario: {by_scenario}")
+    print(
+        f"counted: {counted} call(s); left out as void (the rig's fault, re-run them): "
+        f"{summary.void}. Calls that could not be graded count against."
+    )
+    if met_calls and not met:
+        print("The by-call reading is met only by counting repeats as independent calls.")
+    return 0 if met else 1
+
+
+def _checker(args: argparse.Namespace) -> PrereqChecker | None:
+    """The checker for a scenario's ``requires``, when one was named on the command line."""
+    if args.check_requires_command:
+        return CommandChecker(args.check_requires_command, timeout_s=args.check_requires_timeout)
+    if args.check_requires_url:
+        return HttpChecker(
+            args.check_requires_url,
+            secret=_named_secret(args.check_requires_secret_env, args.env_file),
+            header=args.check_requires_header,
+            timeout_s=args.check_requires_timeout,
+        )
+    return None
+
+
+def _bank(args: argparse.Namespace) -> ClipBank:
+    return ClipBank(args.clips, extra=tuple(getattr(args, "clips_extra", None) or ()))
 
 
 def _named_secret(env_name: str, env_file: str | None) -> str:
@@ -254,13 +300,17 @@ def _batch(args: argparse.Namespace) -> int:
         if (args.before_call or args.after_call)
         else NoHooks()
     )
-    budget = NameBudget(limit=args.name_budget, window_s=args.name_window)
+    budget = NameBudget(
+        limit=args.name_budget,
+        window_s=args.name_window,
+        path=Path(args.name_budget_file) if args.name_budget_file else None,
+    )
     out = Path(args.out)
     result = asyncio.run(
         run_batch(
             scenarios,
             lambda: _build(args),
-            ClipBank(args.clips),
+            _bank(args),
             out,
             repeats=args.repeats,
             max_parallel=args.max_parallel,
@@ -272,6 +322,9 @@ def _batch(args: argparse.Namespace) -> int:
             chains=chains,
             reset=_reset(args),
             read_back=_read_back(args),
+            allow_unverified_clips=args.allow_unverified_clips,
+            space_names=args.space_names,
+            prereq=_checker(args),
         )
     )
     print(f"ran {result.ran}, not run {len(result.blocked)}, chains {result.chains}")
@@ -292,6 +345,17 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--out", required=True)
     run.add_argument("--env-file", default=None)
     run.add_argument("--no-trace", action="store_true", help="do not read the agent's trace")
+    run.add_argument("--trace", choices=TRACES, default="elevenlabs", help="where the trace is")
+    run.add_argument(
+        "--allow-mutating",
+        choices=sorted(ALLOWED),
+        default="none",
+        help="what the scenario may change on the system under test; the default runs "
+        "only a scenario that changes nothing",
+    )
+    run.add_argument("--allow-unverified-clips", action="store_true")
+    run.add_argument("--clips-extra", action="append", default=[], help="a further clip bank")
+    run.add_argument("--name-budget", type=int, default=2, help="identity checks per name")
 
     rep = sub.add_parser("report", help="summarise a directory of runs")
     rep.add_argument("directory")
@@ -308,8 +372,47 @@ def main(argv: list[str] | None = None) -> int:
     bat.add_argument("--out", required=True)
     bat.add_argument("--env-file", default=None)
     bat.add_argument("--no-trace", action="store_true")
+    bat.add_argument("--trace", choices=TRACES, default="elevenlabs", help="where the trace is")
+    bat.add_argument(
+        "--allow-unverified-clips",
+        action="store_true",
+        help="play clips whose label no person has confirmed; results are marked "
+        "'labels unverified'",
+    )
+    bat.add_argument(
+        "--clips-extra",
+        action="append",
+        default=[],
+        help="a further clip bank directory (for example synthetic stand-ins); its "
+        "manifest's provenance column is carried into every result",
+    )
+    bat.add_argument(
+        "--check-requires-command",
+        default="",
+        help="run per scenario that has a 'requires': exit 1 (unmet) holds the scenario back",
+    )
+    bat.add_argument("--check-requires-url", default="", help="as for validate")
+    bat.add_argument("--check-requires-secret-env", default="")
+    bat.add_argument("--check-requires-header", default="X-Synthiq-Secret")
+    bat.add_argument("--check-requires-timeout", type=float, default=60.0, help="seconds")
+    bat.add_argument(
+        "--space-names",
+        action="store_true",
+        help="wait for the name budget to free up instead of leaving the call unrun",
+    )
+    bat.add_argument(
+        "--name-budget-file",
+        default="",
+        help="keep the name budget in this file, so batches run one after another share it",
+    )
     bat.add_argument("--only", action="append", default=[], help="run files whose name contains")
-    bat.add_argument("--name-budget", type=int, default=6, help="calls per name; 0 switches off")
+    bat.add_argument(
+        "--name-budget",
+        type=int,
+        default=2,
+        help="identity checks per name per window, unless the scenario states its own "
+        "(identity_budget); 0 switches off",
+    )
     bat.add_argument("--name-window", type=float, default=900.0, help="seconds")
     bat.add_argument("--settle", type=float, default=2.0, help="wait before reading a trace")
     bat.add_argument("--before-call", default="", help="command run before each call (reset)")
@@ -356,6 +459,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     reg.add_argument("--leg", choices=["elevenlabs-socket"], default="elevenlabs-socket")
     reg.add_argument("--agent", default="-")
+    reg.add_argument("--trace", choices=TRACES, default="elevenlabs", help="where the trace is")
     reg.add_argument("--env-file", default=None)
 
     base = sub.add_parser("baseline", help="store a batch's pass counts to compare against")
@@ -371,6 +475,11 @@ def main(argv: list[str] | None = None) -> int:
         default="never",
         help="exit 1 on a regression: only one beyond noise, or any drop at all",
     )
+
+    gat = sub.add_parser("gate", help="say whether a batch demonstrates a pass rate")
+    gat.add_argument("directory")
+    gat.add_argument("--rate", type=float, default=0.95)
+    gat.add_argument("--confidence", type=float, default=0.95)
 
     val = sub.add_parser("validate", help="check a directory of scenarios, and its clips")
     val.add_argument("scenarios")
@@ -398,6 +507,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     card.add_argument("--faults", default="", help='JSON: {"<directory>/<run file>": "<class>"}')
     card.add_argument("--title", default="")
+    val.add_argument("--clips-extra", action="append", default=[], help="a further clip bank")
 
     bank = sub.add_parser("clipbank", help="build a clip bank, or a scenario from a recorded call")
     bank_sub = bank.add_subparsers(dest="clipbank_command", required=True)
@@ -447,13 +557,28 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "clipbank":
         return _clipbank(args)
+    if args.command == "gate":
+        return _gate(args.directory, args.rate, args.confidence)
 
+    # One scenario goes through the same guards as a batch of them.
     scenario = load_scenario(args.scenario)
     out = Path(args.out)
-    out.mkdir(parents=True, exist_ok=True)
-    start = len(list(out.glob("run-*.json")))
-    for offset in range(args.repeats):
-        asyncio.run(_run_once(scenario, args, start + offset + 1, out))
+    result = asyncio.run(
+        run_batch(
+            [(Path(args.scenario).name, scenario)],
+            lambda: _build(args),
+            _bank(args),
+            out,
+            repeats=args.repeats,
+            allow_mutating=args.allow_mutating,
+            budget=NameBudget(limit=args.name_budget),
+            read_trace=not args.no_trace,
+            settle_s=2.0,
+            allow_unverified_clips=args.allow_unverified_clips,
+        )
+    )
+    for held_back in result.blocked:
+        print(f"not run: {held_back.reason}")
     return report(str(out))
 
 

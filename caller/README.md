@@ -290,3 +290,10 @@ conversations in `tests/fixtures/` (synthetic test callers).
   dropped, and none has had a human listen yet (`checked_by_human` is empty).
 - **Dates are parsed day first** and need a year. Other formats come back as
   "not understood", which reads as a mismatch.
+
+## What a result means
+
+[docs/OUTCOMES-AND-GATE.md](docs/OUTCOMES-AND-GATE.md) is the reference for the
+five outcomes and who each is charged to, booking expectations, reading a tool's
+outcome from its reply, unverified and synthetic clips, the identity budget, and
+the `gate` command (how many calls a claimed pass rate needs).

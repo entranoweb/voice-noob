@@ -333,6 +333,6 @@ def chain_outcome(call_outcomes: list[str]) -> str:
         return "passed"
     if all(o == "not run" for o in call_outcomes):
         return "not run"
-    if "ungraded" in call_outcomes:
+    if "ungraded" in call_outcomes or "ungradeable" in call_outcomes:
         return "ungraded"
     return "incomplete"

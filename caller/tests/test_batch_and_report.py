@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from conftest import mark_checked
 
 from synthiq_caller.batch import NameBudget, ShellHooks, load_scenarios, regrade, run_batch
 from synthiq_caller.clips import ClipBank
@@ -49,6 +50,7 @@ def bank(tmp_path: Path) -> ClipBank:
             wav.setsampwidth(2)
             wav.setframerate(RATE)
             wav.writeframes(tone(0.25))
+    mark_checked(directory)
     return ClipBank(directory)
 
 
@@ -234,12 +236,14 @@ async def test_a_batch_over_the_scripted_agent_grades_and_reports(
     assert (summary.passed, summary.failed, summary.ungraded) == (1, 1, 0)
     assert summary.by_scenario == {"heard right": [1, 1], "heard wrong": [0, 1]}
     tally = summary.fields["date_of_birth"]
-    assert (tally.answered, tally.stored_correctly, tally.misheard, tally.mis_stored) == (
+    # With no read-back, the right value is "sent", not "stored".
+    assert (tally.answered, tally.sent_correctly, tally.misheard, tally.mis_stored) == (
         2,
         1,
         1,
         1,
     )
+    assert tally.stored_correctly == 0
     failure = summary.failures[0]
     assert failure.scenario == "heard wrong"
     assert "NP_CHECK" in failure.failing_step
