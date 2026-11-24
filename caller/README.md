@@ -16,7 +16,7 @@ reaches the agent) and reads a `Trace` (what the agent's tools did).
 
 | Engine-neutral core | Engine-specific, and only here |
 | --- | --- |
-| `leg.py`, `turns.py`, `clips.py`, `scenario.py`, `director.py`, `grading.py`, `stats.py`, `mulaw.py` | `legs/` (sending audio), `traces/` (reading tool calls), and the leg-name switch in `cli.py` |
+| `leg.py`, `turns.py`, `clips.py`, `scenario.py`, `director.py`, `grading.py`, `stats.py`, `mulaw.py`, `batch.py`, `report.py`, `clipbank/` | `legs/` (sending audio), `traces/` (reading tool calls), and the leg-name switch in `cli.py` |
 
 A new engine is one leg and one trace reader. Nothing else changes.
 
@@ -38,6 +38,14 @@ A new engine is one leg and one trace reader. Nothing else changes.
 - **Legs**: `elevenlabs_socket` (works, verified live), `fake` (tests).
 - **Traces**: `elevenlabs` (workflow and plain agents).
 - **Statistics** (`stats.py`): pass rate with a Wilson interval.
+- **Batch runner** (`batch.py`): a directory of scenarios, several times each,
+  behind a mutation guard, a per-name budget and reset hooks.
+- **Report** (`report.py`): pass rate overall and per scenario, the said, heard,
+  stored tally per field, where each failure stopped, and what was not run.
+- **Clip bank builder** (`clipbank/`): cuts caller-only clips from recordings
+  and their word-level transcripts, labels them, and turns one recorded call
+  into a scenario skeleton.
+- **Scenario set** (`scenarios/sophie/`): a 20-call script for one agent.
 
 ## Run it
 
@@ -71,6 +79,141 @@ The shipped scenario hangs up before anything is registered or booked. A
 scenario that lets the agent register, book, move or cancel changes real data in
 whatever system the agent is connected to. Point those at a test system only.
 
+## Run a batch
+
+```
+uv run synthiq-caller validate scenarios/sophie --clips <clip bank dir>
+uv run synthiq-caller batch scenarios/sophie --leg elevenlabs-socket --agent <agent id>     --clips <clip bank dir> --repeats 3 --out runs/
+uv run synthiq-caller report runs/ --summary-only
+uv run synthiq-caller regrade runs/ --scenarios scenarios/sophie      # after fixing a scenario; no calls
+```
+
+Three guards run before every call.
+
+- **Mutation guard.** Each scenario states what it can change on the system the
+  agent is connected to: `none` (lookups only, hangs up before anything is
+  written), `registers`, `books` or `moves`. A scenario that does not say is
+  `unknown` and is treated as the most dangerous. `batch` runs only `none`
+  unless told otherwise with `--allow-mutating registers|books|all`.
+- **Name budget.** Systems that look people up by name limit how often one name
+  may be checked. The default is 6 calls per name in 15 minutes
+  (`--name-budget`, `--name-window`; 0 switches it off). A call over the budget
+  is not placed and is listed in the report.
+- **Hooks.** `--before-call` and `--after-call` run a command around each call,
+  with the scenario in its environment (`SYNTHIQ_SCENARIO_FILE`,
+  `SYNTHIQ_SCENARIO_NAME`, `SYNTHIQ_MUTATES`, `SYNTHIQ_REPEAT`,
+  `SYNTHIQ_PHASE`). A failing before-hook stops that call. This is where a
+  deployment resets the system under test. **No reset is built here**: for the
+  ClinWell test clinic the reset lives in that product's fixture scripts and is
+  wired in by this option, not by code in this package.
+
+Report of one live batch against a test agent (24 Nov 2026): three lookup-only
+scenarios, twice each, six calls.
+
+```
+calls: 6
+passed: 4 of 6 (67%; 95% interval 30% to 90%)
+
+per scenario
+  2 of 2 (100%; 95% interval 34% to 100%)              Caller reports chest pain
+  2 of 2 (100%; 95% interval 34% to 100%)              New patient declines the fee
+  0 of 2 (0%; 95% interval 0% to 66%)                  Symptom-first opener from a new caller
+
+said, heard, stored (per field, all calls)
+  field          answered  stored ok  misheard  mis-stored  not stored
+  date_of_birth         2          2         0           0           0
+  name                  6          6         0           0           0
+  phone                 2          0         0           0           2
+  postcode              2          0         2           0           2
+
+failures
+  run-001.json  Symptom-first opener from a new caller
+    stopped at: step SAY_VERIFY_FAIL: 'I'm sorry, I can't seem to match those up. Let me put you through to reception and they'll'
+    failed check: the agent says /been to (see us|the clinic) before/
+    failed check: the agent never says /different name/
+  run-004.json  Symptom-first opener from a new caller
+    stopped at: step SAY_VERIFY_FAIL: 'I'm sorry, I can't seem to match those up. Let me put you through to reception and they'll'
+    failed check: the agent says /been to (see us|the clinic) before/
+    failed check: the agent never says /different name/
+```
+
+What that batch showed:
+
+- **A real fault, found with nobody on the line.** A new caller who opens with
+  a symptom is asked "might it be registered under a different name?" and then
+  sent to reception, twice out of twice. It is the same fault a person hit by
+  phone the same morning.
+- **A mishearing.** The recorded postcode "E-zero-one-Z-A" was heard as
+  "E01 0A." both times.
+- **Two faults in the test itself, both now handled.** One persona's date of
+  birth was wrong in the scenario because the clip's transcript was wrong
+  ("Sixth in June" for 16 June); the stored runs were graded again after the
+  fix with `regrade`, without calling. And one call's trace came back empty
+  because it was read too soon; a batch now reads again, and a trace that
+  stays empty leaves the call ungraded instead of failed.
+- `phone` and `postcode` show "not stored" because the fee was declined before
+  the step that would have sent them to a tool.
+
+## The scenario set
+
+`scenarios/sophie/` holds 20 scenarios built from recorded calls to one agent.
+
+| Files | What | Changes on the target |
+| --- | --- | --- |
+| 01 to 04 | New-patient consultation: self-pay, insured, a single slot answered "Yes. That's fine.", pick a time | `books` |
+| 05 to 07 | MRI: referral from a doctor, "how do I submit it", any Wednesday | `books` |
+| 08, 09 | Existing patient moves an appointment | `moves` |
+| 10, 13 | Postcode said twice; wrong date of birth then the right one | `registers` (a failed check spends an identity attempt) |
+| 11, 12 | New caller whose name is close to an existing patient's | `none` |
+| 14, 15 | Caller opens with a symptom | `none` |
+| 16 | Chest pain | `none` |
+| 17 | Fee declined | `none` |
+| 18 | Date of birth corrected at read-back | `registers` |
+| 19, 20 | Out of scope then "actually shoulder"; booking for a son | `none`, and **not runnable**: each needs a recording that does not exist (`missing_clips`) |
+
+Scenarios 08 to 13 and 15 also carry a `requires` line: what must already exist
+on the target (a patient, an appointment). Nothing sets that up yet.
+
+Only the `none` scenarios without a `requires` line have been run live (14, 16,
+17). The other seventeen parse and name clips that exist; whether their steps
+carry a whole call through has not been tried.
+
+Expectations are graded from tool results first. Where no tool records the
+outcome (the agent said to call 999; the agent asked "have you been before?"),
+a scenario can require or forbid a pattern in the agent's own words
+(`agent_says`, `agent_never_says`). No model's reading of the transcript is
+involved.
+
+## Build a clip bank
+
+```
+uv run synthiq-caller clipbank build --recordings <dir> --out <dir outside any repository>
+uv run synthiq-caller clipbank scenario --clips <bank dir> --call <call id>
+```
+
+`build` expects `<call>.mp3` (or `.wav`) with `<call>.stt.json` beside it: a
+word-level transcript with speaker ids. For every caller answer it cuts one clip
+and writes one manifest row.
+
+- An answer said in two breaths ("B nine ... zero RS") is one clip with its
+  pause kept, when no agent word falls between the halves and the gap is under
+  2.5 seconds. It is flagged `split_merged`.
+- The label comes from the agent line it answers. A short yes or no after a
+  read-back is a confirmation (`confirm_fee`, `confirm_details`,
+  `confirm_practitioner`, `confirm_booking`, `confirm_choice`), not an answer
+  to whatever the read-back mentions.
+- `value` is the answer in the form a tool should receive: `1987-07-05`,
+  `A56TB`, phone digits, a lower-cased name.
+- `review` flags what a person should check: `overlaps_agent` (the agent's
+  voice is in the clip), `too_short`, `low_energy`, `split_merged`.
+
+`scenario` lays one call's clips out as steps keyed on the question each
+answered. A person then sets the facts, the expectations and `mutates`. This is
+the first half of turning a failed call into a permanent test.
+
+**Recorded voices never go in this repository.** `.gitignore` excludes audio and
+transcripts under `caller/`; point `--out` somewhere else.
+
 ## Tests
 
 ```
@@ -86,6 +229,9 @@ conversations in `tests/fixtures/` (synthetic test callers).
   `NotImplementedError`; its docstring holds the plan (Pipecat with a carrier
   media stream, then SIP).
 - **Resetting the system under test** between calls (diary, records, locks).
+  The hook points exist; no reset does.
+- **Setting up what a scenario requires** (a patient on file, an appointment to
+  move). `requires` is a note for people, not something the runner acts on.
 - **Chains of calls** that share state (register, ring back, get locked out).
 - **A referee recogniser.** `Heard` is whatever the engine reports. An engine
   that reports nothing leaves that column empty.
@@ -100,6 +246,12 @@ conversations in `tests/fixtures/` (synthetic test callers).
   "5th July 1987" was heard correctly five times, although the same words on
   the phone were heard as "6th July" and stored that way. Phone-only mishearing
   needs the phone leg.
+- **A clip's transcript can be wrong.** Persona facts taken from the manifest's
+  `value` column are only as good as the transcript behind them, and no clip
+  has had a human listen. One of three scenarios run live had a wrong date of
+  birth for that reason.
+- **Seventeen of the twenty scenarios have never been run.** Anything that
+  registers, books or moves needs a target that can be reset.
 - **The same clip is not heard the same way twice.** One opener clip was heard
   three ways in five runs: "Sorry, can you book...", "Droitwich, any book...",
   "Surely there will be...". Run each scenario several times and read the

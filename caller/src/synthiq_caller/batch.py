@@ -152,6 +152,46 @@ class BatchResult:
 LegFactory = Callable[[], tuple[Leg, TraceReader | None]]
 
 
+def looks_unfinished(trace: Trace, record: RunRecord) -> bool:
+    """A trace with nothing in it for a call in which the agent plainly spoke.
+
+    Engines publish a call's record a moment after it ends. Read too soon, it
+    comes back empty, and an empty trace graded as it stands would fail a call
+    for something the test rig did, not the agent.
+    """
+    agent_spoke = any(e.get("kind") == "agent" for e in record.timeline)
+    return agent_spoke and not trace.tool_calls and not trace.step_path
+
+
+async def read_trace_when_ready(
+    reader: TraceReader,
+    record: RunRecord,
+    *,
+    settle_s: float = 0.0,
+    attempts: int = 4,
+    retry_s: float = 3.0,
+    wait: Callable[[float], Awaitable[None]] = asyncio.sleep,
+) -> tuple[Trace | None, str]:
+    """The call's trace, or None and why. Never returns a trace that looks unfinished."""
+    if not record.call_ref:
+        return None, "the leg gave no call reference"
+    if settle_s:
+        await wait(settle_s)
+    error = ""
+    for attempt in range(attempts):
+        if attempt:
+            await wait(retry_s)
+        try:
+            trace = await reader.read(record.call_ref)
+        except Exception as caught:  # noqa: BLE001 - a missing trace must not lose the run
+            error = repr(caught)
+            continue
+        if not looks_unfinished(trace, record):
+            return trace, ""
+        error = "the trace was still empty after the call ended"
+    return None, error
+
+
 def load_scenarios(directory: str | Path) -> list[tuple[str, Scenario]]:
     """Every scenario file in ``directory``, in name order."""
     root = Path(directory)
@@ -228,12 +268,9 @@ async def run_batch(
             trace: Trace | None = None
             trace_error = ""
             if reader is not None and record.call_ref and read_trace:
-                if settle_s:
-                    await wait(settle_s)
-                try:
-                    trace = await reader.read(record.call_ref)
-                except Exception as error:  # noqa: BLE001 - a missing trace must not lose the run
-                    trace_error = repr(error)
+                trace, trace_error = await read_trace_when_ready(
+                    reader, record, settle_s=settle_s, wait=wait
+                )
             graded = grade(scenario, record, trace)
             hook_error = ""
             try:
@@ -268,6 +305,23 @@ async def run_batch(
     return result
 
 
+async def reread_missing_traces(out: Path, reader: TraceReader) -> int:
+    """Fetch again the trace of every stored run that has none, or an empty one."""
+    fetched = 0
+    for path in sorted(out.glob("run-*.json")):
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        record = RunRecord.from_json(payload["record"])
+        old = Trace.from_json(payload["trace"]) if payload.get("trace") else None
+        if old is not None and not looks_unfinished(old, record):
+            continue
+        trace, error = await read_trace_when_ready(reader, record, attempts=2)
+        payload["trace"] = trace.to_json() if trace else None
+        payload["trace_error"] = error
+        path.write_text(json.dumps(payload, indent=1), encoding="utf-8")
+        fetched += trace is not None
+    return fetched
+
+
 def regrade(out: Path, scenarios: list[tuple[str, Scenario]]) -> int:
     """Grade stored runs again against the scenarios as they are now. Places no calls.
 
@@ -283,6 +337,8 @@ def regrade(out: Path, scenarios: list[tuple[str, Scenario]]) -> int:
             continue
         record = RunRecord.from_json(payload["record"])
         trace = Trace.from_json(payload["trace"]) if payload.get("trace") else None
+        if trace is not None and looks_unfinished(trace, record):
+            trace = None  # an empty trace proves nothing: ungraded, not failed
         fresh = grade(scenario, record, trace).to_json()
         if fresh != payload["grade"]:
             payload["grade"] = fresh

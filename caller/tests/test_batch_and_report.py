@@ -304,3 +304,59 @@ async def test_stored_runs_can_be_graded_again_without_calling(
     assert not made
     assert summarise(out).passed == 1
     assert regrade(out, [("lookup.json", corrected)]) == 0  # nothing left to change
+
+
+class EmptyThenReady:
+    """A trace reader whose first answers are empty, as a call's record is just after it ends."""
+
+    def __init__(self, empty_reads: int) -> None:
+        self.empty_reads = empty_reads
+        self.reads = 0
+
+    async def read(self, call_ref: str) -> Trace:
+        self.reads += 1
+        if self.reads <= self.empty_reads:
+            return Trace(call_ref=call_ref, termination="Client disconnected: 1000")
+        return await FixedTrace("20th of February, 2002").read(call_ref)
+
+
+async def test_an_empty_trace_is_read_again_until_it_has_the_call_in_it(
+    bank: ClipBank, tmp_path: Path
+) -> None:
+    reader = EmptyThenReady(empty_reads=2)
+    waits: list[float] = []
+
+    async def no_wait(seconds: float) -> None:
+        waits.append(seconds)
+
+    def make() -> tuple[Leg, TraceReader | None]:
+        return agent()[0], reader
+
+    out = tmp_path / "runs"
+    await run_batch(
+        [("lookup.json", scenario("lookup"))], make, bank, out, turn_settings=FAST, wait=no_wait
+    )
+
+    assert reader.reads == 3 and waits == [3.0, 3.0]
+    assert summarise(out).passed == 1
+
+
+async def test_a_trace_that_stays_empty_leaves_the_call_ungraded_not_failed(
+    bank: ClipBank, tmp_path: Path
+) -> None:
+    async def no_wait(seconds: float) -> None:
+        return None
+
+    def make() -> tuple[Leg, TraceReader | None]:
+        return agent()[0], EmptyThenReady(empty_reads=99)
+
+    out = tmp_path / "runs"
+    await run_batch(
+        [("lookup.json", scenario("lookup"))], make, bank, out, turn_settings=FAST, wait=no_wait
+    )
+
+    summary = summarise(out)
+    assert (summary.passed, summary.failed, summary.ungraded) == (0, 0, 1)
+    payload = json.loads((out / "run-001.json").read_text(encoding="utf-8"))
+    assert payload["trace"] is None
+    assert "still empty" in payload["trace_error"]

@@ -31,6 +31,7 @@ from synthiq_caller.batch import (
     ShellHooks,
     load_scenarios,
     regrade,
+    reread_missing_traces,
     run_batch,
 )
 from synthiq_caller.clips import ClipBank
@@ -227,6 +228,10 @@ def main(argv: list[str] | None = None) -> int:
     reg = sub.add_parser("regrade", help="grade stored runs again; places no calls")
     reg.add_argument("directory")
     reg.add_argument("--scenarios", required=True)
+    reg.add_argument("--reread", action="store_true", help="fetch missing or empty traces again")
+    reg.add_argument("--leg", choices=["elevenlabs-socket"], default="elevenlabs-socket")
+    reg.add_argument("--agent", default="-")
+    reg.add_argument("--env-file", default=None)
 
     val = sub.add_parser("validate", help="check a directory of scenarios, and its clips")
     val.add_argument("scenarios")
@@ -248,6 +253,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "batch":
         return _batch(args)
     if args.command == "regrade":
+        if args.reread:
+            _, reader = _build(args)
+            if reader is not None:
+                fetched = asyncio.run(reread_missing_traces(Path(args.directory), reader))
+                print(f"traces fetched again: {fetched}")
         changed = regrade(Path(args.directory), load_scenarios(args.scenarios))
         print(f"regraded: {changed} run(s) changed")
         return report(args.directory, details=False)
