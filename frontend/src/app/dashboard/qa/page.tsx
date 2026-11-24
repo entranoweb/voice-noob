@@ -34,7 +34,6 @@ import {
   listEvaluations,
   getQAStatus,
   type TestScenario,
-  type TestRun,
 } from "@/lib/api/qa";
 import { fetchAgents } from "@/lib/api/agents";
 import { api } from "@/lib/api";
@@ -42,7 +41,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { QASettingsPanel } from "@/components/qa/qa-settings-panel";
 import { ScenarioManager } from "@/components/qa/scenario-manager";
 import { ScenarioForm } from "@/components/qa/scenario-form";
-import { TestRunner } from "@/components/qa/test-runner";
+import { TestRunner, TEXT_HARNESS_NOTICE } from "@/components/qa/test-runner";
 
 interface Workspace {
   id: string;
@@ -80,16 +79,13 @@ export default function QADashboardPage() {
   const activeWorkspaceId = selectedWorkspaceId ?? defaultWorkspace?.id;
 
   // Handle test completion - refresh metrics
-  const handleTestComplete = useCallback(
-    (_run: TestRun) => {
-      // Invalidate queries to refresh dashboard data
-      void queryClient.invalidateQueries({ queryKey: ["qa-metrics"] });
-      void queryClient.invalidateQueries({ queryKey: ["qa-evaluations"] });
-      void queryClient.invalidateQueries({ queryKey: ["qa-trends"] });
-      void queryClient.invalidateQueries({ queryKey: ["qa-failure-reasons"] });
-    },
-    [queryClient]
-  );
+  const handleTestComplete = useCallback(() => {
+    // Invalidate queries to refresh dashboard data
+    void queryClient.invalidateQueries({ queryKey: ["qa-metrics"] });
+    void queryClient.invalidateQueries({ queryKey: ["qa-evaluations"] });
+    void queryClient.invalidateQueries({ queryKey: ["qa-trends"] });
+    void queryClient.invalidateQueries({ queryKey: ["qa-failure-reasons"] });
+  }, [queryClient]);
 
   // Handle running tests from scenario selection
   const handleRunSelectedTests = useCallback(() => {
@@ -145,8 +141,10 @@ export default function QADashboardPage() {
         <Shield className="h-16 w-16 text-muted-foreground/30" />
         <div className="text-center">
           <h2 className="text-lg font-semibold">QA Testing Disabled</h2>
-          <p className="text-sm text-muted-foreground">
-            QA evaluation is currently disabled. Contact your administrator to enable it.
+          <p className="max-w-md text-sm text-muted-foreground">
+            QA evaluation and text test runs are switched off on this server. They are enabled by
+            the person who runs it, with the QA_ENABLED and ANTHROPIC_API_KEY settings; they cannot
+            be switched on from this page.
           </p>
         </div>
       </div>
@@ -349,7 +347,13 @@ export default function QADashboardPage() {
         </TabsContent>
 
         {/* Scenarios Tab */}
-        <TabsContent value="scenarios">
+        <TabsContent value="scenarios" className="space-y-4">
+          <p
+            className="rounded-md border bg-muted/40 p-3 text-sm text-muted-foreground"
+            data-testid="scenarios-harness-notice"
+          >
+            {TEXT_HARNESS_NOTICE}
+          </p>
           <ScenarioManager
             workspaceId={activeWorkspaceId}
             onCreateScenario={() => {
@@ -414,6 +418,7 @@ export default function QADashboardPage() {
         open={testRunnerOpen}
         onOpenChange={setTestRunnerOpen}
         initialSelectedScenarios={selectedScenarioIds}
+        workspaceId={activeWorkspaceId}
         onTestComplete={handleTestComplete}
       />
     </div>
