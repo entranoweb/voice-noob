@@ -137,6 +137,34 @@ async def get_twilio_service(
     )
 
 
+async def twilio_auth_token_for_agent(agent: Agent | None, db: AsyncSession) -> str | None:
+    """The Twilio auth token of the workspace that owns ``agent``, if it has one.
+
+    This is what a Twilio webhook about that agent's number or call is verified
+    against. The agent is always found from the webhook's target (the number it
+    was sent to, the agent id in its path, the call record it reports on), never
+    from the account the request says it comes from.
+    """
+    if agent is None:
+        return None
+    workspace_id = await get_agent_workspace_id(agent.id, db)
+    if workspace_id is None:
+        return None
+    user_settings = await get_user_api_keys(
+        user_id_to_uuid(agent.user_id), db, workspace_id=workspace_id
+    )
+    return (user_settings.twilio_auth_token or None) if user_settings else None
+
+
+async def _agent_by_id(agent_id: str | uuid.UUID | None, db: AsyncSession) -> Agent | None:
+    try:
+        agent_uuid = agent_id if isinstance(agent_id, uuid.UUID) else uuid.UUID(str(agent_id))
+    except (ValueError, TypeError):
+        return None
+    result = await db.execute(select(Agent).where(Agent.id == agent_uuid))
+    return result.scalar_one_or_none()
+
+
 async def get_telnyx_service(
     user_id: int, db: AsyncSession, workspace_id: uuid.UUID | None = None
 ) -> TelnyxService | None:
@@ -864,8 +892,11 @@ async def twilio_voice_webhook(
     This webhook is called when a call comes in to a Twilio phone number.
     It returns TwiML to connect the call to our WebSocket for AI handling.
     """
-    # Validate Twilio signature
-    await verify_twilio_webhook(request)
+    # The number decides whose Twilio account should have signed this: the
+    # workspace that owns the agent the number routes to. Looked up before the
+    # signature is checked (a read, nothing is written) and then verified.
+    agent = await get_agent_by_phone_number(to_number, db)
+    await verify_twilio_webhook(request, await twilio_auth_token_for_agent(agent, db))
 
     log = logger.bind(
         webhook="twilio_voice",
@@ -876,8 +907,6 @@ async def twilio_voice_webhook(
     )
     log.info("twilio_incoming_call")
 
-    # Find agent by phone number
-    agent = await get_agent_by_phone_number(to_number, db)
     agent_id = str(agent.id) if agent else None
 
     if not agent:
@@ -944,8 +973,12 @@ async def twilio_status_callback(
 
     Called when call status changes (initiated, ringing, answered, completed).
     """
-    # Validate Twilio signature
-    await verify_twilio_webhook(request)
+    # Find the call record first: the call it reports on decides whose Twilio
+    # account should have signed this. Nothing is changed until that is verified.
+    result = await db.execute(select(CallRecord).where(CallRecord.provider_call_id == call_sid))
+    call_record = result.scalar_one_or_none()
+    owner = await _agent_by_id(call_record.agent_id, db) if call_record else None
+    await verify_twilio_webhook(request, await twilio_auth_token_for_agent(owner, db))
 
     log = logger.bind(
         webhook="twilio_status",
@@ -954,10 +987,6 @@ async def twilio_status_callback(
         duration=call_duration,
     )
     log.info("twilio_status_update")
-
-    # Find and update call record
-    result = await db.execute(select(CallRecord).where(CallRecord.provider_call_id == call_sid))
-    call_record = result.scalar_one_or_none()
 
     if call_record:
         # Map Twilio status to our status
@@ -1014,8 +1043,10 @@ async def twilio_answer_webhook(
     Called when an outbound call is answered by the recipient.
     Returns TwiML to connect to our WebSocket.
     """
-    # Validate Twilio signature
-    await verify_twilio_webhook(request)
+    # The agent named in the path decides whose Twilio account should have
+    # signed this.
+    owner = await _agent_by_id(agent_id, db)
+    await verify_twilio_webhook(request, await twilio_auth_token_for_agent(owner, db))
 
     # Twilio posts the CallSid with the answer request; the stream's start
     # frame announces the same one, and the token is bound to it.
