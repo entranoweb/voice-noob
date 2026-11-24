@@ -62,6 +62,9 @@ class ToolExpectation:
     # Argument values the call must have carried, compared as trimmed text
     # without regard to case. Empty means any arguments will do.
     arguments: dict[str, str] = field(default_factory=dict)
+    # Named values the tool must have reported back (``ToolCall.outputs``): for a
+    # lookup, ``{"status": "not_found"}``. Compared like ``arguments``.
+    outputs: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -155,6 +158,7 @@ def parse_scenario(data: dict[str, Any]) -> Scenario:
                 ok=bool(t.get("ok", True)),
                 called=bool(t.get("called", True)),
                 arguments={str(k): str(v) for k, v in (t.get("arguments") or {}).items()},
+                outputs={str(k): str(v) for k, v in (t.get("outputs") or {}).items()},
             )
             for t in raw_expect.get("tools", ())
         ),

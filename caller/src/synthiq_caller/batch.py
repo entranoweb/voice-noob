@@ -46,6 +46,7 @@ from synthiq_caller.chain import (
 from synthiq_caller.clips import ClipBank
 from synthiq_caller.director import Director, RunRecord
 from synthiq_caller.grading import Grade, grade
+from synthiq_caller.jsonio import write_json
 from synthiq_caller.leg import Leg
 from synthiq_caller.readback import ReadBack, ReadBackContext
 from synthiq_caller.reset import Reset, ResetContext, ResetFailed
@@ -349,7 +350,7 @@ async def run_batch(
             index = counter
             result.ran += 1
         name = f"run-{index:03d}.json"
-        (out / name).write_text(json.dumps(payload, indent=1), encoding="utf-8")
+        write_json(out / name, payload)
         return Placed(name, graded, record, trace, held)
 
     async def one(file: str, scenario: Scenario, repeat: int) -> None:
@@ -455,22 +456,19 @@ async def run_batch(
                 outcome = "ungraded"  # the call passed but did not show what the next one needs
             chain_counter += 1
             result.chains += 1
-            (out / f"chain-{chain_counter:03d}.json").write_text(
-                json.dumps(
-                    {
-                        "chain_file": file,
-                        "chain": chain.name,
-                        "repeat": repeat,
-                        "mutates": chain.mutates,
-                        "outcome": outcome,
-                        "uncaptured": uncaptured,
-                        "reason": reason,
-                        "calls": rows,
-                        "variables": variables,
-                    },
-                    indent=1,
-                ),
-                encoding="utf-8",
+            write_json(
+                out / f"chain-{chain_counter:03d}.json",
+                {
+                    "chain_file": file,
+                    "chain": chain.name,
+                    "repeat": repeat,
+                    "mutates": chain.mutates,
+                    "outcome": outcome,
+                    "uncaptured": uncaptured,
+                    "reason": reason,
+                    "calls": rows,
+                    "variables": variables,
+                },
             )
 
     jobs = [
@@ -482,23 +480,31 @@ async def run_batch(
         one_chain(file, chain, repeat) for repeat in range(1, repeats + 1) for file, chain in chains
     ]
     await asyncio.gather(*jobs)
-    (out / "batch.json").write_text(json.dumps(result.to_json(), indent=1), encoding="utf-8")
+    write_json(out / "batch.json", result.to_json())
     return result
 
 
-async def reread_missing_traces(out: Path, reader: TraceReader) -> int:
-    """Fetch again the trace of every stored run that has none, or an empty one."""
+async def reread_missing_traces(out: Path, reader: TraceReader, *, every: bool = False) -> int:
+    """Fetch again the trace of every stored run that has none, or an empty one.
+
+    ``every`` fetches all of them again, for runs stored before the reader
+    learned to keep something (a tool's reported values, for one). A trace that
+    is already stored is never replaced by a failed fetch.
+    """
     fetched = 0
     for path in sorted(out.glob("run-*.json")):
         payload = json.loads(path.read_text(encoding="utf-8"))
         record = RunRecord.from_json(payload["record"])
         old = Trace.from_json(payload["trace"]) if payload.get("trace") else None
-        if old is not None and not looks_unfinished(old, record):
+        usable = old is not None and not looks_unfinished(old, record)
+        if usable and not every:
             continue
         trace, error = await read_trace_when_ready(reader, record, attempts=2)
+        if trace is None and usable:
+            continue  # keep what is there
         payload["trace"] = trace.to_json() if trace else None
         payload["trace_error"] = error
-        path.write_text(json.dumps(payload, indent=1), encoding="utf-8")
+        write_json(path, payload)
         fetched += trace is not None
     return fetched
 
@@ -523,7 +529,7 @@ def regrade(out: Path, scenarios: list[tuple[str, Scenario]]) -> int:
         fresh = grade(scenario, record, trace, payload.get("read_back")).to_json()
         if fresh != payload["grade"]:
             payload["grade"] = fresh
-            path.write_text(json.dumps(payload, indent=1), encoding="utf-8")
+            write_json(path, payload)
             changed += 1
     return changed
 
@@ -554,7 +560,7 @@ def regrade_chains(out: Path, chains: list[tuple[str, Chain]]) -> int:
         fresh = grade(scenario, record, trace, payload.get("read_back")).to_json()
         if fresh != payload["grade"]:
             payload["grade"] = fresh
-            path.write_text(json.dumps(payload, indent=1), encoding="utf-8")
+            write_json(path, payload)
             changed += 1
     for path in sorted(out.glob("chain-*.json")):
         stored = json.loads(path.read_text(encoding="utf-8"))
@@ -567,5 +573,5 @@ def regrade_chains(out: Path, chains: list[tuple[str, Chain]]) -> int:
             outcome = "ungraded"
         if outcome != stored["outcome"]:
             stored["outcome"] = outcome
-        path.write_text(json.dumps(stored, indent=1), encoding="utf-8")
+        write_json(path, stored)
     return changed

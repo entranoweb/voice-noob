@@ -17,6 +17,13 @@ class ToolCall:
     # Seconds into the call, when known.
     t: float | None = None
     error: str = ""
+    # Named values the engine recorded the tool as having set (found or not
+    # found, for instance). Some engines keep a tool's answer here and store
+    # only a bare acknowledgement as ``result``.
+    outputs: dict[str, Any] = field(default_factory=dict)
+    # How the tool was reached, when the engine says: method and address only,
+    # never headers.
+    request: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
