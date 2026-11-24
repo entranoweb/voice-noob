@@ -1,172 +1,126 @@
 # Synthiq Voice
 
-Build AI voice agents that handle phone calls. No PhD required.
+Two things live in this repository:
 
-Built by [Ken Kai](https://www.youtube.com/@kenkaidoesai) · [Join the community](https://www.skool.com/kenkai/about)
+1. **A test caller for voice agents** (`caller/`). It plays recorded caller audio into a live voice agent, reacts to what the agent says, and grades the call from the agent's own tool calls and the record it stored. It runs from the command line.
+2. **A voice agent platform** (`backend/`, `frontend/`). A dashboard and API for building phone agents on OpenAI's speech-to-speech model, with Telnyx or Twilio for the phone line.
 
-![Synthiq Voice](synthiq.png)
+They are not joined yet: the dashboard cannot start or show a caller run.
 
----
+Forked from [voice-noob](https://github.com/KenKaiii/voice-noob) by Ken Kai.
 
-## What Is This?
+## What works today
 
-Synthiq Voice is an open-source platform for creating AI-powered phone agents. Configure an agent, connect a phone number, and let it handle calls — booking appointments, answering questions, or qualifying leads while you sleep.
+Read this before relying on anything. The detail is in `docs/HANDOFF.md` and `docs/ROADMAP-2027.md`.
 
-**The problem:** Building voice AI is painful. You need to stitch together speech-to-text, LLMs, text-to-speech, telephony, and a dozen APIs. Then pray it doesn't sound like a robot.
+| Part | State |
+| --- | --- |
+| Caller over a direct audio connection to an ElevenLabs agent | Works; used on real test calls |
+| Caller over a phone line | Built and tested against a stand-in; no real call placed yet |
+| Caller trace adapters for Retell and Vapi | Written from the vendors' documentation; never run against a real account |
+| Platform: inbound and outbound phone calls | Built and tested; never run on a deployment |
+| Platform: text test harness (the QA page) | Works when switched on by the server operator. It simulates the agent's prompt on a text model, not the speech model that answers calls |
+| Hosted deployment | None |
 
-**The solution:** Synthiq Voice handles the plumbing. Pick your AI tier, write a system prompt, enable tools, and deploy.
+## Quick start
 
----
+### You need
 
-## Why Synthiq Voice?
+- [uv](https://docs.astral.sh/uv/) (it installs the right Python for you)
+- Node.js 22
+- Docker with Compose v2
+- `make`, and a POSIX shell. On Windows use Git Bash or WSL
 
-| Feature | Synthiq Voice | Vapi | Retell | Bland AI |
-|---------|------------|------|--------|----------|
-| Open source | Yes | No | No | No |
-| Self-hostable | Yes | No | No | No |
-| Transparent pricing | Per-minute breakdown | Per-minute | Per-minute | Per-minute |
-| Multi-LLM support | 4 tiers (OpenAI, Google, Cerebras) | Limited | Limited | OpenAI only |
-| Built-in CRM | Yes | No | No | No |
-| Tool integrations | 30+ (Shopify, HubSpot, Calendly, etc.) | Via custom code | Limited | Limited |
-| Embeddable widget | Yes | Yes | Yes | No |
-
-**TL;DR:** Same capabilities as the paid platforms, but you own it.
-
----
-
-## Features
-
-![Dashboard](dashboard.png)
-
-### Voice Calling
-
-- Inbound and outbound calls via Telnyx or Twilio
-- Real-time transcription and call recording
-- ~320ms latency on Premium tier
-
-### AI Flexibility
-
-![Create Agent](create-agent.png)
-
-- Choose your price-to-quality tradeoff
-- OpenAI GPT-4 Realtime, Google Gemini, or Cerebras Llama
-- 13+ voice options
-
-### Built-in Tools
-
-- Contact management (search, create, update)
-- Appointment booking (check availability, schedule, reschedule)
-- Call controls (transfer, end call, DTMF)
-
-### 30+ Integrations
-
-![Integrations](integrations.png)
-
-- CRM: HubSpot, Salesforce, Pipedrive, Zoho, GoHighLevel
-- Calendars: Google Calendar, Outlook, Calendly, Cal.com
-- E-commerce: Shopify (orders, inventory, customers)
-- Communication: Slack, Gmail, SendGrid, SMS
-- Data: Airtable, Notion, Google Sheets
-- Payments: Stripe
-
-### Website Widget
-
-- Embed a voice agent on any website
-- One line of code
-- Domain allowlisting for security
-
----
-
-## Pricing Tiers
-
-Pick based on your budget and quality needs:
-
-| Tier | Cost/Min | AI Provider | Latency | Best For |
-|------|----------|-------------|---------|----------|
-| **Premium** | $0.032 | OpenAI GPT-4 Realtime | ~320ms | Quality-first use cases |
-| **Premium Mini** | $0.009 | OpenAI GPT-4o Mini Realtime | ~350ms | High volume, good quality |
-| **Balanced** | $0.023 | Google Gemini 2.5 Flash | ~400ms | Speed + cost balance |
-| **Budget** | $0.014 | Cerebras Llama 3.3 70B | ~530ms | Maximum savings |
-
-**Example:** 1,000 calls/month × 5 min avg = 5,000 minutes
-
-- Premium: ~$160/month AI + ~$50 telephony = **~$210/month**
-- Budget: ~$70/month AI + ~$50 telephony = **~$120/month**
-
----
-
-## Quick Start
-
-### Prerequisites
-
-- Docker & Docker Compose
-- Python 3.12+
-- Node.js 20+
-- API keys for your chosen providers (OpenAI, Telnyx, etc.)
-
-### Setup
+### First run
 
 ```bash
-# Clone the repo
-git clone https://github.com/KenKaiii/voice-noob.git
+git clone https://github.com/entranoweb/voice-noob.git
 cd voice-noob
-
-# Copy environment files
-cp backend/.env.example backend/.env
-cp frontend/.env.example frontend/.env
-
-# Start PostgreSQL and Redis
-docker-compose up -d
-
-# Backend
-cd backend
-uv sync
-uv run uvicorn app.main:app --reload
-
-# Frontend (new terminal)
-cd frontend
-npm install
-npm run dev
+make setup
 ```
 
-Open <http://localhost:3000> and create your first agent.
+`make setup` does five things, in this order:
 
----
+1. Writes `backend/.env` and `frontend/.env`. The backend file gets a generated signing key and a generated admin password, which it prints once. Do not copy `backend/.env.example` by hand: the app refuses to start on its placeholder key.
+2. Installs the backend, caller and frontend dependencies.
+3. Starts Postgres and Redis in Docker and waits until both are healthy.
+4. Applies the database migrations.
+5. Prints the two commands below.
 
-## Tech Stack
+Then, in two terminals:
 
-**Voice & AI:** OpenAI Realtime (`gpt-realtime-2025-08-28`) — speech-to-speech,
-the only engine the call path uses today. There is no cascaded STT/LLM/TTS
-pipeline: the `deepgram-sdk` and `elevenlabs` packages are declared and their API
-keys can be stored, but no client is constructed at call time. The pricing-tier
-provider names are not yet wired to anything
-**Backend:** FastAPI, PostgreSQL 17, Redis 7, SQLAlchemy 2.0
-**Frontend:** Next.js 15, React 19, TypeScript, Tailwind, shadcn/ui
-**Telephony:** Telnyx (primary), Twilio (optional)
+```bash
+cd backend && uv run uvicorn app.main:app --reload
+```
 
----
+```bash
+cd frontend && npm run dev
+```
 
-## Project Structure
+Open <http://localhost:3000> and sign in as `admin@example.com` with the password `make setup` printed. It is also in `backend/.env` as `ADMIN_PASSWORD`. That account is created the first time the backend starts on an empty database.
+
+### Before an agent can take a call
+
+- Create a workspace, then save your OpenAI key in **Settings** with that workspace selected. A call reads its keys from the agent's workspace only.
+- A real phone call also needs a public address and carrier settings. See `DEPLOYMENT.md`.
+
+### If something is off
+
+- **Port 5432 or 6379 is already in use.** Stop the other Postgres or Redis, or change the port mapping in `docker-compose.yml` and the matching URL in `backend/.env`.
+- **You ran an older version of this repository.** The local database is now called `voicenoob`. An old Docker volume still holds the previous name: run `make clean`, then `make setup`. This deletes local data.
+- **You want a fresh admin password.** Delete `backend/.env` and run `make setup` again, on an empty database.
+
+## Tests
+
+```bash
+make test            # backend, frontend and caller
+make test-backend    # backend only
+make test-frontend   # frontend only
+make test-caller     # caller only
+```
+
+The backend tests run on Postgres, as CI does. `make test-backend` starts the Postgres container and creates a `voicenoob_test` database if it is missing. Run without Postgres, the suite falls back to SQLite and fails tests that are correct.
+
+Other checks:
+
+```bash
+make lint            # ruff, mypy, eslint
+make check           # everything CI runs for the backend and frontend
+```
+
+## The caller
+
+`caller/` is its own package with its own lock file and no dependency on the backend. Start with `caller/README.md`. In short:
+
+```bash
+cd caller
+uv sync --all-extras
+uv run synthiq-caller --help
+```
+
+## Layout
 
 ```text
-voice-noob/
-├── backend/           # FastAPI Python backend
-│   ├── app/api/       # API routes
-│   ├── app/services/  # Business logic & integrations
-│   └── app/models/    # Database models
-├── frontend/          # Next.js frontend
-│   ├── src/app/       # Pages (dashboard, agents, CRM)
-│   └── src/lib/       # API clients, utilities
-└── docker-compose.yml # PostgreSQL + Redis
+backend/     FastAPI app: API, call bridge, text test harness, migrations
+frontend/    Next.js dashboard and the embeddable widget
+caller/      Test caller: legs, scenarios, grading, batch runner, reports
+docs/        Handoff notes, roadmap, decisions
+integrations/ promptfoo provider for the text harness
 ```
 
----
+## Stack
 
-## Contributing
+- **Calls:** OpenAI Realtime speech-to-speech. It is the only engine the call path uses. There is no separate speech-recognition, text-model and speech-synthesis pipeline yet, and keys for other providers can be stored but are not used on a call.
+- **Backend:** FastAPI, PostgreSQL 17, Redis 7, SQLAlchemy 2
+- **Frontend:** Next.js 16, React 19, TypeScript, Tailwind, shadcn/ui
+- **Phone line:** Telnyx or Twilio
 
-Pull requests welcome. For major changes, open an issue first.
+## More
 
----
+- `DEPLOYMENT.md`: running it for real, and every setting
+- `docs/HANDOFF.md`: what has and has not been proven
+- `docs/ROADMAP-2027.md`: where it is going
+- `caller/README.md` and `caller/docs/`: the test caller
 
 ## License
 

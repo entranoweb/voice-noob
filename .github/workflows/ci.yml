@@ -99,6 +99,13 @@ jobs:
           fi
           uv run alembic upgrade head
 
+      # The tests build their schema from the models, not from the migrations,
+      # so a model change with no migration passes every test and then breaks
+      # the next deployment. This compares the migrated database with the
+      # models and fails, listing the differences, when they disagree.
+      - name: Models and migrations agree
+        run: uv run alembic check
+
       - name: Test
         run: uv run pytest --cov=app --cov-report=term-missing --cov-report=xml
 
