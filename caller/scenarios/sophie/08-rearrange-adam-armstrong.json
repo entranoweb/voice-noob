@@ -81,12 +81,50 @@
   "expect": {
     "tools": [
       {
-        "name_contains": "verify_identity"
+        "name": "sophie_v2_verify_identity"
       },
       {
-        "name_contains": "v2_reschedule_"
+        "name": "sophie_v2_reschedule_appointment"
       }
     ],
-    "fields": []
-  }
+    "fields": [],
+    "booking": {
+      "weekdays": [
+        "monday"
+      ],
+      "time_from": "12:00",
+      "time_to": "12:00",
+      "start_keys": [
+        "newDisplayTime",
+        "displayTime"
+      ]
+    }
+  },
+  "tool_outcomes": {
+    "sophie_v2_verify_identity": {
+      "path": "verified",
+      "success": [
+        "true"
+      ]
+    },
+    "sophie_v2_book": {
+      "path": "bookOutcome",
+      "success": [
+        "BOOKED"
+      ]
+    },
+    "sophie_v2_reschedule_appointment": {
+      "path": "rescheduleOutcome",
+      "success": [
+        "RESCHEDULED"
+      ]
+    },
+    "sophie_v2_register_patient": {
+      "path": "newPatientRegistered",
+      "success": [
+        "true"
+      ]
+    }
+  },
+  "identity_budget": 2
 }

@@ -17,6 +17,12 @@ Every entry needs a ``reason`` and a ``date`` (``YYYY-MM-DD``). ``label``
 replaces what the manifest says was said; ``exclude`` takes the clip out of the
 bank: asking for it raises ``ClipExcluded``, and a batch does not run a scenario
 that names it.
+
+A bank can be given further directories. They hold clips the first does not,
+each with its own manifest. A manifest's ``provenance`` column says where a clip
+came from: a recording of a real caller (the default) or a synthetic voice. A
+synthetic clip is not evidence of how the agent hears real people, and every
+result it touches says so.
 """
 
 from __future__ import annotations
@@ -84,6 +90,14 @@ class ClipInfo:
     said: str
     question: str
     checked_by_human: bool
+    # Doubts the builder raised about this clip (empty when it raised none).
+    review: str = ""
+    # "real", or a description starting "synthetic".
+    provenance: str = "real"
+
+    @property
+    def synthetic(self) -> bool:
+        return self.provenance.strip().lower().startswith("synthetic")
 
 
 def silence(seconds: float, rate: int) -> bytes:
@@ -114,10 +128,16 @@ def resample_with_ffmpeg(path: Path, rate: int) -> bytes:
 
 
 class ClipBank:
-    def __init__(self, directory: str | Path) -> None:
+    def __init__(self, directory: str | Path, extra: tuple[str | Path, ...] = ()) -> None:
         self.directory = Path(directory)
+        self.directories = [self.directory, *(Path(d) for d in extra)]
         self._info: dict[str, ClipInfo] = {}
-        manifest = self.directory / "manifest.csv"
+        # The first bank wins a name both hold, so read the others first.
+        for folder in reversed(self.directories):
+            self._read_manifest(folder)
+
+    def _read_manifest(self, folder: Path) -> None:
+        manifest = folder / "manifest.csv"
         if manifest.exists():
             with manifest.open(encoding="utf-8", newline="") as handle:
                 for row in csv.DictReader(handle):
@@ -129,6 +149,8 @@ class ClipBank:
                         said=row.get("said", ""),
                         question=row.get("question", ""),
                         checked_by_human=bool((row.get("checked_by_human") or "").strip()),
+                        review=(row.get("review") or "").strip(),
+                        provenance=(row.get("provenance") or "").strip() or "real",
                     )
                     self._info[info.clip] = info
         self.overrides = load_overrides(self.directory)
@@ -151,18 +173,47 @@ class ClipBank:
     def info(self, name: str) -> ClipInfo | None:
         return self._info.get(Path(name).stem)
 
+    def verified(self, name: str) -> bool:
+        """True when a person has confirmed what this clip says.
+
+        A clip's label starts life as a recogniser's transcript of it. Until a
+        person has listened and filled ``checked_by_human`` in the manifest,
+        the label is a guess, and a scenario fact written from it may be wrong.
+        """
+        info = self.info(name)
+        # A synthetic clip was made from its text, so its label is known.
+        return info is not None and (info.checked_by_human or info.synthetic)
+
+    def synthetic(self, name: str) -> bool:
+        """True when the clip is a synthetic voice, not a recording of a caller."""
+        info = self.info(name)
+        return info is not None and info.synthetic
+
+    def label_doubts(self, names: list[str]) -> list[str]:
+        """Each clip in ``names`` whose label nobody has confirmed, with why."""
+        doubts: list[str] = []
+        for name in names:
+            info = self.info(name)
+            if info is None:
+                doubts.append(f"{name}: not in the manifest")
+            elif not (info.checked_by_human or info.synthetic):
+                why = f"flagged {info.review}, " if info.review else ""
+                doubts.append(f"{name}: {why}not checked by a person")
+        return doubts
+
     def path(self, name: str) -> Path:
         ruled_out = self.excluded(name)
         if ruled_out is not None:
             raise ClipExcluded(
                 f"clip excluded from bank: {name} ({ruled_out.reason}, {ruled_out.date})"
             )
-        candidate = self.directory / name
-        if candidate.suffix == "":
-            candidate = candidate.with_suffix(".wav")
-        if not candidate.exists():
-            raise FileNotFoundError(f"clip not found in bank: {name}")
-        return candidate
+        for folder in self.directories:
+            candidate = folder / name
+            if candidate.suffix == "":
+                candidate = candidate.with_suffix(".wav")
+            if candidate.exists():
+                return candidate
+        raise FileNotFoundError(f"clip not found in bank: {name}")
 
     def pcm(self, name: str, rate: int) -> bytes:
         """16-bit mono PCM at ``rate``. ffmpeg is used only when the file differs."""

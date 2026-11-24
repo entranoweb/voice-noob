@@ -350,7 +350,14 @@ async def test_a_batch_writes_the_agents_apostrophes_as_they_were_spoken(tmp_pat
         return leg, NoCalls()
 
     out = tmp_path / "runs"
-    await run_batch([("pain.json", scenario)], make, ClipBank(bank_dir), out, turn_settings=FAST)
+    await run_batch(
+        [("pain.json", scenario)],
+        make,
+        ClipBank(bank_dir),
+        out,
+        turn_settings=FAST,
+        allow_unverified_clips=True,  # a bank with no manifest: nobody has checked it
+    )
 
     raw = (out / "run-001.json").read_bytes()
     assert "I’m sorry".encode() in raw and b"\\u2019" not in raw
@@ -415,6 +422,7 @@ async def test_the_after_call_hook_is_given_the_conversation_and_the_stored_run(
         out,
         hooks=hooks,
         turn_settings=FAST,
+        allow_unverified_clips=True,
     )
 
     stored = json.loads((out / "run-001.json").read_text(encoding="utf-8"))
@@ -437,6 +445,7 @@ async def test_a_hook_that_fails_is_written_into_the_run_it_was_for(tmp_path: Pa
         out,
         hooks=hooks,
         turn_settings=FAST,
+        allow_unverified_clips=True,
     )
 
     stored = json.loads((out / "run-001.json").read_text(encoding="utf-8"))

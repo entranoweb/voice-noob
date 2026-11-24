@@ -46,12 +46,12 @@
   "expect": {
     "tools": [
       {
-        "name_contains": "v2_register_patient",
-        "called": false
+        "called": false,
+        "name": "sophie_v2_register_patient"
       },
       {
-        "name_contains": "v2_book_",
-        "called": false
+        "called": false,
+        "name": "sophie_v2_book"
       }
     ],
     "fields": [],
@@ -62,5 +62,32 @@
       "date of birth",
       "let's carry on"
     ]
-  }
+  },
+  "tool_outcomes": {
+    "sophie_v2_verify_identity": {
+      "path": "verified",
+      "success": [
+        "true"
+      ]
+    },
+    "sophie_v2_book": {
+      "path": "bookOutcome",
+      "success": [
+        "BOOKED"
+      ]
+    },
+    "sophie_v2_reschedule_appointment": {
+      "path": "rescheduleOutcome",
+      "success": [
+        "RESCHEDULED"
+      ]
+    },
+    "sophie_v2_register_patient": {
+      "path": "newPatientRegistered",
+      "success": [
+        "true"
+      ]
+    }
+  },
+  "identity_budget": 2
 }

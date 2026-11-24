@@ -47,7 +47,7 @@
       "field": "postcode"
     },
     {
-      "when": "date of birth, including the year|date of birth again|once more",
+      "when": "date of birth",
       "clips": [
         "2026-11-23T123843Z_mfmr_06_dob"
       ],
@@ -59,12 +59,43 @@
   "expect": {
     "tools": [
       {
-        "name_contains": "verify_identity"
+        "name": "sophie_v2_verify_identity",
+        "outputs": {
+          "verified": "true"
+        }
       }
     ],
     "fields": [],
     "agent_never_says": [
       "can't seem to match"
     ]
-  }
+  },
+  "tool_outcomes": {
+    "sophie_v2_verify_identity": {
+      "path": "verified",
+      "success": [
+        "true"
+      ]
+    },
+    "sophie_v2_book": {
+      "path": "bookOutcome",
+      "success": [
+        "BOOKED"
+      ]
+    },
+    "sophie_v2_reschedule_appointment": {
+      "path": "rescheduleOutcome",
+      "success": [
+        "RESCHEDULED"
+      ]
+    },
+    "sophie_v2_register_patient": {
+      "path": "newPatientRegistered",
+      "success": [
+        "true"
+      ]
+    }
+  },
+  "identity_budget": 2,
+  "identity_attempts": 2
 }

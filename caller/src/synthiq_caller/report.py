@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from synthiq_caller.stats import describe
+from synthiq_caller.stats import describe, wilson_interval
 
 
 @dataclass
@@ -20,6 +20,13 @@ class FieldTally:
     # How many of the stored values were fetched from the system under test,
     # rather than taken from what the agent's tool was sent.
     read_back: int = 0
+    # Answers whose clip label no person has confirmed: "said" is itself a guess.
+    labels_unverified: int = 0
+    # The agent's tool was sent the right value, and nothing confirmed the
+    # system kept it. Not counted in ``stored_correctly``.
+    sent_correctly: int = 0
+    # Answers given by a synthetic voice rather than a recorded caller.
+    synthetic: int = 0
 
 
 @dataclass
@@ -28,6 +35,20 @@ class Failure:
     scenario: str
     failing_step: str
     checks: list[str]
+    # Who the failure is charged to: "agent" or "unknown".
+    fault: str = "agent"
+    reason: str = ""
+
+
+@dataclass
+class Excluded:
+    """A call that was placed and is in neither the passes nor the failures."""
+
+    run: str
+    scenario: str
+    outcome: str
+    fault: str
+    reason: str
 
 
 @dataclass
@@ -36,6 +57,16 @@ class Summary:
     passed: int = 0
     failed: int = 0
     ungraded: int = 0
+    # Spoiled by the test rig: not a mark against the agent, and not a pass.
+    void: int = 0
+    # Calls in which a synthetic voice gave at least one answer.
+    synthetic_calls: int = 0
+    # Cannot be judged as the scenario stands (see ``grading.py``).
+    ungradeable: int = 0
+    # Failures by who they are charged to.
+    faults: dict[str, int] = field(default_factory=dict)
+    # Every placed call left out of "of graded", with its reason.
+    excluded: list[Excluded] = field(default_factory=list)
     by_scenario: dict[str, list[int]] = field(default_factory=dict)  # name -> [passed, graded]
     fields: dict[str, FieldTally] = field(default_factory=dict)
     failures: list[Failure] = field(default_factory=list)
@@ -70,27 +101,47 @@ def summarise(directory: str | Path) -> Summary:
         summary.runs += 1
         name = graded["scenario"]
         tally = summary.by_scenario.setdefault(name, [0, 0])
-        if outcome == "ungraded":
-            summary.ungraded += 1
-        else:
+        if outcome in ("passed", "failed"):
             tally[1] += 1
             if outcome == "passed":
                 summary.passed += 1
                 tally[0] += 1
             else:
                 summary.failed += 1
+                fault = graded.get("fault") or "agent"
+                summary.faults[fault] = summary.faults.get(fault, 0) + 1
                 summary.failures.append(
                     Failure(
                         run=path.name,
                         scenario=name,
                         failing_step=failing_step(payload),
                         checks=[c["what"] for c in graded["checks"] if not c["passed"]],
+                        fault=fault,
+                        reason=graded.get("reason", ""),
                     )
                 )
+        else:
+            if outcome == "void":
+                summary.void += 1
+            elif outcome == "ungradeable":
+                summary.ungradeable += 1
+            else:
+                summary.ungraded += 1
+            summary.excluded.append(
+                Excluded(
+                    run=path.name,
+                    scenario=name,
+                    outcome=outcome,
+                    fault=graded.get("fault", ""),
+                    reason=graded.get("reason", "") or "no trace, or nothing asked of the call",
+                )
+            )
         for row in graded["fields"]:
             field_tally = summary.fields.setdefault(row["field"], FieldTally())
             field_tally.answered += 1
-            if row["stored_matches"]:
+            if row["stored_matches"] and row.get("stored_source") == "tool call":
+                field_tally.sent_correctly += 1
+            elif row["stored_matches"]:
                 field_tally.stored_correctly += 1
             elif row["stored"] is None:
                 field_tally.not_stored += 1
@@ -100,6 +151,12 @@ def summarise(directory: str | Path) -> Summary:
                 field_tally.misheard += 1
             if row.get("stored_source") == "read back":
                 field_tally.read_back += 1
+            if row.get("labels_unverified"):
+                field_tally.labels_unverified += 1
+            if row.get("synthetic"):
+                field_tally.synthetic += 1
+        if payload.get("synthetic_clips"):
+            summary.synthetic_calls += 1
     for path in sorted(root.glob("chain-*.json")):
         chain = json.loads(path.read_text(encoding="utf-8"))
         chain_tally = summary.chains.setdefault(chain["chain"], [0, 0, 0])
@@ -118,11 +175,46 @@ def summarise(directory: str | Path) -> Summary:
     return summary
 
 
+def scenario_level(summary: Summary) -> tuple[int, int, int]:
+    """(scenarios passing every graded call, passing at least one, with a graded call)."""
+    graded = [(p, t) for p, t in summary.by_scenario.values() if t]
+    return sum(p == t for p, t in graded), sum(p > 0 for p, _ in graded), len(graded)
+
+
 def render(summary: Summary) -> str:
     graded = summary.passed + summary.failed
-    lines = [f"calls: {summary.runs}", f"passed: {describe(summary.passed, graded)}"]
-    if summary.ungraded:
-        lines.append(f"ungraded (no trace or no expectations): {summary.ungraded}")
+    lines = [
+        f"calls: {summary.runs}",
+        f"passed: {describe(summary.passed, graded)}",
+        f"  of graded:    {describe(summary.passed, graded)}",
+        f"  of attempted: {describe(summary.passed, summary.runs)}",
+    ]
+    every, some, scenarios = scenario_level(summary)
+    if scenarios:
+        low, high = wilson_interval(every, scenarios)
+        lines.append(
+            f"  by scenario:  {every} of {scenarios} scenarios passed every graded call "
+            f"({every / scenarios:.0%}; 95% interval {low:.0%} to {high:.0%}); "
+            f"{some} passed at least once"
+        )
+        if graded > scenarios:
+            lines.append(
+                "  Repeats of one scenario replay the same audio and are not independent "
+                "calls, so the 'of graded' interval is too narrow. The honest interval is "
+                "the one by scenario."
+            )
+    if summary.failed:
+        charged = ", ".join(f"{who} {count}" for who, count in sorted(summary.faults.items()))
+        lines.append(f"failed: {summary.failed} (charged to: {charged})")
+    if summary.excluded:
+        lines.append(
+            f"left out of 'of graded': {len(summary.excluded)} "
+            f"(void {summary.void}, ungradeable {summary.ungradeable}, "
+            f"ungraded {summary.ungraded})"
+        )
+        for left in summary.excluded:
+            charged = f", fault {left.fault}" if left.fault else ""
+            lines.append(f"  {left.run}  {left.scenario}: {left.outcome}{charged}: {left.reason}")
 
     lines.append("\nper scenario")
     for name, (passed, total) in sorted(summary.by_scenario.items()):
@@ -132,12 +224,34 @@ def render(summary: Summary) -> str:
         lines.append("\nsaid, heard, stored (per field, all calls)")
         lines.append(
             f"  {'field':<14} {'answered':>8} {'stored ok':>10} {'misheard':>9} "
-            f"{'mis-stored':>11} {'not stored':>11} {'read back':>10}"
+            f"{'mis-stored':>11} {'not stored':>11} {'read back':>10} {'unverified':>11} "
+            f"{'sent, unconfirmed':>18} {'synthetic':>10}"
         )
         for name, t in sorted(summary.fields.items()):
             lines.append(
                 f"  {name:<14} {t.answered:>8} {t.stored_correctly:>10} {t.misheard:>9} "
-                f"{t.mis_stored:>11} {t.not_stored:>11} {t.read_back:>10}"
+                f"{t.mis_stored:>11} {t.not_stored:>11} {t.read_back:>10} "
+                f"{t.labels_unverified:>11} {t.sent_correctly:>18} {t.synthetic:>10}"
+            )
+        sent = sum(t.sent_correctly for t in summary.fields.values())
+        if sent:
+            lines.append(
+                f"  'stored ok' counts only values read back from the system. In {sent} "
+                "answer(s) the right value was sent to a tool and nothing confirmed it was "
+                "kept: sent, not confirmed stored."
+            )
+        if summary.synthetic_calls:
+            lines.append(
+                f"  synthetic voice: {summary.synthetic_calls} call(s) played a synthetic clip "
+                "where no recording of a real caller exists; those answers say nothing about "
+                "how the agent hears real people"
+            )
+        doubtful = sum(t.labels_unverified for t in summary.fields.values())
+        if doubtful:
+            lines.append(
+                f"  labels unverified: in {doubtful} answer(s) 'said' is a recogniser's reading "
+                "of the clip that no person has confirmed; a match or a mismatch there may "
+                "be the label's doing"
             )
         stored = sum(t.answered - t.not_stored for t in summary.fields.values())
         fetched = sum(t.read_back for t in summary.fields.values())
@@ -157,7 +271,9 @@ def render(summary: Summary) -> str:
     if summary.failures:
         lines.append("\nfailures")
         for failure in summary.failures:
-            lines.append(f"  {failure.run}  {failure.scenario}")
+            lines.append(f"  {failure.run}  {failure.scenario}  [fault: {failure.fault}]")
+            if failure.reason:
+                lines.append(f"    {failure.reason}")
             lines.append(f"    stopped at: {failure.failing_step}")
             for check in failure.checks:
                 lines.append(f"    failed check: {check}")

@@ -29,6 +29,10 @@ KNOWN_FIELDS = ("name", "date_of_birth", "postcode", "phone")
 # order. "unknown" is the default for a scenario that does not say, and is
 # treated as the most dangerous.
 MUTATION_LEVELS = ("none", "registers", "books", "moves", "unknown")
+# Levels at which a call writes an appointment. A scenario at one of these must
+# say what the appointment should be, or its call cannot be graded.
+APPOINTMENT_LEVELS = ("books", "moves")
+WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
 
 
 @dataclass(frozen=True)
@@ -54,8 +58,26 @@ class Step:
 
 
 @dataclass(frozen=True)
+class ToolOutcome:
+    """Where one tool's reply says whether it did the thing, and what "yes" looks like.
+
+    A tool can answer "success" at the transport level and still have refused:
+    an identity check that ran and did not match is a successful request. The
+    outcome is read from the reply's own body, never from that flag.
+    """
+
+    # Dotted path into the tool's reply, for example ``verified`` or ``booking.outcome``.
+    path: str
+    # Values at that path that mean the tool did what was asked (compared as
+    # trimmed text without regard to case). ``*`` accepts any value at all.
+    success: tuple[str, ...] = ("true",)
+
+
+@dataclass(frozen=True)
 class ToolExpectation:
+    # A fragment of the tool's name. With ``name`` set, the whole name instead.
     name_contains: str
+    name: str = ""
     ok: bool = True
     # False means the tool must NOT have been called.
     called: bool = True
@@ -65,6 +87,49 @@ class ToolExpectation:
     # Named values the tool must have reported back (``ToolCall.outputs``): for a
     # lookup, ``{"status": "not_found"}``. Compared like ``arguments``.
     outputs: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class BookingExpectation:
+    """What the appointment the call writes must be: the caller's intent, as data.
+
+    A booking tool that answers "success" says only that something was booked.
+    These say what: each stated part is compared with the appointment as the
+    system under test holds it (read-back first, then what the agent's tools
+    carried). A part that cannot be found is never taken as right.
+    """
+
+    # The appointment must fall on one of these days (names from WEEKDAYS).
+    weekdays: tuple[str, ...] = ()
+    # ISO dates, inclusive at both ends.
+    date_from: str = ""
+    date_to: str = ""
+    # Local start time, ``HH:MM``, inclusive at both ends.
+    time_from: str = ""
+    time_to: str = ""
+    appointment_type: str = ""
+    clinician: str = ""
+    # For a cancellation, or any state with no slot: the status the system must hold.
+    status: str = ""
+    # The time zone the day and time are stated in.
+    timezone: str = "Europe/London"
+    # Names the appointment's parts travel under, when the defaults do not fit.
+    start_keys: tuple[str, ...] = ()
+    type_keys: tuple[str, ...] = ()
+    clinician_keys: tuple[str, ...] = ()
+    status_keys: tuple[str, ...] = ()
+
+    def stated(self) -> bool:
+        return bool(
+            self.weekdays
+            or self.date_from
+            or self.date_to
+            or self.time_from
+            or self.time_to
+            or self.appointment_type
+            or self.clinician
+            or self.status
+        )
 
 
 @dataclass(frozen=True)
@@ -80,6 +145,9 @@ class Expectations:
     # batch's read-back (``readback.py``). With no read-back these cannot be
     # checked and the call is left ungraded rather than passed on the agent's word.
     read_back: dict[str, str] = field(default_factory=dict)
+    # What the appointment this call writes must be. Required, with at least one
+    # part stated, for a scenario whose ``mutates`` is in APPOINTMENT_LEVELS.
+    booking: BookingExpectation = field(default_factory=BookingExpectation)
 
 
 @dataclass(frozen=True)
@@ -101,6 +169,18 @@ class Scenario:
     description: str = ""
     # The system under test must be reset before this call (see ``reset.py``).
     clean_state: bool = False
+    # What the caller says to a question no step matches, instead of silence.
+    fallback: Step | None = None
+    # How many identity checks the system under test allows per caller in one
+    # window before it locks that caller out. 0 leaves it to the batch's setting.
+    identity_budget: int = 0
+    # How many of those checks this one call spends (a wrong answer then a right
+    # one spends two).
+    identity_attempts: int = 1
+    # How to read each tool's outcome from its reply, by tool name (a whole
+    # name, or failing that a fragment). A tool not listed is read by the
+    # platform's own success flag.
+    tool_outcomes: dict[str, ToolOutcome] = field(default_factory=dict)
 
 
 class ScenarioError(ValueError):
@@ -112,6 +192,65 @@ def _pattern(text: str) -> re.Pattern[str]:
         return re.compile(text, re.IGNORECASE)
     except re.error as error:
         raise ScenarioError(f"bad pattern {text!r}: {error}") from error
+
+
+_HH_MM = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)$")
+_ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _keys(raw: dict[str, Any], name: str) -> tuple[str, ...]:
+    return tuple(str(k) for k in raw.get(name, ()))
+
+
+def parse_booking(raw: Any) -> BookingExpectation:
+    if raw is None:
+        return BookingExpectation()
+    if not isinstance(raw, dict):
+        raise ScenarioError("expect.booking must be an object")
+    known = set(BookingExpectation.__dataclass_fields__) | {"type"}
+    unknown = sorted(set(raw) - known)
+    if unknown:
+        raise ScenarioError(f"expect.booking has unknown parts: {unknown}")
+    weekdays = tuple(str(d).lower() for d in raw.get("weekdays", ()))
+    bad = [d for d in weekdays if d not in WEEKDAYS]
+    if bad:
+        raise ScenarioError(f"expect.booking.weekdays: not days of the week: {bad}")
+    for name in ("time_from", "time_to"):
+        if raw.get(name) and not _HH_MM.match(str(raw[name])):
+            raise ScenarioError(f"expect.booking.{name} must be HH:MM, not {raw[name]!r}")
+    for name in ("date_from", "date_to"):
+        if raw.get(name) and not _ISO_DATE.match(str(raw[name])):
+            raise ScenarioError(f"expect.booking.{name} must be YYYY-MM-DD, not {raw[name]!r}")
+    return BookingExpectation(
+        weekdays=weekdays,
+        date_from=str(raw.get("date_from", "")),
+        date_to=str(raw.get("date_to", "")),
+        time_from=str(raw.get("time_from", "")),
+        time_to=str(raw.get("time_to", "")),
+        appointment_type=str(raw.get("appointment_type", raw.get("type", ""))),
+        clinician=str(raw.get("clinician", "")),
+        status=str(raw.get("status", "")),
+        timezone=str(raw.get("timezone", "Europe/London")),
+        start_keys=_keys(raw, "start_keys"),
+        type_keys=_keys(raw, "type_keys"),
+        clinician_keys=_keys(raw, "clinician_keys"),
+        status_keys=_keys(raw, "status_keys"),
+    )
+
+
+def _fallback(raw: Any) -> Step | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict) or not (raw.get("clips") or raw.get("dtmf")):
+        raise ScenarioError("fallback needs clips or dtmf")
+    return Step(
+        when=_pattern(""),
+        clips=tuple(str(c) for c in raw.get("clips", ())),
+        dtmf=str(raw.get("dtmf", "")),
+        intended=str(raw.get("intended", "")),
+        gap_s=float(raw.get("gap_s", 0.25)),
+        max_uses=int(raw.get("max_uses", 2)),
+    )
 
 
 def parse_scenario(data: dict[str, Any]) -> Scenario:
@@ -154,7 +293,8 @@ def parse_scenario(data: dict[str, Any]) -> Scenario:
     expect = Expectations(
         tools=tuple(
             ToolExpectation(
-                name_contains=str(t["name_contains"]),
+                name_contains=str(t.get("name_contains") or t.get("name") or ""),
+                name=str(t.get("name", "")),
                 ok=bool(t.get("ok", True)),
                 called=bool(t.get("called", True)),
                 arguments={str(k): str(v) for k, v in (t.get("arguments") or {}).items()},
@@ -166,7 +306,18 @@ def parse_scenario(data: dict[str, Any]) -> Scenario:
         agent_says=tuple(_pattern(str(p)) for p in raw_expect.get("agent_says", ())),
         agent_never_says=tuple(_pattern(str(p)) for p in raw_expect.get("agent_never_says", ())),
         read_back={str(k): str(v) for k, v in (raw_expect.get("read_back") or {}).items()},
+        booking=parse_booking(raw_expect.get("booking")),
     )
+    if any(not t.name_contains for t in expect.tools):
+        raise ScenarioError("a tool expectation needs 'name' or 'name_contains'")
+    outcomes: dict[str, ToolOutcome] = {}
+    for tool, raw_outcome in (data.get("tool_outcomes") or {}).items():
+        if not isinstance(raw_outcome, dict) or not raw_outcome.get("path"):
+            raise ScenarioError(f"tool_outcomes[{tool!r}] needs a 'path' into the tool's reply")
+        outcomes[str(tool)] = ToolOutcome(
+            path=str(raw_outcome["path"]),
+            success=tuple(str(v) for v in raw_outcome.get("success", ("true",))),
+        )
     for name in expect.fields:
         if name not in facts:
             raise ScenarioError(f"expect.fields names {name!r} but the persona has no such fact")
@@ -191,6 +342,10 @@ def parse_scenario(data: dict[str, Any]) -> Scenario:
         missing_clips=tuple(str(m) for m in data.get("missing_clips", ())),
         description=str(data.get("description", "")),
         clean_state=bool(data.get("clean_state", False)),
+        fallback=_fallback(data.get("fallback")),
+        identity_budget=int(data.get("identity_budget", 0)),
+        identity_attempts=max(1, int(data.get("identity_attempts", 1))),
+        tool_outcomes=outcomes,
     )
 
 

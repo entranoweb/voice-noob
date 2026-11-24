@@ -8,6 +8,7 @@ from typing import Any
 
 import httpx
 import pytest
+from conftest import mark_checked
 
 from synthiq_caller.batch import load_chains, load_scenarios, regrade_chains, run_batch
 from synthiq_caller.chain import (
@@ -76,6 +77,7 @@ def bank(tmp_path: Path) -> ClipBank:
             wav.setsampwidth(2)
             wav.setframerate(RATE)
             wav.writeframes(tone(0.25))
+    mark_checked(directory)
     return ClipBank(directory)
 
 
@@ -366,7 +368,10 @@ def chain_data(**extra: Any) -> dict[str, Any]:
                 ],
                 "hangup_after": "mobile number",
                 "max_seconds": 20,
-                "expect": {"tools": [{"name_contains": "book"}]},
+                "expect": {
+                    "tools": [{"name_contains": "book"}],
+                    "booking": {"weekdays": ["wednesday"], "start_keys": ["day"]},
+                },
                 "capture": {
                     "appointment": {"tool": "book", "result": "appointment.id"},
                     "day": {"tool": "book", "argument": "day"},
@@ -592,9 +597,12 @@ async def test_chain_files_and_single_files_load_separately_and_regrade(
         allow_mutating="all",
         turn_settings=FAST,
     )
-    # The expectation was too strict: any successful cancel will do. Regrade, no new calls.
+    # The expectation named the wrong appointment. Correct it and regrade, no new calls.
+    # (A cancel that says nothing of which appointment would be ungradeable.)
     relaxed = chain_data()
-    relaxed["chain"][1]["expect"] = {"tools": [{"name_contains": "cancel"}]}
+    relaxed["chain"][1]["expect"] = {
+        "tools": [{"name_contains": "cancel", "arguments": {"appointmentId": "apt-12"}}]
+    }
     (directory / "chain.json").write_text(json.dumps(relaxed), encoding="utf-8")
     assert regrade_chains(out, load_chains(directory)) == 1
     stored = json.loads((out / "chain-001.json").read_text(encoding="utf-8"))

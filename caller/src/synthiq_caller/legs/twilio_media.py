@@ -92,6 +92,10 @@ class PhoneLog:
 
 
 class TwilioMediaLeg:
+    # The agent's words reach this leg as a transcript of audio it has already
+    # played, so text trails speech (see ``TurnSettings.text_follows_audio``).
+    text_follows_audio = True
+
     def __init__(
         self,
         config: PhoneConfig,

@@ -12,6 +12,14 @@
   "hangup_after": "have a lovely day|take care|goodbye",
   "steps": [
     {
+      "when": "which (?:doctor|practitioner|clinician|consultant|specialist)|who would you like to see|anyone in particular|particular (?:doctor|practitioner|clinician|consultant)",
+      "clips": [
+        "practitioner_no_preference"
+      ],
+      "intended": "I don't mind, whoever is available.",
+      "max_uses": 2
+    },
+    {
       "when": "fee is|self-pay fee|pounds",
       "clips": [
         "2026-11-20T094342Z_505e_09_confirm_fee"
@@ -147,15 +155,52 @@
   "expect": {
     "tools": [
       {
-        "name_contains": "v2_register_patient"
+        "name": "sophie_v2_register_patient"
       },
       {
-        "name_contains": "v2_book_"
+        "name": "sophie_v2_book"
       }
     ],
     "fields": [
       "name",
-      "date_of_birth"
-    ]
-  }
+      "date_of_birth",
+      "postcode"
+    ],
+    "booking": {
+      "type": "consultation",
+      "time_from": "12:30",
+      "time_to": "12:30",
+      "start_keys": [
+        "bookedDisplayTime"
+      ]
+    }
+  },
+  "tool_outcomes": {
+    "sophie_v2_verify_identity": {
+      "path": "verified",
+      "success": [
+        "true"
+      ]
+    },
+    "sophie_v2_book": {
+      "path": "bookOutcome",
+      "success": [
+        "BOOKED"
+      ]
+    },
+    "sophie_v2_reschedule_appointment": {
+      "path": "rescheduleOutcome",
+      "success": [
+        "RESCHEDULED"
+      ]
+    },
+    "sophie_v2_register_patient": {
+      "path": "newPatientRegistered",
+      "success": [
+        "true"
+      ]
+    }
+  },
+  "identity_budget": 2,
+  "description": "Needs the synthetic stand-in clip 'practitioner_no_preference' (a second clip bank, --clips-extra): no recording of a real caller answers 'which doctor'."
 }

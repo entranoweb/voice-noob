@@ -6,9 +6,14 @@ Three guards sit in front of every call:
   under test (``mutates``). A batch runs only the levels it was allowed; the
   default allows none, so a batch started by accident changes nothing.
 * **The name budget.** Systems that look patients up by name limit how often one
-  name may be checked. The limiter refuses a call that would go over, rather
-  than let the target lock the name and fail every later call for the wrong
-  reason.
+  name may be checked. The limiter refuses a call that would go over (or, when
+  asked to space calls, waits until it would not), rather than let the target
+  lock the name and fail every later call for the wrong reason. A scenario says
+  how many checks its target allows (``identity_budget``) and how many one call
+  spends (``identity_attempts``).
+* **The clip labels.** A clip whose label no person has confirmed is not played
+  unless the batch was told to allow it, and then every result it touches says
+  "labels unverified".
 * **The reset.** A scenario or chain that needs a clean start gets the batch's
   reset first (``reset.py``). When that fails, or none is configured, the call
   is not run. Nothing here knows how to reset any real system.
@@ -49,6 +54,7 @@ from synthiq_caller.director import Director, RunRecord
 from synthiq_caller.grading import Grade, grade
 from synthiq_caller.jsonio import write_json
 from synthiq_caller.leg import Leg
+from synthiq_caller.prereq import PrereqChecker, requires_state
 from synthiq_caller.readback import ReadBack, ReadBackContext
 from synthiq_caller.reset import Reset, ResetContext, ResetFailed
 from synthiq_caller.scenario import MUTATION_LEVELS, Scenario, ScenarioError, load_scenario
@@ -193,30 +199,66 @@ class ShellHooks:
 
 @dataclass
 class NameBudget:
-    """At most ``limit`` calls per caller name in any ``window_s`` seconds."""
+    """At most ``limit`` identity checks per caller name in any ``window_s`` seconds.
 
-    limit: int = 6
+    The default of two is the tightest lock known on a system under test; a
+    scenario states its own target's allowance with ``identity_budget``. Given a
+    ``path`` the spending is kept in that file, on the wall clock, so that one
+    batch run straight after another does not spend the same allowance twice.
+    """
+
+    limit: int = 2
     window_s: float = 900.0
     clock: Callable[[], float] = time.monotonic
+    path: Path | None = None
     _used: dict[str, list[float]] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.path is None:
+            return
+        if self.clock is time.monotonic:
+            self.clock = time.time  # a file outlives the process; so must its clock
+        if self.path.exists():
+            stored = json.loads(self.path.read_text(encoding="utf-8"))
+            self._used = {str(k): [float(t) for t in v] for k, v in stored.items()}
 
     @staticmethod
     def key(name: str) -> str:
         return " ".join(name.lower().split())
 
-    def remaining(self, name: str) -> int:
+    def _recent(self, name: str) -> list[float]:
         now = self.clock()
         recent = [t for t in self._used.get(self.key(name), []) if now - t < self.window_s]
         self._used[self.key(name)] = recent
-        return max(0, self.limit - len(recent))
+        return recent
 
-    def take(self, name: str) -> bool:
-        """Spend one call for ``name``. False, and nothing spent, when none is left."""
+    def remaining(self, name: str, limit: int | None = None) -> int:
+        return max(0, (limit or self.limit) - len(self._recent(name)))
+
+    def wait_s(self, name: str, cost: int = 1, limit: int | None = None) -> float | None:
+        """Seconds until ``cost`` checks could be spent; None when they never could."""
+        allowed = limit or self.limit
+        if not name or self.limit <= 0:
+            return 0.0
+        if cost > allowed:
+            return None
+        recent = sorted(self._recent(name))
+        over = len(recent) + cost - allowed
+        if over <= 0:
+            return 0.0
+        return max(0.0, recent[over - 1] + self.window_s - self.clock())
+
+    def take(self, name: str, cost: int = 1, limit: int | None = None) -> bool:
+        """Spend ``cost`` checks for ``name``. False, and nothing spent, when too few are left."""
         if not name or self.limit <= 0:
             return True  # no name to protect, or the limiter is switched off
-        if self.remaining(name) <= 0:
+        if self.remaining(name, limit) < cost:
             return False
-        self._used[self.key(name)].append(self.clock())
+        now = self.clock()
+        self._used[self.key(name)].extend([now] * cost)
+        if self.path is not None:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            write_json(self.path, self._used)
         return True
 
 
@@ -255,6 +297,11 @@ class Placed:
 
 
 LegFactory = Callable[[], tuple[Leg, TraceReader | None]]
+
+
+def connected(record: RunRecord) -> bool:
+    """False for a call that was never answered or that the rig itself broke."""
+    return not record.ended.startswith(("not answered", "rig error"))
 
 
 def looks_unfinished(trace: Trace, record: RunRecord) -> bool:
@@ -330,6 +377,9 @@ async def run_batch(
     chains: list[tuple[str, Chain]] | None = None,
     reset: Reset | None = None,
     read_back: ReadBack | None = None,
+    allow_unverified_clips: bool = False,
+    space_names: bool = False,
+    prereq: PrereqChecker | None = None,
 ) -> BatchResult:
     if allow_mutating not in ALLOWED:
         raise ValueError(f"allow_mutating must be one of {sorted(ALLOWED)}")
@@ -363,21 +413,43 @@ async def run_batch(
     async def place(file: str, scenario: Scenario, repeat: int, extra: dict[str, Any]) -> Placed:
         """Place one call and store it. Raises ``NotRun`` when the rig holds it back."""
         nonlocal counter
-        if not budget.take(scenario.facts.get("name", "")):
+        played = [clip for step in scenario.steps for clip in step.clips]
+        if scenario.fallback is not None:
+            played += list(scenario.fallback.clips)
+        doubts = clips.label_doubts(played)
+        if doubts and not allow_unverified_clips:
             raise NotRun(
-                f"name budget: {budget.limit} calls per {budget.window_s:.0f}s already "
-                f"used for {scenario.facts.get('name', '')!r}"
+                f"clip labels not confirmed by a person ({len(doubts)}): {doubts[:3]}; "
+                "check them, or allow unverified clips for this batch"
             )
+        name = scenario.facts.get("name", "")
+        allowance = scenario.identity_budget or None
+        cost = scenario.identity_attempts
+        if not budget.take(name, cost, allowance):
+            delay = budget.wait_s(name, cost, allowance)
+            if space_names and delay is not None:
+                await wait(delay + 1.0)
+            if not (space_names and delay is not None and budget.take(name, cost, allowance)):
+                raise NotRun(
+                    f"name budget: {name!r} is allowed {allowance or budget.limit} identity "
+                    f"check(s) per {budget.window_s:.0f}s and this call needs {cost}"
+                )
         try:
             await hooks.before_call(file, scenario, repeat)
         except Exception as error:  # noqa: BLE001 - a failed hook must stop this call only
             raise NotRun(f"before hook: {error}") from error
-        leg, reader = make_leg()
-        director = Director(scenario, leg, clips, turn_settings=turn_settings)
-        record = await director.run()
+        reader: TraceReader | None = None
+        try:
+            leg, reader = make_leg()
+            director = Director(scenario, leg, clips, turn_settings=turn_settings)
+            record = await director.run()
+        except Exception as error:  # noqa: BLE001 - the rig breaking is a result to record
+            # Nothing here is the agent's doing. Kept as a void call so that it
+            # is seen and re-run, never silently missing from the count.
+            record = RunRecord(scenario=scenario.name, ended=f"rig error: {error!r}")
         trace: Trace | None = None
         trace_error = ""
-        if reader is not None and record.call_ref and read_trace:
+        if reader is not None and record.call_ref and read_trace and connected(record):
             trace, trace_error = await read_trace_when_ready(
                 reader, record, settle_s=settle_s, wait=wait
             )
@@ -404,6 +476,9 @@ async def run_batch(
             "read_back": held,
             "read_back_error": read_back_error,
             "hook_error": "",
+            "labels_unverified": doubts,
+            # Clips played in this call that are a synthetic voice, not a recorded caller.
+            "synthetic_clips": sorted({c for said in record.said for c in said.synthetic_clips}),
             "grade": graded.to_json(),
             **extra,
         }
@@ -437,6 +512,15 @@ async def run_batch(
         if scenario.missing_clips:
             block(f"missing clips: {list(scenario.missing_clips)}")
             return
+        if prereq is not None and scenario.requires.strip():
+            # What the scenario needs on the system under test is not there: a
+            # call placed now would fail for the fixture's reason, not the agent's.
+            found = await asyncio.to_thread(
+                requires_state, file, scenario.name, scenario.requires, prereq
+            )
+            if found.state == "unmet":
+                block(f"prerequisite unmet: {found.detail or scenario.requires}")
+                return
         excluded = clips.excluded_in([clip for step in scenario.steps for clip in step.clips])
         if excluded:
             block(f"excluded clips: {excluded}")
@@ -510,7 +594,16 @@ async def run_batch(
         refused = [c.id for c in chain.calls if c.mutates not in allowed]
         unrecorded = [c.id for c in chain.calls if c.missing_clips]
         async with gate:
-            if refused:
+            unmet = ""
+            if prereq is not None and chain.requires.strip():
+                found = await asyncio.to_thread(
+                    requires_state, file, chain.name, chain.requires, prereq
+                )
+                if found.state == "unmet":
+                    unmet = f"prerequisite unmet: {found.detail or chain.requires}"
+            if unmet:
+                stop(0, unmet, unmet)
+            elif refused:
                 why = (
                     f"mutation guard: chain {chain.mutates} (calls {refused}), "
                     f"batch allows {allow_mutating}"
@@ -557,8 +650,12 @@ async def run_batch(
     jobs += [
         one_chain(file, chain, repeat) for repeat in range(1, repeats + 1) for file, chain in chains
     ]
-    await asyncio.gather(*jobs)
+    # Whatever happens to one call, the batch's own record is written.
+    finished = await asyncio.gather(*jobs, return_exceptions=True)
     write_json(out / "batch.json", result.to_json())
+    for outcome in finished:
+        if isinstance(outcome, BaseException):
+            raise outcome
     return result
 
 

@@ -97,6 +97,14 @@ What Pipecat would add later, and when it becomes worth it:
 When one of those is needed, the right move is a second leg (`legs/pipecat.py`)
 behind the same `Leg` interface, not a rewrite of this one.
 
+## Answer timing
+
+On this leg the agent's words come from a transcriber, so they arrive after the agent has said them. The turn tracker used to treat the arriving text as the start of a line and wait a fixed 2.5 seconds for audio that had already played, which made every answer about three seconds late: long enough to trip an agent's "no answer" handling.
+
+The leg now declares `text_follows_audio`. With it, agent speech heard since the caller's last answer is taken as the line the text belongs to, and the caller answers once that speech has been quiet for the usual moment. Speech from before the caller's last answer is never counted, so text that does arrive ahead of its audio is still waited for.
+
+This is tested against the scripted leg only. On a real line, measure the gap between the end of the agent's speech and the start of the caller's answer in the first calls before using any phone result as evidence. Two things remain: the transcriber's own delay is still in every answer, and a line the transcriber returns without its question mark cannot be recognised as an unanswered question (see `OUTCOMES-AND-GATE.md`).
+
 ## Not verified
 
 Nothing here has touched a carrier. Specifically:
