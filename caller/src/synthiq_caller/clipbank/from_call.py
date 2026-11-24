@@ -12,6 +12,8 @@ import csv
 from pathlib import Path
 from typing import Any
 
+from synthiq_caller.clips import load_overrides
+
 # The agent line each kind of answer responds to. Specific confirmations come
 # first so a read-back that mentions a date of birth is not taken for the
 # question that asks for one.
@@ -57,8 +59,15 @@ def scenario_from_call(
     steps: dict[str, dict[str, Any]] = {}
     facts: dict[str, str] = {}
     skipped: list[str] = []
+    overrides = load_overrides(bank)
     for row in rows:
         category = row["category"]
+        override = overrides.get(row["clip"])
+        if override is not None and override.exclude:
+            skipped.append(f"{row['clip']} (excluded: {override.reason}, {override.date})")
+            continue
+        if override is not None and override.label:
+            row = {**row, "said": override.label, "intended": override.label}
         flags = row.get("review", "").split()
         if category not in WHEN or "overlaps_agent" in flags:
             skipped.append(f"{row['clip']} ({category}; {' '.join(flags) or 'no step for it'})")

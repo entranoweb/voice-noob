@@ -70,6 +70,53 @@ the agent used. Before, `I'm sorry` with a typographic apostrophe was saved as
 `I’m sorry`: valid JSON, unreadable in the file. Printed reports are UTF-8
 too, including when redirected to a file on Windows.
 
+The same fault hit the pound sign (`\u00a3250`), and one more place: output
+captured from an operator's command (reset, read-back, hooks) was decoded with
+the platform's legacy code page. It is now decoded as UTF-8.
+
+## The after-call hook knows which call it is for
+
+`--after-call` now runs once the run file is written, and is told the call:
+
+| In the environment | As an argument | What |
+|---|---|---|
+| `SYNTHIQ_CALL_REF` | `{call_ref}` | the engine's reference for the call (the conversation id) |
+| `SYNTHIQ_RUN_FILE` | `{run_file}` | `run-003.json` |
+| `SYNTHIQ_RUN_ID` | `{run_id}` | `run-003` |
+| `SYNTHIQ_OUT_DIR` | | the batch's output directory |
+| `SYNTHIQ_OUTCOME` | | `passed`, `failed` or `ungraded` |
+| `SYNTHIQ_SCENARIO_FILE` | `{scenario_file}` | as before |
+
+So a product's own "record what this call created" command can be the hook:
+
+```
+--after-call "npm run fixture -- adopt --conversation {call_ref}"
+```
+
+A value is put on the command line only if it is made of letters, digits and
+`. _ - :`. A command that names a value the call does not have (a `{call_ref}`
+in `--before-call`, or a leg that gave none) is not run, and the run file's
+`hook_error` says so.
+
+## Clip overrides
+
+The manifest is generated and the audio is evidence; neither is edited by hand.
+When a person finds a clip that does not say what its row claims, they record it
+in `overrides.json` beside `manifest.csv`:
+
+```json
+{"clips": {
+  "<clip id>": {"exclude": true, "reason": "plays 'Thank you. Bye.'", "date": "2026-11-25"},
+  "<clip id>": {"label": "Neck pain.", "reason": "mislabelled", "date": "2026-11-25"}
+}}
+```
+
+Every entry needs a `reason` and a `date`. `label` replaces what the manifest
+says was said and marks the clip as checked by a person. `exclude` takes the
+clip out of the bank: playing it raises `ClipExcluded`, `validate` reports it,
+a batch does not run a scenario that names it ("excluded clips" under *not
+run*), and `clipbank scenario` leaves it out of a generated scenario.
+
 ## Scorecard
 
 ```

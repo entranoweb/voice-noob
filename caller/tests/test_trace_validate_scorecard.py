@@ -1,5 +1,6 @@
 """What a lookup returned, prerequisites that were never checked, readable run files, the scorecard."""
 
+import io
 import json
 import sys
 import wave
@@ -9,11 +10,12 @@ from typing import Any
 import httpx
 import pytest
 
-from synthiq_caller.batch import reread_missing_traces, run_batch
-from synthiq_caller.clips import ClipBank
+from synthiq_caller.batch import CallInfo, ShellHooks, reread_missing_traces, run_batch
+from synthiq_caller.clips import ClipBank, ClipExcluded
 from synthiq_caller.director import RunRecord
+from synthiq_caller.external import run_command
 from synthiq_caller.grading import grade
-from synthiq_caller.jsonio import write_json
+from synthiq_caller.jsonio import utf8_console, write_json
 from synthiq_caller.leg import Leg
 from synthiq_caller.legs.fake import RATE, AgentLine, FakeLeg, tone
 from synthiq_caller.prereq import CommandChecker, HttpChecker
@@ -285,14 +287,33 @@ def test_the_validate_command_fails_only_on_a_real_problem(tmp_path: Path) -> No
 
 
 def test_run_files_keep_the_agents_own_characters(tmp_path: Path) -> None:
-    line = "I’m sorry you’re in pain"
+    line = "I’m sorry you’re in pain. The self-pay fee is £250."
     path = tmp_path / "run.json"
     write_json(path, {"text": line})
 
     raw = path.read_bytes()
     assert line.encode("utf-8") in raw
-    assert b"\\u2019" not in raw and b"\r\n" not in raw
+    assert b"\\u2019" not in raw and b"\\u00a3" not in raw and b"\r\n" not in raw
+    assert "£250".encode() in raw
     assert json.loads(raw.decode("utf-8"))["text"] == line
+
+
+def test_a_report_redirected_on_windows_is_still_utf8(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A redirected stdout there takes the legacy code page unless told otherwise."""
+    raw = io.BytesIO()
+    monkeypatch.setattr(sys, "stdout", io.TextIOWrapper(raw, encoding="cp1252"))
+    monkeypatch.setattr(sys, "stderr", io.TextIOWrapper(io.BytesIO(), encoding="cp1252"))
+
+    utf8_console()
+    print("the fee is £250, I’m afraid")
+    sys.stdout.flush()
+
+    assert raw.getvalue().decode("utf-8").strip() == "the fee is £250, I’m afraid"
+
+
+async def test_what_a_command_prints_in_utf8_comes_back_as_itself() -> None:
+    script = "import sys; sys.stdout.buffer.write('£250 I’m'.encode('utf-8'))"
+    assert await run_command([sys.executable, "-c", script], {}, 30) == "£250 I’m"
 
 
 class NoCalls:
@@ -323,7 +344,7 @@ async def test_a_batch_writes_the_agents_apostrophes_as_they_were_spoken(tmp_pat
         leg = FakeLeg(
             [
                 AgentLine("May I take your name?", speech_s=0.3),
-                AgentLine("I’m sorry you’re in pain.", speech_s=0.3),
+                AgentLine("I’m sorry you’re in pain. That is £250.", speech_s=0.3),
             ]
         )
         return leg, NoCalls()
@@ -333,6 +354,209 @@ async def test_a_batch_writes_the_agents_apostrophes_as_they_were_spoken(tmp_pat
 
     raw = (out / "run-001.json").read_bytes()
     assert "I’m sorry".encode() in raw and b"\\u2019" not in raw
+    assert "£250".encode() in raw and b"\\u00a3" not in raw
+
+
+# --- 3b. the after-call hook knows which call it is for -------------------------------------
+
+
+def one_tone(directory: Path, name: str) -> None:
+    with wave.open(str(directory / name), "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(RATE)
+        wav.writeframes(tone(0.25))
+
+
+def greeting_scenario(clip: str = "name.wav") -> Any:
+    return parse_scenario(
+        {
+            "name": "greeting",
+            "mutates": "none",
+            "steps": [{"when": "name", "clips": [clip]}],
+            "hangup_after": "thank you",
+            "max_seconds": 20,
+            "expect": {"tools": [{"name_contains": "t"}]},
+        }
+    )
+
+
+def greeting_agent() -> tuple[Leg, TraceReader | None]:
+    leg = FakeLeg(
+        [AgentLine("May I take your name?", speech_s=0.3), AgentLine("Thank you.", speech_s=0.3)]
+    )
+    return leg, NoCalls()
+
+
+async def test_the_after_call_hook_is_given_the_conversation_and_the_stored_run(
+    tmp_path: Path,
+) -> None:
+    bank_dir = tmp_path / "bank"
+    bank_dir.mkdir()
+    one_tone(bank_dir, "name.wav")
+    seen = tmp_path / "seen.txt"
+    script = tmp_path / "adopt.py"
+    script.write_text(
+        "import json, os, sys\n"
+        "stored = json.load(open(os.path.join(os.environ['SYNTHIQ_OUT_DIR'],"
+        " os.environ['SYNTHIQ_RUN_FILE']), encoding='utf-8'))\n"
+        f"open(r'{seen}', 'w').write('|'.join([sys.argv[1], sys.argv[2],"
+        " os.environ['SYNTHIQ_CALL_REF'], os.environ['SYNTHIQ_RUN_ID'],"
+        " os.environ['SYNTHIQ_OUTCOME'], stored['record']['call_ref']]))\n",
+        encoding="utf-8",
+    )
+    hooks = ShellHooks(after=f'"{sys.executable}" "{script}" {{call_ref}} {{run_file}}')
+    out = tmp_path / "runs"
+
+    await run_batch(
+        [("g.json", greeting_scenario())],
+        greeting_agent,
+        ClipBank(bank_dir),
+        out,
+        hooks=hooks,
+        turn_settings=FAST,
+    )
+
+    stored = json.loads((out / "run-001.json").read_text(encoding="utf-8"))
+    ref = stored["record"]["call_ref"]
+    assert stored["hook_error"] == "" and ref
+    assert seen.read_text().split("|") == [ref, "run-001.json", ref, "run-001", "passed", ref]
+
+
+async def test_a_hook_that_fails_is_written_into_the_run_it_was_for(tmp_path: Path) -> None:
+    bank_dir = tmp_path / "bank"
+    bank_dir.mkdir()
+    one_tone(bank_dir, "name.wav")
+    hooks = ShellHooks(after=f'"{sys.executable}" -c "import sys; sys.exit(4)"')
+    out = tmp_path / "runs"
+
+    await run_batch(
+        [("g.json", greeting_scenario())],
+        greeting_agent,
+        ClipBank(bank_dir),
+        out,
+        hooks=hooks,
+        turn_settings=FAST,
+    )
+
+    stored = json.loads((out / "run-001.json").read_text(encoding="utf-8"))
+    assert "after hook" in stored["hook_error"] and "exited 4" in stored["hook_error"]
+
+
+async def test_a_before_hook_cannot_ask_for_a_call_that_has_not_happened() -> None:
+    hooks = ShellHooks(before="adopt {call_ref}")
+    with pytest.raises(RuntimeError, match="does not have"):
+        await hooks.before_call("g.json", greeting_scenario(), 1)
+
+
+async def test_a_value_that_is_not_plain_is_never_put_on_a_command_line() -> None:
+    hooks = ShellHooks(after="adopt {call_ref}")
+    call = CallInfo("conv_1; rm -rf x", "run-001.json", "out", "passed")
+    with pytest.raises(RuntimeError, match="not safe"):
+        await hooks.after_call("g.json", greeting_scenario(), 1, call)
+
+
+# --- 3c. clips a person has ruled out, or relabelled ----------------------------------------
+
+
+def bank_with_overrides(tmp_path: Path, overrides: dict[str, Any]) -> Path:
+    bank_dir = tmp_path / "bank"
+    bank_dir.mkdir()
+    for clip in ("call1_04_reason.wav", "call1_02_name.wav"):
+        one_tone(bank_dir, clip)
+    (bank_dir / "manifest.csv").write_text(
+        "clip,call,category,start,end,secs,said,intended,value,question,review,checked_by_human\n"
+        "call1_04_reason,call1,reason,1,2,1,Knee pain.,Knee pain.,,What brings you in?,,\n"
+        "call1_02_name,call1,name,0,1,1,Mark Marshal.,Mark Marshal.,Mark Marshal,Your name?,,\n",
+        encoding="utf-8",
+    )
+    (bank_dir / "overrides.json").write_text(json.dumps({"clips": overrides}), encoding="utf-8")
+    return bank_dir
+
+
+WRONG_AUDIO = {
+    "exclude": True,
+    "reason": "labelled 'Knee pain.' but plays 'Thank you. Bye.'",
+    "date": "2026-11-25",
+}
+
+
+def test_an_excluded_clip_cannot_be_played_and_says_why(tmp_path: Path) -> None:
+    bank = ClipBank(bank_with_overrides(tmp_path, {"call1_04_reason": WRONG_AUDIO}))
+
+    with pytest.raises(ClipExcluded, match="Thank you. Bye."):
+        bank.path("call1_04_reason.wav")
+    with pytest.raises(ClipExcluded):
+        bank.pcm("call1_04_reason", RATE)
+    assert bank.path("call1_02_name.wav").exists()
+    assert bank.excluded_in(["call1_02_name.wav", "call1_04_reason.wav"]) == ["call1_04_reason.wav"]
+
+
+def test_a_relabelled_clip_reports_what_a_person_heard(tmp_path: Path) -> None:
+    fixed = {"label": "Mark Marshall.", "reason": "manifest spelling", "date": "2026-11-25"}
+    bank = ClipBank(bank_with_overrides(tmp_path, {"call1_02_name": fixed}))
+
+    info = bank.info("call1_02_name.wav")
+    assert info is not None and info.said == "Mark Marshall." and info.checked_by_human
+    assert bank.path("call1_02_name").exists()
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        {"exclude": True, "date": "2026-11-25"},
+        {"exclude": True, "reason": "wrong audio"},
+        {"exclude": True, "reason": "wrong audio", "date": "25 Nov"},
+        {"reason": "nothing asked", "date": "2026-11-25"},
+        {"exclude": True, "label": "both", "reason": "x", "date": "2026-11-25"},
+    ],
+)
+def test_an_override_without_a_reason_a_date_or_a_decision_is_refused(
+    tmp_path: Path, entry: dict[str, Any]
+) -> None:
+    with pytest.raises(ValueError, match="override|either"):
+        ClipBank(bank_with_overrides(tmp_path, {"call1_04_reason": entry}))
+
+
+async def test_a_batch_does_not_run_a_scenario_that_names_an_excluded_clip(tmp_path: Path) -> None:
+    bank = ClipBank(bank_with_overrides(tmp_path, {"call1_04_reason": WRONG_AUDIO}))
+    made: list[int] = []
+
+    def make() -> tuple[Leg, TraceReader | None]:
+        made.append(1)
+        return greeting_agent()
+
+    result = await run_batch(
+        [("g.json", greeting_scenario("call1_04_reason.wav"))],
+        make,
+        bank,
+        tmp_path / "runs",
+        turn_settings=FAST,
+    )
+
+    assert result.ran == 0 and not made
+    assert "excluded clips" in result.blocked[0].reason
+
+
+def test_validate_and_a_generated_scenario_both_leave_the_excluded_clip_out(tmp_path: Path) -> None:
+    from synthiq_caller.clipbank.from_call import scenario_from_call
+
+    bank_dir = bank_with_overrides(tmp_path, {"call1_04_reason": WRONG_AUDIO})
+    scenarios = tmp_path / "scenarios"
+    scenarios.mkdir()
+    data = {
+        "name": "s",
+        "mutates": "none",
+        "steps": [{"when": "brings", "clips": ["call1_04_reason.wav"]}],
+    }
+    (scenarios / "s.json").write_text(json.dumps(data), encoding="utf-8")
+
+    rows = validate_directory(scenarios, ClipBank(bank_dir), None)
+    generated = scenario_from_call(bank_dir, "call1")
+
+    assert rows[0].problem and "excluded from bank" in rows[0].line()
+    assert [s["clips"] for s in generated["steps"]] == [["call1_02_name"]]
+    assert any("excluded" in note for note in generated["notes"]["clips_not_placed"])
 
 
 # --- 4. scorecard -----------------------------------------------------------------------

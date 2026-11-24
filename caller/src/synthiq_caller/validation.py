@@ -13,7 +13,7 @@ from pathlib import Path
 
 from synthiq_caller.batch import load_chains, load_scenarios
 from synthiq_caller.chain import variables_in
-from synthiq_caller.clips import ClipBank
+from synthiq_caller.clips import ClipBank, ClipExcluded
 from synthiq_caller.prereq import PrereqChecker, requires_state
 
 
@@ -36,7 +36,7 @@ class Row:
 
     def line(self) -> str:
         clips = (
-            f"CLIPS NOT IN BANK: {self.missing_clips}"
+            f"CLIPS NOT USABLE: {self.missing_clips}"
             if self.clips_state == "missing"
             else f"clips {self.clips_state}"
         )
@@ -73,6 +73,8 @@ def validate_directory(
                         continue  # declared as not yet recorded; a batch will not run it
                     try:
                         bank.path(clip)
+                    except ClipExcluded as ruled_out:
+                        missing.append(str(ruled_out))
                     except FileNotFoundError:
                         missing.append(clip)
         prereq = requires_state(file, scenario.name, scenario.requires, checker)
@@ -100,6 +102,8 @@ def validate_directory(
                             continue  # chosen at run time, or declared as not yet recorded
                         try:
                             bank.path(str(clip))
+                        except ClipExcluded as ruled_out:
+                            missing.append(str(ruled_out))
                         except FileNotFoundError:
                             missing.append(str(clip))
         prereq = requires_state(file, chain.name, chain.requires, checker)
