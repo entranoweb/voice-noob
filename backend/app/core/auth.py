@@ -3,9 +3,9 @@
 import uuid
 from typing import Annotated
 
+import jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from jose import JWTError, jwt
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -45,7 +45,8 @@ async def get_current_user(
         user_id: str | None = payload.get("sub")
         if user_id is None:
             raise credentials_exception
-    except JWTError as exc:
+    except jwt.PyJWTError as exc:
+        # Expired, tampered, malformed or signed with another algorithm: all 401.
         raise credentials_exception from exc
 
     # Fetch user from database
