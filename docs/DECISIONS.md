@@ -526,10 +526,7 @@ frame's `callSid`, inside ten seconds, and nothing else is processed until it
 verifies. Putting a Twilio token in the URL would have looked right, tested green
 against a client that preserves query strings, and refused every real call.
 
-It is not single-use. That would need shared state, and a Redis outage would
-then drop calls to enforce a property whose absence costs little: the token
-travels only between this process and the carrier, over TLS, and dies in two
-minutes.
+It was not single-use when this was written. That changed: see §41.
 
 What this costs: every backend instance must share one `SECRET_KEY`, because the
 webhook and the socket can land on different instances. And the preflight's
@@ -575,3 +572,41 @@ pydantic validator. A validator was the first version, and its failure message
 printed the input it had rejected — which is the process environment, so a
 startup error about one secret wrote a fragment of another into the log.
 
+
+## 41. A stream token works once, and Redis going down stops calls
+
+§38 left the stream token valid until it expired, on the argument that making it
+single-use would let a Redis outage drop calls. That trade is reversed. The
+first socket to present a token claims it in Redis (`SET NX`, keyed on a hash of
+the token, for the token's lifetime); a second presentation is refused as
+`replayed`.
+
+It fails closed. When Redis cannot be reached the claim cannot be made and the
+stream is refused (`stream_token_claim_store_unavailable`). A dropped call is
+the cost of an outage; the alternative is that an outage silently reopens the
+replay window, and anyone able to cause one gets the hole back. So Redis is now
+on the call path, and every instance must share one.
+
+## 42. An embedded session is signed, capped, and has no tools by default
+
+The widget's allowed-sites check compared against the page the widget itself is
+served from, so it always passed, and an empty list meant every site. Now the
+embedding site is taken from the parent page, an agent with no allowed domains
+can be embedded by no other site, and the widget holds a signed session that
+its tool calls and transcript writes must present.
+
+Three settings carry the old behaviour for a deployment that needs time:
+`EMBED_ALLOW_ANY_ORIGIN_WHEN_UNSET` (default false, warns each time it is
+used), `EMBED_TOOLS_DEFAULT_ENABLED` (default false; the per-agent switch is
+`embed_settings.allow_tools`), and `EMBED_SESSION_MAX_SECONDS` (default 900).
+
+## 43. A Twilio webhook is checked against its owner's token
+
+Each workspace can bring its own Twilio account, and Twilio signs with that
+account's auth token, so one global token could only ever verify one tenant.
+The token is chosen from what the webhook is about (the number dialled, the
+agent named, the call reported on), never from the `AccountSid` the request
+claims: a secret picked from a field the sender controls would let one tenant
+sign a webhook aimed at another's number. The global `TWILIO_AUTH_TOKEN` stays
+as a fallback for a deployment on one platform account. Telnyx verification
+still uses one global key.

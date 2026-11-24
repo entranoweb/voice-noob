@@ -248,7 +248,8 @@ real deployment. Telnyx must be able to POST *into* it.
 | --- | --- |
 | Public HTTPS host | Telnyx posts to it, and the media stream connects back to it. See 7.2 — this is the step most likely to fail |
 | `PUBLIC_URL` | The public origin, e.g. `https://voice.example.com`. It is what the answer document's stream URL is built from. See 7.2 |
-| Postgres 17, Redis 7 | `docker-compose.yml` has both. Run `alembic upgrade head`; the head is `b83d1c4f7a90` |
+| Postgres 17, Redis 7 | `docker-compose.yml` has both. Run `alembic upgrade head`; the head is `b83d1c4f7a90`. Redis is on the call path: a stream token is claimed there so it works once, and media streams are refused while Redis is down (DECISIONS §41) |
+| `SECRET_KEY` | **Required**, shared by every instance. The app does not start on a placeholder (DECISIONS §40) |
 | `TELNYX_PUBLIC_KEY` | **Required.** Signature verification reads the *global* setting, not per-user credentials. With it unset every webhook is rejected 403, whatever `DEBUG` says (DECISIONS §39; it used to be accepted unverified under `DEBUG=true`) |
 | `OPENAI_API_KEY` | The bridge opens a Realtime session with `gpt-realtime-2025-08-28` |
 | `DEBUG=false` | See above |
