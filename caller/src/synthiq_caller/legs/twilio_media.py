@@ -33,7 +33,8 @@ import json
 import secrets
 import time
 from collections.abc import AsyncIterator
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, urlsplit
 
@@ -45,6 +46,8 @@ from websockets.http11 import Request, Response
 from synthiq_caller import dtmf
 from synthiq_caller.leg import AgentAudio, AgentText, Closed, LegEvent
 from synthiq_caller.mulaw import lin2ulaw, ulaw2lin
+from synthiq_caller.numbers import is_allowed
+from synthiq_caller.recording import CallRecorder
 from synthiq_caller.transcribe import NullTranscriber, Transcriber
 from synthiq_caller.twilio_rest import ENDED_STATUSES, CallControl, stream_twiml, valid_signature
 
@@ -56,6 +59,10 @@ MULAW_SILENCE = 0xFF
 
 class CallNotConnected(RuntimeError):
     pass
+
+
+class NumberNotAllowed(CallNotConnected):
+    """The number to dial is not on the operator's list. Nothing was sent to the carrier."""
 
 
 @dataclass
@@ -74,6 +81,11 @@ class PhoneConfig:
     stream_grace_s: float = 15.0
     # Send frames of pure silence too. Off by default: the carrier fills the gap.
     send_silence: bool = False
+    # The only numbers this leg may dial. None leaves the check to whoever built
+    # the leg (tests, the dry run); an empty tuple allows nothing.
+    allowed_to: tuple[str, ...] | None = None
+    # Where to write each side of the call as its own WAV. Empty: keep no audio.
+    audio_dir: str = ""
 
 
 @dataclass
@@ -89,6 +101,12 @@ class PhoneLog:
     clears_sent: int = 0
     rejected: list[str] = field(default_factory=list)
     handshake_signature_seen: bool = False
+    # What a trace lookup needs to find this call on the agent's platform.
+    to_number: str = ""
+    from_number: str = ""
+    dialled_at_unix: float = 0.0
+    stream_started_at_unix: float = 0.0
+    ended_at_unix: float = 0.0
 
 
 class TwilioMediaLeg:
@@ -103,8 +121,13 @@ class TwilioMediaLeg:
         *,
         auth_token: str,
         transcriber: Transcriber | None = None,
+        exchange: PhoneExchange | None = None,
     ) -> None:
         self.config = config
+        self._exchange = exchange
+        self._recorder = CallRecorder(RATE) if config.audio_dir else None
+        self._stream_t0 = 0.0
+        self.audio: dict[str, Any] = {}
         self.public_url = config.public_url.rstrip("/")
         self._control = control
         self._auth_token = auth_token
@@ -119,7 +142,7 @@ class TwilioMediaLeg:
         self._outgoing = bytearray()
         self._sender: asyncio.Task[None] | None = None
         self._call_ended = False
-        self.log = PhoneLog()
+        self.log = PhoneLog(to_number=config.to_number, from_number=config.from_number)
 
     # ----- Leg protocol -------------------------------------------------
 
@@ -133,6 +156,8 @@ class TwilioMediaLeg:
 
     @property
     def local_port(self) -> int:
+        if self._exchange is not None:
+            return self._exchange.port
         if self._server is None:
             raise RuntimeError("the media server has not been started")
         port: int = next(iter(self._server.sockets)).getsockname()[1]
@@ -140,6 +165,10 @@ class TwilioMediaLeg:
 
     async def start_server(self) -> int:
         """Start listening and return the port. ``connect`` calls this if needed."""
+        if self._exchange is not None:
+            port = await self._exchange.start()
+            self._exchange.register(self._token, self)
+            return port
         if self._server is None:
             self._server = await serve(
                 self._handle_stream,
@@ -161,8 +190,15 @@ class TwilioMediaLeg:
     async def connect(self) -> None:
         if not self.public_url:
             raise CallNotConnected("public_url is not set: Twilio needs an address it can reach")
+        allowed = self.config.allowed_to
+        if allowed is not None and not is_allowed(self.config.to_number, allowed):
+            raise NumberNotAllowed(
+                f"{self.config.to_number or '(no number)'} is not on the list of numbers "
+                "this caller may dial; nothing was sent to the carrier"
+            )
         await self.start_server()
         await self._transcriber.start(self._on_agent_text)
+        self.log.dialled_at_unix = time.time()
         self._call_sid = await self._control.create_call(
             to=self.config.to_number,
             from_=self.config.from_number,
@@ -223,6 +259,8 @@ class TwilioMediaLeg:
         if self._socket is not None:
             with contextlib.suppress(Exception):
                 await self._socket.close()
+        if self._exchange is not None:
+            self._exchange.unregister(self._token)
         if self._server is not None:
             self._server.close()
             with contextlib.suppress(Exception):
@@ -231,6 +269,34 @@ class TwilioMediaLeg:
         with contextlib.suppress(Exception):
             await self._transcriber.close()
         self._emit_closed("(caller hung up)")
+        self._save_audio()
+
+    def details(self) -> dict[str, Any]:
+        """What a stored run keeps about the line itself, beside the director's record."""
+        found: dict[str, Any] = {
+            "leg": "phone",
+            # The leg's call reference is the carrier's id for its own outbound
+            # leg, not the agent platform's id for the call it answered.
+            "carrier_call_ref": self._call_sid or "",
+            "phone": asdict(self.log),
+        }
+        if self.audio:
+            found["audio"] = dict(self.audio)
+        return found
+
+    def _save_audio(self) -> None:
+        if self._recorder is None or self.audio or self._recorder.empty or not self._call_sid:
+            return
+        directory = Path(self.config.audio_dir)
+        try:
+            saved = self._recorder.save(directory, self._call_sid)
+        except OSError as error:
+            self.audio = {"error": f"the audio could not be written: {error}"}
+            return
+        # Relative to the folder that holds the audio folder: the run directory.
+        for track in ("caller", "agent"):
+            saved[track] = f"{directory.name}/{saved[track]}"
+        self.audio = saved
 
     # ----- internals ----------------------------------------------------
 
@@ -240,6 +306,7 @@ class TwilioMediaLeg:
     def _emit_closed(self, reason: str) -> None:
         if not self._closed_sent:
             self._closed_sent = True
+            self.log.ended_at_unix = time.time()
             self._events.put_nowait(Closed(reason))
         # Whoever is waiting in connect() must not wait for a call that is over.
         self._started.set()
@@ -300,6 +367,8 @@ class TwilioMediaLeg:
                 await self._socket.close(4401, "not authorised")
                 return
             self.log.stream_sid = str(message.get("streamSid") or start.get("streamSid") or "")
+            self.log.stream_started_at_unix = time.time()
+            self._stream_t0 = time.monotonic()
             self._started.set()
         elif event == "media":
             media = message.get("media") or {}
@@ -308,7 +377,13 @@ class TwilioMediaLeg:
             mulaw = base64.b64decode(media.get("payload", ""))
             if not self.log.stream_sid or not mulaw:
                 return
-            self._events.put_nowait(AgentAudio(ulaw2lin(mulaw), RATE))
+            pcm = ulaw2lin(mulaw)
+            if self._recorder is not None:
+                # The carrier stamps each frame in milliseconds from the stream's start.
+                stamp = str(media.get("timestamp", ""))
+                at = int(stamp) / 1000 if stamp.isdigit() else time.monotonic() - self._stream_t0
+                self._recorder.put("agent", at, pcm)
+            self._events.put_nowait(AgentAudio(pcm, RATE))
             await self._transcriber.feed(mulaw)
         elif event == "dtmf":
             self.log.received_dtmf.append(str((message.get("dtmf") or {}).get("digit", "")))
@@ -346,6 +421,10 @@ class TwilioMediaLeg:
                     except ConnectionClosed:
                         return
                     self.log.frames_sent += 1
+                    if self._recorder is not None:
+                        self._recorder.put(
+                            "caller", time.monotonic() - self._stream_t0, ulaw2lin(frame)
+                        )
             next_at += period
             delay = next_at - time.monotonic()
             if delay < -1.0:
@@ -353,6 +432,102 @@ class TwilioMediaLeg:
                 next_at = time.monotonic()
                 delay = 0.0
             await asyncio.sleep(max(0.0, delay))
+
+
+class PhoneExchange:
+    """One listening server for many calls, so a batch does not open a port per call.
+
+    Each call's leg registers the token it issued; a request is handed to the
+    leg whose token is in its path, and that leg then checks the path and the
+    signature exactly as it does when it listens on its own. A token nobody
+    registered gets nothing.
+
+    The exchange also answers a probe, over plain HTTP and as a websocket, so a
+    preflight can prove that the public address reaches this process and that
+    whatever sits in front of it forwards upgrades. The probe carries no call.
+    """
+
+    PROBE_REPLY = "synthiq-caller"
+
+    def __init__(self, host: str = "0.0.0.0", port: int = 8765) -> None:  # noqa: S104
+        self.host = host
+        self._wanted_port = port
+        self._server: Server | None = None
+        self._legs: dict[str, TwilioMediaLeg] = {}
+        self.probe_token = secrets.token_urlsafe(16)
+        self.rejected: list[str] = []
+
+    @property
+    def port(self) -> int:
+        if self._server is None:
+            raise RuntimeError("the exchange has not been started")
+        port: int = next(iter(self._server.sockets)).getsockname()[1]
+        return port
+
+    async def start(self) -> int:
+        if self._server is None:
+            self._server = await serve(
+                self._handle,
+                self.host,
+                self._wanted_port,
+                process_request=self._process_request,
+                max_size=None,
+            )
+        return self.port
+
+    def register(self, token: str, leg: TwilioMediaLeg) -> None:
+        self._legs[token] = leg
+
+    def unregister(self, token: str) -> None:
+        self._legs.pop(token, None)
+
+    async def close(self) -> None:
+        if self._server is not None:
+            self._server.close()
+            with contextlib.suppress(Exception):
+                await self._server.wait_closed()
+            self._server = None
+
+    @staticmethod
+    def _route(path: str) -> tuple[str, str]:
+        """The last two parts of the path: what is asked for, and the token."""
+        parts = path.split("?", 1)[0].rstrip("/").rsplit("/", 2)
+        return (parts[-2], parts[-1]) if len(parts) >= 2 else ("", "")
+
+    def _probe_ok(self, token: str) -> bool:
+        return secrets.compare_digest(token, self.probe_token)
+
+    def _process_request(self, connection: ServerConnection, request: Request) -> Response | None:
+        kind, token = self._route(request.path)
+        upgrade = request.headers.get("Upgrade", "").lower() == "websocket"
+        if kind == "probe":
+            if not self._probe_ok(token):
+                return _plain(connection, http.HTTPStatus.NOT_FOUND, "not found")
+            return None if upgrade else _plain(connection, http.HTTPStatus.OK, self.PROBE_REPLY)
+        leg = self._legs.get(token)
+        if kind == "status":
+            if leg is None:
+                self.rejected.append("status: no call is registered for this path")
+                return _plain(connection, http.HTTPStatus.NOT_FOUND, "not found")
+            return leg._process_request(connection, request)
+        if leg is not None and kind == "media":
+            return leg._process_request(connection, request)
+        return None if upgrade else _plain(connection, http.HTTPStatus.NOT_FOUND, "not found")
+
+    async def _handle(self, socket: ServerConnection) -> None:
+        path = socket.request.path if socket.request is not None else ""
+        kind, token = self._route(path)
+        if kind == "probe" and self._probe_ok(token):
+            with contextlib.suppress(ConnectionClosed):
+                await socket.send(self.PROBE_REPLY)
+            await socket.close()
+            return
+        leg = self._legs.get(token) if kind == "media" else None
+        if leg is None:
+            self.rejected.append("media: no call is registered for this path")
+            await socket.close(4401, "not authorised")
+            return
+        await leg._handle_stream(socket)
 
 
 def _plain(connection: ServerConnection, status: http.HTTPStatus, text: str) -> Response:
