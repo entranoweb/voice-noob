@@ -620,6 +620,29 @@ def _plan_downstream(plan: Plan, run: Path, carried: list[str], keep_text: bool)
         plan.redact[run] = fields
 
 
+class NotDeleted(Exception):  # noqa: N818 - a plain statement of what was left, not an error class
+    """A clip's audio that ``forget`` will not delete, and why."""
+
+
+def _outside(path: Path, banks: list[Path]) -> bool:
+    here = path.resolve()
+    return not any(here.is_relative_to(bank.resolve()) for bank in banks)
+
+
+def _delete_clip(path: Path, banks: list[Path]) -> None:
+    """Delete a clip's audio. A symlink's target goes too, if it is inside a bank.
+
+    Unlinking a link frees nothing: the audio is still on disk under its real name. A target
+    outside every bank is somebody else's file, so nothing is touched, and it is said plainly.
+    """
+    if path.is_symlink():
+        target = path.resolve()
+        if target.exists() and _outside(path, banks):
+            raise NotDeleted(f"not deleted: {target} is outside the bank (linked from {path})")
+        target.unlink(missing_ok=True)
+    path.unlink(missing_ok=True)
+
+
 def _tracks(data: Any) -> list[dict[str, Any]]:
     """Every ``audio`` entry of a stored run: ``{"caller": "audio/x.caller.wav", "agent": ...}``."""
     found: list[dict[str, Any]] = []
@@ -713,7 +736,15 @@ def describe(
         f"{len(plan.stems)} clip(s)" + (f", speaker(s) {plan.speakers}" if plan.speakers else "")
     ]
     lines += [f"  clip {s}" for s in plan.stems]
-    lines += [f"  {verb} delete audio: {p}" for p in plan.audio]
+    for p in plan.audio:
+        if p.is_symlink() and p.resolve().exists():
+            target = p.resolve()
+            lines.append(
+                f"  {verb} delete audio: {p} (a link: its target {target} goes too if it is "
+                "inside the bank; if not, it is left and reported)"
+            )
+        else:
+            lines.append(f"  {verb} delete audio: {p}")
     lines += [f"  {verb} delete caller-side call audio: {p}" for p in plan.call_audio]
     lines += [f"  {verb} remove manifest row: {p} ({', '.join(c)})" for p, c in plan.rows.items()]
     lines += [f"  {verb} remove override: {p} ({', '.join(c)})" for p, c in plan.overrides.items()]
@@ -855,12 +886,16 @@ def execute(
         try:
             action()
         except Exception as error:  # noqa: BLE001 - one file failing must not stop the others
-            failed.append(f"{what} {_label(path)}: {type(error).__name__}")
+            failed.append(
+                str(error)
+                if isinstance(error, NotDeleted)
+                else f"{what} {_label(path)}: {type(error).__name__}"
+            )
         else:
             done[counter] += n
 
     for audio in plan.audio:
-        attempt("delete", audio, partial(audio.unlink, missing_ok=True), "audio_files")
+        attempt("delete", audio, partial(_delete_clip, audio, banks), "audio_files")
     for audio in plan.call_audio:
         attempt("delete", audio, partial(audio.unlink, missing_ok=True), "audio_files")
     for path in plan.scenarios:

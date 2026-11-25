@@ -2,6 +2,8 @@
 its fix."""
 
 import json
+import os
+import shutil
 from pathlib import Path
 
 import pytest
@@ -139,3 +141,30 @@ async def test_consent_record_missing_is_said_in_every_page_a_person_reads(tmp_p
     page = acceptance.render_html(report)
     assert "Consent record missing" in page
     assert any("consent record missing" in line for line in report["not_shown"])
+
+
+def test_a_symlinked_clip_takes_its_target_with_it_when_inside_the_bank(tmp_path: Path) -> None:
+    world = bare_world(tmp_path)
+    store = world["bank"] / "store"
+    store.mkdir()
+    shutil.move(world["bank"] / "opener.wav", store / "opener.wav")
+    os.symlink(store / "opener.wav", world["bank"] / "opener.wav")
+    assert cli.main(forget_args(world, "opener")) == 0
+    assert not (store / "opener.wav").exists()
+    assert not (world["bank"] / "opener.wav").is_symlink()
+
+
+def test_a_symlink_to_outside_the_bank_is_reported_and_never_called_complete(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    world = bare_world(tmp_path)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    shutil.move(world["bank"] / "opener.wav", elsewhere / "opener.wav")
+    os.symlink(elsewhere / "opener.wav", world["bank"] / "opener.wav")
+    assert cli.main(forget_args(world, "opener")) == 1
+    out = capsys.readouterr().out
+    assert f"not deleted: {elsewhere / 'opener.wav'} is outside the bank" in out
+    assert "complete" not in out.replace("incomplete", "").replace("INCOMPLETE", "")
+    assert (elsewhere / "opener.wav").exists()
+    assert removals.read_log(world["bank"] / removals.LOG_FILE)[-1]["outcome"] == "incomplete"
