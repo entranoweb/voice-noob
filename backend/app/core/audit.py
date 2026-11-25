@@ -69,6 +69,14 @@ class AuditAction:
     LOGIN_SUCCESS = "auth.login.success"
     LOGIN_FAILED = "auth.login.failed"
     REGISTER = "auth.register"
+    PASSWORD_RESET_REQUESTED = "auth.password_reset.requested"  # noqa: S105
+    PASSWORD_RESET_COMPLETED = "auth.password_reset.completed"  # noqa: S105
+    REFRESH_REUSE_DETECTED = "auth.refresh.reuse_detected"
+    API_TOKEN_CREATE = "auth.api_token.create"  # noqa: S105
+    API_TOKEN_REVOKE = "auth.api_token.revoke"  # noqa: S105
+
+    # A workspace made by the system, not by a person
+    WORKSPACE_BOOTSTRAP = "workspace.bootstrap"
 
     # Provider credentials
     CREDENTIAL_UPDATE = "credential.update"

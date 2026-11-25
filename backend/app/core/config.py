@@ -124,7 +124,16 @@ class Settings(BaseSettings):
     SECRET_KEY: str = INSECURE_DEFAULT_SECRET_KEY
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
+    # A refresh token is good for this long after it was issued (idle limit; each
+    # rotation starts the window again) ...
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+    # ... but no chain of rotations lasts longer than this from the sign-in.
+    REFRESH_TOKEN_MAX_AGE_DAYS: int = 30
+    # How long an emailed password-reset link works.
+    PASSWORD_RESET_EXPIRE_MINUTES: int = 30
+    # Reset mails one account can be sent per hour. More requests get the same
+    # answer and no mail, so a stranger cannot fill somebody's inbox.
+    PASSWORD_RESET_MAX_PER_HOUR: int = 5
     # Accept carrier webhooks that carry no verifiable signature. Off by default
     # and meant to stay off: it exists so a local rehearsal without a carrier key
     # is a deliberate, named choice instead of a side effect of DEBUG. With it on,
