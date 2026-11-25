@@ -49,6 +49,7 @@ from app.monitoring.call_trace import CallStatus as TraceCallStatus
 from app.monitoring.call_trace import Direction, TerminationReason, ToolOutcome
 from app.monitoring.call_trace_emitter import CallTraceEmitter
 from app.monitoring.metrics import (
+    record_benign_provider_error,
     record_call_completed,
     record_call_failed,
     record_call_initiated,
@@ -95,6 +96,7 @@ class _BridgeState:
     reason: TerminationReason | None = None
     last_activity: float = field(default_factory=time.monotonic)
     tools_in_flight: int = 0
+    tools_running: list[str] = field(default_factory=list)
     tools_idle: asyncio.Event = field(default_factory=asyncio.Event)
 
     def __post_init__(self) -> None:
@@ -108,31 +110,54 @@ class _BridgeState:
         self.last_activity = time.monotonic()
 
     @contextlib.asynccontextmanager
-    async def tool_call(self) -> AsyncIterator[None]:
+    async def tool_call(self, name: str = "") -> AsyncIterator[None]:
         self.tools_in_flight += 1
+        self.tools_running.append(name)
         self.tools_idle.clear()
         try:
             yield
         finally:
             self.tools_in_flight -= 1
+            self.tools_running.remove(name)
             self.touch()
             if self.tools_in_flight == 0:
                 self.tools_idle.set()
 
 
-def _log_provider_error(event: Any, log: Any) -> None:
-    """Log an OpenAI Realtime ``error`` event at ERROR with what it says.
+# Error codes the Realtime API raises for a race the call survives: the model was
+# asked to respond while it already was, or the buffer was committed with nothing
+# in it. The session carries on after either. Everything else, including every
+# code not listed here, ends the call. Keep this list small and explicit.
+BENIGN_PROVIDER_ERROR_CODES = frozenset(
+    {
+        "conversation_already_has_active_response",
+        "input_audio_buffer_commit_empty",
+    }
+)
+
+
+def _provider_error_ends_call(event: Any, log: Any) -> bool:
+    """Log an OpenAI Realtime ``error`` event and say whether the call must end.
 
     The payload is ``{"error": {"type", "code", "message", "param"}}``. ``param``
     is left out: it names the offending field and can quote what was sent.
+
+    A code on the benign allowlist is logged at WARNING and counted; anything
+    else is logged at ERROR and ends the call.
     """
     error = getattr(event, "error", None)
-    log.error(
-        "realtime_provider_error",
-        error_type=getattr(error, "type", None),
-        error_code=getattr(error, "code", None),
-        error_message=getattr(error, "message", None),
-    )
+    code = getattr(error, "code", None)
+    fields = {
+        "error_type": getattr(error, "type", None),
+        "error_code": code,
+        "error_message": getattr(error, "message", None),
+    }
+    if code in BENIGN_PROVIDER_ERROR_CODES:
+        log.warning("realtime_provider_error_ignored", **fields)
+        record_benign_provider_error(code)
+        return False
+    log.error("realtime_provider_error", **fields)
+    return True
 
 
 async def _run_bridge(
@@ -196,8 +221,14 @@ async def _run_bridge(
         pending = [task for task in tasks if not task.done()]
         if model_task in pending and state.tools_in_flight:
             log.info("waiting_for_tool_call_before_teardown", grace_s=settings.CALL_TOOL_GRACE_S)
-            with contextlib.suppress(TimeoutError):
+            try:
                 await asyncio.wait_for(state.tools_idle.wait(), settings.CALL_TOOL_GRACE_S)
+            except TimeoutError:
+                log.warning(
+                    "tool_call_cancelled_after_grace",
+                    tools=list(state.tools_running),
+                    grace_s=settings.CALL_TOOL_GRACE_S,
+                )
     finally:
         for task in tasks:
             task.cancel()
@@ -391,7 +422,7 @@ async def _run_tool_call(
     if state is None:
         result = await realtime_session.handle_function_call_event(event)
     else:
-        async with state.tool_call():
+        async with state.tool_call(event.name):
             result = await realtime_session.handle_function_call_event(event)
     _record_tool_call(turns, event, result, started_at=started_at)
 
@@ -537,12 +568,29 @@ async def save_termination_reason(
     log.info("termination_reason_saved", reason=termination.value)
 
 
+async def _persist_step(
+    name: str, write: Callable[[], Coroutine[Any, Any, None]], db: AsyncSession, log: Any
+) -> None:
+    """Run one write on its own, so a failure here does not skip the others.
+
+    A write that fails is rolled back and logged at ERROR. It does not fail the
+    call: the call already happened, and the failure is the database's, not the
+    conversation's.
+    """
+    try:
+        await write()
+    except Exception:
+        log.exception("call_persistence_failed", step=name)
+        with contextlib.suppress(Exception):
+            await db.rollback()
+
+
 async def _persist_call_artifacts(
     *,
     record_key: str,
     agent: Agent,
     realtime_session: GPTRealtimeSession,
-    recorder: AudioTurnRecorder,
+    recorder: AudioTurnRecorder | None,
     termination: TerminationReason,
     db: AsyncSession,
     log: Any,
@@ -550,19 +598,41 @@ async def _persist_call_artifacts(
     """Write what the call produced onto its record.
 
     The transcript only when the agent stores transcripts; the turn timings
-    always, because they are telemetry about the call rather than its content
-    and are what the audio metrics read once the websocket has closed.
+    (when there is a recorder) because they are telemetry about the call rather
+    than its content and are what the audio metrics read once the websocket has
+    closed; and why the call ended. Each is written independently.
     """
     if not record_key:
         log.warning("no_call_reference_nothing_persisted")
         return
 
+    # Read once, before any write: a rollback expires every loaded object, and a
+    # lazy load on the expired agent would fail the writes that follow.
+    agent_id = agent.id
     if agent.enable_transcript:
         transcript = realtime_session.get_transcript()
-        await save_transcript_to_call_record(record_key, transcript, db, log, agent_id=agent.id)
+        await _persist_step(
+            "transcript",
+            lambda: save_transcript_to_call_record(
+                record_key, transcript, db, log, agent_id=agent_id
+            ),
+            db,
+            log,
+        )
 
-    await save_turns_to_call_record(record_key, recorder, db, log, agent_id=agent.id)
-    await save_termination_reason(record_key, termination, db, log, agent_id=agent.id)
+    if recorder is not None:
+        await _persist_step(
+            "turns",
+            lambda: save_turns_to_call_record(record_key, recorder, db, log, agent_id=agent_id),
+            db,
+            log,
+        )
+    await _persist_step(
+        "termination_reason",
+        lambda: save_termination_reason(record_key, termination, db, log, agent_id=agent_id),
+        db,
+        log,
+    )
 
 
 async def save_transcript_to_call_record(
@@ -608,7 +678,7 @@ async def save_transcript_to_call_record(
 
 
 @router.websocket("/twilio/{agent_id}")
-async def twilio_media_stream(  # noqa: PLR0912, PLR0915
+async def twilio_media_stream(  # noqa: PLR0915
     websocket: WebSocket,
     agent_id: str,
     db: AsyncSession = Depends(get_db),
@@ -720,14 +790,15 @@ async def twilio_media_stream(  # noqa: PLR0912, PLR0915
                 initial_start=start_frame,
             )
 
-            # Save transcript to call record if enabled
-            if agent.enable_transcript and call_sid:
-                transcript = realtime_session.get_transcript()
-                await save_transcript_to_call_record(
-                    call_sid, transcript, db, log, agent_id=agent.id
-                )
-            if call_sid:
-                await save_termination_reason(call_sid, termination, db, log, agent_id=agent.id)
+            await _persist_call_artifacts(
+                record_key=call_sid,
+                agent=agent,
+                realtime_session=realtime_session,
+                recorder=None,
+                termination=termination,
+                db=db,
+                log=log,
+            )
 
     except WebSocketDisconnect:
         log.info("twilio_websocket_disconnected")
@@ -869,9 +940,9 @@ async def _handle_twilio_stream(  # noqa: PLR0915
                         log.info("initial_greeting_triggered_after_session_update")
 
                 elif event_type == "error":
-                    _log_provider_error(event, log)
-                    state.end(TerminationReason.PIPELINE_ERROR)
-                    break
+                    if _provider_error_ends_call(event, log):
+                        state.end(TerminationReason.PIPELINE_ERROR)
+                        break
 
                 # Handle audio output
                 elif event_type == "response.output_audio.delta":
@@ -915,7 +986,7 @@ async def _handle_twilio_stream(  # noqa: PLR0915
                         call_id=event.call_id,
                         name=event.name,
                     )
-                    async with state.tool_call():
+                    async with state.tool_call(event.name):
                         result = await realtime_session.handle_function_call_event(event)
                     # Check if this is an end_call action
                     if result.get("action") == "end_call":
@@ -1307,9 +1378,9 @@ async def _handle_telnyx_stream(  # noqa: PLR0915
                         log.info("initial_greeting_triggered_after_session_update")
 
                 elif event_type == "error":
-                    _log_provider_error(event, log)
-                    state.end(TerminationReason.PIPELINE_ERROR)
-                    break
+                    if _provider_error_ends_call(event, log):
+                        state.end(TerminationReason.PIPELINE_ERROR)
+                        break
 
                 # Handle audio output
                 elif event_type == "response.output_audio.delta":

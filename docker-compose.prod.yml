@@ -127,6 +127,11 @@ services:
       # Where rate-limit counts are kept. Empty: the Redis above, shared by
       # every worker. "memory://" counts per process.
       RATE_LIMIT_STORAGE_URI: ${RATE_LIMIT_STORAGE_URI:-}
+      # Call length: a hard cap, how long a call may go without anyone speaking
+      # (0 disables), and how long a running tool may finish after the call ends.
+      CALL_MAX_DURATION_S: ${CALL_MAX_DURATION_S:-1800}
+      CALL_IDLE_TIMEOUT_S: ${CALL_IDLE_TIMEOUT_S:-120}
+      CALL_TOOL_GRACE_S: ${CALL_TOOL_GRACE_S:-10}
       DEBUG: ${DEBUG:-false}
       # Optional. A trace carries transcripts, so cleartext to a non-loopback
       # host is refused.

@@ -387,6 +387,59 @@ class TestModelEnds:
         await _no_bridge_tasks_left()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("code", "kind"),
+        [
+            ("invalid_api_key", "invalid_request_error"),
+            ("rate_limit_exceeded", "rate_limit_error"),
+            ("insufficient_quota", "insufficient_quota"),
+            (None, "server_error"),
+        ],
+    )
+    async def test_every_fatal_or_unknown_error_ends_the_call(
+        self, open_call: Any, code: str | None, kind: str
+    ) -> None:
+        async with open_call.call() as call:
+            session = _session()
+            session.connection.push(
+                "error", error=SimpleNamespace(type=kind, code=code, message="no")
+            )
+
+            assert await _carrier_closed(call) == 1000
+            await _closed_within(session, HANG_UP_BUDGET_S)
+
+        assert (await open_call.record()).termination_reason == "pipeline_error"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "code",
+        ["conversation_already_has_active_response", "input_audio_buffer_commit_empty"],
+    )
+    async def test_a_benign_race_is_logged_as_a_warning_counted_and_the_call_goes_on(
+        self, open_call: Any, monkeypatch: pytest.MonkeyPatch, code: str
+    ) -> None:
+        counted: list[str] = []
+        monkeypatch.setattr(telephony_ws, "record_benign_provider_error", counted.append)
+        async with open_call.call() as call:
+            session = _session()
+            with structlog.testing.capture_logs() as logs:
+                session.connection.push(
+                    "error",
+                    error=SimpleNamespace(type="invalid_request_error", code=code, message="race"),
+                )
+                await asyncio.sleep(0.3)
+
+            assert not session.closed.is_set(), "a benign race ended the call"
+            await call.stop()
+            await _closed_within(session, HANG_UP_BUDGET_S)
+
+        assert counted == [code]
+        ignored = [e for e in logs if e.get("event") == "realtime_provider_error_ignored"]
+        assert [e["log_level"] for e in ignored] == ["warning"]
+        assert not [e for e in logs if e.get("log_level") == "error"]
+        assert (await open_call.record()).termination_reason == "caller_hangup"
+
+    @pytest.mark.asyncio
     async def test_the_agent_ending_the_call_is_still_recorded_as_the_agent(
         self, open_call: Any
     ) -> None:
@@ -563,34 +616,102 @@ class TestToolInFlightAtTeardown:
                 arguments="{}",
             )
             await asyncio.sleep(0.1)
-            await call.stop()
+            with structlog.testing.capture_logs() as logs:
+                await call.stop()
 
-            await _closed_within(session, 2.0)
+                await _closed_within(session, 2.0)
 
             assert session.tool_cancelled
+        cancelled = [e for e in logs if e.get("event") == "tool_call_cancelled_after_grace"]
+        assert len(cancelled) == 1
+        assert cancelled[0]["tools"] == ["book_appointment"]
+        assert cancelled[0]["log_level"] == "warning"
+        await _no_bridge_tasks_left()
+
+    @pytest.mark.asyncio
+    async def test_the_duration_cap_landing_mid_tool_lets_the_tool_finish(
+        self, open_call: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(settings, "CALL_MAX_DURATION_S", 0.5)
+        _LiveSession.tool_seconds = 1.0
+        async with open_call.call() as call:
+            session = _session()
+            session.connection.push(
+                "response.function_call_arguments.done",
+                call_id="fc-1",
+                name="book_appointment",
+                arguments="{}",
+            )
+            await asyncio.sleep(0.2)
+            assert session.tool_started
+
+            await asyncio.sleep(0.5)
+            assert not session.closed.is_set(), "the cap cut a tool that was writing"
+            await _closed_within(session, 3.0)
+
+            assert session.tool_finished
+            assert not session.tool_cancelled
+            assert await _carrier_closed(call) == 1000
+
+        assert (await open_call.record()).termination_reason == "max_duration"
         await _no_bridge_tasks_left()
 
 
 @pytest.mark.parametrize("open_call", CARRIERS, indirect=True)
 class TestPersistenceFailure:
+    @staticmethod
+    async def _hang_up(open_call: Any) -> None:
+        async with open_call.call() as call:
+            await call.media()
+            session = _session()
+            await call.stop()
+            await _closed_within(session, HANG_UP_BUDGET_S)
+
     @pytest.mark.asyncio
-    async def test_a_failed_write_still_closes_the_session_and_unregisters(
+    async def test_a_failed_transcript_write_does_not_skip_the_termination_reason(
         self,
         open_call: Any,
         registry: dict[str, list[str]],
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        failed: list[tuple[str, str]] = []
+        monkeypatch.setattr(
+            telephony_ws,
+            "record_call_failed",
+            lambda agent_id, error_type: failed.append((agent_id, error_type)),
+        )
+
         async def _boom(*_: Any, **__: Any) -> None:
             message = "database went away"
             raise RuntimeError(message)
 
         monkeypatch.setattr(telephony_ws, "save_transcript_to_call_record", _boom)
-        async with open_call.call() as call:
-            await call.media()
-            session = _session()
-            await call.stop()
+        with structlog.testing.capture_logs() as logs:
+            await self._hang_up(open_call)
 
-            await _closed_within(session, HANG_UP_BUDGET_S)
-
+        record = await open_call.record()
+        assert record.termination_reason == "caller_hangup"
+        assert record.transcript in (None, "")
+        errors = [e for e in logs if e.get("event") == "call_persistence_failed"]
+        assert [(e["step"], e["log_level"]) for e in errors] == [("transcript", "error")]
+        assert failed == [], "a persistence failure marked the call as failed"
         assert registry["unregistered"] == [open_call.provider_call_id]
         await _no_bridge_tasks_left()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_termination_write_does_not_lose_the_transcript(
+        self, open_call: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def _boom(*_: Any, **__: Any) -> None:
+            message = "database went away"
+            raise RuntimeError(message)
+
+        monkeypatch.setattr(telephony_ws, "save_termination_reason", _boom)
+        with structlog.testing.capture_logs() as logs:
+            await self._hang_up(open_call)
+
+        record = await open_call.record()
+        assert record.transcript == "User: hello"
+        assert record.termination_reason is None
+        errors = [e for e in logs if e.get("event") == "call_persistence_failed"]
+        assert [e["step"] for e in errors] == ["termination_reason"]
