@@ -109,6 +109,7 @@ def dry_run(
     read_back: ReadBack | None = None,
     hooks: Hooks | None = None,
     target: dict[str, Any] | None = None,
+    allow_ungradeable: bool = False,
 ) -> list[str]:
     """Every line a dry run prints. Runs nothing."""
     allowed = ALLOWED[allow_mutating]
@@ -126,7 +127,9 @@ def dry_run(
     for file, scenario in scenarios:
         lines.append(f"{file}  mutates={scenario.mutates}  clean_state={scenario.clean_state}")
         why = ""
-        if scenario.mutates not in allowed:
+        if not allow_ungradeable and not scenario.states_expectations():
+            why = "UNGRADEABLE: the scenario states no expectations, so no call could pass it"
+        elif scenario.mutates not in allowed:
             why = f"mutation guard: scenario {scenario.mutates}, batch allows {allow_mutating}"
         elif scenario.missing_clips:
             why = f"missing clips: {list(scenario.missing_clips)}"
