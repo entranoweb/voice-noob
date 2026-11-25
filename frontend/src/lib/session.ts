@@ -129,3 +129,23 @@ export function accessTokenExpiry(token: string): number | null {
 
 /** Renew this long before the access token runs out. */
 export const RENEW_MARGIN_MS = 2 * 60 * 1000;
+
+/**
+ * `fetch` for authenticated calls: sends the current access token, and when the
+ * server answers 401, renews the session once and sends the request again. If
+ * the renewal fails the 401 is returned as it is, and `refreshSession` has
+ * already cleared the session. Bodies must be strings or other replayable values.
+ */
+export async function authedFetch(input: string, init: RequestInit = {}): Promise<Response> {
+  const send = (token: string | null) => {
+    const headers = new Headers(init.headers);
+    if (token) headers.set("Authorization", `Bearer ${token}`);
+    return fetch(input, { ...init, headers });
+  };
+
+  const response = await send(getAccessToken());
+  if (response.status !== 401) return response;
+
+  const renewed = await refreshSession();
+  return renewed ? send(renewed) : response;
+}

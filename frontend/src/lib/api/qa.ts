@@ -2,6 +2,8 @@
  * API client for QA evaluation and testing
  */
 
+import { authedFetch } from "@/lib/session";
+
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 function getAuthHeaders(): HeadersInit {
@@ -192,7 +194,7 @@ export interface RunScenarioResponse {
  * Get QA system status
  */
 export async function getQAStatus(): Promise<QAStatus> {
-  const response = await fetch(`${API_BASE}/api/v1/qa/status`, {
+  const response = await authedFetch(`${API_BASE}/api/v1/qa/status`, {
     headers: getAuthHeaders(),
   });
 
@@ -237,7 +239,7 @@ export interface WorkspaceQASettingsResponse {
 export async function getWorkspaceQASettings(
   workspaceId: string
 ): Promise<WorkspaceQASettingsResponse> {
-  const response = await fetch(`${API_BASE}/api/v1/qa/workspace/${workspaceId}/settings`, {
+  const response = await authedFetch(`${API_BASE}/api/v1/qa/workspace/${workspaceId}/settings`, {
     headers: getAuthHeaders(),
   });
 
@@ -256,7 +258,7 @@ export async function updateWorkspaceQASettings(
   workspaceId: string,
   settings: WorkspaceQASettingsUpdate
 ): Promise<WorkspaceQASettingsResponse> {
-  const response = await fetch(`${API_BASE}/api/v1/qa/workspace/${workspaceId}/settings`, {
+  const response = await authedFetch(`${API_BASE}/api/v1/qa/workspace/${workspaceId}/settings`, {
     method: "PUT",
     headers: {
       ...getAuthHeaders(),
@@ -290,9 +292,12 @@ export async function listEvaluations(
   if (params.workspace_id) searchParams.set("workspace_id", params.workspace_id);
   if (params.passed !== undefined) searchParams.set("passed", params.passed.toString());
 
-  const response = await fetch(`${API_BASE}/api/v1/qa/evaluations?${searchParams.toString()}`, {
-    headers: getAuthHeaders(),
-  });
+  const response = await authedFetch(
+    `${API_BASE}/api/v1/qa/evaluations?${searchParams.toString()}`,
+    {
+      headers: getAuthHeaders(),
+    }
+  );
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ detail: response.statusText }));
@@ -306,7 +311,7 @@ export async function listEvaluations(
  * Get a specific evaluation
  */
 export async function getEvaluation(evaluationId: string): Promise<CallEvaluation> {
-  const response = await fetch(`${API_BASE}/api/v1/qa/evaluations/${evaluationId}`, {
+  const response = await authedFetch(`${API_BASE}/api/v1/qa/evaluations/${evaluationId}`, {
     headers: getAuthHeaders(),
   });
 
@@ -322,7 +327,7 @@ export async function getEvaluation(evaluationId: string): Promise<CallEvaluatio
  * Get evaluation for a specific call
  */
 export async function getCallEvaluation(callId: string): Promise<CallEvaluation> {
-  const response = await fetch(`${API_BASE}/api/v1/qa/calls/${callId}/evaluation`, {
+  const response = await authedFetch(`${API_BASE}/api/v1/qa/calls/${callId}/evaluation`, {
     headers: getAuthHeaders(),
   });
 
@@ -340,7 +345,7 @@ export async function getCallEvaluation(callId: string): Promise<CallEvaluation>
 export async function evaluateCall(
   callId: string
 ): Promise<{ message: string; evaluation_id: string | null; queued: boolean }> {
-  const response = await fetch(`${API_BASE}/api/v1/qa/evaluate`, {
+  const response = await authedFetch(`${API_BASE}/api/v1/qa/evaluate`, {
     method: "POST",
     headers: {
       ...getAuthHeaders(),
@@ -372,7 +377,7 @@ export async function getQAMetrics(params: {
   if (params.agent_id) searchParams.set("agent_id", params.agent_id);
   if (params.workspace_id) searchParams.set("workspace_id", params.workspace_id);
 
-  const response = await fetch(`${API_BASE}/api/v1/qa/metrics?${searchParams.toString()}`, {
+  const response = await authedFetch(`${API_BASE}/api/v1/qa/metrics?${searchParams.toString()}`, {
     headers: getAuthHeaders(),
   });
 
@@ -401,7 +406,7 @@ export async function getDashboardMetrics(params: {
   if (params.workspace_id) searchParams.set("workspace_id", params.workspace_id);
   if (params.days) searchParams.set("days", params.days.toString());
 
-  const response = await fetch(
+  const response = await authedFetch(
     `${API_BASE}/api/v1/qa/dashboard/metrics?${searchParams.toString()}`,
     {
       headers: getAuthHeaders(),
@@ -431,7 +436,7 @@ export async function getTrends(params: {
   if (params.metric) searchParams.set("metric", params.metric);
   if (params.days) searchParams.set("days", params.days.toString());
 
-  const response = await fetch(
+  const response = await authedFetch(
     `${API_BASE}/api/v1/qa/dashboard/trends?${searchParams.toString()}`,
     {
       headers: getAuthHeaders(),
@@ -461,7 +466,7 @@ export async function getFailureReasons(params: {
   if (params.days) searchParams.set("days", params.days.toString());
   if (params.limit) searchParams.set("limit", params.limit.toString());
 
-  const response = await fetch(
+  const response = await authedFetch(
     `${API_BASE}/api/v1/qa/dashboard/failure-reasons?${searchParams.toString()}`,
     {
       headers: getAuthHeaders(),
@@ -487,7 +492,7 @@ export async function getAgentComparison(params: {
   searchParams.set("workspace_id", params.workspace_id);
   if (params.days) searchParams.set("days", params.days.toString());
 
-  const response = await fetch(
+  const response = await authedFetch(
     `${API_BASE}/api/v1/qa/dashboard/agent-comparison?${searchParams.toString()}`,
     {
       headers: getAuthHeaders(),
@@ -558,9 +563,12 @@ export async function listScenarios(params: {
     searchParams.set("built_in_only", params.built_in_only.toString());
   }
 
-  const response = await fetch(`${API_BASE}/api/v1/testing/scenarios?${searchParams.toString()}`, {
-    headers: getAuthHeaders(),
-  });
+  const response = await authedFetch(
+    `${API_BASE}/api/v1/testing/scenarios?${searchParams.toString()}`,
+    {
+      headers: getAuthHeaders(),
+    }
+  );
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ detail: response.statusText }));
@@ -576,7 +584,7 @@ export async function listScenarios(params: {
  * Get a specific test scenario
  */
 export async function getScenario(scenarioId: string): Promise<TestScenario> {
-  const response = await fetch(`${API_BASE}/api/v1/testing/scenarios/${scenarioId}`, {
+  const response = await authedFetch(`${API_BASE}/api/v1/testing/scenarios/${scenarioId}`, {
     headers: getAuthHeaders(),
   });
 
@@ -592,7 +600,7 @@ export async function getScenario(scenarioId: string): Promise<TestScenario> {
  * Create a new test scenario
  */
 export async function createScenario(data: TestScenarioCreate): Promise<TestScenario> {
-  const response = await fetch(`${API_BASE}/api/v1/testing/scenarios`, {
+  const response = await authedFetch(`${API_BASE}/api/v1/testing/scenarios`, {
     method: "POST",
     headers: {
       ...getAuthHeaders(),
@@ -616,7 +624,7 @@ export async function updateScenario(
   scenarioId: string,
   data: TestScenarioUpdate
 ): Promise<TestScenario> {
-  const response = await fetch(`${API_BASE}/api/v1/testing/scenarios/${scenarioId}`, {
+  const response = await authedFetch(`${API_BASE}/api/v1/testing/scenarios/${scenarioId}`, {
     method: "PUT",
     headers: {
       ...getAuthHeaders(),
@@ -637,7 +645,7 @@ export async function updateScenario(
  * Delete a test scenario
  */
 export async function deleteScenario(scenarioId: string): Promise<void> {
-  const response = await fetch(`${API_BASE}/api/v1/testing/scenarios/${scenarioId}`, {
+  const response = await authedFetch(`${API_BASE}/api/v1/testing/scenarios/${scenarioId}`, {
     method: "DELETE",
     headers: getAuthHeaders(),
   });
@@ -652,10 +660,13 @@ export async function deleteScenario(scenarioId: string): Promise<void> {
  * Duplicate a test scenario
  */
 export async function duplicateScenario(scenarioId: string): Promise<DuplicateScenarioResponse> {
-  const response = await fetch(`${API_BASE}/api/v1/testing/scenarios/${scenarioId}/duplicate`, {
-    method: "POST",
-    headers: getAuthHeaders(),
-  });
+  const response = await authedFetch(
+    `${API_BASE}/api/v1/testing/scenarios/${scenarioId}/duplicate`,
+    {
+      method: "POST",
+      headers: getAuthHeaders(),
+    }
+  );
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ detail: response.statusText }));
@@ -669,7 +680,7 @@ export async function duplicateScenario(scenarioId: string): Promise<DuplicateSc
  * Seed built-in test scenarios
  */
 export async function seedScenarios(): Promise<SeedScenariosResponse> {
-  const response = await fetch(`${API_BASE}/api/v1/testing/scenarios/seed`, {
+  const response = await authedFetch(`${API_BASE}/api/v1/testing/scenarios/seed`, {
     method: "POST",
     headers: getAuthHeaders(),
   });
@@ -691,7 +702,7 @@ export async function seedScenarios(): Promise<SeedScenariosResponse> {
  * finished; fetch the result with `getTestRun(test_run_id)`.
  */
 export async function runScenario(params: RunScenarioParams): Promise<RunScenarioResponse> {
-  const response = await fetch(`${API_BASE}/api/v1/testing/run`, {
+  const response = await authedFetch(`${API_BASE}/api/v1/testing/run`, {
     method: "POST",
     headers: {
       ...getAuthHeaders(),
@@ -719,7 +730,7 @@ export async function listTestRuns(params: {
   if (params.agent_id) searchParams.set("agent_id", params.agent_id);
   if (params.status) searchParams.set("status", params.status);
 
-  const response = await fetch(`${API_BASE}/api/v1/testing/runs?${searchParams.toString()}`, {
+  const response = await authedFetch(`${API_BASE}/api/v1/testing/runs?${searchParams.toString()}`, {
     headers: getAuthHeaders(),
   });
 
@@ -737,7 +748,7 @@ export async function listTestRuns(params: {
  * Get a specific test run
  */
 export async function getTestRun(runId: string): Promise<ScenarioRun> {
-  const response = await fetch(`${API_BASE}/api/v1/testing/runs/${runId}`, {
+  const response = await authedFetch(`${API_BASE}/api/v1/testing/runs/${runId}`, {
     headers: getAuthHeaders(),
   });
 

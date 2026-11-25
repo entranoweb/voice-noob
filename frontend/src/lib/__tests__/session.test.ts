@@ -2,8 +2,10 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { http, HttpResponse } from "msw";
 import { server } from "@/test/test-utils";
+import { getCallStats } from "@/lib/api/calls";
 import {
   accessTokenExpiry,
+  authedFetch,
   clearSession,
   getAccessToken,
   getRefreshToken,
@@ -81,5 +83,75 @@ describe("accessTokenExpiry", () => {
 
   it("is null for anything that is not a token", () => {
     expect(accessTokenExpiry("nonsense")).toBeNull();
+  });
+});
+
+describe("authedFetch", () => {
+  beforeEach(() => {
+    clearSession();
+    storeSession({ access_token: "old-access", refresh_token: "old-refresh" });
+  });
+
+  function serve(seen: string[], refreshCalls: { n: number }) {
+    server.use(
+      http.get(`${API}/api/v1/probe`, ({ request }) => {
+        const auth = request.headers.get("authorization") ?? "";
+        seen.push(auth);
+        return auth === "Bearer new-access"
+          ? HttpResponse.json({ ok: true })
+          : HttpResponse.json({ detail: "expired" }, { status: 401 });
+      }),
+      http.post(`${API}/api/v1/auth/refresh`, () => {
+        refreshCalls.n += 1;
+        return HttpResponse.json({ access_token: "new-access", refresh_token: "new-refresh" });
+      })
+    );
+  }
+
+  it("on a 401 refreshes once and retries with the new token", async () => {
+    const seen: string[] = [];
+    const refreshCalls = { n: 0 };
+    serve(seen, refreshCalls);
+
+    const response = await authedFetch(`${API}/api/v1/probe`);
+
+    expect(response.status).toBe(200);
+    expect(refreshCalls.n).toBe(1);
+    expect(seen).toEqual(["Bearer old-access", "Bearer new-access"]);
+  });
+
+  it("gives up after one retry and returns the 401 when the refresh is refused", async () => {
+    server.use(
+      http.get(`${API}/api/v1/probe`, () => HttpResponse.json({ detail: "x" }, { status: 401 })),
+      http.post(`${API}/api/v1/auth/refresh`, () => HttpResponse.json({}, { status: 401 }))
+    );
+
+    const response = await authedFetch(`${API}/api/v1/probe`);
+
+    expect(response.status).toBe(401);
+    expect(getAccessToken()).toBeNull();
+  });
+
+  it("is used by the call-history client", async () => {
+    const seen: string[] = [];
+    const refreshCalls = { n: 0 };
+    server.use(
+      http.get(`${API}/api/v1/calls/stats`, ({ request }) => {
+        const auth = request.headers.get("authorization") ?? "";
+        seen.push(auth);
+        return auth === "Bearer new-access"
+          ? HttpResponse.json({ total_calls: 3 })
+          : HttpResponse.json({ detail: "expired" }, { status: 401 });
+      }),
+      http.post(`${API}/api/v1/auth/refresh`, () => {
+        refreshCalls.n += 1;
+        return HttpResponse.json({ access_token: "new-access", refresh_token: "new-refresh" });
+      })
+    );
+
+    await getCallStats();
+
+    expect(refreshCalls.n).toBe(1);
+    expect(seen).toEqual(["Bearer old-access", "Bearer new-access"]);
   });
 });
