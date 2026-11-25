@@ -1,0 +1,22 @@
+{
+  "notes": "An example for read_back_sql.py. Copy it outside the repository and make the table and column names those of the system under test: the ones below are a common shape, not a statement about any system. Each query answers the keys listed in 'columns'; the select must return columns of those names. 'name', 'date_of_birth', 'postcode' and 'phone' are graded as the caller's stored facts; any other key can be required with expect.read_back in a scenario or captured by a chain.",
+  "timeout_ms": 10000,
+  "settings": {
+    "app.current_tenant_id": "scope_id"
+  },
+  "sanity": "select 1 from tenants where id = %(scope_id)s::uuid",
+  "queries": [
+    {
+      "name": "patient",
+      "needs": ["fact_name"],
+      "columns": ["patient_id", "name", "date_of_birth", "phone"],
+      "sql": "select id::text as patient_id, full_name as name, date_of_birth::date as date_of_birth, phone from patients where tenant_id = %(scope_id)s::uuid and lower(full_name) = lower(%(fact_name)s) order by created_at desc limit 1"
+    },
+    {
+      "name": "latest appointment",
+      "needs": ["fact_name"],
+      "columns": ["appointment_id", "appointment_status", "appointment_start", "appointment_type"],
+      "sql": "select a.id::text as appointment_id, a.status as appointment_status, a.start_time as appointment_start, a.type as appointment_type from appointments a join patients p on p.id = a.patient_id and p.tenant_id = a.tenant_id where a.tenant_id = %(scope_id)s::uuid and lower(p.full_name) = lower(%(fact_name)s) order by a.created_at desc limit 1"
+    }
+  ]
+}

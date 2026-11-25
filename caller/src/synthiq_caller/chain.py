@@ -127,10 +127,16 @@ class ChainCall:
     mutates: str
     uses: frozenset[str]
     missing_clips: tuple[str, ...] = ()
+    # The profile of the system under test (``target.py``) and the name this
+    # call's appointment goes under in its ``bookings``: "<chain file>/<call id>".
+    target: dict[str, Any] | None = None
+    key: str = ""
+    # Parts of this call's appointment left to the profile that it does not give.
+    missing_target: tuple[str, ...] = ()
 
     def scenario(self, variables: dict[str, str]) -> Scenario:
         """This call's scenario with the values earlier calls produced."""
-        return parse_scenario(render(self.raw, variables))
+        return parse_scenario(render(self.raw, variables), self.target, self.key)
 
 
 @dataclass(frozen=True)
@@ -176,7 +182,12 @@ def _parse_capture(name: str, raw: Any) -> Capture:
     raise ScenarioError(f"capture {name!r} needs 'tool', 'field', 'agent_says' or 'read_back'")
 
 
-def parse_chain(data: dict[str, Any]) -> Chain:
+def parse_chain(data: dict[str, Any], target: dict[str, Any] | None = None, key: str = "") -> Chain:
+    """Make a chain of ``data``, each call filled in from the target's profile.
+
+    ``key`` is the chain's file name without its ending. A call's appointment is
+    looked up in the profile's ``bookings`` under ``<key>/<call id>``.
+    """
     if not isinstance(data.get("name"), str) or not data["name"]:
         raise ScenarioError("a chain needs a name")
     raw_calls = data.get("chain")
@@ -206,8 +217,9 @@ def parse_chain(data: dict[str, Any]) -> Chain:
             raise ScenarioError(
                 f"chain call {call_id!r} uses {unknown}, which no earlier call captures"
             )
+        call_key = f"{key}/{call_id}" if key else call_id
         try:
-            shape = parse_scenario(render(raw, dict.fromkeys(uses, "x")))
+            shape = parse_scenario(render(raw, dict.fromkeys(uses, "x")), target, call_key)
         except ScenarioError as error:
             raise ScenarioError(f"chain call {call_id!r}: {error}") from error
         expect = shape.expect
@@ -231,6 +243,9 @@ def parse_chain(data: dict[str, Any]) -> Chain:
                 mutates=shape.mutates,
                 uses=frozenset(uses),
                 missing_clips=shape.missing_clips,
+                target=target,
+                key=call_key,
+                missing_target=shape.missing_target,
             )
         )
         known |= {capture.name for capture in captures}
@@ -244,8 +259,8 @@ def parse_chain(data: dict[str, Any]) -> Chain:
     )
 
 
-def load_chain(path: str | Path) -> Chain:
-    return parse_chain(read_scenario_file(path))
+def load_chain(path: str | Path, target: dict[str, Any] | None = None) -> Chain:
+    return parse_chain(read_scenario_file(path), target, Path(path).stem)
 
 
 def is_chain_file(path: str | Path) -> bool:
