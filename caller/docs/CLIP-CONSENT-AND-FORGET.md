@@ -30,7 +30,7 @@ The id rules cannot stop someone typing `spk_jane1985`. Mint ids at random and k
 ### What the tool does with them
 
 - **`validate`** (with `--clips`) fails when a clip is past `retain_until` or a field is written and wrong. It reports, without failing, each clip with no provenance and each real recording that lacks a speaker ref, a lawful basis or a date. A scenario that names a clip past retention is marked `CLIPS PAST RETENTION`; one that names a clip with unknown provenance says so.
-- **`batch` and `run`** will not play a clip past its retention date (no flag allows it). They will not play a clip whose provenance is unknown unless given `--allow-unknown-provenance`; the call is then stored with `provenance_unknown` listing the clips, and `report` and `acceptance` say "provenance unknown", the same way they say "labels unverified". A clip that is not in any manifest has unknown provenance.
+- **`batch` and `run`** will not play a clip past its retention date (no flag allows it; a `retain_until` that cannot be read counts as past, and the day is judged in UTC). The check is made where every clip is played (the clip bank), so `batch`, `run`, chains, regrade, and the phone leg (`synthiq-caller-phone`, real and `--dry-run`) all obey it; the phone command takes `--allow-unknown-provenance` and `--clips-extra` too. They will not play a clip whose provenance is unknown unless given `--allow-unknown-provenance`; the call is then stored with `provenance_unknown` listing the clips, and `report` and `acceptance` say "provenance unknown", the same way they say "labels unverified". A clip that is not in any manifest has unknown provenance.
 - A clip in an old manifest, or one with no `provenance` cell, is *unknown*, not *real*. Before this change the bank treated a missing value as real. To play an existing bank without the flag, add the column: `provenance` is `real` for recordings of people and `synthetic` for made voices.
 
 ## `forget`
@@ -39,20 +39,22 @@ The id rules cannot stop someone typing `spk_jane1985`. Mint ids at random and k
 synthiq-caller forget <clip id | spk_ref> --clips <bank> [--clips-extra <bank>]
     [--scenarios <dir>]... [--results <dir>]...
     --operator op_<opaque id> [--reason erasure_request|consent_withdrawn|retention_expired|other]
-    [--request-ref <id>] [--dry-run]
+    [--request-ref <id>] [--keep-text] [--recordings <dir>]... [--dry-run]
 ```
 
 Run it with `--dry-run` first: it lists everything below and changes nothing, not even the log.
 
-It takes a clip id (with or without `.wav`), or a speaker ref, which means every clip with that ref in any manifest or earlier removal record. Then, for each clip:
+It takes one clip id (with or without an audio ending; `a` never touches `a.v2`), or a speaker ref, which means every clip with that ref in any manifest or earlier removal record. Then, for each clip:
 
-1. **Audio.** Deletes `<clip>.wav` (and any other audio file of that name) from every bank directory.
+The target is never used as a pattern: `*`, `?` and `[ab]` are refused, and it must be a clip in a manifest, an earlier removal record, or an audio file of exactly that name, or a known speaker ref. Anything else changes nothing.
+
+1. **Audio.** Deletes `<clip>.wav`, `.mp3` or `.flac` (exact name) from every bank directory, including its subfolders.
 2. **Manifest.** Removes the clip's row from each `manifest.csv` and its entry from `overrides.json`, because both hold a transcript of what the person said.
-3. **Scenarios and chains** in each `--scenarios` directory that play it. The step's clip becomes `missing/<clip>` and the scenario gets a `missing_clips` entry saying the clip was removed. From then on `validate` prints `MISSING CLIP` for it and a batch lists it under "not run: missing clips". The file is rewritten as JSON in the indent it had; key order is kept. Restore it by recording a new clip and editing the step back.
-4. **Stored results** in each `--results` directory: every `run-*.json`, `chain-*.json` and `batch.json` that names a clip gets a top-level `clips_removed` list (`clip`, `removal`, `removed_on`). A chain file is marked when any run it points to was. The grade is not touched, so a result stays what it was; `report` adds "clips removed: N call(s)" so nobody mistakes it for something that can be played again.
-5. **The record.** Appends one line to `removals.jsonl` in the `--clips` directory: what (clip ids, the speaker refs they carried), when, why, which operator (an opaque id), the request reference, and the counts and file names touched. It holds no name, no transcript and no audio. Nothing is ever rewritten or removed from it. A bank reads it, so a removed clip stays ruled out even if a copy of the file is put back; a line that is not valid JSON stops the bank from loading, because skipping it would bring a clip back.
+3. **Scenarios and chains** in each `--scenarios` directory that play it. The step's clip becomes `missing/<clip>` and the scenario gets a `missing_clips` entry saying the clip was removed. From then on `validate` prints `MISSING CLIP` for it and a batch lists it under "not run: missing clips". JSON files are rewritten in the indent they had, YAML/YML files (as `batch` loads them, needs PyYAML) are rewritten as YAML; key order is kept. A scenario that names the clip and cannot be read or rewritten is reported and makes the run incomplete. Restore it by recording a new clip and editing the step back.
+4. **Stored results** in each `--results` directory: every `run-*.json`, `chain-*.json` and `batch.json` that names a clip gets a top-level `clips_removed` list (`clip`, `removal`, `removed_on`). A chain file is marked when any run it points to was. **Erasure redaction.** Unless told otherwise, `intended` and `heard` in every stored `said` entry whose clips include a removed clip become `[redacted <removal id>]`, and the mark says `redacted: true`. Grades and timings are kept. `--keep-text` keeps the text, and is allowed only with `--reason retention_expired`. (The default is a coordinator decision pending owner review.) `read_back`, `trace` and other free text elsewhere in a result are not redacted. The grade is not touched, so a result stays what it was; `report` adds "clips removed: N call(s)" so nobody mistakes it for something that can be played again.
+5. **The record.** Appends two lines to `removals.jsonl`, `started` before anything is changed and `complete` or `incomplete` (with a `failed` list) when it ends, in the `--clips` directory: what (clip ids, the speaker refs they carried), when, why, which operator (an opaque id), the request reference, and the counts and file names touched. It holds no name, no transcript and no audio. Nothing is ever rewritten or removed from it. A bank reads it, so a removed clip stays ruled out even if a copy of the file is put back; a line that is not valid JSON stops the bank from loading, because skipping it would bring a clip back.
 
-It is idempotent. Run again, it finds nothing left to change and says so; no second record is written for no work. Run again with a further `--results` directory, it marks that directory too and writes a record of that work. If it is interrupted, run it again: the audio is deleted first, the record is written after the stored files change, and the manifest rows go last.
+It is idempotent. Run again, it finds nothing left to change and says so; no second record is written for no work. Run again with a further `--results` directory, it marks that directory too and writes a record of that work. A failure on one file (a read-only file, say) does not stop the rest: the record says `incomplete`, the command prints what failed and exits 1. Fix the cause and run it again to finish. If it is interrupted, run it again: the audio is deleted first, the record is written after the stored files change, and the manifest rows go last.
 
 ### What it lists and does not change
 
@@ -63,7 +65,8 @@ It is idempotent. Run again, it finds nothing left to change and says so; no sec
 
 - **Runs uploaded to a dashboard** hold the clip names and the transcript of what the caller said, in the server's database. `forget` cannot change them. Delete those runs on the server, or upload the directory again with `upload --replace` after the results here were handled. A directory with `upload.json` was uploaded.
 - The carrier's and the voice engine's own recordings of the calls, and any backup or copy of the bank, scenarios or results made before.
-- Transcripts in stored results (`record.said`, `read_back`, `trace`) stay as they are. `forget` marks them; it does not redact them. Whether stored results must be redacted to meet an erasure request is a decision for the owner.
+- Source recordings. If the clips were cut with `clipbank build --recordings <dir>`, the whole calls in that directory hold the person's voice and are not touched. `forget` prints their ids (from `source_ref` or `call`) and, given `--recordings <dir>`, lists the matching files. Delete them yourself if the request covers them.
+- Free text elsewhere in stored results (`read_back`, `trace`) is not redacted.
 
 ### On timing
 

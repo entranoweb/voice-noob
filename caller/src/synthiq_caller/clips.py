@@ -44,6 +44,8 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+from synthiq_caller import consent as consent_rules
+from synthiq_caller.clipid import clip_id
 from synthiq_caller.consent import UNKNOWN, Consent
 from synthiq_caller.removals import read_removed
 
@@ -75,7 +77,7 @@ def load_overrides(directory: Path) -> dict[str, Override]:
         raise ValueError(f"{path}: expected an object with a 'clips' object")
     found: dict[str, Override] = {}
     for name, raw in entries.items():
-        clip = Path(str(name)).stem
+        clip = clip_id(str(name))
         if not isinstance(raw, dict):
             raise ValueError(f"{path}: {name}: expected an object")
         reason, when = str(raw.get("reason", "")).strip(), str(raw.get("date", "")).strip()
@@ -150,7 +152,16 @@ def resample_with_ffmpeg(path: Path, rate: int) -> bytes:
 
 
 class ClipBank:
-    def __init__(self, directory: str | Path, extra: tuple[str | Path, ...] = ()) -> None:
+    def __init__(
+        self,
+        directory: str | Path,
+        extra: tuple[str | Path, ...] = (),
+        *,
+        allow_unknown_provenance: bool = False,
+    ) -> None:
+        # Every playback goes through ``pcm``, which refuses a clip past its retention
+        # date, always, and a clip whose provenance is unknown unless this is set.
+        self.allow_unknown_provenance = allow_unknown_provenance
         self.directory = Path(directory)
         self.directories = [self.directory, *(Path(d) for d in extra)]
         self._info: dict[str, ClipInfo] = {}
@@ -164,7 +175,7 @@ class ClipBank:
             with manifest.open(encoding="utf-8", newline="") as handle:
                 for row in csv.DictReader(handle):
                     info = ClipInfo(
-                        clip=Path(row.get("clip") or "").stem,
+                        clip=clip_id(row.get("clip") or ""),
                         call=row.get("call", ""),
                         category=row.get("category", ""),
                         secs=float(row.get("secs") or 0),
@@ -188,7 +199,7 @@ class ClipBank:
                 )
 
     def excluded(self, name: str) -> Override | None:
-        stem = Path(name).stem
+        stem = clip_id(name)
         gone = self.removed.get(stem)
         if gone is not None:
             return Override(stem, f"removed, see {gone.removal}", gone.date, exclude=True)
@@ -200,7 +211,7 @@ class ClipBank:
         return list(dict.fromkeys(name for name in names if self.excluded(name)))
 
     def info(self, name: str) -> ClipInfo | None:
-        return self._info.get(Path(name).stem)
+        return self._info.get(clip_id(name))
 
     def verified(self, name: str) -> bool:
         """True when a person has confirmed what this clip says.
@@ -244,7 +255,7 @@ class ClipBank:
 
     def expired_in(self, names: list[str], today: date | None = None) -> list[str]:
         """Those of ``names`` past their ``retain_until`` date, with the date, once each."""
-        day = today or date.today()
+        day = today or consent_rules.today_utc()
         late: list[str] = []
         for name in dict.fromkeys(names):
             info = self.info(name)
@@ -270,8 +281,20 @@ class ClipBank:
                 return candidate
         raise FileNotFoundError(f"clip not found in bank: {name}")
 
+    def refusal(self, name: str) -> str:
+        """Why ``name`` may not be played; empty when it may. The one rule every playback obeys."""
+        info = self.info(name)
+        if info is not None and info.consent.expired(consent_rules.today_utc()):
+            return f"{name}: past its retention date (retain_until {info.consent.retain_until!r})"
+        if not self.allow_unknown_provenance and self.provenance_unknown([name]):
+            return f"{name}: provenance not recorded; allow unknown provenance to play it"
+        return ""
+
     def pcm(self, name: str, rate: int) -> bytes:
         """16-bit mono PCM at ``rate``. ffmpeg is used only when the file differs."""
+        refused = self.refusal(name)
+        if refused:
+            raise ClipExcluded(f"clip not played: {refused}")
         path = self.path(name)
         try:
             with wave.open(str(path), "rb") as wav:

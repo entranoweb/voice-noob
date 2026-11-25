@@ -446,6 +446,8 @@ async def run_batch(
     budget = budget if budget is not None else NameBudget()
     hooks = hooks if hooks is not None else NoHooks()
     out.mkdir(parents=True, exist_ok=True)
+    # The bank enforces this at playback too, so no path to a clip can skip the check.
+    clips.allow_unknown_provenance = allow_unknown_provenance
     result = BatchResult(out=str(out), rehearsal=rehearsal)
     gate = asyncio.Semaphore(max(1, max_parallel))
     # The highest number in use, not a count: after a gap a count would name a

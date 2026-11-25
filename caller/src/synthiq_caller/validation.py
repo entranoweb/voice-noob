@@ -16,6 +16,7 @@ from typing import Any
 from synthiq_caller.batch import load_chains, load_scenarios
 from synthiq_caller.chain import variables_in
 from synthiq_caller.clips import ClipBank, ClipExcluded
+from synthiq_caller.consent import today_utc
 from synthiq_caller.prereq import PrereqChecker, requires_state
 
 
@@ -123,7 +124,7 @@ def validate_bank(bank: ClipBank, today: date | None = None) -> list[BankFinding
     listed as a gap: neither stops ``validate``, but a batch will not play a clip
     with no provenance unless told to.
     """
-    day = today or date.today()
+    day = today or today_utc()
     found: list[BankFinding] = []
     for info in bank.infos():
         consent = info.consent

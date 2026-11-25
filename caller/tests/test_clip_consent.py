@@ -496,8 +496,10 @@ def test_forget_removes_the_audio_breaks_scenarios_marks_results_and_writes_the_
 
     # one record, with what, when, why, who, and no name, transcript or audio
     log = bank_dir / "removals.jsonl"
-    (line,) = log.read_text(encoding="utf-8").splitlines()
+    started, line = log.read_text(encoding="utf-8").splitlines()
+    assert json.loads(started)["outcome"] == "started"
     record = json.loads(line)
+    assert record["outcome"] == "complete"
     assert record["clips"] == ["a1", "a2"] and record["speakers"] == [SPK_A]
     assert record["why"] == "consent_withdrawn" and record["operator"] == OP
     assert record["removed_at"] and record["removal"].startswith("rm_")
@@ -538,7 +540,7 @@ def test_forgetting_twice_is_safe_and_the_second_time_changes_nothing(
     capsys.readouterr()
     assert cli.main(forget_args(world, "a1")) == 0
     assert tree(tmp_path) == after_first
-    assert len((world["bank"] / "removals.jsonl").read_text(encoding="utf-8").splitlines()) == 1
+    assert len((world["bank"] / "removals.jsonl").read_text(encoding="utf-8").splitlines()) == 2
     assert "nothing to change" in capsys.readouterr().out
     # the speaker's other clip is still there, and is removed by asking for the speaker
     assert (world["bank"] / "a2.wav").exists()
@@ -561,7 +563,7 @@ def test_a_second_forget_catches_up_a_results_directory_it_was_not_given_before(
     )
     assert cli.main([*forget_args(world, "a1")[:-2], "--results", str(late), "--operator", OP]) == 0
     assert json.loads((late / "run-001.json").read_text(encoding="utf-8"))["clips_removed"]
-    assert len(removals.read_log(world["bank"] / "removals.jsonl")) == 2
+    assert len(removals.read_log(world["bank"] / "removals.jsonl")) == 4
 
 
 def test_forget_refuses_what_it_cannot_name_and_changes_nothing(
@@ -585,7 +587,7 @@ async def test_a_real_run_marked_by_forget_says_so_in_its_report(tmp_path: Path)
     before = json.loads((tmp_path / "out" / "run-001.json").read_text(encoding="utf-8"))
     code = cli.main(
         ["forget", "dob", "--clips", str(bank.directory), "--results", str(tmp_path / "out")]
-        + ["--operator", OP]
+        + ["--operator", OP, "--reason", "retention_expired", "--keep-text"]
     )
     assert code == 0
     after = json.loads((tmp_path / "out" / "run-001.json").read_text(encoding="utf-8"))

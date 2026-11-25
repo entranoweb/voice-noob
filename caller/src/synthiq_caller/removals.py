@@ -21,6 +21,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from synthiq_caller.clipid import clip_id
+
 LOG_FILE = "removals.jsonl"
 
 REASONS = ("erasure_request", "consent_withdrawn", "retention_expired", "other")
@@ -66,7 +68,7 @@ def read_removed(directories: Iterable[Path]) -> dict[str, Removed]:
         for record in read_log(directory / LOG_FILE):
             when = str(record.get("removed_at", ""))[:10]
             for clip in record["clips"]:
-                stem = Path(str(clip)).stem
+                stem = clip_id(str(clip))
                 removed.setdefault(stem, Removed(stem, when, str(record.get("removal", ""))))
     return removed
 

@@ -28,7 +28,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import date
+from datetime import UTC, date, datetime
 
 SOURCE_KINDS = ("call", "session")
 PROVENANCES = ("real", "synthetic")
@@ -52,6 +52,17 @@ _BODY = r"(?=[a-z0-9]*[0-9])(?=[a-z0-9]*[a-z])[a-z0-9]{8,32}"
 _TOKEN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/#-]{2,79}$")
 # Ten digits in a row is a telephone number, whatever surrounds it.
 _PHONE_RUN = re.compile(r"\d{10,}")
+# Spaces, dashes, brackets and a plus sign come out first: "0770 090-0123" is one too.
+_SEPARATORS = re.compile(r"[\s\-()\[\]+]")
+
+
+def looks_like_phone(value: str) -> bool:
+    return bool(_PHONE_RUN.search(_SEPARATORS.sub("", value)))
+
+
+def today_utc() -> date:
+    """The one clock retention is judged by: today's date in UTC."""
+    return datetime.now(UTC).date()
 
 
 def opaque_id_problem(value: str, prefix: str, what: str) -> str:
@@ -63,7 +74,7 @@ def opaque_id_problem(value: str, prefix: str, what: str) -> str:
     someone typing ``spk_jane1985``: mint ids at random and keep the key that
     links them to a person outside the bank.
     """
-    if _PHONE_RUN.search(value.replace(" ", "")):
+    if looks_like_phone(value):
         return f"{what} {value!r} looks like a phone number; use an opaque id"
     if not re.fullmatch(rf"{prefix}_{_BODY}", value):
         return (
@@ -75,7 +86,7 @@ def opaque_id_problem(value: str, prefix: str, what: str) -> str:
 
 def reference_problem(value: str, what: str) -> str:
     """Why ``value`` is not a plain pointer to a record held elsewhere; empty when it is."""
-    if "@" in value or _PHONE_RUN.search(value.replace(" ", "")):
+    if "@" in value or looks_like_phone(value):
         return f"{what} {value!r} looks like an address or a phone number; give a record id"
     if not _TOKEN.fullmatch(value):
         return f"{what} {value!r} must be an id of 3 to 80 characters with no spaces"
@@ -127,11 +138,16 @@ class Consent:
         return UNKNOWN
 
     def expired(self, today: date) -> bool:
-        """True when ``retain_until`` is a valid date before ``today``."""
+        """True when ``retain_until`` is before ``today``, or is written and cannot be read.
+
+        A date nobody can read fails closed: the clip is refused, not kept for ever.
+        """
+        if not self.retain_until:
+            return False
         try:
             return date.fromisoformat(self.retain_until) < today
         except ValueError:
-            return False
+            return True
 
     def problems(self) -> list[str]:
         """Every field that is written and wrong, or missing where another needs it."""
