@@ -25,6 +25,7 @@ from app.models.appointment import Appointment
 from app.models.call_evaluation import CallEvaluation
 from app.models.call_interaction import CallInteraction
 from app.models.call_record import CallRecord
+from app.models.caller_audio import CallerAudio
 from app.models.caller_run import CallerCall, CallerRun
 from app.models.campaign import Campaign, CampaignContact
 from app.models.compliance_run import (
@@ -43,6 +44,8 @@ from app.models.user import User
 from app.models.user_integration import UserIntegration
 from app.models.user_settings import UserSettings
 from app.models.workspace import AgentWorkspace, Workspace
+from app.services.audio_store import get_audio_store
+from app.services.caller_audio import delete_audio, expire_audio
 
 logger = structlog.get_logger()
 
@@ -279,6 +282,16 @@ async def erase_account_data(
         CallerRun.user_id == user_id,
         CallerRun.workspace_id.in_(workspace_ids) if workspace_ids else None,
     )
+    # The audio of those calls: files first, then rows. A file that will not go is
+    # listed in ``not_erased`` (by row id; no names or paths) and the run is not complete.
+    audio_filter = _any_of(
+        CallerAudio.run_pk.in_(select(CallerRun.id).where(caller_run_filter)),
+        CallerAudio.workspace_id.in_(workspace_ids) if workspace_ids else None,
+    )
+    counts["caller_audio"], audio_failed = await delete_audio(db, get_audio_store(), audio_filter)
+    if audio_failed and not_erased is not None:
+        not_erased.extend({"provider": "audio_store", "provider_call_id": i} for i in audio_failed)
+    counts["caller_audio_left"] = len(audio_failed)
     counts["caller_calls"] = _rows(
         await db.execute(
             delete(CallerCall).where(
@@ -345,6 +358,16 @@ async def cleanup_expired_data(
     """
     now = datetime.now(UTC)
     counts = {"call_interactions": 0, "call_evaluations": 0, "call_records": 0, "accounts": 0}
+
+    # Call audio is kept for its workspace's own period (30 days unless changed),
+    # whether or not the account ever set a general retention period.
+    scope = None
+    if user_id is not None:
+        scope = await owned_workspace_ids(db, user_id)
+    audio = await expire_audio(db, get_audio_store(), workspace_ids=scope, dry_run=dry_run, now=now)
+    counts["caller_audio"] = audio["expired"]
+    if audio["failed"]:
+        counts["caller_audio_failed"] = audio["failed"]
 
     async def remove(model: Any, *conditions: ColumnElement[bool]) -> int:
         if dry_run:
