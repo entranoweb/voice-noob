@@ -34,23 +34,11 @@ import httpx
 
 from synthiq_caller.jsonio import to_text
 from synthiq_caller.legs.fake import RATE, tone
+from synthiq_caller.regions import REGIONS, UnknownRegion, api_for
 from synthiq_caller.target import TargetError, parse_target
-from synthiq_caller.traces.elevenlabs import API
 
 DEFAULT_KEY_ENV = "ELEVENLABS_API_KEY"
-# Checked on 2026-11-25 against the vendor's data-residency page
-# (elevenlabs.io/docs/overview/administration/data-residency) and the official Python
-# SDK's environments (elevenlabs-python, src/elevenlabs/environment.py: PRODUCTION,
-# PRODUCTION_US, PRODUCTION_EU, PRODUCTION_INDIA, PRODUCTION_SINGAPORE). No request was made.
-# The platform's API address for each region. ``global`` is the default one. A
-# residency account must use its own region's address.
-REGIONS = {
-    "global": API,
-    "us": "https://api.us.elevenlabs.io/v1",
-    "eu": "https://api.eu.residency.elevenlabs.io/v1",
-    "in": "https://api.in.residency.elevenlabs.io/v1",
-    "sg": "https://api.sg.residency.elevenlabs.io/v1",
-}
+# The region-to-address mapping lives in ``regions.py``, the one place it is kept.
 
 GITIGNORE = """\
 # A recording of a person never goes in a repository. Neither does a call
@@ -274,9 +262,16 @@ class Check:
     name: str
     status: str  # "ok", "FAIL", "warn" or "skipped"
     detail: str
+    # "fake": what a run on the fake leg needs. "live": what only a call to a real
+    # platform needs (a key, a region, an address that answers, ffmpeg for ``ingest``).
+    needed_by: str = "fake"
 
     def line(self) -> str:
-        return f"{self.status:<8} {self.name:<16} {self.detail}"
+        tag = "" if self.needed_by == "fake" else "  [live leg]"
+        return f"{self.status:<8} {self.name:<16} {self.detail}{tag}"
+
+
+LIVE_NEEDS = ("ffmpeg", "key", "region")
 
 
 def _ignored(gitignore: Path, entry: str) -> bool:
@@ -324,8 +319,10 @@ def _check_network(api: str, transport: httpx.BaseTransport | None) -> Check:
         with httpx.Client(timeout=10.0, transport=transport) as client:
             response = client.get(api)
     except httpx.HTTPError as error:
-        return Check("network", "FAIL", f"{api} did not answer: {type(error).__name__}")
-    return Check("network", "ok", f"{api} answered (HTTP {response.status_code}); no key was sent")
+        return Check("network", "FAIL", f"{api} did not answer: {type(error).__name__}", "live")
+    return Check(
+        "network", "ok", f"{api} answered (HTTP {response.status_code}); no key was sent", "live"
+    )
 
 
 def doctor(
@@ -338,33 +335,64 @@ def doctor(
     environ: dict[str, str] | None = None,
     transport: httpx.BaseTransport | None = None,
 ) -> list[Check]:
+    """One line per check, each tagged with the leg that needs it.
+
+    A missing key, an unknown region, an address that does not answer and a missing ffmpeg
+    stop only a live leg, so they are tagged ``live`` and ``verdicts`` does not count them
+    against the fake leg. ``fake_only`` leaves them out of the verdict by not making them;
+    it never turns one into a pass.
+    """
     env = os.environ if environ is None else environ
     checks: list[Check] = []
     if shutil.which("ffmpeg"):
-        checks.append(Check("ffmpeg", "ok", "found on PATH"))
+        checks.append(Check("ffmpeg", "ok", "found on PATH", "live"))
     else:
         needed = "needed to cut clips from a captured call (`ingest`)"
-        checks.append(Check("ffmpeg", "warn" if fake_only else "FAIL", f"not on PATH; {needed}"))
+        status = "warn" if fake_only else "FAIL"
+        checks.append(Check("ffmpeg", status, f"not on PATH; {needed}", "live"))
     if fake_only:
-        checks.append(Check("key", "skipped", "the fake leg needs no key"))
+        checks.append(Check("key", "skipped", "the fake leg needs no key", "live"))
     elif env.get(key_env):
-        checks.append(Check("key", "ok", f"{key_env} is set (value not shown)"))
+        checks.append(Check("key", "ok", f"{key_env} is set (value not shown)", "live"))
     else:
-        checks.append(Check("key", "FAIL", f"{key_env} is not set in the environment"))
-    api = REGIONS.get(region)
-    if api is None:
-        checks.append(
-            Check("region", "FAIL", f"unknown region {region!r}; one of {sorted(REGIONS)}")
-        )
+        checks.append(Check("key", "FAIL", f"{key_env} is not set in the environment", "live"))
+    api: str | None
+    try:
+        api = api_for(region)
+    except UnknownRegion as error:
+        api = None
+        checks.append(Check("region", "FAIL", str(error)))  # a mistake on the command line
     else:
-        checks.append(Check("region", "ok", f"{region}: {api}"))
+        checks.append(Check("region", "ok", f"{region}: {api}", "live"))
     if directory is not None:
         checks.extend(_check_folder(directory))
     if not check_network or fake_only:
-        checks.append(Check("network", "skipped", "not asked (pass --check-network)"))
+        checks.append(Check("network", "skipped", "not asked (pass --check-network)", "live"))
     elif api is not None:
         checks.append(_check_network(api, transport))
     return checks
+
+
+def verdicts(checks: list[Check], *, fake_only: bool) -> tuple[bool, str, bool]:
+    """(fake leg ready, the live leg's one-line state, live leg ready).
+
+    The live leg is ready only when the key, the region and ffmpeg were each checked and
+    passed, and nothing else it needs failed. A check that was skipped or never made
+    leaves it not ready (or "not checked" under ``--fake-only``); it is never reported
+    ready on the strength of a check nobody ran. Even ready, that is a statement about
+    this machine's settings: only a call shows the platform accepts the key.
+    """
+    fake_ready = not any(c.status == "FAIL" and c.needed_by == "fake" for c in checks)
+    if fake_only:
+        return fake_ready, "not checked (--fake-only)", False
+    live = {c.name: c for c in checks if c.needed_by == "live"}
+    problems = [name for name, c in live.items() if c.status == "FAIL"]
+    problems += [name for name in LIVE_NEEDS if name not in live or live[name].status != "ok"]
+    if problems:
+        return fake_ready, "NOT READY (" + ", ".join(dict.fromkeys(problems)) + ")", False
+    network = live.get("network")
+    note = "" if network is not None and network.status == "ok" else "; the address was not tried"
+    return fake_ready, "settings present, nothing was called" + note, True
 
 
 def run_doctor(args: argparse.Namespace) -> int:
@@ -377,11 +405,17 @@ def run_doctor(args: argparse.Namespace) -> int:
     )
     for check in checks:
         print(check.line())
-    failed = [c for c in checks if c.status == "FAIL"]
-    if failed:
+    fake_ready, live_state, live_ready = verdicts(checks, fake_only=args.fake_only)
+    print(f"\nfake leg: {'ready' if fake_ready else 'NOT READY'}")
+    print(f"live leg: {live_state}")
+    if not fake_ready:
+        failed = [c for c in checks if c.status == "FAIL" and c.needed_by == "fake"]
         print(f"\n{len(failed)} check(s) failed.")
         return 1
-    print("\nNothing failed. This says the machine is set up, not that any agent works.")
+    if args.live and not live_ready:
+        print("\n--live was given and the live leg is not ready.")
+        return 1
+    print("\nThis says the machine is set up, not that any agent works.")
     return 0
 
 
@@ -396,6 +430,11 @@ def register(sub: Any) -> None:
     doc.add_argument("--region", default="global", help=f"one of {', '.join(REGIONS)}")
     doc.add_argument("--key-env", default=DEFAULT_KEY_ENV, help="variable holding the API key")
     doc.add_argument("--fake-only", action="store_true", help="skip what only a real target needs")
+    doc.add_argument(
+        "--live",
+        action="store_true",
+        help="exit 1 unless the live leg is ready too (a missing key then fails)",
+    )
     doc.add_argument(
         "--check-network",
         action="store_true",

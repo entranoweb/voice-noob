@@ -61,8 +61,9 @@ from synthiq_caller.consent import (
     opaque_id_problem,
     reference_problem,
 )
-from synthiq_caller.ingest import CLIPS_DIR
+from synthiq_caller.ingest import CLIPS_DIR, SCENARIO_DIR
 from synthiq_caller.jsonio import write_json
+from synthiq_caller.manifestcsv import ManifestError, read_rows
 
 MARK = "clips_removed"
 
@@ -184,6 +185,8 @@ class Plan:
     # transcript and conversation (the last two stay under --keep-text, and are listed).
     case_files: list[Path] = field(default_factory=list)
     case_kept: list[Path] = field(default_factory=list)
+    # The skeleton scenarios ``ingest`` wrote beside the clips; they hold the call's words.
+    case_scenarios: list[Path] = field(default_factory=list)
     uploaded: list[Path] = field(default_factory=list)
     # The recordings the clips were cut from (ids from the manifests), and any found.
     sources: list[str] = field(default_factory=list)
@@ -207,8 +210,7 @@ def _manifest_rows(directory: Path) -> list[dict[str, str]]:
     manifest = directory / "manifest.csv"
     if not manifest.exists():
         return []
-    with manifest.open(encoding="utf-8", newline="") as handle:
-        return [dict(row) for row in csv.DictReader(handle)]
+    return read_rows(manifest)[1]
 
 
 def _audio_files(bank: Path, stems: list[str]) -> list[Path]:
@@ -288,49 +290,114 @@ def _missing_text(stem: str, removal: str) -> str:
     return f"{stem}: removed by forget ({removal}); record a new clip, then restore the step"
 
 
+def _same_words(text: str) -> str:
+    """Spoken words compared by their letters and digits only: "Sam Example." is "sam example"."""
+    return " ".join(re.sub(r"[^\w\s]", " ", text).casefold().split())
+
+
+def _removed_here(clip: object, stems: list[str]) -> str:
+    """The removed clip a step's ``clips`` entry names (as it was, or as ``missing/<clip>``)."""
+    if not isinstance(clip, str) or "{{" in clip:
+        return ""
+    name = clip[len("missing/") :] if clip.startswith("missing/") else clip
+    return clip_id(name) if clip_id(name) in stems else ""
+
+
+def _blanked(stem: str) -> str:
+    return f"[removed: {stem}]"
+
+
 def _rewrite_scenario(node: Any, stems: list[str], removal: str) -> list[str]:
-    """Point every step that plays a removed clip at ``missing/<clip>``. Returns the clips hit.
+    """Point every step that plays a removed clip at ``missing/<clip>``. Returns the clips changed.
 
     A scenario has ``steps`` and perhaps a ``fallback``; a chain has ``chain``, a
     list of calls each shaped like a scenario. A clip chosen at run time (``{{variable}}``) is
     not named here and is left alone.
+
+    What the clip said goes with it, wherever the scenario keeps it: the step's
+    ``intended``, the persona fact it answered, and any expectation (a tool argument or
+    output) that holds the same words. The names of the fields stay. A step already
+    pointing at ``missing/<clip>`` is looked at again, so a removal that stopped half way,
+    or one made before this blanked the words, is finished by running it again.
     """
     if not isinstance(node, dict):
         return []
-    hit: list[str] = []
+    changed: list[str] = []
+    spoken: dict[str, str] = {}  # normalised words -> the clip they came from
     answers = [*(node.get("steps") or []), node.get("fallback")]
     for answer in answers:
         clips = answer.get("clips") if isinstance(answer, dict) else None
-        if not isinstance(clips, list):
+        if not isinstance(answer, dict) or not isinstance(clips, list):
             continue
+        gone: list[str] = []
         for index, clip in enumerate(clips):
-            if not isinstance(clip, str) or clip.startswith("missing/"):
+            stem = _removed_here(clip, stems)
+            if not stem:
                 continue
-            if clip_id(clip) in stems and "{{" not in clip:
-                clips[index] = f"missing/{clip_id(clip)}"
-                hit.append(clip_id(clip))
-                _blank_fact(node, answer, clip_id(clip))
-    if hit:
-        declared = node.setdefault("missing_clips", [])
-        for stem in dict.fromkeys(hit):
-            if not any(str(d).startswith(f"{stem}: removed") for d in declared):
-                declared.append(_missing_text(stem, removal))
+            gone.append(stem)
+            if not clip.startswith("missing/"):
+                clips[index] = f"missing/{stem}"
+                changed.append(stem)
+                declared = node.setdefault("missing_clips", [])
+                if not any(str(d).startswith(f"{stem}: removed") for d in declared):
+                    declared.append(_missing_text(stem, removal))
+        if gone:
+            changed += _blank_words(node, answer, gone[0], spoken)
+    if spoken:
+        changed += _blank_expectations(node, spoken)
     for call in [*(node.get("chain") or []), *(node.get("calls") or [])]:
-        hit += _rewrite_scenario(call, stems, removal)
-    return hit
+        changed += _rewrite_scenario(call, stems, removal)
+    return changed
 
 
-def _blank_fact(node: dict[str, Any], answer: dict[str, Any], stem: str) -> None:
-    """Blank the persona fact the removed clip answered: it is what the caller said.
+def _blank_words(
+    node: dict[str, Any], answer: dict[str, Any], stem: str, spoken: dict[str, str]
+) -> list[str]:
+    """Blank the step's ``intended`` and the persona fact it answers (its ``field``).
 
-    A step names the fact it answers in ``field``. A fact no step ties to a clip is left,
-    and ``describe`` says so.
+    ``spoken`` collects the words found, so the same words can be blanked elsewhere in the
+    scenario. A fact no step ties to a clip is left unless it holds those same words, and
+    ``describe`` says so.
     """
+    changed: list[str] = []
+    intended = answer.get("intended")
+    if isinstance(intended, str) and intended and intended != _blanked(stem):
+        if _same_words(intended):
+            spoken[_same_words(intended)] = stem
+        answer["intended"] = _blanked(stem)
+        changed.append(stem)
     persona = node.get("persona")
     facts = persona.get("facts") if isinstance(persona, dict) else None
     name = answer.get("field")
     if isinstance(facts, dict) and isinstance(name, str) and name in facts:
-        facts[name] = f"[removed: {stem}]"
+        held = facts[name]
+        if isinstance(held, str) and held and held != _blanked(stem):
+            if _same_words(held):
+                spoken[_same_words(held)] = stem
+            facts[name] = _blanked(stem)
+            changed.append(stem)
+    return changed
+
+
+def _blank_expectations(node: dict[str, Any], spoken: dict[str, str]) -> list[str]:
+    """Blank any value in ``persona`` or ``expect`` that holds words a removed clip said."""
+    changed: list[str] = []
+
+    def walk(item: Any) -> Any:
+        if isinstance(item, dict):
+            return {key: walk(value) for key, value in item.items()}
+        if isinstance(item, list):
+            return [walk(value) for value in item]
+        if isinstance(item, str) and _same_words(item) in spoken:
+            stem = spoken[_same_words(item)]
+            changed.append(stem)
+            return _blanked(stem)
+        return item
+
+    for part in ("persona", "expect"):
+        if part in node:
+            node[part] = walk(node[part])
+    return changed
 
 
 def _scenario_files(directory: Path) -> list[Path]:
@@ -731,6 +798,8 @@ def _plan_cases(plan: Plan, banks: list[Path], *, keep_text: bool) -> None:
         )
         if not came_from_here:
             continue
+        if (case / SCENARIO_DIR).is_dir():
+            plan.case_scenarios.append(case / SCENARIO_DIR)
         for path in sorted(case.glob("audio.*")):
             if path.is_file() or path.is_symlink():
                 plan.case_files.append(path)
@@ -785,7 +854,10 @@ def make_plan(
                 plan.overrides[bank / OVERRIDES_FILE] = [clip_id(k) for k in held]
     _plan_cases(plan, banks, keep_text=keep_text)
     _plan_sources(plan, banks, recordings or [])
-    _plan_scenarios(plan, scenarios)
+    given = {d.resolve() for d in scenarios}
+    _plan_scenarios(
+        plan, [*scenarios, *(d for d in plan.case_scenarios if d.resolve() not in given)]
+    )
     _plan_results(plan, results, keep_text=keep_text)
     return plan
 
@@ -824,9 +896,10 @@ def describe(
     ]
     if plan.scenarios:
         lines.append(
-            "  persona facts the removed clips answered (a step's field) are blanked; "
-            "NOT removed: any other persona fact, which may still hold what the caller said. "
-            "Remove or edit persona facts by hand in:"
+            "  what the removed clips said is blanked in each step's intended, in the persona "
+            "fact it answered (its field) and in any expectation that holds the same words; "
+            "the names of the fields and checks stay. NOT removed: any other persona fact, "
+            "which may still hold what the caller said. Check these by hand in:"
         )
         lines += [f"    {p}" for p in plan.scenarios]
     lines += [f"  CANNOT rewrite {p} ({why}); it names a clip" for p, why in plan.unreadable]
@@ -873,10 +946,8 @@ def describe(
 
 
 def _remove_rows(path: Path, stems: list[str]) -> None:
-    with path.open(encoding="utf-8", newline="") as handle:
-        reader = csv.DictReader(handle)
-        names = list(reader.fieldnames or [])
-        kept = [r for r in reader if clip_id(r.get("clip") or "") not in stems]
+    names, rows = read_rows(path)  # a column written twice comes back once, or refuses
+    kept = [r for r in rows if clip_id(r.get("clip") or "") not in stems]
     temporary = path.with_name(path.name + ".forget-tmp")
     with temporary.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=names)
@@ -1063,8 +1134,9 @@ def run(args: argparse.Namespace) -> int:
             keep_text=args.keep_text,
             recordings=[Path(p) for p in args.recordings],
         )
-    except ForgetError as error:
-        print(f"forget: {error}")
+    except (ForgetError, ManifestError) as error:
+        suffix = "; nothing was changed" if isinstance(error, ManifestError) else ""
+        print(f"forget: {error}{suffix}")
         return 2
     pending = [
         r

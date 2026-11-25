@@ -27,9 +27,10 @@ from typing import Any, Protocol
 import httpx
 
 from synthiq_caller.numbers import same_number
+from synthiq_caller.regions import GLOBAL_API
 from synthiq_caller.traces.base import Trace, TraceReader
 
-ELEVENLABS_API = "https://api.elevenlabs.io/v1"
+ELEVENLABS_API = GLOBAL_API
 
 
 class TraceNotFound(RuntimeError):
