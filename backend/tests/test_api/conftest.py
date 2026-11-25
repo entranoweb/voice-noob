@@ -9,9 +9,8 @@ headers, with an in-memory mailer so a reset link can be read without a network.
 from __future__ import annotations
 
 import re
-from collections.abc import AsyncGenerator
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
@@ -25,7 +24,10 @@ from app.models.user import User
 from app.models.workspace import Workspace
 from app.services.mail import FakeMailer, get_mailer
 
-PASSWORD = "correct-horse-battery"  # noqa: S105 - a test fixture, not a credential
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
+
+PASSWORD = "correct-horse-battery"
 
 
 @dataclass

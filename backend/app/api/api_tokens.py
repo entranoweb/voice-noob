@@ -4,8 +4,6 @@ These routes take a signed-in session (``CurrentUser``), never a personal token,
 so a leaked token cannot make more tokens or hide itself by revoking others.
 """
 
-from __future__ import annotations
-
 import uuid
 from datetime import UTC, datetime
 

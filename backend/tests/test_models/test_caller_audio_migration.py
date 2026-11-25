@@ -14,19 +14,27 @@ import uuid
 from pathlib import Path
 
 import pytest
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
 BACKEND = Path(__file__).resolve().parents[2]
 PARENT = "d2f5a8c31b47"
-HEAD = "e3a7c9d41f68"
 SERVER = os.getenv("TEST_DATABASE_URL", "")
 
 pytestmark = pytest.mark.skipif(
     not SERVER.startswith("postgresql"),
     reason="needs PostgreSQL: set TEST_DATABASE_URL (CI does)",
 )
+
+
+def _script_head() -> str | None:
+    """The newest revision in migrations/versions, read from the script directory."""
+    config = Config(str(BACKEND / "alembic.ini"))
+    config.set_main_option("script_location", str(BACKEND / "migrations"))
+    return ScriptDirectory.from_config(config).get_current_head()
 
 
 def _alembic(url: str, *args: str) -> None:
@@ -99,7 +107,7 @@ async def test_upgrade_adds_audio_and_the_30_day_default_and_downgrade_takes_the
                 )
             ).scalar()
         assert kept == 30, "workspaces that already existed get the 30-day default"
-        assert version == HEAD
+        assert version == _script_head(), "upgrade head lands on the newest revision"
         assert unique == 1, "one recording per side of a call"
 
         _alembic(url, "downgrade", PARENT)

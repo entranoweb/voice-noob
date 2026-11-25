@@ -4,16 +4,13 @@ Two things this must not do: tell a stranger which addresses have accounts, and
 leave a way back in for whoever had the old password (or a disabled account).
 """
 
-from __future__ import annotations
-
 from datetime import UTC, datetime, timedelta
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 import structlog
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import func, select, update
-from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.auth import get_password_hash
@@ -33,6 +30,9 @@ from app.services.auth_tokens import (
     revoke_user_sessions,
 )
 from app.services.mail import Mail, Mailer, get_mailer
+
+if TYPE_CHECKING:
+    from sqlalchemy.engine import CursorResult
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 logger = structlog.get_logger()
@@ -87,9 +87,7 @@ async def forgot_password(
     goes out after the response, so sending does not show in the timing.
     """
     now = datetime.now(UTC)
-    user = (
-        await db.execute(select(User).where(User.email == payload.email))
-    ).scalar_one_or_none()
+    user = (await db.execute(select(User).where(User.email == payload.email))).scalar_one_or_none()
     raw = new_secret()
     digest = hash_token(raw)
 
@@ -107,9 +105,7 @@ async def forgot_password(
             # A newer link replaces every older one.
             await db.execute(
                 update(PasswordResetToken)
-                .where(
-                    PasswordResetToken.user_id == user.id, PasswordResetToken.used_at.is_(None)
-                )
+                .where(PasswordResetToken.user_id == user.id, PasswordResetToken.used_at.is_(None))
                 .values(used_at=now)
             )
             db.add(

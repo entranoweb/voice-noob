@@ -78,11 +78,9 @@ async def authenticate_api_token(
         return None
 
     now = datetime.now(UTC)
-    if row.revoked_at is not None:
-        return None
-    if row.expires_at is not None and as_utc(row.expires_at) <= now:
-        return None
-    if any(scope != row.scope for scope in required_scopes):
+    expired = row.expires_at is not None and as_utc(row.expires_at) <= now
+    wrong_scope = any(scope != row.scope for scope in required_scopes)
+    if row.revoked_at is not None or expired or wrong_scope:
         return None
 
     user = (await db.execute(select(User).where(User.id == row.user_id))).scalar_one_or_none()

@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 import sqlalchemy as sa
@@ -21,7 +21,9 @@ from app.core.audit import AuditAction
 from app.models.audit_event import AuditEvent
 from app.models.refresh_token import RefreshToken
 from app.models.user import User
-from tests.test_api.conftest import Lifecycle
+
+if TYPE_CHECKING:
+    from tests.test_api.conftest import Lifecycle
 
 REFRESH = "/api/v1/auth/refresh"
 LOGOUT = "/api/v1/auth/logout"
@@ -212,8 +214,10 @@ async def test_a_new_access_token_has_the_normal_lifetime(lifecycle: Lifecycle) 
 
     claims = jwt.decode(refreshed["access_token"], settings.SECRET_KEY, algorithms=["HS256"])
     remaining = claims["exp"] - datetime.now(UTC).timestamp()
-    assert settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60 - 60 < remaining <= (
-        settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60
+    assert (
+        settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60 - 60
+        < remaining
+        <= (settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60)
     )
 
 

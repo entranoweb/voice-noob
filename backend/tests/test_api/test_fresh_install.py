@@ -8,8 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncGenerator
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 import pytest_asyncio
@@ -29,7 +28,10 @@ from app.models.user import User
 from app.models.workspace import Workspace
 from tests.test_api.test_caller_runs import _bundle
 
-ADMIN_PASSWORD = "a-long-password-of-our-own"  # noqa: S105 - a test fixture
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
+
+ADMIN_PASSWORD = "a-long-password-of-our-own"
 
 
 @pytest_asyncio.fixture
@@ -158,9 +160,7 @@ async def test_an_install_that_already_has_a_workspace_is_left_alone(
         await session.commit()
         await session.refresh(other)
         session.add(Workspace(user_id=other.id, name="theirs", is_default=True))
-        await session.execute(
-            sa.delete(Workspace).where(Workspace.name != "theirs")
-        )
+        await session.execute(sa.delete(Workspace).where(Workspace.name != "theirs"))
         await session.commit()
 
     await _start(sessions)

@@ -23,7 +23,6 @@ from typing import TYPE_CHECKING, cast
 
 import structlog
 from sqlalchemy import select, update
-from sqlalchemy.engine import CursorResult
 
 from app.core.audit import AuditAction, record_audit
 from app.core.config import settings
@@ -32,6 +31,7 @@ from app.models.user import User
 
 if TYPE_CHECKING:
     from fastapi import Request
+    from sqlalchemy.engine import CursorResult
     from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = structlog.get_logger()

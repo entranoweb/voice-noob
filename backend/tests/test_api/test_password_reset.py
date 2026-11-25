@@ -12,7 +12,7 @@ Risks, in the order they would hurt:
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 import sqlalchemy as sa
@@ -22,11 +22,13 @@ from app.core.limiter import limiter
 from app.models.audit_event import AuditEvent
 from app.models.password_reset_token import PasswordResetToken
 from app.models.user import User
-from tests.test_api.conftest import Lifecycle
+
+if TYPE_CHECKING:
+    from tests.test_api.conftest import Lifecycle
 
 FORGOT = "/api/v1/auth/forgot-password"
 RESET = "/api/v1/auth/reset-password"
-NEW_PASSWORD = "a-brand-new-passphrase"  # noqa: S105 - a test fixture
+NEW_PASSWORD = "a-brand-new-passphrase"
 
 
 async def _rows(lc: Lifecycle, model: Any) -> list[Any]:
@@ -207,7 +209,9 @@ async def test_an_unknown_email_is_still_recorded_in_the_trail(lifecycle: Lifecy
 
     await _forgot(lc, "nobody-here@example.com")
 
-    events = [e for e in await _rows(lc, AuditEvent) if e.action == AuditAction.PASSWORD_RESET_REQUESTED]
+    events = [
+        e for e in await _rows(lc, AuditEvent) if e.action == AuditAction.PASSWORD_RESET_REQUESTED
+    ]
     assert len(events) == 1
     assert events[0].actor_user_id is None
     assert "nobody-here" not in repr(events[0].details), "an address nobody owns is not logged"

@@ -16,7 +16,7 @@ import hashlib
 import json
 import re
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 import sqlalchemy as sa
@@ -26,9 +26,11 @@ from app.main import app
 from app.models.api_token import ApiToken
 from app.models.audit_event import AuditEvent
 from app.models.user import User
-from tests.test_api.conftest import Lifecycle, Person
 from tests.test_api.test_caller_audio import tone
 from tests.test_api.test_caller_runs import _bundle
+
+if TYPE_CHECKING:
+    from tests.test_api.conftest import Lifecycle, Person
 
 TOKENS = "/api/v1/auth/api-tokens"
 RUNS = "/api/v1/caller/runs"

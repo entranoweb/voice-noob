@@ -44,15 +44,15 @@ async def ensure_default_workspace(db: AsyncSession) -> Workspace | None:
     async with _lock:
         if db.bind is not None and db.bind.dialect.name == "postgresql":
             # Released when the transaction ends, so it is held until the commit below.
-            await db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": _ADVISORY_LOCK_KEY})
+            await db.execute(
+                text("SELECT pg_advisory_xact_lock(:key)"), {"key": _ADVISORY_LOCK_KEY}
+            )
 
         if ((await db.execute(select(func.count(Workspace.id)))).scalar() or 0) > 0:
             await db.rollback()
             return None
 
-        first = (
-            await db.execute(select(User).order_by(User.id).limit(1))
-        ).scalar_one_or_none()
+        first = (await db.execute(select(User).order_by(User.id).limit(1))).scalar_one_or_none()
         if first is None:
             await db.rollback()
             return None

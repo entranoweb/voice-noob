@@ -18,7 +18,7 @@ security = HTTPBearer()
 
 # Every personal API token starts with this, so it is told apart from a session
 # token before anything is decoded.
-API_TOKEN_PREFIX = "sqt_"  # noqa: S105 - a prefix, not a credential
+API_TOKEN_PREFIX = "sqt_"
 
 
 def user_id_to_uuid(user_id: int) -> uuid.UUID:
