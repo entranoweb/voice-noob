@@ -53,6 +53,27 @@ class UsageError(SystemExit):
         super().__init__(2)
 
 
+def open_bank(args: argparse.Namespace, scenario: Scenario) -> ClipBank:
+    """The clip bank for a call, refused up front if the scenario names a clip it may not play.
+
+    The bank enforces the same rule at playback, so a call cannot reach a clip any
+    other way. Checking here stops a real call being placed that would fail half way.
+    """
+    bank = ClipBank(
+        args.clips,
+        extra=tuple(args.clips_extra),
+        allow_unknown_provenance=args.allow_unknown_provenance,
+        allow_missing_consent=args.allow_missing_consent,
+    )
+    played = [clip for step in scenario.steps for clip in step.clips]
+    if scenario.fallback is not None:
+        played += list(scenario.fallback.clips)
+    refused = [r for r in (bank.refusal(c) for c in dict.fromkeys(played)) if r]
+    if refused:
+        raise UsageError(f"the call was not placed; clips not allowed: {refused[:3]}")
+    return bank
+
+
 def check_public_url(url: str) -> str:
     parts = urlsplit(url)
     if parts.scheme != "https" or not parts.netloc or parts.query or parts.fragment:
@@ -129,6 +150,7 @@ async def run_real(args: argparse.Namespace, scenario: Scenario, env: Mapping[st
             f"mutation guard: this scenario's 'mutates' is {scenario.mutates!r} and "
             f"--allow-mutating is {args.allow_mutating!r}; the call was not placed"
         )
+    bank = open_bank(args, scenario)
     public_url = check_public_url(args.public_url or "")
     transcriber = build_transcriber(args, env)
     rest = TwilioRest(credentials)
@@ -147,9 +169,7 @@ async def run_real(args: argparse.Namespace, scenario: Scenario, env: Mapping[st
         transcriber=transcriber,
     )
     try:
-        record = await Director(
-            scenario, leg, ClipBank(args.clips), turn_settings=PHONE_TURNS
-        ).run()
+        record = await Director(scenario, leg, bank, turn_settings=PHONE_TURNS).run()
         recordings: list[dict[str, Any]] = []
         if record.call_ref and not args.no_record:
             try:
@@ -188,7 +208,8 @@ async def run_dry(args: argparse.Namespace, scenario: Scenario) -> int:
     )
     port = await leg.start_server()
     leg.public_url = f"http://127.0.0.1:{port}"
-    record = await Director(scenario, leg, ClipBank(args.clips), turn_settings=PHONE_TURNS).run()
+    bank = open_bank(args, scenario)
+    record = await Director(scenario, leg, bank, turn_settings=PHONE_TURNS).run()
     await fake.wait_finished()
     print("DRY RUN: no call was placed and nothing was sent to Twilio.")
     request = fake.created[0]
@@ -213,6 +234,17 @@ def main(argv: list[str] | None = None, env: Mapping[str, str] | None = None) ->
     parser = argparse.ArgumentParser(prog="synthiq-caller-phone")
     parser.add_argument("--scenario", required=True)
     parser.add_argument("--clips", required=True)
+    parser.add_argument("--clips-extra", action="append", default=[], help="a further clip bank")
+    parser.add_argument(
+        "--allow-unknown-provenance",
+        action="store_true",
+        help="play clips whose manifest does not say if they are real or synthetic",
+    )
+    parser.add_argument(
+        "--allow-missing-consent",
+        action="store_true",
+        help="play real clips with no lawful basis or consent record (special-category data)",
+    )
     parser.add_argument("--out", default="")
     parser.add_argument("--public-url", default="")
     parser.add_argument("--from", dest="from_number", default="")

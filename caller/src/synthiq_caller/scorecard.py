@@ -54,6 +54,7 @@ def merged(summaries: list[Summary]) -> Summary:
         total.void += one.void
         total.ungradeable += one.ungradeable
         total.synthetic_calls += one.synthetic_calls
+        total.consent_missing_calls += one.consent_missing_calls
         total.excluded += one.excluded
         for who, count in one.faults.items():
             total.faults[who] = total.faults.get(who, 0) + count
@@ -233,6 +234,7 @@ def build(
         "labels_unverified_calls": unverified_calls,
         "failed_by_fault": dict(sorted(summary.faults.items())),
         "synthetic_calls": summary.synthetic_calls,
+        "consent_missing_calls": summary.consent_missing_calls,
         "graded": graded,
         "rate": summary.passed / graded if graded else 0.0,
         "interval": list(wilson_interval(summary.passed, graded)),
@@ -444,6 +446,12 @@ def _marks(card: dict[str, Any]) -> list[str]:
         f"synthetic clip. Labels unverified: {card['labels_unverified_calls']} of {calls} calls "
         "used a clip whose label no person has confirmed.</p>"
     )
+    if card.get("consent_missing_calls"):
+        out.append(
+            f'<p class="bad"><strong>Consent record missing</strong>: '
+            f"{card['consent_missing_calls']} of {calls} calls played a clip with no lawful "
+            "basis or consent record, allowed for the run.</p>"
+        )
     return out
 
 

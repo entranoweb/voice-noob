@@ -356,3 +356,5 @@ and the `acceptance` command, which turns run directories into one dated page:
 what was tested, what passed, and what that does not show.
 
 See also `docs/TARGETS-REHEARSAL-AND-SAFETY.md`: target profiles (`--target`), rehearsing a batch without an agent (`--leg fake`), and the rules tightened after the post-merge review.
+
+See also [docs/CLIP-CONSENT-AND-FORGET.md](docs/CLIP-CONSENT-AND-FORGET.md): what each clip manifest field means (provenance, lawful basis, retention), the batch gate on unknown provenance, and `forget`, which removes a clip or a speaker's clips everywhere this tool reaches.
