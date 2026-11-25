@@ -74,9 +74,10 @@ def read_removed(directories: Iterable[Path]) -> dict[str, Removed]:
 
 
 def unfinished(directories: Iterable[Path]) -> list[dict[str, Any]]:
-    """Removals that logged ``started`` and never ``complete`` or ``incomplete``.
+    """Removals that logged ``started`` and no ``complete`` since.
 
-    One is cleared when a later ``complete`` record covers all of its clips (running
+    An ``incomplete`` record does not close one: it says the work failed part way, so it
+    stays open, and is reported, until a later ``complete`` covers all of its clips (running
     ``forget`` again for the same target does that). What is left may still have audio
     on disk: the clips are ruled out, but the files and the stored text may remain.
     """
@@ -88,10 +89,9 @@ def unfinished(directories: Iterable[Path]) -> list[dict[str, Any]]:
             removal = str(record.get("removal", ""))
             if outcome == "started":
                 open_.setdefault(removal, record)
-            elif outcome in ("complete", "incomplete"):
+            elif outcome == "complete":
                 open_.pop(removal, None)
-                if outcome == "complete":
-                    finished.append({clip_id(str(c)) for c in record["clips"]})
+                finished.append({clip_id(str(c)) for c in record["clips"]})
     return [
         record
         for record in open_.values()
@@ -102,7 +102,7 @@ def unfinished(directories: Iterable[Path]) -> list[dict[str, Any]]:
 def unfinished_lines(directories: Iterable[Path]) -> list[str]:
     return [
         f"UNFINISHED REMOVAL {record.get('removal')}: it started "
-        f"({str(record.get('removed_at', ''))[:10]}) and never finished, so the audio may remain "
+        f"({str(record.get('removed_at', ''))[:10]}) and has not finished, so the audio may remain "
         f"for {', '.join(str(c) for c in record['clips'])} and so may stored text. "
         f"Run forget {record.get('target') or ' '.join(map(str, record['clips']))} again "
         "with the same --clips, --scenarios and --results to finish it."

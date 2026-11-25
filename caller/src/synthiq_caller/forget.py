@@ -941,8 +941,10 @@ def run(args: argparse.Namespace) -> int:
         finishing=[str(r["removal"]) for r in pending],
     ):
         print(line)
-    if args.dry_run or not (plan.changes or pending):
+    if args.dry_run:
         return 0
+    if not (plan.changes or pending):
+        return _still_open(banks)
     try:
         removal, failed = execute(
             plan,
@@ -962,7 +964,15 @@ def run(args: argparse.Namespace) -> int:
         print("The record says so. Fix the cause and run the same command again to finish.")
         return 1
     print(f"removal {removal} complete; recorded in {log}")
-    return 0
+    return _still_open(banks)
+
+
+def _still_open(banks: list[Path]) -> int:
+    """1, naming each, when an earlier removal is still unfinished; otherwise 0."""
+    lines = removals.unfinished_lines(banks)
+    for line in lines:
+        print(f"forget: {line}")
+    return 1 if lines else 0
 
 
 def register(sub: Any) -> None:
