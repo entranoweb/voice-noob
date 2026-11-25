@@ -51,6 +51,30 @@ def tone_wav(seconds: int = 30, rate: int = 8000) -> bytes:
     return buffer.getvalue()
 
 
+CUTS: list[tuple[float, float]] = []
+
+
+def cut_without_ffmpeg(source: Path, start: float, end: float, target: Path, rate: int = 0) -> None:
+    """Stand-in for the ffmpeg cut (CI has no ffmpeg): slice a WAV and record the span asked for."""
+    CUTS.append((start, end))
+    with wave.open(str(source), "rb") as wav:
+        frame_rate = wav.getframerate()
+        wav.setpos(min(int(start * frame_rate), wav.getnframes()))
+        frames = wav.readframes(max(0, int((end - start) * frame_rate)))
+    with wave.open(str(target), "wb") as out:
+        out.setnchannels(1)
+        out.setsampwidth(2)
+        out.setframerate(frame_rate)
+        out.writeframes(frames)
+
+
+@pytest.fixture(autouse=True)
+def no_ffmpeg(monkeypatch: pytest.MonkeyPatch) -> None:
+    CUTS.clear()
+    monkeypatch.setattr("synthiq_caller.ingest.cut", cut_without_ffmpeg)
+    monkeypatch.setattr("synthiq_caller.clipbank.build.cut", cut_without_ffmpeg)
+
+
 class Platform:
     """A mock of the two endpoints, recording what was asked of it."""
 
@@ -249,6 +273,9 @@ def test_ingest_cuts_the_callers_turns_and_marks_every_clip_unverified(tmp_path:
     assert not any(bank.verified(n) for n in names)
     assert not any(bank.synthetic(n) for n in names)
     assert len(bank.label_doubts(names)) == 3
+    # The spans handed to the cutter are the turn times, padded 0.5 s each side:
+    # 4 s to the next turn at 8 s, then 12 to 15 and 20 to 24.
+    assert CUTS == [(3.5, 8.5), (11.5, 15.5), (19.5, 24.5)]
 
 
 def test_the_cut_is_padded_and_the_turn_ends_where_the_next_begins() -> None:
