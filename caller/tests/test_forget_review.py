@@ -314,7 +314,7 @@ def test_forget_redacts_what_was_said_and_heard_and_keeps_the_grade(tmp_path: Pa
     (said,) = stored_said(world)
     assert said["intended"] == f"[redacted {removal}]"
     assert said["heard"] == [f"[redacted {removal}]"]
-    assert said["answering"] == "Your name?" and said["clips"] == ["a1.wav"]
+    assert said["answering"] == f"[redacted {removal}]" and said["clips"] == ["a1.wav"]
     data = json.loads((world["results"] / "run-001.json").read_text(encoding="utf-8"))
     assert data["grade"] == {"outcome": "passed"}
     assert data["clips_removed"][0]["redacted"] is True
@@ -348,3 +348,226 @@ def test_redaction_is_idempotent(tmp_path: Path) -> None:
     after = tree(tmp_path)
     assert cli.main(forget_args(world, "a1")) == 0
     assert tree(tmp_path) == after
+
+
+# --- 7. round 3: redaction reaches the whole result; unfinished removals are loud ---
+
+SENTINEL = "Zebediah Quill"
+
+
+def realistic_result(clip: str) -> dict[str, object]:
+    """A stored run as the director, tracer and grader write it, with a name in every free-text field."""
+    said = f"my name is {SENTINEL}"
+    return {
+        "scenario_file": "a.json",
+        "leg": "",
+        "mutates": "none",
+        "record": {
+            "scenario": "a",
+            "call_ref": "fake-call",
+            "ended": f"agent ended the call {SENTINEL}",
+            "duration_s": 2.17,
+            "timeline": [
+                {"t": 0.0, "kind": "agent", "text": f"Hello {SENTINEL}"},
+                {"t": 0.66, "kind": "said", "step": 0, "clips": [f"{clip}.wav"], "seconds": 0.25},
+                {"t": 2.16, "kind": "heard", "text": said},
+                {"t": 2.17, "kind": "hangup", "on": f"Thanks {SENTINEL}"},
+            ],
+            "said": [
+                {
+                    "t": 0.66,
+                    "step_index": 0,
+                    "field": "name",
+                    "intended": said,
+                    "clips": [f"{clip}.wav"],
+                    "dtmf": "07700900123",
+                    "seconds": 0.25,
+                    "talk_over": False,
+                    "answering": f"Is that {SENTINEL}?",
+                    "heard": [said],
+                    "labels_unverified": False,
+                    "fallback": False,
+                    "synthetic_clips": [],
+                }
+            ],
+            "unanswered": [f"What about {SENTINEL}?"],
+        },
+        "trace": {
+            "call_ref": "fake-call",
+            "tool_calls": [
+                {
+                    "name": "check_patient",
+                    "arguments": {"name": SENTINEL, "nested": [{"who": SENTINEL}], "age": 41},
+                    "result": {"matched": SENTINEL},
+                    "ok": True,
+                    "step_id": "NP",
+                    "t": None,
+                    "error": f"no record for {SENTINEL}",
+                    "outputs": {"name": SENTINEL},
+                    "request": {"body": SENTINEL},
+                }
+            ],
+            "step_path": ["I1", "NP_CHECK"],
+            "transcript": [{"role": "user", "text": said}, f"{SENTINEL} said hello"],
+            "termination": f"hung up by {SENTINEL}",
+            "final": False,
+        },
+        "trace_error": f"trace for {SENTINEL} failed",
+        "read_back": {"name": SENTINEL, "note": f"stored as {SENTINEL}"},
+        "read_back_error": f"could not read {SENTINEL}",
+        "hook_error": f"hook saw {SENTINEL}",
+        "labels_unverified": [],
+        "provenance_unknown": [],
+        "synthetic_clips": [],
+        "grade": {
+            "scenario": "a",
+            "call_ref": "fake-call",
+            "outcome": "failed",
+            "checks": [
+                {"what": f"name is {SENTINEL}", "passed": False, "why": f"heard {SENTINEL}"},
+                {"what": "tool 'check_patient' is called", "passed": True},
+            ],
+            "fields": [
+                {
+                    "field": "name",
+                    "said": SENTINEL,
+                    "heard": SENTINEL,
+                    "stored": SENTINEL,
+                    "heard_matches": True,
+                    "stored_matches": False,
+                    "verdict": "sent correctly, stored wrongly",
+                    "stored_source": "tool call",
+                }
+            ],
+            "fault": "storage",
+            "reason": f"stored {SENTINEL} wrongly",
+        },
+    }
+
+
+def test_redaction_reaches_every_free_text_field_of_the_result(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    world = forget_world(tmp_path)
+    path = world["results"] / "run-001.json"
+    path.write_text(json.dumps(realistic_result("a1")), encoding="utf-8")
+    assert cli.main(forget_args(world, "a1")) == 0
+    text = path.read_text(encoding="utf-8")
+    assert SENTINEL not in text and "Zebediah" not in text and "07700900123" not in text
+    data = json.loads(text)
+    # what stays: outcome, fault class, which checks passed, timings, tool names, clip ids
+    assert data["grade"]["outcome"] == "failed" and data["grade"]["fault"] == "storage"
+    assert [c["passed"] for c in data["grade"]["checks"]] == [False, True]
+    assert data["record"]["duration_s"] == 2.17
+    assert [e["t"] for e in data["record"]["timeline"]] == [0.0, 0.66, 2.16, 2.17]
+    assert data["record"]["said"][0]["seconds"] == 0.25
+    assert data["record"]["said"][0]["clips"] == ["a1.wav"]
+    assert data["trace"]["tool_calls"][0]["name"] == "check_patient"
+    assert data["trace"]["tool_calls"][0]["ok"] is True
+    assert data["trace"]["step_path"] == ["I1", "NP_CHECK"]
+    # the mark lists exactly what was redacted, and the message says it
+    (mark,) = data["clips_removed"]
+    fields = mark["redacted_fields"]
+    for expected in (
+        "record.timeline[*].text",
+        "record.timeline[*].on",
+        "record.said[*].intended",
+        "record.said[*].heard",
+        "trace.transcript",
+        "trace.tool_calls[*].arguments",
+        "read_back.name",
+        "grade.checks[*].why",
+        "grade.fields[*].stored",
+    ):
+        assert expected in fields, expected
+    assert "record.duration_s" not in fields and "grade.outcome" not in fields
+    out = capsys.readouterr().out
+    assert "redacted" in out and "record.timeline[*].text" in out
+    assert "kept" in out and "outcome" in out
+
+
+def test_the_message_never_says_text_was_redacted_when_it_was_kept(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    world = forget_world(tmp_path)
+    path = world["results"] / "run-001.json"
+    path.write_text(json.dumps(realistic_result("a1")), encoding="utf-8")
+    assert cli.main(forget_args(world, "a1", "--keep-text", "--reason", "retention_expired")) == 0
+    out = capsys.readouterr().out
+    assert SENTINEL in path.read_text(encoding="utf-8")
+    assert "text redacted" not in out and "keeps what was said" in out
+    mark = json.loads(path.read_text(encoding="utf-8"))["clips_removed"][0]
+    assert mark["redacted"] is False and mark["redacted_fields"] == []
+
+
+def test_a_result_that_did_not_play_the_clip_is_left_alone(tmp_path: Path) -> None:
+    world = forget_world(tmp_path)
+    other = world["results"] / "run-002.json"
+    other.write_text(json.dumps(realistic_result("b1")), encoding="utf-8")
+    assert cli.main(forget_args(world, "a1")) == 0
+    assert SENTINEL in other.read_text(encoding="utf-8")
+
+
+def test_a_short_clip_id_in_prose_is_not_a_mention(tmp_path: Path) -> None:
+    world = forget_world(tmp_path)
+    prose = world["results"] / "run-003.json"
+    prose.write_text(
+        json.dumps({"record": {"said": []}, "note": "a1 call about a1 and a day"}),
+        encoding="utf-8",
+    )
+    assert cli.main(forget_args(world, "a1")) == 0
+    assert "clips_removed" not in json.loads(prose.read_text(encoding="utf-8"))
+
+
+def test_a_removal_that_started_and_never_finished_is_reported_loudly(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    world = forget_world(tmp_path)
+    log = world["bank"] / removals.LOG_FILE
+    removals.append(
+        log,
+        {
+            "removal": "rm_20260101T000000Z_abc123",
+            "removed_at": "2026-01-01T00:00:00+00:00",
+            "target": "a1",
+            "clips": ["a1"],
+            "outcome": "started",
+        },
+    )
+    # forget, on any invocation (a dry run included), says so and names the removal and what to do
+    assert cli.main(forget_args(world, "b1", "--dry-run")) == 0
+    out = capsys.readouterr().out
+    assert "UNFINISHED REMOVAL rm_20260101T000000Z_abc123" in out
+    assert "audio may remain" in out and "forget a1" in out
+    # validate --clips fails on it
+    check = ["validate", str(world["scenarios"]), "--clips", str(world["bank"])]
+    assert cli.main(check) == 1
+    assert "rm_20260101T000000Z_abc123" in capsys.readouterr().out
+    # running forget for that target finishes it: the warning is gone
+    assert cli.main(forget_args(world, "a1")) == 0
+    capsys.readouterr()
+    assert cli.main(forget_args(world, "b1", "--dry-run")) == 0
+    assert "UNFINISHED REMOVAL" not in capsys.readouterr().out
+
+
+def test_a_finished_removal_is_not_reported(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    world = forget_world(tmp_path)
+    assert cli.main(forget_args(world, "a1")) == 0
+    capsys.readouterr()
+    assert cli.main(forget_args(world, "b1", "--dry-run")) == 0
+    assert "UNFINISHED" not in capsys.readouterr().out
+
+
+async def test_run_batch_does_not_change_the_bank_it_was_given(tmp_path: Path) -> None:
+    bank = ClipBank(write_bank(tmp_path / "bank", {"a": FULL}))
+    await run_batch(
+        [("a.json", scenario("a"))],
+        agent,
+        bank,
+        tmp_path / "out",
+        turn_settings=FAST,
+        allow_unknown_provenance=True,
+    )
+    assert bank.allow_unknown_provenance is False

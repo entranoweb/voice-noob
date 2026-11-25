@@ -13,10 +13,13 @@ erasure, or the clip passes its retention date, this command:
    that played it, with a top-level ``clips_removed`` list (the grade is not changed);
 5. appends one record to ``removals.jsonl`` beside the manifest (``removals.py``).
 
-Stored results also lose what the person said: ``intended`` and ``heard`` in each
-``said`` entry that played a removed clip become ``[redacted <removal id>]`` (the
-grade and the timings stay, and the mark says it was redacted). ``--keep-text``
-keeps them, and is allowed only when the reason is ``retention_expired``.
+Stored results also lose what was said: in every result that played a removed clip,
+each free-text string (the timeline's ``heard`` and ``agent`` text, ``said``, the
+trace and its tool-call arguments, ``read_back``, the grade's ``why`` and the values
+it quotes) becomes ``[redacted <removal id>]``. The grade outcome, fault class,
+pass/fail of each check, timings, tool and step names and clip ids stay. The mark
+lists exactly which fields were redacted. ``--keep-text`` keeps the text, and is
+allowed only when the reason is ``retention_expired``.
 
 The record is written before anything is changed (outcome ``started``) and again
 when the work ends (``complete``, or ``incomplete`` with what failed). A failure on
@@ -74,12 +77,15 @@ class ForgetError(Exception):
 
 
 def _ids_in(text: str) -> set[str]:
-    """Every clip id a piece of text could be naming: whole tokens only, never a part of one."""
-    found: set[str] = set()
+    """The clip ids a text names: the whole text, a quoted token, or a token with an audio ending.
+
+    A bare word in prose ("a call about a day") is never a mention of the clip ``a``.
+    """
+    found = {clip_id(text.strip())}
+    found |= {clip_id(quoted) for quoted in re.findall(r"""['"]([A-Za-z0-9_.\-/]+)['"]""", text)}
     for token in re.findall(r"[A-Za-z0-9_.\-]+", text):
-        token = token.strip(".")
-        found.add(token)
-        found.add(clip_id(token))
+        if token.lower().endswith(AUDIO_SUFFIXES):
+            found.add(clip_id(token))
     return found
 
 
@@ -163,8 +169,8 @@ class Plan:
     unreadable: list[tuple[Path, str]] = field(default_factory=list)
     # stored run, chain or batch file -> the clips it used that it is not yet marked with.
     results: dict[Path, list[str]] = field(default_factory=dict)
-    # Stored run files whose said and heard text is to be redacted.
-    redact: set[Path] = field(default_factory=set)
+    # Stored run files whose text is to be redacted, and the fields that hold it.
+    redact: dict[Path, list[str]] = field(default_factory=dict)
     # Files that mention a clip and are not changed (uploads, scorecards, acceptance pages).
     mentioned: list[Path] = field(default_factory=list)
     # Sound files of calls that played a clip, in the results directories.
@@ -338,35 +344,109 @@ def _is_redacted(text: object) -> bool:
     return isinstance(text, str) and text.startswith("[redacted ")
 
 
-def _said_for(data: Any, stems: list[str]) -> list[dict[str, Any]]:
-    """The ``said`` entries of a stored run whose clips include a removed one."""
-    record = data.get("record") if isinstance(data, dict) else None
-    entries = record.get("said") if isinstance(record, dict) else None
-    if not isinstance(entries, list):
-        return []
-    return [
-        e
-        for e in entries
-        if isinstance(e, dict) and any(clip_id(str(c)) in stems for c in e.get("clips") or [])
-    ]
+# Keys whose string values say which step, tool, clip or class of fault it was, not what a
+# person said. Everything else under the parts of a result listed in ``_TEXT_PARTS`` is text.
+_KEEP_KEYS = frozenset(
+    {
+        "scenario",
+        "scenario_file",
+        "call_ref",
+        "outcome",
+        "fault",
+        "kind",
+        "name",
+        "step_id",
+        "step_path",
+        "clips",
+        "synthetic_clips",
+        "field",
+        "verdict",
+        "stored_source",
+        "role",
+        "leg",
+        "mutates",
+    }
+)
+# The parts of a stored result that can hold what someone said, heard or typed.
+_TEXT_PARTS = (
+    "record",
+    "trace",
+    "trace_error",
+    "read_back",
+    "read_back_error",
+    "hook_error",
+    "grade",
+)
+# Under these, numbers are what was said too (an age, a phone number): redact them as well.
+_VALUE_KEYS = frozenset({"arguments", "result", "outputs", "request", "dtmf"})
+
+KEPT_NOTE = (
+    "kept: grade outcome and fault class, which checks passed, timings, tool and step names, "
+    "clip ids"
+)
 
 
-def _needs_redaction(data: Any, stems: list[str]) -> bool:
-    for entry in _said_for(data, stems):
-        if entry.get("intended") and not _is_redacted(entry.get("intended")):
-            return True
-        if any(not _is_redacted(h) for h in entry.get("heard") or []):
-            return True
-    return False
+def _shape(path: str) -> str:
+    return re.sub(r"(\[\*\])+$", "", re.sub(r"\[\d+\]", "[*]", path))
 
 
-def _redact(data: Any, stems: list[str], removal: str) -> None:
+def _scrub(
+    node: Any,
+    marker: str,
+    path: str,
+    found: set[str],
+    *,
+    values: str = "",
+    keep: bool = True,
+) -> Any:
+    """``node`` with every free-text string replaced by ``marker``; ``found`` gets each place.
+
+    ``values`` is the path of the value subtree (tool arguments, say) the node is inside;
+    it is reported as one field, and numbers in it are redacted too.
+    """
+    if isinstance(node, dict):
+        out: dict[str, Any] = {}
+        for key, value in node.items():
+            here = f"{path}.{key}" if path else str(key)
+            plain = isinstance(value, str) or (
+                isinstance(value, list) and all(isinstance(v, str) for v in value)
+            )
+            if keep and not values and key in _KEEP_KEYS and plain:
+                out[key] = value
+            else:
+                inside = values or (here if key in _VALUE_KEYS else "")
+                out[key] = _scrub(value, marker, here, found, values=inside, keep=keep)
+        return out
+    if isinstance(node, list):
+        return [
+            _scrub(v, marker, f"{path}[{i}]", found, values=values, keep=keep)
+            for i, v in enumerate(node)
+        ]
+    if isinstance(node, str) and node and not _is_redacted(node):
+        found.add(_shape(values or path))
+        return marker
+    if values and isinstance(node, int | float) and not isinstance(node, bool):
+        found.add(_shape(values))
+        return marker
+    return node
+
+
+def _redacted_result(data: dict[str, Any], removal: str) -> tuple[dict[str, Any], list[str]]:
+    """The result with its free text redacted, and the list of fields that held any."""
+    found: set[str] = set()
     marker = f"[redacted {removal}]"
-    for entry in _said_for(data, stems):
-        if entry.get("intended") and not _is_redacted(entry.get("intended")):
-            entry["intended"] = marker
-        if isinstance(entry.get("heard"), list):
-            entry["heard"] = [h if _is_redacted(h) else marker for h in entry["heard"]]
+    out = dict(data)
+    for part in _TEXT_PARTS:
+        if part in out:
+            out[part] = _scrub(
+                out[part], marker, part, found, keep=not part.startswith("read_back")
+            )
+    return out, sorted(found)
+
+
+def _text_fields(data: dict[str, Any]) -> list[str]:
+    """The fields of this result that still hold text (none once it is redacted)."""
+    return _redacted_result(data, "x")[1]
 
 
 def _plan_results(plan: Plan, directories: list[Path], *, keep_text: bool) -> None:
@@ -384,11 +464,11 @@ def _plan_results(plan: Plan, directories: list[Path], *, keep_text: bool) -> No
                 _sound_files(plan, path, data)
             done = {str(m.get("clip")) for m in data.get(MARK, []) if isinstance(m, dict)}
             todo = [s for s in used if s not in done]
-            wipe = not keep_text and _needs_redaction(data, stems)
-            if todo or wipe:
+            fields = _text_fields(data) if used and not keep_text else []
+            if todo or fields:
                 plan.results[path] = todo
-            if wipe:
-                plan.redact.add(path)
+            if fields:
+                plan.redact[path] = fields
         for path in files:
             if not _is_result(path) or path.name.startswith("run-"):
                 continue
@@ -490,10 +570,20 @@ def describe(plan: Plan, *, dry: bool, keep_text: bool = False) -> list[str]:
     ]
     lines += [f"  CANNOT rewrite {p} ({why}); it names a clip" for p, why in plan.unreadable]
     for path, clips in plan.results.items():
-        redacted = ", text redacted" if path in plan.redact else ""
-        lines.append(f"  {verb} mark result with {MARK}: {path} ({', '.join(clips)}){redacted}")
+        lines.append(f"  {verb} mark result with {MARK}: {path} ({', '.join(clips)})")
+        if path in plan.redact:
+            lines.append(f"    {verb} redact: {', '.join(plan.redact[path])}")
+    if plan.redact:
+        lines.append(f"  {KEPT_NOTE}")
+        lines.append(
+            "  NOT redacted: batch and chain summaries (marked only), uploads, scorecards, "
+            "acceptance pages, call recordings"
+        )
     if keep_text:
-        lines.append("  --keep-text: what was said and heard in stored results is kept")
+        lines.append(
+            "  --keep-text: nothing in stored results is redacted; each result keeps what was "
+            "said and heard, and its mark says redacted: false"
+        )
     lines += [f"  left alone, mentions a clip: {p}" for p in plan.mentioned]
     if plan.recordings:
         lines.append(
@@ -542,12 +632,23 @@ def _mark_result(
 ) -> None:
     data = json.loads(path.read_text(encoding="utf-8"))
     held = [m for m in data.get(MARK, []) if isinstance(m, dict)]
+    fields: list[str] = []
     if wipe:
-        _redact(data, plan.stems, removal)
+        data, fields = _redacted_result(data, removal)
         for mark in held:
             if str(mark.get("clip")) in plan.stems:
                 mark["redacted"] = True
-    held += [{"clip": s, "removal": removal, "removed_on": day, "redacted": wipe} for s in todo]
+                mark["redacted_fields"] = sorted({*mark.get("redacted_fields", []), *fields})
+    held += [
+        {
+            "clip": s,
+            "removal": removal,
+            "removed_on": day,
+            "redacted": wipe,
+            "redacted_fields": fields,
+        }
+        for s in todo
+    ]
     data[MARK] = sorted(held, key=lambda m: str(m.get("clip")))
     write_json(path, data)
 
@@ -679,6 +780,8 @@ def run(args: argparse.Namespace) -> int:
         )
     if any(problems):
         raise SystemExit("forget: " + "; ".join(p for p in problems if p))
+    for warning in removals.unfinished_lines(banks):
+        print(f"forget: {warning}")
     try:
         plan = make_plan(
             args.target,
@@ -693,7 +796,12 @@ def run(args: argparse.Namespace) -> int:
         return 2
     for line in describe(plan, dry=args.dry_run, keep_text=args.keep_text):
         print(line)
-    if args.dry_run or not plan.changes:
+    pending = [
+        r
+        for r in removals.unfinished(banks)
+        if {clip_id(str(c)) for c in r["clips"]} <= set(plan.stems)
+    ]
+    if args.dry_run or not (plan.changes or pending):
         return 0
     try:
         removal, failed = execute(

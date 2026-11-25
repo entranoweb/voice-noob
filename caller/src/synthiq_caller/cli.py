@@ -205,7 +205,11 @@ def validate(args: argparse.Namespace) -> int:
             if finding.problem or shown[finding.kind] <= BANK_LINES:
                 print("  " + finding.line())
         for kind, count in shown.items():
-            if count > BANK_LINES and kind not in ("past retention", "invalid field"):
+            if count > BANK_LINES and kind not in (
+                "past retention",
+                "invalid field",
+                "unfinished removal",
+            ):
                 print(f"  ... {count - BANK_LINES} more {kind} finding(s) not listed")
     unchecked = sum(row.requires_state == "unchecked" for row in rows)
     if unchecked:

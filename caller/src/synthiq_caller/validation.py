@@ -13,6 +13,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+from synthiq_caller import removals
 from synthiq_caller.batch import load_chains, load_scenarios
 from synthiq_caller.chain import variables_in
 from synthiq_caller.clips import ClipBank, ClipExcluded
@@ -110,7 +111,7 @@ class BankFinding:
 
     @property
     def problem(self) -> bool:
-        return self.kind in ("past retention", "invalid field")
+        return self.kind in ("past retention", "invalid field", "unfinished removal")
 
     def line(self) -> str:
         return f"{self.clip:<44} {self.kind.upper() if self.problem else self.kind}: {self.detail}"
@@ -138,6 +139,9 @@ def validate_bank(bank: ClipBank, today: date | None = None) -> list[BankFinding
             found.append(BankFinding(info.clip, "no provenance", "the manifest does not say"))
         if gaps := consent.gaps():
             found.append(BankFinding(info.clip, "gap", f"no {', '.join(gaps)}"))
+    for line in removals.unfinished_lines(bank.directories):
+        removal = line.split(":", 1)[0].removeprefix("UNFINISHED REMOVAL ")
+        found.append(BankFinding(removal, "unfinished removal", line.split(": ", 1)[1]))
     return found
 
 

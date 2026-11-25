@@ -36,6 +36,7 @@ that does not pass.
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import re
 import time
@@ -446,7 +447,9 @@ async def run_batch(
     budget = budget if budget is not None else NameBudget()
     hooks = hooks if hooks is not None else NoHooks()
     out.mkdir(parents=True, exist_ok=True)
-    # The bank enforces this at playback too, so no path to a clip can skip the check.
+    # The bank enforces this at playback too, so no path to a clip can skip the check. The
+    # caller's bank is not changed: this run plays from a copy.
+    clips = copy.copy(clips)
     clips.allow_unknown_provenance = allow_unknown_provenance
     result = BatchResult(out=str(out), rehearsal=rehearsal)
     gate = asyncio.Semaphore(max(1, max_parallel))

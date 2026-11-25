@@ -73,6 +73,43 @@ def read_removed(directories: Iterable[Path]) -> dict[str, Removed]:
     return removed
 
 
+def unfinished(directories: Iterable[Path]) -> list[dict[str, Any]]:
+    """Removals that logged ``started`` and never ``complete`` or ``incomplete``.
+
+    One is cleared when a later ``complete`` record covers all of its clips (running
+    ``forget`` again for the same target does that). What is left may still have audio
+    on disk: the clips are ruled out, but the files and the stored text may remain.
+    """
+    open_: dict[str, dict[str, Any]] = {}
+    finished: list[set[str]] = []
+    for directory in directories:
+        for record in read_log(directory / LOG_FILE):
+            outcome = record.get("outcome")
+            removal = str(record.get("removal", ""))
+            if outcome == "started":
+                open_.setdefault(removal, record)
+            elif outcome in ("complete", "incomplete"):
+                open_.pop(removal, None)
+                if outcome == "complete":
+                    finished.append({clip_id(str(c)) for c in record["clips"]})
+    return [
+        record
+        for record in open_.values()
+        if not any({clip_id(str(c)) for c in record["clips"]} <= done for done in finished)
+    ]
+
+
+def unfinished_lines(directories: Iterable[Path]) -> list[str]:
+    return [
+        f"UNFINISHED REMOVAL {record.get('removal')}: it started "
+        f"({str(record.get('removed_at', ''))[:10]}) and never finished, so the audio may remain "
+        f"for {', '.join(str(c) for c in record['clips'])} and so may stored text. "
+        f"Run forget {record.get('target') or ' '.join(map(str, record['clips']))} again "
+        "with the same --clips, --scenarios and --results to finish it."
+        for record in unfinished(directories)
+    ]
+
+
 def append(path: Path, record: dict[str, Any]) -> None:
     """Add one record to the log, flushed to disk. Nothing already there is touched."""
     line = json.dumps(record, ensure_ascii=False, sort_keys=True)
