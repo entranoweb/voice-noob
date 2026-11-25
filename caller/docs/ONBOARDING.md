@@ -167,10 +167,12 @@ in the bank, and that what they require of the system is stated. Read every line
 - `TARGET PROFILE LACKS ...`: the scenario leaves a part of its booking to the
   profile and `target.json` does not give it.
 
-**Strict validation is coming.** A `--strict` flag, which will make an ungradeable
-scenario a failure, is planned as a separate change and does not exist yet. When
-it does, acceptance runs and CI must use it. Until then, read the output for the
-word UNGRADEABLE yourself before you accept a scenario set.
+**Use `--strict` before anything counts.** `synthiq-caller validate scenarios
+--clips clips --strict` turns every UNGRADEABLE line into an error and exits 1,
+naming each scenario. Acceptance runs and the CI gate always apply this check,
+and acceptance refuses a run whose scenario stated no expectations. A capture
+you have not finished is expected to fail it; fill in the expectations, then
+run it again.
 
 ## Step 7. Run one lookup-only call
 
