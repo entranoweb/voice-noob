@@ -237,10 +237,19 @@ def check(directory: str | Path) -> Completeness:
             else:
                 never.append(f"{key[0]} repeat {key[1]}")
         if never:
-            how = "was interrupted" if entry.get("status") == "interrupted" else "did not finish"
-            problems.append(
-                f"batch {batch} {how}: {len(never)} planned call(s) never ran (first: {never[0]})"
-            )
+            if entry.get("status") == "finished":
+                problems.append(
+                    f"batch {batch}: {len(never)} planned call(s) have no run file and no "
+                    f"held-back record (first: {never[0]}): removed or lost"
+                )
+            else:
+                how = (
+                    "was interrupted" if entry.get("status") == "interrupted" else "did not finish"
+                )
+                problems.append(
+                    f"batch {batch} {how}: {len(never)} planned call(s) never ran "
+                    f"(first: {never[0]})"
+                )
         for name, chain in chains.items():
             if chain.get("batch") != batch:
                 continue

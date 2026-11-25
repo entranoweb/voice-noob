@@ -110,7 +110,7 @@ When the step that matches an agent turn carries a persona fact, every other unu
 
 58 of 60 shows a true rate of about 90%, not 95%.
 
-Two readings are printed. By call, every placed call that is not void counts, and anything not passed counts against. By scenario, a scenario counts once and passes only if every one of its calls passed. Repeats of one scenario replay the same audio and are not independent calls, so the by-scenario reading is the one to quote. The command exits 0 only when the by-scenario reading is met.
+Two readings are printed. By call, every placed call that is not void counts, and anything not passed counts against. By scenario, a scenario counts once and passes only if every one of its calls passed. Repeats of one scenario replay the same audio and are not independent calls, so the by-scenario reading is the one to quote. The command exits 0 only when the by-scenario reading is met and the directory is what was planned (see [COMPLETENESS.md](COMPLETENESS.md)): a batch that was stopped, or a run file that was removed or edited, is exit 1 however good the remaining numbers are. Runs of different versions of one scenario file are refused (`--allow-mixed-scenarios`). Runs made before plans were recorded print `completeness unknown` and are judged on what is there; `--require-complete` makes that exit 1. The gate prints the same consent, provenance and unverified-label warnings acceptance does; they do not change its verdict.
 
 ## Not verified
 

@@ -208,6 +208,9 @@ def validate(args: argparse.Namespace) -> int:
             header=args.check_requires_header,
             timeout_s=args.check_requires_timeout,
         )
+    if not Path(args.scenarios).is_dir():
+        print(f"ERROR: {args.scenarios}: not a directory of scenarios; nothing was checked")
+        return 1
     try:
         rows = validate_directory(
             args.scenarios, _bank(args) if args.clips else None, checker, _target(args)
@@ -216,6 +219,10 @@ def validate(args: argparse.Namespace) -> int:
         # A file that does not load is an error with or without --strict.
         for line in load_problems(args.scenarios, _target(args)) or [str(error)]:
             print(f"ERROR: {line}")
+        return 1
+    if not rows:
+        # Nothing checked is not a check that passed.
+        print(f"ERROR: {args.scenarios}: no scenario or chain files; nothing was checked")
         return 1
     for row in rows:
         print(row.line())
@@ -233,6 +240,7 @@ def validate(args: argparse.Namespace) -> int:
                 "invalid field",
                 "consent record missing",
                 "unfinished removal",
+                "unusable audio",
             ):
                 print(f"  ... {count - BANK_LINES} more {kind} finding(s) not listed")
     unchecked = sum(row.requires_state == "unchecked" for row in rows)

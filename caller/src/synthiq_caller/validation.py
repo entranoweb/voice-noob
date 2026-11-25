@@ -171,7 +171,12 @@ class BankFinding:
     def problem(self) -> bool:
         if self.kind == "consent record missing":
             return not self.allowed
-        return self.kind in ("past retention", "invalid field", "unfinished removal")
+        return self.kind in (
+            "past retention",
+            "invalid field",
+            "unfinished removal",
+            "unusable audio",
+        )
 
     def line(self) -> str:
         return f"{self.clip:<44} {self.kind.upper() if self.problem else self.kind}: {self.detail}"
@@ -209,6 +214,8 @@ def validate_bank(bank: ClipBank, today: date | None = None) -> list[BankFinding
             )
         if gaps := consent.gaps():
             found.append(BankFinding(info.clip, "gap", f"no {', '.join(gaps)}"))
+        if why := bank.unusable(info.clip):
+            found.append(BankFinding(info.clip, "unusable audio", why))
     for line in removals.unfinished_lines(bank.directories):
         removal = line.split(":", 1)[0].removeprefix("UNFINISHED REMOVAL ")
         found.append(BankFinding(removal, "unfinished removal", line.split(": ", 1)[1]))
@@ -240,6 +247,9 @@ def validate_directory(
                         missing.append(str(ruled_out))
                     except FileNotFoundError:
                         missing.append(clip)
+                    else:
+                        if why := bank.unusable(clip):
+                            missing.append(f"{clip} ({why})")
         late, unknown, no_consent = _retention(bank, named, today)
         prereq = requires_state(file, scenario.name, scenario.requires, checker)
         rows.append(
@@ -280,6 +290,9 @@ def validate_directory(
                             missing.append(str(ruled_out))
                         except FileNotFoundError:
                             missing.append(str(clip))
+                        else:
+                            if why := bank.unusable(str(clip)):
+                                missing.append(f"{clip} ({why})")
         late, unknown, no_consent = _retention(bank, named, today)
         prereq = requires_state(file, chain.name, chain.requires, checker)
         calls = " > ".join(f"{call.id}({call.mutates})" for call in chain.calls)

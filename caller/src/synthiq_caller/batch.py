@@ -54,7 +54,8 @@ from synthiq_caller.chain import (
     load_chain,
     variables_in,
 )
-from synthiq_caller.clips import ClipBank
+from synthiq_caller.clips import ClipBank, ClipExcluded
+from synthiq_caller.completeness import read_object, read_run
 from synthiq_caller.director import Director, RunRecord
 from synthiq_caller.external import ExternalFailed, run_blocking, safe_id
 from synthiq_caller.grading import Grade, grade
@@ -498,6 +499,19 @@ async def run_batch(
         late = clips.expired_in(played)
         if late:
             raise NotRun(f"clips past their retention date: {late[:3]}; remove or re-consent them")
+        for clip in dict.fromkeys(played):
+            if clip.startswith("missing/"):
+                continue
+            # The rig's own fault, found before the call: a clip that is not there, or holds
+            # no audio, would play silence and the agent would be blamed for what it never heard.
+            try:
+                clips.path(clip)
+            except FileNotFoundError:
+                raise NotRun(f"clip file missing: {clip}") from None
+            except ClipExcluded:
+                continue  # said above, in its own words
+            if why := clips.unusable(clip):
+                raise NotRun(f"clip not usable: {clip}: {why}")
         unknown = clips.provenance_unknown(played)
         if unknown and not allow_unknown_provenance:
             raise NotRun(
@@ -835,7 +849,7 @@ async def reread_missing_traces(out: Path, reader: TraceReader, *, every: bool =
     """
     fetched = 0
     for path in sorted(out.glob("run-*.json")):
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = read_run(path)
         record = RunRecord.from_json(payload["record"])
         old = Trace.from_json(payload["trace"]) if payload.get("trace") else None
         usable = old is not None and not looks_unfinished(old, record)
@@ -861,7 +875,7 @@ def regrade(out: Path, scenarios: list[tuple[str, Scenario]]) -> int:
     changed = 0
     skipped = 0
     for path in sorted(out.glob("run-*.json")):
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = read_run(path)
         scenario = by_file.get(payload.get("scenario_file", ""))
         if scenario is None:
             continue
@@ -907,10 +921,12 @@ def regrade_chains(out: Path, chains: list[tuple[str, Chain]]) -> int:
     changed = 0
     skipped = 0
     for path in sorted(out.glob("run-*.json")):
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = read_run(path)
         link = payload.get("chain")
         chain = by_file.get(link["file"]) if link else None
-        call = next((c for c in chain.calls if c.id == link["id"]), None) if chain else None
+        call = (
+            next((c for c in chain.calls if c.id == link["id"]), None) if chain and link else None
+        )
         if call is None:
             continue
         if _was_redacted(payload):
@@ -930,16 +946,21 @@ def regrade_chains(out: Path, chains: list[tuple[str, Chain]]) -> int:
             write_run(path, payload)
             changed += 1
     for path in sorted(out.glob("chain-*.json")):
-        stored = json.loads(path.read_text(encoding="utf-8"))
+        stored = read_object(path)
+        moved = False
         for row in stored["calls"]:
             if row["run"] and (out / row["run"]).exists():
-                run = json.loads((out / row["run"]).read_text(encoding="utf-8"))
-                row["outcome"] = run["grade"]["outcome"]
+                run = read_run(out / row["run"])
+                now = run["grade"]["outcome"]
+                moved = moved or row["outcome"] != now
+                row["outcome"] = now
         outcome = chain_outcome([row["outcome"] for row in stored["calls"]])
         if outcome == "incomplete" and stored.get("uncaptured"):
             outcome = "ungraded"
         if outcome != stored["outcome"]:
             stored["outcome"] = outcome
-        write_run(path, stored)
+            moved = True
+        if moved:
+            write_run(path, stored)  # only a chain that moved is written (and stamped again)
     _say_skipped(skipped)
     return changed

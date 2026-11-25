@@ -106,6 +106,8 @@ Hooks, the reset, the read-back and the prerequisite checker run the operator's 
 
 ## Other changes
 
+- A directory of runs is checked against the plan the batch wrote before its first call
+  ([COMPLETENESS.md](COMPLETENESS.md)); a stopped batch exits 130 (SIGINT) or 143 (SIGTERM).
 - Run files are numbered from the highest number in use and are never written over.
 - A baseline made before these changes is refused (`version 2`); make it again.
   `compare` reports a scenario that lost all its graded calls as a regression.
