@@ -61,6 +61,42 @@ def test_request_log_does_not_take_its_address_from_a_client_header() -> None:
     assert middleware._get_client_ip(Request(scope)) == "192.0.2.10"
 
 
+@pytest.mark.parametrize(
+    ("host", "expected"),
+    [
+        ("203.0.113.9", "203.0.113.9"),
+        ("2001:db8::1", "2001:db8::1"),
+        ("::ffff:192.0.2.1", "::ffff:192.0.2.1"),
+        ("x" * 500, "invalid"),  # what `*` lets a client write
+        ("1.2.3.4; DROP TABLE audit_events", "invalid"),
+        ("fe80::1%" + "e" * 60, "invalid"),  # valid address, too long for the column
+        ("", "invalid"),
+    ],
+)
+def test_stored_client_address_is_an_ip_or_a_marker_and_fits_the_columns(
+    host: str, expected: str
+) -> None:
+    from starlette.requests import Request
+
+    from app.core.audit import client_ip
+    from app.core.proxy import ADDRESS_COLUMN_WIDTH
+
+    request = Request({"type": "http", "client": (host, 1), "headers": []})
+    stored = client_ip(request)
+    assert stored == expected
+    assert stored is not None
+    assert len(stored) <= ADDRESS_COLUMN_WIDTH <= 45  # ConsentRecord.ip_address is String(45)
+
+
+def test_no_client_is_none_not_a_marker() -> None:
+    from starlette.requests import Request
+
+    from app.core.audit import client_ip
+
+    assert client_ip(Request({"type": "http", "client": None, "headers": []})) is None
+    assert client_ip(None) is None
+
+
 def test_gunicorn_config_ignores_the_ambient_forwarded_allow_ips(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

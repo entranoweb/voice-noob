@@ -18,6 +18,12 @@ believed about nothing.
 addresses and CIDR networks. Unset, only loopback is trusted. ``*`` trusts every
 peer, which lets any client choose its own address (and so its own rate-limit
 bucket); it is accepted only as the whole value and never by default.
+
+Under ``*`` the first ``X-Forwarded-For`` entry is taken, and the client wrote
+it. ``stored_client_address`` therefore treats ``request.client.host`` as
+untrusted text: it keeps a valid IP address and replaces anything else with a
+marker, so a hostile header can neither overflow a column nor be stored as a
+string.
 """
 
 from __future__ import annotations
@@ -26,6 +32,26 @@ import ipaddress
 
 DEFAULT_TRUSTED_PROXY_IPS = "127.0.0.1,::1"
 SETTING_NAME = "TRUSTED_PROXY_IPS"
+
+# Narrowest address column: ConsentRecord.ip_address is String(45), the length
+# of the longest IPv6 text form (an IPv4-mapped address with a dotted tail).
+ADDRESS_COLUMN_WIDTH = 45
+INVALID_ADDRESS = "invalid"
+
+
+def stored_client_address(host: str) -> str:
+    """The address to persist for ``host``: a valid IP that fits, else a marker.
+
+    Never raises.
+    """
+    if len(host) <= ADDRESS_COLUMN_WIDTH:
+        try:
+            ipaddress.ip_address(host)
+        except ValueError:
+            pass
+        else:
+            return host
+    return INVALID_ADDRESS
 
 
 def trusted_proxy_ips(raw: str | None) -> str:
