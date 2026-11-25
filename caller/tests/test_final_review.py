@@ -4,10 +4,13 @@ its fix."""
 import json
 from pathlib import Path
 
+from test_batch_and_report import FAST, agent, scenario
 from test_clip_consent import FULL, forget_args, write_bank
 from test_forget_review import SENTINEL, realistic_result
 
 from synthiq_caller import cli
+from synthiq_caller.batch import regrade, run_batch
+from synthiq_caller.clips import ClipBank
 
 
 def bare_world(tmp_path: Path, rows: dict[str, dict[str, str]] | None = None) -> dict[str, Path]:
@@ -38,3 +41,20 @@ def test_a_result_file_with_a_new_name_is_still_redacted(tmp_path: Path) -> None
     path.write_text(json.dumps({"record": realistic_result("opener")["record"]}), encoding="utf-8")
     assert cli.main(forget_args(world, "opener")) == 0
     assert SENTINEL not in path.read_text(encoding="utf-8")
+
+
+async def test_a_keep_text_result_is_not_regraded_into_another_outcome(tmp_path: Path) -> None:
+    world = bare_world(tmp_path)
+    await run_batch(
+        [("s.json", scenario("s"))], agent, ClipBank(world["bank"]), world["results"],
+        turn_settings=FAST,
+    )  # fmt: skip
+    path = world["results"] / "run-001.json"
+    before_outcome = json.loads(path.read_text(encoding="utf-8"))["grade"]["outcome"]
+    args = forget_args(world, "opener", "--reason", "retention_expired", "--keep-text")
+    assert cli.main(args) == 0
+    stored = path.read_bytes()
+    harder = scenario("s", expect={"tools": [{"name_contains": "nonexistent"}]})
+    assert regrade(world["results"], [("s.json", harder)]) == 0
+    assert path.read_bytes() == stored
+    assert json.loads(stored)["grade"]["outcome"] == before_outcome

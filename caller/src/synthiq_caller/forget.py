@@ -577,9 +577,7 @@ def _plan_results(plan: Plan, directories: list[Path], *, keep_text: bool) -> No
             done = {str(m.get("clip")) for m in data.get(MARK, []) if isinstance(m, dict)}
             todo = [s for s in used if s not in done]
             chain_fields = (
-                _text_fields(data)
-                if used and not keep_text and kinds[path] == "chain"
-                else []
+                _text_fields(data) if used and not keep_text and kinds[path] == "chain" else []
             )
             if todo or chain_fields:
                 plan.results[path] = todo

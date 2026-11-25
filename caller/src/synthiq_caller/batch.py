@@ -863,14 +863,19 @@ def regrade(out: Path, scenarios: list[tuple[str, Scenario]]) -> int:
 
 
 def _was_redacted(payload: dict[str, Any]) -> bool:
-    """Whether ``forget`` redacted this stored result: grading what is left would only fail it."""
+    """Whether ``forget`` marked this stored result (redacted, or kept under ``--keep-text``).
+
+    A redacted result would only fail on what is left; one kept with its text was played
+    with a clip that is gone, and the scenario has been rewritten since, so a new grade
+    would not be the grade of that call. Either way the stored grade stays.
+    """
     marks = payload.get("clips_removed")
-    return isinstance(marks, list) and any(isinstance(m, dict) and m.get("redacted") for m in marks)
+    return isinstance(marks, list) and any(isinstance(m, dict) for m in marks)
 
 
 def _say_skipped(count: int) -> None:
     if count:
-        print(f"{count} redacted results not regraded (their stored grade is kept)")
+        print(f"{count} results of removed clips not regraded (their stored grade is kept)")
 
 
 def regrade_chains(out: Path, chains: list[tuple[str, Chain]]) -> int:

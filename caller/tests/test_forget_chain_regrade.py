@@ -98,7 +98,7 @@ async def test_regrade_leaves_a_redacted_result_and_its_grade_alone(
     assert regrade(out, [("lookup.json", scenario("lookup"))]) == 0
     assert path.read_bytes() == before
     assert json.loads(before)["grade"]["outcome"] == "passed"
-    assert "1 redacted results not regraded" in capsys.readouterr().out
+    assert "1 results of removed clips not regraded" in capsys.readouterr().out
 
 
 async def test_regrade_chains_leaves_a_redacted_result_and_its_grade_alone(
@@ -135,7 +135,7 @@ async def test_regrade_chains_leaves_a_redacted_result_and_its_grade_alone(
     capsys.readouterr()
     assert regrade_chains(out, load_chains(directory)) == 0
     assert {p.name: p.read_bytes() for p in runs} == before
-    assert f"{len(redacted)} redacted results not regraded" in capsys.readouterr().out
+    assert f"{len(redacted)} results of removed clips not regraded" in capsys.readouterr().out
 
 
 def test_finishing_an_earlier_removal_is_not_called_nothing_to_change(
