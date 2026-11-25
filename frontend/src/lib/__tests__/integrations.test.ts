@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, it, expect } from "vitest";
 import { AVAILABLE_INTEGRATIONS } from "../integrations";
 import type { Integration, IntegrationType, AuthType } from "../integrations";
@@ -332,5 +334,21 @@ describe("Integration Categories Distribution", () => {
   it("has integrations in productivity category", () => {
     const productivity = AVAILABLE_INTEGRATIONS.filter((i) => i.category === "productivity");
     expect(productivity.length).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe("agent prompt templates", () => {
+  // The templates are module constants inside Next page files, so they are read
+  // as source. With transfer_call gone, an agent told to transfer would promise a
+  // caller something that never happens.
+  const pages = [
+    "src/app/dashboard/agents/create-agent/page.tsx",
+    "src/app/dashboard/agents/[id]/page.tsx",
+  ];
+
+  it.each(pages)("%s does not tell the agent to transfer a call", (page) => {
+    const source = readFileSync(resolve(process.cwd(), page), "utf8");
+    expect(source).not.toMatch(/transfer (you|to a human)/i);
+    expect(source).toMatch(/take a message/i);
   });
 });

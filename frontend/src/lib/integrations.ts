@@ -51,7 +51,7 @@ export const AVAILABLE_INTEGRATIONS: Integration[] = [
     id: "call_control",
     name: "Call Control",
     slug: "call-control",
-    description: "End calls, transfer to agents, send DTMF tones for IVR navigation",
+    description: "Let the agent end the call",
     category: "communication",
     authType: "none",
     icon: "https://cdn.simpleicons.org/phone",
