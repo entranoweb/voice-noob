@@ -465,12 +465,13 @@ def test_doctor_in_a_folder_without_a_key_passes_the_fake_leg_and_says_the_live_
 ) -> None:
     monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
     monkeypatch.delenv("ELEVENLABS_REGION", raising=False)
+    monkeypatch.setattr("shutil.which", lambda name: "/bin/ffmpeg")  # CI has none
     assert cli.main(["init", str(tmp_path / "t")]) == 0
     capsys.readouterr()
     assert cli.main(["doctor", str(tmp_path / "t")]) == 0
     out = capsys.readouterr().out
     assert "fake leg: ready" in out
-    assert "live leg: NOT READY (key" in out
+    assert "live leg: NOT READY (key)" in out
     assert "live leg: ready" not in out
 
 
