@@ -311,6 +311,16 @@ class Settings(BaseSettings):
     RETENTION_SWEEP_ENABLED: bool = False
     RETENTION_SWEEP_INTERVAL_HOURS: int = 24
 
+    # Audio of caller calls (app.services.audio_store). A directory on local disk:
+    # in a container it must be a persistent volume, or every recording is lost
+    # on the next deploy. Stored per workspace under generated names.
+    CALLER_AUDIO_DIR: str = "./data/caller-audio"
+    # The most one uploaded file may be. 64 MiB is about 33 minutes of 16 kHz mono.
+    CALLER_AUDIO_MAX_BYTES: int = 64 * 1024 * 1024
+    # How often expired audio is deleted. Always on (it is not tied to
+    # RETENTION_SWEEP_ENABLED): a pass also runs at start-up. Minimum 1.
+    CALLER_AUDIO_EXPIRY_INTERVAL_MINUTES: int = 60
+
     @property
     def public_signup_allowed(self) -> bool:
         """Whether /auth/register accepts a stranger."""

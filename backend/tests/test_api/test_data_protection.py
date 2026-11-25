@@ -334,6 +334,7 @@ async def test_the_first_sweep_only_counts_and_the_next_one_deletes_only_expired
         "call_evaluations": 1,
         "call_records": 1,
         "accounts": 1,
+        "caller_audio": 0,
         "dry_run": 1,
     }
     async with _sessions(test_engine)() as session:
@@ -358,6 +359,7 @@ async def test_the_first_sweep_only_counts_and_the_next_one_deletes_only_expired
         "call_evaluations": 1,
         "call_records": 1,
         "accounts": 1,
+        "caller_audio": 0,
     }
     async with _sessions(test_engine)() as session:
         calls = (await session.execute(sa.select(CallRecord.id))).scalars().all()
