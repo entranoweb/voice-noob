@@ -219,3 +219,30 @@ def test_a_call_audio_path_into_a_folder_with_a_longer_name_is_not_touched(
     (world["results"] / "run-001.json").write_text(json.dumps(run), encoding="utf-8")
     assert cli.main(forget_args(world, "opener")) == 0
     assert stranger.exists()
+
+
+def test_a_rewritten_scenario_loses_the_fact_the_removed_clip_answered(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    world = bare_world(tmp_path)
+    scenario_file = world["scenarios"] / "s.json"
+    scenario_file.write_text(
+        json.dumps(
+            {
+                "name": "s",
+                "mutates": "none",
+                "persona": {"facts": {"name": "Zebediah Quill", "city": "Leeds"}},
+                "steps": [
+                    {"when": "name", "clips": ["opener.wav"], "field": "name"},
+                    {"when": "city", "clips": ["dob.wav"], "field": "city"},
+                ],
+                "expect": {"tools": [], "fields": []},
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert cli.main(forget_args(world, "opener")) == 0
+    text = scenario_file.read_text(encoding="utf-8")
+    assert "Zebediah" not in text
+    assert json.loads(text)["persona"]["facts"]["city"] == "Leeds"
+    assert "NOT removed: any other persona fact" in capsys.readouterr().out

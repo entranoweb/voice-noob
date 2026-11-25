@@ -309,6 +309,7 @@ def _rewrite_scenario(node: Any, stems: list[str], removal: str) -> list[str]:
             if clip_id(clip) in stems and "{{" not in clip:
                 clips[index] = f"missing/{clip_id(clip)}"
                 hit.append(clip_id(clip))
+                _blank_fact(node, answer, clip_id(clip))
     if hit:
         declared = node.setdefault("missing_clips", [])
         for stem in dict.fromkeys(hit):
@@ -317,6 +318,19 @@ def _rewrite_scenario(node: Any, stems: list[str], removal: str) -> list[str]:
     for call in [*(node.get("chain") or []), *(node.get("calls") or [])]:
         hit += _rewrite_scenario(call, stems, removal)
     return hit
+
+
+def _blank_fact(node: dict[str, Any], answer: dict[str, Any], stem: str) -> None:
+    """Blank the persona fact the removed clip answered: it is what the caller said.
+
+    A step names the fact it answers in ``field``. A fact no step ties to a clip is left,
+    and ``describe`` says so.
+    """
+    persona = node.get("persona")
+    facts = persona.get("facts") if isinstance(persona, dict) else None
+    name = answer.get("field")
+    if isinstance(facts, dict) and isinstance(name, str) and name in facts:
+        facts[name] = f"[removed: {stem}]"
 
 
 def _scenario_files(directory: Path) -> list[Path]:
@@ -797,6 +811,11 @@ def describe(
         f"  {verb} make a scenario MISSING CLIP: {p} ({', '.join(c)})"
         for p, c in plan.scenarios.items()
     ]
+    if plan.scenarios:
+        lines.append(
+            "  persona facts the removed clips answered (a step's field) are blanked; "
+            "NOT removed: any other persona fact, which may still hold what the caller said"
+        )
     lines += [f"  CANNOT rewrite {p} ({why}); it names a clip" for p, why in plan.unreadable]
     for path, clips in plan.results.items():
         lines.append(f"  {verb} mark result with {MARK}: {path} ({', '.join(clips)})")
