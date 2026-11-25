@@ -381,10 +381,9 @@ def test_the_guide_uses_real_commands_and_promises_nothing_that_does_not_exist()
     # Neutral placeholders only: no addresses, keys or numbers.
     assert not re.search(r"https?://(?!docs\.astral\.sh)", guide)
     assert not re.search(r"sk-|agent_[0-9a-z]{6,}|\+?\d{9,}", guide)
-    # The strict flag is announced as coming, and no command line in the guide uses it.
-    assert "does not exist yet" in guide and "--strict" in guide
-    assert not re.search(r"^\s*synthiq-caller .*--strict", guide, re.M)
-    assert '"--strict"' not in _source().replace('"--strict" not in', "")
+    # The guide tells the reader to use --strict, and the flag exists (#47).
+    assert "--strict" in guide and '"--strict"' in _source()
+    assert "does not exist yet" not in guide and "is coming" not in guide
 
 
 def test_the_guide_names_the_consent_fields_for_real_clips() -> None:
