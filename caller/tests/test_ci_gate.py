@@ -316,6 +316,17 @@ def test_a_chain_call_that_states_nothing_never_loads(tmp_path: Path) -> None:
         load_chains(tmp_path)
 
 
+@pytest.mark.parametrize("strict", [[], ["--strict"]])
+def test_validate_prints_a_clean_error_for_a_chain_call_that_expects_nothing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], strict: list[str]
+) -> None:
+    write_chain(tmp_path, second_expects=False)
+    assert main(["validate", str(tmp_path), *strict]) == 1
+    out = capsys.readouterr().out
+    assert out.startswith("ERROR: chain.json: chain call 'second' expects nothing")
+    assert "Traceback" not in out
+
+
 def test_validate_strict_passes_a_chain_whose_every_call_states_expectations(
     tmp_path: Path,
 ) -> None:

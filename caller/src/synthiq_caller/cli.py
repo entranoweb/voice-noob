@@ -63,10 +63,10 @@ from synthiq_caller.prereq import CommandChecker, HttpChecker, PrereqChecker
 from synthiq_caller.readback import CommandReadBack, HttpReadBack, NoReadBack, ReadBack
 from synthiq_caller.report import fail_under_exit, gate_reading, render, summarise
 from synthiq_caller.reset import CommandReset, HttpReset, NoReset, Reset
-from synthiq_caller.scenario import load_scenario
+from synthiq_caller.scenario import ScenarioError, load_scenario
 from synthiq_caller.stats import describe
 from synthiq_caller.traces.base import TraceReader
-from synthiq_caller.validation import ungradeable_problems, validate_directory
+from synthiq_caller.validation import load_problems, ungradeable_problems, validate_directory
 
 
 def _secret(name: str, env_file: str | None) -> str:
@@ -194,9 +194,15 @@ def validate(args: argparse.Namespace) -> int:
             header=args.check_requires_header,
             timeout_s=args.check_requires_timeout,
         )
-    rows = validate_directory(
-        args.scenarios, _bank(args) if args.clips else None, checker, _target(args)
-    )
+    try:
+        rows = validate_directory(
+            args.scenarios, _bank(args) if args.clips else None, checker, _target(args)
+        )
+    except (ScenarioError, ValueError) as error:
+        # A file that does not load is an error with or without --strict.
+        for line in load_problems(args.scenarios, _target(args)) or [str(error)]:
+            print(f"ERROR: {line}")
+        return 1
     for row in rows:
         print(row.line())
     unchecked = sum(row.requires_state == "unchecked" for row in rows)

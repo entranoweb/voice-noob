@@ -12,11 +12,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from synthiq_caller.batch import load_chains, load_scenarios
-from synthiq_caller.chain import variables_in
+from synthiq_caller.batch import _scenario_files, load_chains, load_scenarios
+from synthiq_caller.chain import is_chain_file, load_chain, variables_in
 from synthiq_caller.clips import ClipBank, ClipExcluded
 from synthiq_caller.prereq import PrereqChecker, requires_state
-from synthiq_caller.scenario import UNGRADEABLE
+from synthiq_caller.scenario import UNGRADEABLE, ScenarioError, load_scenario
 
 
 @dataclass
@@ -83,6 +83,21 @@ def ungradeable_problems(rows: list[Row]) -> list[str]:
     or a clip not yet in the bank are not: they are reported as they always were.
     """
     return [ungradeable_why(row.file) for row in rows if not row.states_expectations]
+
+
+def load_problems(directory: str | Path, target: dict[str, Any] | None = None) -> list[str]:
+    """One line per file that cannot be loaded (``<file>: <why>``), for a clean error.
+
+    ``load_scenarios`` and ``load_chains`` stop at the first bad file with an exception
+    that does not name it; this loads the files one at a time to say which.
+    """
+    problems: list[str] = []
+    for path in _scenario_files(directory):
+        try:
+            load_chain(path, target) if is_chain_file(path) else load_scenario(path, target)
+        except (ScenarioError, ValueError) as error:
+            problems.append(f"{path.name}: {error}")
+    return problems
 
 
 def _clips_state(bank: ClipBank | None, missing: list[str]) -> str:
