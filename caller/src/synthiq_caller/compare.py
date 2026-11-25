@@ -12,12 +12,12 @@ honest answer, and the cure is more repeats.
 
 from __future__ import annotations
 
-import json
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from synthiq_caller.completeness import Completeness, read_object
 from synthiq_caller.jsonio import write_json
 from synthiq_caller.report import Summary
 from synthiq_caller.stats import wilson_interval
@@ -55,7 +55,7 @@ def save_baseline(baseline: Baseline, path: str | Path) -> None:
 
 
 def load_baseline(path: str | Path) -> Baseline:
-    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    data = read_object(Path(path))
     if data.get("version") != VERSION:
         raise ValueError(
             f"baseline version {data.get('version')!r} is not {VERSION}: it was made under an "
@@ -173,3 +173,42 @@ def render_comparison(baseline: Baseline, changes: list[Change]) -> str:
             f"  {_rate(change.before):<24} {_rate(change.after):<24} {change.verdict:<26} {label}"
         )
     return "\n".join(lines)
+
+
+def comparison_failures(
+    changes: list[Change], fail_on: str, completeness: Completeness | None = None
+) -> list[str]:
+    """Why a comparison should fail a pipeline, one line each; empty when it should not.
+
+    ``never`` never fails. ``beyond-noise`` fails on a drop beyond noise. ``any`` fails on any
+    drop, and on a baseline scenario that is gone from the batch. Both fail when the
+    directory is not what was planned (a call that never ran, a file removed or edited), and
+    when nothing of the baseline was found at all: an empty or wrong directory has no
+    regression in it because it has nothing in it.
+    """
+    if fail_on == "never":
+        return []
+    reasons: list[str] = []
+    if completeness is not None and completeness.bad:
+        reasons.append(f"the batch is {completeness.status.upper()}, so it is not comparable")
+    scenarios = [c for c in changes if c.kind == "scenario" and c.before is not None]
+    if scenarios and all(c.after is None for c in scenarios):
+        reasons.append(
+            f"none of the baseline's {len(scenarios)} scenario(s) is in this batch: nothing "
+            "was compared"
+        )
+    if fail_on == "any":
+        reasons += [f"{c.kind} {c.name}: {c.verdict}" for c in changes if c.regressed]
+        reasons += [
+            f"{c.kind} {c.name}: missing from this batch"
+            for c in changes
+            if c.verdict == "missing" and not reasons_cover(reasons, c)
+        ]
+    else:
+        reasons += [f"{c.kind} {c.name}: {c.verdict}" for c in changes if c.beyond_noise]
+    return reasons
+
+
+def reasons_cover(reasons: list[str], change: Change) -> bool:
+    """Whether ``reasons`` already names this change (no double line for one scenario)."""
+    return any(r.startswith(f"{change.kind} {change.name}:") for r in reasons)

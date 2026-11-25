@@ -34,6 +34,7 @@ from typing import Any
 
 import httpx
 
+from synthiq_caller import completeness
 from synthiq_caller.jsonio import write_json
 from synthiq_caller.report import failing_step, summarise
 
@@ -101,7 +102,7 @@ def _marker(
     path = root / MARKER
     stored: dict[str, Any] = {}
     if path.exists():
-        loaded = json.loads(path.read_text(encoding="utf-8"))
+        loaded = completeness.read_json(path)
         stored = loaded if isinstance(loaded, dict) else {}
     marker = {
         "run_id": run_id or stored.get("run_id") or uuid.uuid4().hex,
@@ -120,17 +121,30 @@ def build_bundle(
     run_id: str | None = None,
     scenarios: str | Path | None = None,
     faults: dict[str, str] | None = None,
+    allow_incomplete: bool = False,
 ) -> dict[str, Any]:
-    """Everything in a run directory as one document. Places no calls, sends nothing."""
+    """Everything in a run directory as one document. Places no calls, sends nothing.
+
+    A directory that is not what was planned (a call that never ran, a run file removed or
+    changed) is refused unless ``allow_incomplete``: the server would show part of a run as
+    the whole of it. A directory whose completeness is unknown is sent as it is.
+    """
     root = Path(directory)
     files = sorted(root.glob("run-*.json"))
     batch_file = root / "batch.json"
     if not files and not batch_file.exists():
         raise UploadError(f"no runs found in {root}")
-    runs = [(path, json.loads(path.read_text(encoding="utf-8"))) for path in files]
+    shape = completeness.check(root)
+    if shape.bad and not allow_incomplete:
+        raise UploadError(
+            "; ".join(shape.lines())
+            + ". Uploading it would show part of a run as the whole of it; pass "
+            "--allow-incomplete to send it anyway"
+        )
+    runs = [(path, completeness.read_run(path)) for path in files]
     chains = []
     for path in sorted(root.glob("chain-*.json")):
-        chain = json.loads(path.read_text(encoding="utf-8"))
+        chain = completeness.read_object(path)
         chains.append({**chain, "file": path.name} if isinstance(chain, dict) else {})
     started, ended = _times(runs)
     marker = _marker(root, run_id, started, ended)
@@ -150,9 +164,7 @@ def build_bundle(
         "scenario_set_hash": scenario_set_hash(scenarios) if scenarios else "",
         "started_at": marker["started_at"],
         "ended_at": marker["ended_at"],
-        "batch": (
-            json.loads(batch_file.read_text(encoding="utf-8")) if batch_file.exists() else None
-        ),
+        "batch": (completeness.read_object(batch_file) if batch_file.exists() else None),
         # This package's own reading of the directory, sent beside the raw files
         # so the server can show it without knowing how it was worked out.
         "summary": asdict(summarise(root)),
@@ -342,7 +354,12 @@ def run(args: argparse.Namespace) -> int:
             run_id=args.run_id,
             scenarios=args.scenarios,
             faults=_faults(args.faults),
+            allow_incomplete=args.allow_incomplete,
         )
+        shape = completeness.check(args.directory)
+        if shape.bad or shape.unknown:
+            for line in shape.lines():
+                print(f"warning: {line}")
         body = encode(bundle)
         if args.bundle_out:
             Path(args.bundle_out).write_bytes(body)
@@ -413,6 +430,12 @@ def register(sub: Any) -> None:
     )
     parser.add_argument("--token-env", default=DEFAULT_TOKEN_ENV, help="variable holding the token")
     parser.add_argument("--env-file", default=None)
+    parser.add_argument(
+        "--allow-incomplete",
+        action="store_true",
+        help="send a directory that is not what was planned (a call never ran, a run file is "
+        "missing or was changed); without it the upload is refused",
+    )
     parser.add_argument(
         "--bundle-out", default="", help="write the bundle to a file and send nothing"
     )

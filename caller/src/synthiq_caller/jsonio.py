@@ -29,6 +29,25 @@ def write_new_json(path: Path, payload: Any) -> None:
         handle.write(to_text(payload))
 
 
+def write_run(path: Path, payload: dict[str, Any]) -> None:
+    """Write a stored run or chain file, stamped with a digest of what is being written.
+
+    The digest lets a later command see that the file was changed by something
+    other than the rig. It catches an accidental edit; it is not tamper-proofing
+    (see ``completeness``).
+    """
+    from synthiq_caller.completeness import stamp
+
+    write_json(path, stamp(payload))
+
+
+def write_new_run(path: Path, payload: dict[str, Any]) -> None:
+    """``write_run`` for a file that must not exist yet."""
+    from synthiq_caller.completeness import stamp
+
+    write_new_json(path, stamp(payload))
+
+
 def next_index(directory: Path, prefix: str) -> int:
     """One more than the highest number among ``<prefix>-NNN.json`` in ``directory``.
 

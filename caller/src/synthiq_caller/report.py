@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from synthiq_caller.completeness import Completeness, read_object, read_run
 from synthiq_caller.stats import describe, gate, wilson_interval
 
 
@@ -116,7 +116,9 @@ def ungraded_reason(payload: dict[str, Any]) -> str:
     return "nothing to check, or the system was not read back"
 
 
-def fail_under_exit(summary: Summary, fail_under: float | None) -> tuple[int, str]:
+def fail_under_exit(
+    summary: Summary, fail_under: float | None, completeness: Completeness | None = None
+) -> tuple[int, str]:
     """An exit code for a pipeline: 1 when the pass rate is under ``fail_under`` percent.
 
     A plain threshold, not a demonstration of a rate (that is the ``gate``
@@ -127,6 +129,11 @@ def fail_under_exit(summary: Summary, fail_under: float | None) -> tuple[int, st
     """
     if fail_under is None:
         return 0, ""
+    if completeness is not None and completeness.bad:
+        return 1, (
+            f"threshold: NOT met: the directory is {completeness.status.upper()}; the calls "
+            "that are here do not stand for the calls that were planned"
+        )
     if summary.rehearsals:
         return 1, (
             f"threshold: NOT met: {summary.rehearsals} call(s) are rehearsals against a "
@@ -149,7 +156,7 @@ def summarise(directory: str | Path) -> Summary:
     root = Path(directory)
     summary = Summary()
     for path in sorted(root.glob("run-*.json")):
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = read_run(path)
         graded = payload["grade"]
         outcome = graded["outcome"]
         summary.runs += 1
@@ -233,7 +240,7 @@ def summarise(directory: str | Path) -> Summary:
         if payload.get("clips_removed"):
             summary.removed_clip_calls += 1
     for path in sorted(root.glob("chain-*.json")):
-        chain = json.loads(path.read_text(encoding="utf-8"))
+        chain = read_object(path)
         chain_tally = summary.chains.setdefault(chain["chain"], [0, 0, 0])
         if chain["outcome"] == "passed":
             chain_tally[0] += 1
@@ -246,7 +253,7 @@ def summarise(directory: str | Path) -> Summary:
             chain_tally[2] += 1
     batch = root / "batch.json"
     if batch.exists():
-        summary.blocked = list(json.loads(batch.read_text(encoding="utf-8")).get("blocked", []))
+        summary.blocked = list(read_object(batch).get("blocked", []))
     return summary
 
 
@@ -304,7 +311,11 @@ class GateReading:
 
 
 def gate_reading(
-    summary: Summary, rate: float, confidence: float, max_unjudged: float = 0.1
+    summary: Summary,
+    rate: float,
+    confidence: float,
+    max_unjudged: float = 0.1,
+    completeness: Completeness | None = None,
 ) -> GateReading:
     """Judge a summary against a claimed pass rate.
 
@@ -330,6 +341,13 @@ def gate_reading(
     attempted = summary.runs + not_run
     share = unjudged / attempted if attempted else 1.0
     refused = []
+    if completeness is not None and completeness.bad:
+        # The numbers describe the calls that are here, not the calls that were planned.
+        refused.append(
+            f"the directory is {completeness.status.upper()} ("
+            + "; ".join(completeness.problems[:2])
+            + "): the calls here are not the calls that were planned"
+        )
     if summary.rehearsals:
         refused.append(
             f"{summary.rehearsals} call(s) are rehearsals against a scripted stand-in, not an agent"
