@@ -42,6 +42,11 @@ export DEBUG=false
 # The value under test: the answer document is built from this, and setting it
 # to something the request could not have produced is what proves it is used.
 export PUBLIC_URL='https://api.synthiqvoice.com'
+# Required: with DEBUG=false the app refuses to start without it (it encrypts
+# stored provider credentials, including the workspace's OpenAI key). Any entry
+# of the form "id:<urlsafe-base64 of 32 bytes>" works:
+#   python3 -c 'import os,base64;print("k1:"+base64.urlsafe_b64encode(os.urandom(32)).decode())'
+export CREDENTIAL_ENCRYPTION_KEYS='k1:2QsSF8A8mY9uffCHhEMfjhL2J0Y37X9EjdYpkQh2dhk='
 ```
 
 Then the signing key the instance will verify against:
@@ -175,3 +180,10 @@ TEST_DATABASE_URL='postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/voiceno
 
 Green. The 16 failures the sqlite fallback produces are artifacts of sqlite, and
 knowing that is worth the two minutes.
+
+## What a rehearsal does not record
+
+Twilio calls store **no turns**: `call_records.turns` stays null and the audio
+metrics read `not_measurable`, because the Twilio bridge has no turn recorder.
+That is the current state of the code, not a failed rehearsal. Telnyx calls store
+turns. The transcript and `termination_reason` are written for both.
