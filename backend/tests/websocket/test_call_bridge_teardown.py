@@ -13,6 +13,7 @@ Nothing sleeps for minutes: the limits are settings, and the tests shorten them.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from types import SimpleNamespace
 from typing import Any, ClassVar, Self
@@ -694,6 +695,27 @@ class TestPersistenceFailure:
                 release.set()
 
         assert closed_before_write, "the model session was still open during the write"
+        record = await open_call.record()
+        assert record.transcript == "User: hello"
+        assert record.termination_reason == "caller_hangup"
+        await _no_bridge_tasks_left()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("how", ["cancelled", "raises"])
+    async def test_a_model_session_that_fails_to_close_does_not_lose_the_call(
+        self, open_call: Any, monkeypatch: pytest.MonkeyPatch, how: str
+    ) -> None:
+        async def _bad_exit(session: _LiveSession, *_: object) -> None:
+            session.closed.set()
+            if how == "cancelled":
+                raise asyncio.CancelledError
+            message = "the model socket broke while closing"
+            raise RuntimeError(message)
+
+        monkeypatch.setattr(_LiveSession, "__aexit__", _bad_exit)
+        with contextlib.suppress(asyncio.CancelledError):
+            await self._hang_up(open_call)
+
         record = await open_call.record()
         assert record.transcript == "User: hello"
         assert record.termination_reason == "caller_hangup"
