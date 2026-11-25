@@ -100,13 +100,18 @@ class TestNoRetiredNames:
             "https://api.openai.com/v1/realtime/sessions",
         ):
             assert RETIRED.search(name), name
-        assert not RETIRED.search("gpt-realtime-2.1 gpt-realtime-2.1-mini gpt-live-transcribe")
+        assert not RETIRED.search("gpt-realtime-2.1 gpt-realtime-2.1-mini gpt-transcribe")
 
 
 class TestOneSourceOfModels:
     def test_defaults(self) -> None:
         assert settings.OPENAI_REALTIME_MODEL_PREMIUM == "gpt-realtime-2.1"
         assert settings.OPENAI_REALTIME_MODEL_PREMIUM_MINI == "gpt-realtime-2.1-mini"
+
+    def test_transcription_default_is_gpt_transcribe_not_live(self) -> None:
+        """gpt-live-transcribe does not support server_vad, which every session sets."""
+        assert settings.OPENAI_REALTIME_INPUT_TRANSCRIPTION_MODEL == "gpt-transcribe"
+        assert settings.OPENAI_REALTIME_INPUT_TRANSCRIPTION_MODEL != "gpt-live-transcribe"
 
     def test_tier_picks_the_model_from_settings(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(settings, "OPENAI_REALTIME_MODEL_PREMIUM", "premium-x")
@@ -129,7 +134,7 @@ class TestOneSourceOfModels:
     def test_transcription_is_configurable_and_can_be_left_out(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        assert input_transcription() == {"model": "gpt-live-transcribe"}
+        assert input_transcription() == {"model": "gpt-transcribe"}
         monkeypatch.setattr(settings, "OPENAI_REALTIME_INPUT_TRANSCRIPTION_MODEL", "other")
         assert input_transcription() == {"model": "other"}
         monkeypatch.setattr(settings, "OPENAI_REALTIME_INPUT_TRANSCRIPTION_MODEL", "")
@@ -164,7 +169,7 @@ class TestMintedRequestIsGa:
         assert session["model"] == "gpt-realtime-2.1"
         assert session["audio"]["output"]["voice"] == "marin"
         assert session["audio"]["input"]["turn_detection"]["type"] == "server_vad"
-        assert session["audio"]["input"]["transcription"] == {"model": "gpt-live-transcribe"}
+        assert session["audio"]["input"]["transcription"] == {"model": "gpt-transcribe"}
         assert session["output_modalities"] == ["audio"]
 
     def test_the_dashboard_session_is_ga(self) -> None:

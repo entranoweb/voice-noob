@@ -208,10 +208,14 @@ class Settings(BaseSettings):
     OPENAI_REALTIME_MODEL_PREMIUM_MINI: str = "gpt-realtime-2.1-mini"
     # Transcription of the caller's speech inside a Realtime session. Empty
     # means "send no transcription block": the call still works, there are just
-    # no caller transcripts. Whether this model is accepted inside a
-    # speech-to-speech session is not confirmed by OpenAI's model pages (see
-    # the PR); change it here without a code change if a live session says no.
-    OPENAI_REALTIME_INPUT_TRANSCRIPTION_MODEL: str = "gpt-live-transcribe"
+    # no caller transcripts. `gpt-transcribe` is the documented choice for a
+    # Realtime session: the realtime-transcription guide
+    # (https://developers.openai.com/api/docs/guides/realtime-transcription)
+    # describes it performing "input transcription in a Realtime API session" or
+    # in a dedicated transcription session. `gpt-live-transcribe` is not usable
+    # here: the same guide says it "doesn't support `server_vad` or
+    # `semantic_vad`", and every session this app opens sets server_vad.
+    OPENAI_REALTIME_INPUT_TRANSCRIPTION_MODEL: str = "gpt-transcribe"
     DEEPGRAM_API_KEY: str | None = None
     ELEVENLABS_API_KEY: str | None = None
 
