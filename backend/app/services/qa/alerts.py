@@ -15,6 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.core.safe_http import assert_public_url
 from app.models.call_evaluation import CallEvaluation
 from app.models.workspace import Workspace
 
@@ -147,7 +148,10 @@ async def _send_webhook_alert(
         ).hexdigest()
         headers["X-Signature-256"] = f"sha256={signature}"
 
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    # The address comes from workspace settings a customer writes. Check where
+    # it leads before calling it, and do not follow it anywhere else.
+    webhook_url = await assert_public_url(webhook_url)
+    async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as client:
         response = await client.post(webhook_url, json=payload, headers=headers)
         return response.status_code < 400  # noqa: PLR2004
 
@@ -200,7 +204,8 @@ async def _send_slack_alert(
         ],
     }
 
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    slack_webhook = await assert_public_url(slack_webhook)
+    async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as client:
         response = await client.post(slack_webhook, json=slack_payload)
         return response.status_code == 200  # noqa: PLR2004
 

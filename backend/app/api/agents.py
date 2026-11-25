@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.audit import AuditAction, record_audit
 from app.core.auth import CurrentUser
 from app.core.limiter import limiter
+from app.core.ownership import ensure_phone_reference_is_owned
 from app.core.public_id import generate_public_id
 from app.core.public_url import frontend_base_url
 from app.db.session import get_db
@@ -139,6 +140,10 @@ async def create_agent(
     Returns:
         Created agent
     """
+    # The phone field is free text that inbound routing reads; it may only
+    # point at a number registered to this account.
+    await ensure_phone_reference_is_owned(db, agent_request.phone_number_id, current_user)
+
     # Build provider config based on tier (from pricing-tiers.ts)
     provider_config = _get_provider_config(agent_request.pricing_tier)
 
@@ -343,6 +348,8 @@ async def update_agent(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Agent not found",
         )
+
+    await ensure_phone_reference_is_owned(db, update_request.phone_number_id, current_user)
 
     # Apply updates from request
     previous_number = agent.phone_number_id

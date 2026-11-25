@@ -56,7 +56,25 @@ async def get_current_user(
     if user is None:
         raise credentials_exception
 
+    # A disabled account has no access, whatever its token says. Tokens carry
+    # no revocation list, so this lookup is what makes disabling take effect on
+    # the next request rather than when the token expires.
+    if not user.is_active:
+        raise credentials_exception
+
     return user
+
+
+async def get_current_superuser(
+    current_user: Annotated[User, Depends(get_current_user)],
+) -> User:
+    """The signed-in user, who must be a platform administrator."""
+    if not current_user.is_superuser:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Administrator access required",
+        )
+    return current_user
 
 
 async def get_user_id_from_uuid(user_uuid: uuid.UUID, db: AsyncSession) -> int | None:
@@ -84,3 +102,4 @@ async def get_user_id_from_uuid(user_uuid: uuid.UUID, db: AsyncSession) -> int |
 
 # Type alias for dependency injection
 CurrentUser = Annotated[User, Depends(get_current_user)]
+SuperUser = Annotated[User, Depends(get_current_superuser)]

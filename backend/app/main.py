@@ -9,7 +9,6 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
-from sqlalchemy import func, select
 
 from app.api import (
     agents,
@@ -33,15 +32,13 @@ from app.api import (
     workspaces,
 )
 from app.api import settings as settings_api
-from app.api.auth import get_password_hash
-from app.core.audit import AuditAction, record_audit
-from app.core.config import settings
+from app.core.config import InsecureDefaultCredentialsError, settings
+from app.core.first_admin import ensure_first_admin
 from app.core.limiter import limiter
 from app.db.redis import close_redis, get_redis
 from app.db.session import AsyncSessionLocal, engine
 from app.middleware.request_tracing import RequestTracingMiddleware
 from app.middleware.security import SecurityHeadersMiddleware
-from app.models.user import User
 from app.monitoring import get_metrics_router, loop_lag
 from app.monitoring.tracing import configure_tracing, shutdown_tracing
 from app.services.call_registry import set_shutting_down, wait_for_calls_to_drain
@@ -92,37 +89,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:  # noqa: PLR0912
         logger.exception("Failed to initialize Redis - application cannot start")
         raise  # Re-raise to prevent app startup
 
-    # Create default admin user if no users exist
+    # Create the first administrator if no users exist, and refuse to serve on
+    # a password shipped in the repository. A refusal is fatal on purpose: the
+    # alternative is a deployment that works and has a public superuser login.
     try:
         async with AsyncSessionLocal() as db:
-            result = await db.execute(select(func.count(User.id)))
-            user_count = result.scalar() or 0
-
-            if user_count == 0:
-                admin_user = User(
-                    email=settings.ADMIN_EMAIL,
-                    hashed_password=get_password_hash(settings.ADMIN_PASSWORD),
-                    full_name=settings.ADMIN_NAME,
-                    is_active=True,
-                    is_superuser=True,
-                )
-                db.add(admin_user)
-                await db.flush()
-                await record_audit(
-                    db,
-                    AuditAction.ADMIN_BOOTSTRAP,
-                    target_type="user",
-                    target_id=str(admin_user.id),
-                    details={"reason": "first start with no users"},
-                )
-                await db.commit()
-                logger.info(
-                    "Created default admin user",
-                    email=settings.ADMIN_EMAIL,
-                    name=settings.ADMIN_NAME,
-                )
-            else:
-                logger.debug("Users already exist, skipping admin user creation")
+            await ensure_first_admin(db)
+    except InsecureDefaultCredentialsError:
+        raise
     except Exception:
         logger.exception("Failed to check/create admin user - continuing anyway")
 
@@ -227,9 +201,11 @@ app = FastAPI(
     version=settings.APP_VERSION,
     debug=settings.DEBUG,
     lifespan=lifespan,
-    docs_url="/docs",
-    redoc_url="/redoc",
-    openapi_url="/openapi.json",
+    # The interactive documentation lists every route and schema. It is for
+    # development; in production it is off unless ENABLE_API_DOCS says otherwise.
+    docs_url="/docs" if settings.api_docs_enabled else None,
+    redoc_url="/redoc" if settings.api_docs_enabled else None,
+    openapi_url="/openapi.json" if settings.api_docs_enabled else None,
 )
 
 # Add rate limiting
