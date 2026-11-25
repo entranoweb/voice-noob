@@ -668,6 +668,38 @@ class TestPersistenceFailure:
             await _closed_within(session, HANG_UP_BUDGET_S)
 
     @pytest.mark.asyncio
+    async def test_a_slow_database_does_not_hold_the_model_session_open(
+        self, open_call: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        save = telephony_ws.save_transcript_to_call_record
+        writing = asyncio.Event()
+        release = asyncio.Event()
+
+        async def _slow(*args: Any, **kwargs: Any) -> None:
+            writing.set()
+            await release.wait()
+            await save(*args, **kwargs)
+
+        monkeypatch.setattr(telephony_ws, "save_transcript_to_call_record", _slow)
+        async with open_call.call() as call:
+            session = _session()
+            await call.media()
+            await call.stop()
+            try:
+                # The write is held until released, so this is not a race: the
+                # session is either closed before the write starts or never.
+                await asyncio.wait_for(writing.wait(), timeout=10.0)
+                closed_before_write = session.closed.is_set()
+            finally:
+                release.set()
+
+        assert closed_before_write, "the model session was still open during the write"
+        record = await open_call.record()
+        assert record.transcript == "User: hello"
+        assert record.termination_reason == "caller_hangup"
+        await _no_bridge_tasks_left()
+
+    @pytest.mark.asyncio
     async def test_a_failed_transcript_write_does_not_skip_the_termination_reason(
         self,
         open_call: Any,

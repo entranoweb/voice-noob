@@ -790,15 +790,17 @@ async def twilio_media_stream(  # noqa: PLR0915
                 initial_start=start_frame,
             )
 
-            await _persist_call_artifacts(
-                record_key=call_sid,
-                agent=agent,
-                realtime_session=realtime_session,
-                recorder=None,
-                termination=termination,
-                db=db,
-                log=log,
-            )
+        # After the session has closed: a slow database must not keep a model
+        # session open for a caller who has already gone.
+        await _persist_call_artifacts(
+            record_key=call_sid,
+            agent=agent,
+            realtime_session=realtime_session,
+            recorder=None,
+            termination=termination,
+            db=db,
+            log=log,
+        )
 
     except WebSocketDisconnect:
         log.info("twilio_websocket_disconnected")
@@ -1222,15 +1224,17 @@ async def telnyx_media_stream(  # noqa: PLR0912, PLR0915
                 recorder=recorder,
             )
 
-            await _persist_call_artifacts(
-                record_key=webhook_call_id or call_control_id,
-                agent=agent,
-                realtime_session=realtime_session,
-                recorder=recorder,
-                termination=termination,
-                db=db,
-                log=log,
-            )
+        # After the session has closed: a slow database must not keep a model
+        # session open for a caller who has already gone.
+        await _persist_call_artifacts(
+            record_key=webhook_call_id or call_control_id,
+            agent=agent,
+            realtime_session=realtime_session,
+            recorder=recorder,
+            termination=termination,
+            db=db,
+            log=log,
+        )
 
     except WebSocketDisconnect:
         log.info("telnyx_websocket_disconnected")
