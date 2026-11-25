@@ -351,4 +351,9 @@ describe("agent prompt templates", () => {
     expect(source).not.toMatch(/transfer (you|to a human)/i);
     expect(source).toMatch(/take a message/i);
   });
+
+  it("links only to pages that exist: no /docs/ pages are served by this app", () => {
+    const internal = AVAILABLE_INTEGRATIONS.filter((i) => i.documentationUrl?.startsWith("/"));
+    expect(internal.map((i) => `${i.id} ${i.documentationUrl}`)).toEqual([]);
+  });
 });

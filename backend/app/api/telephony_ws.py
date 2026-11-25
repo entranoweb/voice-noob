@@ -678,7 +678,7 @@ async def save_transcript_to_call_record(
 
 
 @router.websocket("/twilio/{agent_id}")
-async def twilio_media_stream(  # noqa: PLR0915
+async def twilio_media_stream(  # noqa: PLR0912, PLR0915
     websocket: WebSocket,
     agent_id: str,
     db: AsyncSession = Depends(get_db),
@@ -773,32 +773,40 @@ async def twilio_media_stream(  # noqa: PLR0915
                 log.exception("call_registration_failed", call_sid=sid)
 
         # Initialize GPT Realtime session
-        async with GPTRealtimeSession(
-            db=db,
-            user_id=user_id_int,
-            agent_config=agent_config,
-            session_id=session_id,
-            workspace_id=workspace_id,
-        ) as realtime_session:
-            # Handle Twilio media stream and capture call_sid
-            call_sid, termination = await _handle_twilio_stream(
-                websocket=websocket,
-                realtime_session=realtime_session,
-                log=log,
-                enable_transcript=agent.enable_transcript,
-                on_call_start=on_call_start,
-                initial_start=start_frame,
-            )
-
-            await _persist_call_artifacts(
-                record_key=call_sid,
-                agent=agent,
-                realtime_session=realtime_session,
-                recorder=None,
-                termination=termination,
+        conversation_over = False
+        try:
+            async with GPTRealtimeSession(
                 db=db,
-                log=log,
-            )
+                user_id=user_id_int,
+                agent_config=agent_config,
+                session_id=session_id,
+                workspace_id=workspace_id,
+            ) as realtime_session:
+                # Handle Twilio media stream and capture call_sid
+                call_sid, termination = await _handle_twilio_stream(
+                    websocket=websocket,
+                    realtime_session=realtime_session,
+                    log=log,
+                    enable_transcript=agent.enable_transcript,
+                    on_call_start=on_call_start,
+                    initial_start=start_frame,
+                )
+                conversation_over = True
+        finally:
+            # After the session has closed, because a slow database must not keep
+            # a model session open for a caller who has already gone; in a
+            # ``finally``, because a close that fails or is cancelled must not
+            # lose the call. A conversation that raised has no outcome to save.
+            if conversation_over:
+                await _persist_call_artifacts(
+                    record_key=call_sid,
+                    agent=agent,
+                    realtime_session=realtime_session,
+                    recorder=None,
+                    termination=termination,
+                    db=db,
+                    log=log,
+                )
 
     except WebSocketDisconnect:
         log.info("twilio_websocket_disconnected")
@@ -1205,32 +1213,40 @@ async def telnyx_media_stream(  # noqa: PLR0912, PLR0915
                 log.exception("call_registration_failed", call_control_id=cid)
 
         # Initialize GPT Realtime session
-        async with GPTRealtimeSession(
-            db=db,
-            user_id=user_id_int,
-            agent_config=agent_config,
-            session_id=session_id,
-            workspace_id=workspace_id,
-        ) as realtime_session:
-            # Handle Telnyx media stream and capture call_control_id
-            call_control_id, termination = await _handle_telnyx_stream(
-                websocket=websocket,
-                realtime_session=realtime_session,
-                log=log,
-                enable_transcript=agent.enable_transcript,
-                on_call_start=on_call_start,
-                recorder=recorder,
-            )
-
-            await _persist_call_artifacts(
-                record_key=webhook_call_id or call_control_id,
-                agent=agent,
-                realtime_session=realtime_session,
-                recorder=recorder,
-                termination=termination,
+        conversation_over = False
+        try:
+            async with GPTRealtimeSession(
                 db=db,
-                log=log,
-            )
+                user_id=user_id_int,
+                agent_config=agent_config,
+                session_id=session_id,
+                workspace_id=workspace_id,
+            ) as realtime_session:
+                # Handle Telnyx media stream and capture call_control_id
+                call_control_id, termination = await _handle_telnyx_stream(
+                    websocket=websocket,
+                    realtime_session=realtime_session,
+                    log=log,
+                    enable_transcript=agent.enable_transcript,
+                    on_call_start=on_call_start,
+                    recorder=recorder,
+                )
+                conversation_over = True
+        finally:
+            # After the session has closed, because a slow database must not keep
+            # a model session open for a caller who has already gone; in a
+            # ``finally``, because a close that fails or is cancelled must not
+            # lose the call. A conversation that raised has no outcome to save.
+            if conversation_over:
+                await _persist_call_artifacts(
+                    record_key=webhook_call_id or call_control_id,
+                    agent=agent,
+                    realtime_session=realtime_session,
+                    recorder=recorder,
+                    termination=termination,
+                    db=db,
+                    log=log,
+                )
 
     except WebSocketDisconnect:
         log.info("telnyx_websocket_disconnected")
