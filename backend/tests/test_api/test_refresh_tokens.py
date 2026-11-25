@@ -132,6 +132,30 @@ async def test_logout_with_an_unknown_token_is_quietly_accepted(lifecycle: Lifec
     out = await lc.client.post(LOGOUT, json={"refresh_token": "x" * 43})
 
     assert out.status_code == 204
+    async with lc.sessions() as session:
+        events = (await session.execute(sa.select(AuditEvent))).scalars().all()
+    assert AuditAction.LOGOUT not in [e.action for e in events], "a token nobody holds is no event"
+
+
+@pytest.mark.asyncio
+async def test_logout_is_written_to_the_audit_trail(lifecycle: Lifecycle) -> None:
+    lc = lifecycle
+    tokens = await lc.login(lc.alice.user.email)
+
+    out = await lc.client.post(LOGOUT, json={"refresh_token": tokens["refresh_token"]})
+    again = await lc.client.post(LOGOUT, json={"refresh_token": tokens["refresh_token"]})
+
+    assert (out.status_code, again.status_code) == (204, 204)
+    async with lc.sessions() as session:
+        events = [
+            e
+            for e in (await session.execute(sa.select(AuditEvent))).scalars().all()
+            if e.action == AuditAction.LOGOUT
+        ]
+    assert len(events) == 1, "the second logout of the same sign-in changes nothing"
+    assert events[0].actor_user_id == lc.alice.user.id
+    assert "refresh_token" not in repr(events[0].details)
+    assert tokens["refresh_token"] not in repr(events[0].details)
 
 
 @pytest.mark.asyncio

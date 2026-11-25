@@ -77,25 +77,48 @@ export async function endSessionOnServer(): Promise<void> {
 
 let inFlight: Promise<string | null> | null = null;
 
+const LOCK_NAME = "synthiq-session-refresh";
+
+/**
+ * Run ``task`` while holding a lock shared by every tab of this origin
+ * (Web Locks). Where the API is missing the task just runs: that browser falls
+ * back to the per-tab guard in ``refreshSession`` and the small chance that two
+ * tabs collide stays.
+ */
+async function withCrossTabLock<T>(task: () => Promise<T>): Promise<T> {
+  const locks = typeof navigator === "undefined" ? undefined : navigator.locks;
+  if (!locks || typeof locks.request !== "function") return task();
+  return await locks.request(LOCK_NAME, task);
+}
+
 /**
  * Trade the refresh token for a new access token. Returns it, or null when the
  * session is over (no refresh token, or the server refused it).
  *
- * One request at a time: a refresh token works once, so two tabs' worth of
- * parallel 401s must share a single call, or the second would look like theft
- * and end the session.
+ * A refresh token works once, and a second use looks like theft to the server
+ * and ends the sign-in everywhere. Two guards keep that from happening to a
+ * person with several tabs open:
+ *
+ * - within a tab, concurrent callers share one promise (``inFlight``);
+ * - across tabs, the call is made while holding a Web Lock, and once the lock is
+ *   ours the stored refresh token is read again. If it is no longer the one this
+ *   call set out with, another tab already rotated it, so its stored pair is
+ *   used and /refresh is not called.
  */
 export function refreshSession(): Promise<string | null> {
   if (inFlight) return inFlight;
-  const refreshToken = getRefreshToken();
-  if (!refreshToken) return Promise.resolve(null);
+  const startedWith = getRefreshToken();
+  if (!startedWith) return Promise.resolve(null);
 
-  inFlight = (async () => {
+  inFlight = withCrossTabLock(async () => {
+    const current = getRefreshToken();
+    if (!current) return null;
+    if (current !== startedWith) return getAccessToken();
     try {
       const response = await fetch(`${API_BASE}/api/v1/auth/refresh`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ refresh_token: refreshToken }),
+        body: JSON.stringify({ refresh_token: current }),
       });
       if (!response.ok) {
         if (response.status === 401) clearSession();
@@ -107,10 +130,10 @@ export function refreshSession(): Promise<string | null> {
     } catch {
       // A network error is not a verdict on the session: keep it and try later.
       return null;
-    } finally {
-      inFlight = null;
     }
-  })();
+  }).finally(() => {
+    inFlight = null;
+  });
   return inFlight;
 }
 
@@ -129,6 +152,8 @@ export function accessTokenExpiry(token: string): number | null {
 
 /** Renew this long before the access token runs out. */
 export const RENEW_MARGIN_MS = 2 * 60 * 1000;
+/** Renewal fires up to this much earlier at random, so open tabs do not all renew at once. */ export const RENEW_JITTER_MS =
+  30 * 1000;
 
 /**
  * `fetch` for authenticated calls: sends the current access token, and when the

@@ -17,7 +17,7 @@ from app.api.auth import get_password_hash
 from app.core.audit import AuditAction, record_audit
 from app.core.config import settings
 from app.core.limiter import limiter
-from app.core.public_url import frontend_base_url
+from app.core.public_url import configured_frontend_origin
 from app.db.session import get_db
 from app.models.api_token import ApiToken
 from app.models.password_reset_token import PasswordResetToken
@@ -74,7 +74,7 @@ def _reset_mail(to: str, link: str) -> Mail:
 )
 @limiter.limit("5/minute")
 async def forgot_password(
-    request: Request,  # named `request` for slowapi; also used for the link's origin
+    request: Request,  # named `request` for slowapi and the audit row
     payload: ForgotPasswordRequest,
     background: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
@@ -91,8 +91,18 @@ async def forgot_password(
     raw = new_secret()
     digest = hash_token(raw)
 
+    # A link is only ever built from configuration, never from the Host header.
+    # Without a configured origin nothing is issued, and the requester still
+    # gets the usual answer: the failure is for the operator, in the log.
+    origin = configured_frontend_origin()
+    if origin is None:
+        logger.error(
+            "password_reset_not_sent_no_frontend_origin",
+            hint="set FRONTEND_URL so reset links can be built",
+        )
+
     issued = False
-    if user is not None and user.is_active:
+    if origin is not None and user is not None and user.is_active:
         recent = (
             await db.execute(
                 select(func.count(PasswordResetToken.id)).where(
@@ -131,8 +141,8 @@ async def forgot_password(
     )
     await db.commit()
 
-    if issued and user is not None:
-        link = f"{frontend_base_url(request)}/reset-password?token={raw}"
+    if issued and user is not None and origin is not None:
+        link = f"{origin}/reset-password?token={raw}"
         background.add_task(mailer.send, _reset_mail(user.email, link))
     return DetailResponse(detail=REQUESTED_DETAIL)
 

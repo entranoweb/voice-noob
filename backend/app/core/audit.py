@@ -68,6 +68,7 @@ class AuditAction:
     # Authentication
     LOGIN_SUCCESS = "auth.login.success"
     LOGIN_FAILED = "auth.login.failed"
+    LOGOUT = "auth.logout"
     REGISTER = "auth.register"
     PASSWORD_RESET_REQUESTED = "auth.password_reset.requested"
     PASSWORD_RESET_COMPLETED = "auth.password_reset.completed"

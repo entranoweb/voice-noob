@@ -100,12 +100,17 @@ async def issue_refresh_token(
     return raw
 
 
-async def revoke_family(db: AsyncSession, family_id: uuid.UUID) -> None:
-    await db.execute(
-        update(RefreshToken)
-        .where(RefreshToken.family_id == family_id, RefreshToken.revoked_at.is_(None))
-        .values(revoked_at=_now())
+async def revoke_family(db: AsyncSession, family_id: uuid.UUID) -> int:
+    """Revoke every live token of a sign-in. Returns how many were still live."""
+    result = cast(
+        "CursorResult[tuple[()]]",
+        await db.execute(
+            update(RefreshToken)
+            .where(RefreshToken.family_id == family_id, RefreshToken.revoked_at.is_(None))
+            .values(revoked_at=_now())
+        ),
     )
+    return int(result.rowcount)
 
 
 async def revoke_user_sessions(

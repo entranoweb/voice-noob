@@ -18,6 +18,7 @@ import pytest
 import sqlalchemy as sa
 
 from app.core.audit import AuditAction
+from app.core.config import settings
 from app.core.limiter import limiter
 from app.models.audit_event import AuditEvent
 from app.models.password_reset_token import PasswordResetToken
@@ -303,3 +304,44 @@ async def test_a_made_up_token_is_refused(lifecycle: Lifecycle) -> None:
     response = await _reset(lc, "x" * 43)
 
     assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_a_spoofed_host_header_never_ends_up_in_a_reset_link(
+    lifecycle: Lifecycle, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lc = lifecycle
+    monkeypatch.setattr(settings, "FRONTEND_URL", "https://app.example.com")
+
+    response = await lc.client.post(
+        FORGOT, json={"email": lc.alice.user.email}, headers={"Host": "evil.example"}
+    )
+
+    assert response.status_code == 202
+    text = lc.mailer.outbox[-1].text
+    assert "https://app.example.com/reset-password?token=" in text
+    assert "evil.example" not in text
+
+
+@pytest.mark.asyncio
+async def test_without_any_configured_origin_no_link_is_built_from_the_request(
+    lifecycle: Lifecycle, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lc = lifecycle
+    monkeypatch.setattr(settings, "FRONTEND_URL", None)
+    monkeypatch.setattr(settings, "CORS_ORIGINS", [])
+    monkeypatch.setattr(settings, "PUBLIC_URL", None)
+
+    known = await lc.client.post(
+        FORGOT, json={"email": lc.alice.user.email}, headers={"Host": "evil.example"}
+    )
+    unknown = await _forgot(lc, "nobody-here@example.com")
+
+    # The requester cannot tell: same answer as any other request.
+    assert (known.status_code, known.json()) == (unknown.status_code, unknown.json())
+    assert lc.mailer.outbox == [], "nothing is sent rather than a link to the Host header"
+    assert await _rows(lc, PasswordResetToken) == [], "and no link is left valid"
+    events = [
+        e for e in await _rows(lc, AuditEvent) if e.action == AuditAction.PASSWORD_RESET_REQUESTED
+    ]
+    assert [e.details["link_sent"] for e in events] == [False, False]

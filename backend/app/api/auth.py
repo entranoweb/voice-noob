@@ -341,7 +341,19 @@ async def logout(
         )
     ).scalar_one_or_none()
     if row is not None:
-        await revoke_family(db, row.family_id)
+        user_id = row.user_id
+        ended = await revoke_family(db, row.family_id)
+        if ended:
+            # Only a sign-in that was still live is an event; repeating the call
+            # or presenting a stale token changes nothing and records nothing.
+            await record_audit(
+                db,
+                AuditAction.LOGOUT,
+                actor_user_id=user_id,
+                target_type="user",
+                target_id=str(user_id),
+                request=request,
+            )
         await db.commit()
 
 

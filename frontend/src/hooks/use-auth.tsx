@@ -3,6 +3,7 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import {
+  RENEW_JITTER_MS,
   RENEW_MARGIN_MS,
   accessTokenExpiry,
   clearSession,
@@ -64,7 +65,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const schedule = () => {
       const expiry = accessTokenExpiry(getAccessToken() ?? token);
       if (expiry === null) return;
-      const wait = Math.max(expiry - RENEW_MARGIN_MS - Date.now(), 0);
+      // Jitter so tabs opened together do not all wake in the same millisecond.
+      const jitter = Math.random() * RENEW_JITTER_MS;
+      const wait = Math.max(expiry - RENEW_MARGIN_MS - Date.now() - jitter, 0);
       timer = setTimeout(() => void renew(), wait);
     };
     const onVisible = () => {
