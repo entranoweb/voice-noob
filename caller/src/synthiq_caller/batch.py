@@ -11,6 +11,10 @@ Three guards sit in front of every call:
   lock the name and fail every later call for the wrong reason. A scenario says
   how many checks its target allows (``identity_budget``) and how many one call
   spends (``identity_attempts``).
+* **The clip provenance.** A clip whose manifest row does not say where it came
+  from (real or synthetic) is not played unless the batch was told to allow it,
+  and then every result it touches says "provenance unknown". A clip past its
+  retention date is never played.
 * **The clip labels.** A clip whose label no person has confirmed is not played
   unless the batch was told to allow it, and then every result it touches says
   "labels unverified".
@@ -421,6 +425,7 @@ async def run_batch(
     reset: Reset | None = None,
     read_back: ReadBack | None = None,
     allow_unverified_clips: bool = False,
+    allow_unknown_provenance: bool = False,
     space_names: bool = False,
     prereq: PrereqChecker | None = None,
     make_leg_for: LegFactoryFor | None = None,
@@ -470,6 +475,15 @@ async def run_batch(
             # Found here, before the call: at play time it would break the call
             # half-way and leave a failure that is nobody's but the rig's.
             raise NotRun(f"excluded clips: {ruled_out}")
+        late = clips.expired_in(played)
+        if late:
+            raise NotRun(f"clips past their retention date: {late[:3]}; remove or re-consent them")
+        unknown = clips.provenance_unknown(played)
+        if unknown and not allow_unknown_provenance:
+            raise NotRun(
+                f"clip provenance not recorded ({len(unknown)}): {unknown[:3]}; "
+                "record it in the manifest, or allow unknown provenance for this batch"
+            )
         doubts = clips.label_doubts(played)
         if doubts and not allow_unverified_clips:
             raise NotRun(
@@ -543,6 +557,8 @@ async def run_batch(
             "read_back_error": read_back_error,
             "hook_error": "",
             "labels_unverified": doubts,
+            # Clips played whose manifest does not say where they came from.
+            "provenance_unknown": unknown,
             # Clips played in this call that are a synthetic voice, not a recorded caller.
             "synthetic_clips": sorted({c for said in record.said for c in said.synthetic_clips}),
             "grade": graded.to_json(),

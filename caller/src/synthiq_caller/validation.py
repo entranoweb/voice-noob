@@ -9,6 +9,7 @@ test hold. The last can only be answered by a checker the deployment supplies
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -32,10 +33,20 @@ class Row:
     requires_detail: str = ""
     # Parts of the appointment the target profile should give and does not.
     missing_target: list[str] = field(default_factory=list)
+    # Clips named that are past their retention date; a batch will not play them.
+    expired_clips: list[str] = field(default_factory=list)
+    # Clips named whose manifest row says nothing of where they came from.
+    unknown_provenance: list[str] = field(default_factory=list)
+    # What the scenario says it still needs recorded (see ``missing_clips``).
+    missing_recordings: list[str] = field(default_factory=list)
 
     @property
     def problem(self) -> bool:
-        return self.clips_state == "missing" or self.requires_state in ("unmet", "error")
+        return (
+            self.clips_state == "missing"
+            or bool(self.expired_clips)
+            or self.requires_state in ("unmet", "error")
+        )
 
     def line(self) -> str:
         clips = (
@@ -44,8 +55,20 @@ class Row:
             else f"clips {self.clips_state}"
         )
         needs = (
-            f"  needs {self.needs_recordings} recording(s), will not run"
+            f"  MISSING CLIP: needs {self.needs_recordings} recording(s), will not run"
+            + "".join(f"\n    - {text[:100]}" for text in self.missing_recordings)
             if self.needs_recordings
+            else ""
+        )
+        expired = (
+            f"  CLIPS PAST RETENTION: {self.expired_clips}, will not run"
+            if self.expired_clips
+            else ""
+        )
+        unknown = (
+            f"  provenance unknown: {len(self.unknown_provenance)} clip(s), "
+            "a batch needs --allow-unknown-provenance"
+            if self.unknown_provenance
             else ""
         )
         loud = self.requires_state not in ("none", "met")
@@ -58,7 +81,7 @@ class Row:
         )
         return (
             f"{self.file:<44} mutates={self.mutates:<10} {self.shape}  "
-            f"{clips}{needs}  {requires}{detail}{target}"
+            f"{clips}{expired}{unknown}{needs}  {requires}{detail}{target}"
         )
 
 
@@ -68,15 +91,66 @@ def _clips_state(bank: ClipBank | None, missing: list[str]) -> str:
     return "ok" if bank is not None else "not checked"
 
 
+def _retention(
+    bank: ClipBank | None, named: list[str], today: date | None
+) -> tuple[list[str], list[str]]:
+    """The clips among ``named`` past retention, and those with no provenance."""
+    if bank is None:
+        return [], []
+    return bank.expired_in(named, today), bank.provenance_unknown(named)
+
+
+@dataclass
+class BankFinding:
+    clip: str
+    # "past retention", "invalid field", "no provenance" or "gap".
+    kind: str
+    detail: str
+
+    @property
+    def problem(self) -> bool:
+        return self.kind in ("past retention", "invalid field")
+
+    def line(self) -> str:
+        return f"{self.clip:<44} {self.kind.upper() if self.problem else self.kind}: {self.detail}"
+
+
+def validate_bank(bank: ClipBank, today: date | None = None) -> list[BankFinding]:
+    """What the bank's own manifests say is wrong or missing, whatever scenarios use.
+
+    Past retention and invalid fields are problems. A clip with no provenance is
+    reported, and a recording that lacks a speaker ref, a lawful basis or dates is
+    listed as a gap: neither stops ``validate``, but a batch will not play a clip
+    with no provenance unless told to.
+    """
+    day = today or date.today()
+    found: list[BankFinding] = []
+    for info in bank.infos():
+        consent = info.consent
+        if consent.expired(day):
+            found.append(
+                BankFinding(info.clip, "past retention", f"retain_until {consent.retain_until}")
+            )
+        for problem in consent.problems():
+            found.append(BankFinding(info.clip, "invalid field", problem))
+        if info.provenance == "unknown" and not consent.provenance:
+            found.append(BankFinding(info.clip, "no provenance", "the manifest does not say"))
+        if gaps := consent.gaps():
+            found.append(BankFinding(info.clip, "gap", f"no {', '.join(gaps)}"))
+    return found
+
+
 def validate_directory(
     directory: str | Path,
     bank: ClipBank | None,
     checker: PrereqChecker | None,
     target: dict[str, Any] | None = None,
+    today: date | None = None,
 ) -> list[Row]:
     rows: list[Row] = []
     for file, scenario in load_scenarios(directory, target):
         missing: list[str] = []
+        named: list[str] = []
         if bank is not None:
             # The fallback's clips are played too, when a question has no step.
             answers = [*scenario.steps, *([scenario.fallback] if scenario.fallback else [])]
@@ -84,12 +158,14 @@ def validate_directory(
                 for clip in step.clips:
                     if clip.startswith("missing/") and scenario.missing_clips:
                         continue  # declared as not yet recorded; a batch will not run it
+                    named.append(clip)
                     try:
                         bank.path(clip)
                     except ClipExcluded as ruled_out:
                         missing.append(str(ruled_out))
                     except FileNotFoundError:
                         missing.append(clip)
+        late, unknown = _retention(bank, named, today)
         prereq = requires_state(file, scenario.name, scenario.requires, checker)
         rows.append(
             Row(
@@ -99,6 +175,9 @@ def validate_directory(
                 clips_state=_clips_state(bank, missing),
                 missing_clips=missing,
                 needs_recordings=len(scenario.missing_clips),
+                missing_recordings=list(scenario.missing_clips),
+                expired_clips=late,
+                unknown_provenance=unknown,
                 requires_state=prereq.state,
                 requires_detail=prereq.detail,
                 missing_target=list(scenario.missing_target),
@@ -106,6 +185,7 @@ def validate_directory(
         )
     for file, chain in load_chains(directory, target):
         missing = []
+        named = []
         if bank is not None:
             for call in chain.calls:
                 raw_answers = [*call.raw.get("steps", ()), call.raw.get("fallback") or {}]
@@ -115,12 +195,14 @@ def validate_directory(
                             str(clip).startswith("missing/") and call.missing_clips
                         ):
                             continue  # chosen at run time, or declared as not yet recorded
+                        named.append(str(clip))
                         try:
                             bank.path(str(clip))
                         except ClipExcluded as ruled_out:
                             missing.append(str(ruled_out))
                         except FileNotFoundError:
                             missing.append(str(clip))
+        late, unknown = _retention(bank, named, today)
         prereq = requires_state(file, chain.name, chain.requires, checker)
         calls = " > ".join(f"{call.id}({call.mutates})" for call in chain.calls)
         rows.append(
@@ -131,6 +213,9 @@ def validate_directory(
                 clips_state=_clips_state(bank, missing),
                 missing_clips=missing,
                 needs_recordings=sum(len(call.missing_clips) for call in chain.calls),
+                missing_recordings=[text for call in chain.calls for text in call.missing_clips],
+                expired_clips=late,
+                unknown_provenance=unknown,
                 requires_state=prereq.state,
                 requires_detail=prereq.detail,
                 missing_target=[

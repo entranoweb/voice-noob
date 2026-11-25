@@ -20,9 +20,17 @@ that names it.
 
 A bank can be given further directories. They hold clips the first does not,
 each with its own manifest. A manifest's ``provenance`` column says where a clip
-came from: a recording of a real caller (the default) or a synthetic voice. A
-synthetic clip is not evidence of how the agent hears real people, and every
-result it touches says so.
+came from: a recording of a real caller or a synthetic voice. A clip whose row
+does not say (an older manifest, or no row) has *unknown* provenance, which is
+not "real": a batch will not play it unless told to, and every result it touches
+says so. A synthetic clip is not evidence of how the agent hears real people,
+and every result it touches says so too. The other consent and provenance
+columns are described in ``consent.py``.
+
+**Removal.** ``synthiq-caller forget`` deletes a clip's audio and writes a record
+to ``removals.jsonl`` beside the manifest (``removals.py``). A bank reads that
+log, so a clip removed there is ruled out the way an excluded one is, even if a
+copy of its file is put back.
 """
 
 from __future__ import annotations
@@ -31,10 +39,13 @@ import csv
 import json
 import subprocess
 import wave
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import date
 from pathlib import Path
 from typing import Any
+
+from synthiq_caller.consent import UNKNOWN, Consent
+from synthiq_caller.removals import read_removed
 
 OVERRIDES_FILE = "overrides.json"
 
@@ -92,12 +103,23 @@ class ClipInfo:
     checked_by_human: bool
     # Doubts the builder raised about this clip (empty when it raised none).
     review: str = ""
-    # "real", or a description starting "synthetic".
-    provenance: str = "real"
+    # Where the clip came from and what may be done with it (``consent.py``).
+    consent: Consent = field(default_factory=Consent)
+    # Which manifest's directory the row was read from.
+    folder: str = ""
+
+    @property
+    def provenance(self) -> str:
+        """``real``, ``synthetic`` or ``unknown`` (a manifest that does not say)."""
+        return self.consent.kind
 
     @property
     def synthetic(self) -> bool:
-        return self.provenance.strip().lower().startswith("synthetic")
+        return self.provenance == "synthetic"
+
+    @property
+    def confirmed(self) -> bool:
+        return self.checked_by_human or bool(self.consent.label_confirmed_by)
 
 
 def silence(seconds: float, rate: int) -> bytes:
@@ -142,7 +164,7 @@ class ClipBank:
             with manifest.open(encoding="utf-8", newline="") as handle:
                 for row in csv.DictReader(handle):
                     info = ClipInfo(
-                        clip=row.get("clip", ""),
+                        clip=Path(row.get("clip") or "").stem,
                         call=row.get("call", ""),
                         category=row.get("category", ""),
                         secs=float(row.get("secs") or 0),
@@ -150,10 +172,13 @@ class ClipBank:
                         question=row.get("question", ""),
                         checked_by_human=bool((row.get("checked_by_human") or "").strip()),
                         review=(row.get("review") or "").strip(),
-                        provenance=(row.get("provenance") or "").strip() or "real",
+                        consent=Consent.from_row(row),
+                        folder=str(folder),
                     )
                     self._info[info.clip] = info
         self.overrides = load_overrides(self.directory)
+        # What ``forget`` removed, from every directory: a clip removed from any is gone.
+        self.removed = read_removed(self.directories)
         for override in self.overrides.values():
             known = self._info.get(override.clip)
             if known is not None and override.label:
@@ -163,7 +188,11 @@ class ClipBank:
                 )
 
     def excluded(self, name: str) -> Override | None:
-        override = self.overrides.get(Path(name).stem)
+        stem = Path(name).stem
+        gone = self.removed.get(stem)
+        if gone is not None:
+            return Override(stem, f"removed, see {gone.removal}", gone.date, exclude=True)
+        override = self.overrides.get(stem)
         return override if override is not None and override.exclude else None
 
     def excluded_in(self, names: list[str]) -> list[str]:
@@ -182,7 +211,7 @@ class ClipBank:
         """
         info = self.info(name)
         # A synthetic clip was made from its text, so its label is known.
-        return info is not None and (info.checked_by_human or info.synthetic)
+        return info is not None and (info.confirmed or info.synthetic)
 
     def synthetic(self, name: str) -> bool:
         """True when the clip is a synthetic voice, not a recording of a caller."""
@@ -196,10 +225,36 @@ class ClipBank:
             info = self.info(name)
             if info is None:
                 doubts.append(f"{name}: not in the manifest")
-            elif not (info.checked_by_human or info.synthetic):
+            elif not (info.confirmed or info.synthetic):
                 why = f"flagged {info.review}, " if info.review else ""
                 doubts.append(f"{name}: {why}not checked by a person")
         return doubts
+
+    def provenance_unknown(self, names: list[str]) -> list[str]:
+        """Each clip in ``names`` whose manifest row does not say where it came from, once."""
+        unknown: list[str] = []
+        for name in dict.fromkeys(names):
+            info = self.info(name)
+            if info is None:
+                unknown.append(f"{name}: not in the manifest")
+            elif info.provenance == UNKNOWN:
+                said = f"provenance {info.consent.provenance!r}" if info.consent.provenance else ""
+                unknown.append(f"{name}: {said or 'no provenance in the manifest'}")
+        return unknown
+
+    def expired_in(self, names: list[str], today: date | None = None) -> list[str]:
+        """Those of ``names`` past their ``retain_until`` date, with the date, once each."""
+        day = today or date.today()
+        late: list[str] = []
+        for name in dict.fromkeys(names):
+            info = self.info(name)
+            if info is not None and info.consent.expired(day):
+                late.append(f"{name}: retain_until {info.consent.retain_until}")
+        return late
+
+    def infos(self) -> list[ClipInfo]:
+        """Every clip the manifests describe."""
+        return list(self._info.values())
 
     def path(self, name: str) -> Path:
         ruled_out = self.excluded(name)

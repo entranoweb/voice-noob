@@ -9,7 +9,17 @@ def mark_checked(directory: Path, *, by: str = "a test") -> None:
     with (directory / "manifest.csv").open("w", encoding="utf-8", newline="") as handle:
         writer = csv.writer(handle)
         writer.writerow(
-            ["clip", "call", "category", "secs", "said", "question", "review", "checked_by_human"]
+            [
+                "clip",
+                "call",
+                "category",
+                "secs",
+                "said",
+                "question",
+                "review",
+                "checked_by_human",
+                "provenance",
+            ]
         )
         for clip in sorted(directory.rglob("*.wav")):
-            writer.writerow([clip.stem, "", "", "0.25", "", "", "", by])
+            writer.writerow([clip.stem, "", "", "0.25", "", "", "", by, "real"])

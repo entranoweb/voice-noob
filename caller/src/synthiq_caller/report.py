@@ -61,6 +61,10 @@ class Summary:
     void: int = 0
     # Calls in which a synthetic voice gave at least one answer.
     synthetic_calls: int = 0
+    # Calls that played a clip whose manifest did not say where it came from.
+    provenance_unknown_calls: int = 0
+    # Calls that played a clip that has since been removed (``forget``).
+    removed_clip_calls: int = 0
     # Cannot be judged as the scenario stands (see ``grading.py``).
     ungradeable: int = 0
     # Failures by who they are charged to.
@@ -220,6 +224,10 @@ def summarise(directory: str | Path) -> Summary:
                 field_tally.synthetic += 1
         if payload.get("synthetic_clips"):
             summary.synthetic_calls += 1
+        if payload.get("provenance_unknown"):
+            summary.provenance_unknown_calls += 1
+        if payload.get("clips_removed"):
+            summary.removed_clip_calls += 1
     for path in sorted(root.glob("chain-*.json")):
         chain = json.loads(path.read_text(encoding="utf-8"))
         chain_tally = summary.chains.setdefault(chain["chain"], [0, 0, 0])
@@ -429,6 +437,18 @@ def render(summary: Summary) -> str:
                 f"  synthetic voice: {summary.synthetic_calls} call(s) played a synthetic clip "
                 "where no recording of a real caller exists; those answers say nothing about "
                 "how the agent hears real people"
+            )
+        if summary.provenance_unknown_calls:
+            lines.append(
+                f"  provenance unknown: {summary.provenance_unknown_calls} call(s) played a clip "
+                "whose manifest does not say if it is a real recording or a synthetic voice, "
+                "or on what basis it is held"
+            )
+        if summary.removed_clip_calls:
+            lines.append(
+                f"  clips removed: {summary.removed_clip_calls} call(s) played a clip that has "
+                "since been removed with 'forget'; the call stands as it was graded, the audio "
+                "is gone and the call cannot be played again"
             )
         doubtful = sum(t.labels_unverified for t in summary.fields.values())
         if doubtful:

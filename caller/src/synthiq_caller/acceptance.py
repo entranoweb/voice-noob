@@ -141,6 +141,8 @@ def _clips(roots: list[Path]) -> dict[str, Any]:
     unverified: dict[str, str] = {}
     synthetic: set[str] = set()
     unverified_calls = synthetic_calls = calls = 0
+    unknown: set[str] = set()
+    unknown_calls = 0
     for root in roots:
         for path in sorted(root.glob("run-*.json")):
             payload = json.loads(path.read_text(encoding="utf-8"))
@@ -153,12 +155,17 @@ def _clips(roots: list[Path]) -> dict[str, Any]:
             made = [str(c) for c in payload.get("synthetic_clips") or []]
             synthetic.update(made)
             synthetic_calls += bool(made)
+            lost = [str(c).partition(": ")[0] for c in payload.get("provenance_unknown") or []]
+            unknown.update(lost)
+            unknown_calls += bool(lost)
     return {
         "calls": calls,
         "unverified": [{"clip": c, "why": w} for c, w in sorted(unverified.items())],
         "unverified_calls": unverified_calls,
         "synthetic": sorted(synthetic),
         "synthetic_calls": synthetic_calls,
+        "provenance_unknown": sorted(unknown),
+        "provenance_unknown_calls": unknown_calls,
     }
 
 
@@ -220,6 +227,11 @@ def _not_shown(report: dict[str, Any]) -> list[str]:
             f"{clips['synthetic_calls']} call(s) played a synthetic voice where no recording "
             "of a real caller exists. Those answers say nothing about how the agent hears "
             "real people."
+        )
+    if clips["provenance_unknown"]:
+        limits.append(
+            f"{clips['provenance_unknown_calls']} call(s) played a clip whose manifest does not "
+            "say if it is a real recording or a synthetic voice."
         )
     if clips["unverified"]:
         limits.append(
@@ -503,6 +515,13 @@ def _clip_section(report: dict[str, Any]) -> list[str]:
         parts.append(
             "<p>Every clip played carried a label a person has confirmed, or was a synthetic "
             "clip made from its own text.</p>"
+        )
+    if clips["provenance_unknown"]:
+        names = ", ".join(f"<code>{_e(c)}</code>" for c in clips["provenance_unknown"])
+        parts.append(
+            f"<p>{_span('warn', 'Provenance unknown.')} {clips['provenance_unknown_calls']} of "
+            f"{clips['calls']} call(s) played a clip whose manifest does not say if it is a "
+            f"real recording or a synthetic voice: {names}.</p>"
         )
     if clips["synthetic"]:
         names = ", ".join(f"<code>{_e(c)}</code>" for c in clips["synthetic"])
