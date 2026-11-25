@@ -158,6 +158,23 @@ class TwilioRest:
         recordings: list[dict[str, Any]] = response.json().get("recordings", [])
         return recordings
 
+    async def find_number(self, number: str) -> dict[str, Any] | None:
+        """One of the account's own numbers, or None when it does not hold it.
+
+        A read only: nothing is dialled and nothing is changed. A caller ID that
+        was verified rather than bought is not one of the account's numbers and
+        is not found here.
+        """
+        response = await self._client.get(
+            f"{self._root}/IncomingPhoneNumbers.json",
+            params={"PhoneNumber": number},
+            auth=self._credentials.basic_auth(),
+        )
+        if response.status_code >= 400:
+            raise RuntimeError(f"Twilio refused the request: {response.status_code}")
+        held: list[dict[str, Any]] = response.json().get("incoming_phone_numbers", [])
+        return held[0] if held else None
+
     async def aclose(self) -> None:
         await self._client.aclose()
 

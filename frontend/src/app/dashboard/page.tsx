@@ -67,6 +67,9 @@ export default function DashboardPage() {
 
   const activeAgents = agents.filter((a) => a.is_active).length;
   const totalCalls = callsData?.total ?? 0;
+  // The dashboard loads the five most recent calls only, so these two figures
+  // describe that sample and are labelled as such. Only `total` is a real total.
+  const recentCount = callsData?.calls?.length ?? 0;
   const completedCalls = callsData?.calls?.filter((c) => c.status === "completed").length ?? 0;
   const avgDuration =
     callsData?.calls && callsData.calls.length > 0
@@ -141,8 +144,10 @@ export default function DashboardPage() {
           <CardContent className="p-4">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-xs text-muted-foreground">Completed</p>
-                <p className="text-lg font-semibold">{completedCalls}</p>
+                <p className="text-xs text-muted-foreground">Completed (last {recentCount})</p>
+                <p className="text-lg font-semibold">
+                  {completedCalls} of {recentCount}
+                </p>
               </div>
               <CheckCircle className="h-4 w-4 text-muted-foreground" />
             </div>
@@ -153,7 +158,7 @@ export default function DashboardPage() {
           <CardContent className="p-4">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-xs text-muted-foreground">Avg Duration</p>
+                <p className="text-xs text-muted-foreground">Avg Duration (last {recentCount})</p>
                 <p className="text-lg font-semibold">{formatDuration(avgDuration)}</p>
               </div>
               <Clock className="h-4 w-4 text-muted-foreground" />

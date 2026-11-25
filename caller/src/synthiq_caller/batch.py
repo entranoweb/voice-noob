@@ -408,6 +408,7 @@ async def run_batch(
     prereq: PrereqChecker | None = None,
     make_leg_for: LegFactoryFor | None = None,
     rehearsal: bool = False,
+    leg_name: str = "",
 ) -> BatchResult:
     if allow_mutating not in ALLOWED:
         raise ValueError(f"allow_mutating must be one of {sorted(ALLOWED)}")
@@ -474,6 +475,7 @@ async def run_batch(
         except Exception as error:  # noqa: BLE001 - a failed hook must stop this call only
             raise NotRun(f"before hook: {error}") from error
         reader: TraceReader | None = None
+        leg: Leg | None = None
         try:
             leg, reader = make_leg_for(file) if make_leg_for is not None else make_leg()
             director = Director(scenario, leg, clips, turn_settings=turn_settings)
@@ -500,8 +502,19 @@ async def run_batch(
             except Exception as error:  # noqa: BLE001 - recorded; the grader falls back
                 read_back_error = str(error) or repr(error)
         graded = grade(scenario, record, trace, held)
+        # A leg may say more about the line it used (a phone leg: numbers, times, audio files).
+        describe = getattr(leg, "details", None)
+        line: dict[str, Any] = dict(describe()) if callable(describe) else {}
+        kind = str(line.pop("leg", ""))
+        # Over a phone line the leg's reference is the carrier's, not the engine's:
+        # the engine's is the one the trace was found under, and there may be none.
+        engine_ref = record.call_ref or ""
+        if "carrier_call_ref" in line:
+            engine_ref = trace.call_ref if trace is not None else ""
         payload: dict[str, Any] = {
             "scenario_file": file,
+            "leg": leg_name or kind,
+            **line,
             "mutates": scenario.mutates,
             "repeat": repeat,
             "record": record.to_json(),
@@ -534,7 +547,7 @@ async def run_batch(
                 file,
                 scenario,
                 repeat,
-                CallInfo(record.call_ref or "", name, str(out), graded.outcome),
+                CallInfo(engine_ref, name, str(out), graded.outcome),
             )
         except Exception as error:  # noqa: BLE001 - recorded, never hidden
             payload["hook_error"] = f"after hook: {error}"

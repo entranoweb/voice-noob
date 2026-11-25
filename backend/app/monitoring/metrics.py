@@ -6,8 +6,10 @@ Feature-flagged via ENABLE_PROMETHEUS_METRICS.
 
 from __future__ import annotations
 
+import hmac
+
 import structlog
-from fastapi import APIRouter, Response
+from fastapi import APIRouter, Request, Response
 from prometheus_client import (
     CONTENT_TYPE_LATEST,
     CollectorRegistry,
@@ -116,6 +118,22 @@ def record_call_failed(agent_id: str, error_type: str) -> None:
     )
 
 
+def metrics_request_allowed(authorization: str | None) -> bool:
+    """Whether a request may read the metrics.
+
+    The series carry agent ids as labels and say how busy each customer is.
+    In DEBUG anyone may read them. Otherwise the request must present
+    METRICS_TOKEN as a bearer token, and with no token configured nobody may.
+    """
+    if settings.DEBUG:
+        return True
+    token = settings.METRICS_TOKEN
+    if not token:
+        return False
+    presented = (authorization or "").removeprefix("Bearer ").strip()
+    return hmac.compare_digest(presented.encode(), token.encode())
+
+
 def get_metrics_router() -> APIRouter:
     """Get router with /metrics endpoint.
 
@@ -125,13 +143,17 @@ def get_metrics_router() -> APIRouter:
     router = APIRouter()
 
     @router.get("/metrics")
-    async def metrics() -> Response:
+    async def metrics(request: Request) -> Response:
         """Prometheus metrics endpoint."""
         if not settings.ENABLE_PROMETHEUS_METRICS:
             return Response(
                 content="Prometheus metrics disabled",
                 status_code=503,
             )
+
+        if not metrics_request_allowed(request.headers.get("authorization")):
+            # 404, not 401: outside DEBUG the endpoint does not advertise itself.
+            return Response(status_code=404)
 
         return Response(
             content=generate_latest(REGISTRY),

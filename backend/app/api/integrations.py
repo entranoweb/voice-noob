@@ -232,7 +232,10 @@ async def connect_integration(
         # Verify workspace belongs to user
         ws_result = await db.execute(
             select(Workspace).where(
-                and_(Workspace.id == workspace_uuid, Workspace.user_id == user_uuid)
+                # Workspaces are owned by the integer user id. Comparing with the
+                # derived UUID matched nothing, and on Postgres raised, so an
+                # integration could never be connected to a workspace.
+                and_(Workspace.id == workspace_uuid, Workspace.user_id == current_user.id)
             )
         )
         workspace = ws_result.scalar_one_or_none()

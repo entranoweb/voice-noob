@@ -113,3 +113,43 @@ export async function getAgentCallStats(agentId: string): Promise<CallStats> {
 
   return response.json();
 }
+
+/**
+ * One measurement for one call. `value: null` means it could not be measured
+ * for this call (no audio, or nothing to compare against); it does not mean zero.
+ */
+export interface CallMetricScore {
+  metric: string;
+  version: string;
+  category: string;
+  kind: string;
+  value: number | null;
+  passed: boolean | null;
+  unit: string | null;
+  detail: Record<string, unknown>;
+}
+
+export interface CallMetrics {
+  call_id: string;
+  outcome: string;
+  trustworthy: boolean;
+  has_audio: boolean;
+  scores: CallMetricScore[];
+  invalid_reasons: string[];
+}
+
+/**
+ * Get what was measured on one real call
+ */
+export async function getCallMetrics(callId: string): Promise<CallMetrics> {
+  const response = await fetch(`${API_BASE}/api/v1/calls/${callId}/metrics`, {
+    headers: getAuthHeaders(),
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: response.statusText }));
+    throw new Error(error.detail ?? "Failed to fetch call metrics");
+  }
+
+  return response.json();
+}

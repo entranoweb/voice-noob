@@ -230,10 +230,52 @@ async def get_agent_by_phone_number(phone_number: str, db: AsyncSession) -> Agen
     normalized = phone_number.lstrip("+")
     candidates = (phone_number, normalized, f"+{normalized}")
 
-    result = await db.execute(select(Agent).where(Agent.phone_number_id.in_(candidates)).limit(1))
-    agent = result.scalars().first()
-    if agent:
-        return agent
+    # Who holds this number. The record table is the authority on ownership:
+    # one live record per number is enforced by a unique index, and a number
+    # that somehow has two owners reaches nobody rather than whichever row the
+    # database returns first.
+    records = (
+        (
+            await db.execute(
+                select(PhoneNumberRecord).where(
+                    PhoneNumberRecord.phone_number.in_(candidates),
+                    PhoneNumberRecord.status != PhoneNumberStatus.RELEASED.value,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    record_owners = {record.user_id for record in records}
+    if len(record_owners) > 1:
+        logger.error("inbound_number_has_several_owners", owners=len(record_owners))
+        return None
+
+    # The agent's own free-text field. It is honoured only for the account that
+    # holds the number: an agent in any other account that has written this
+    # number into the field is ignored, so it can neither take the calls nor
+    # break the owner's signature check. With no record at all (rows that
+    # predate the table), it is honoured only when every agent claiming the
+    # number belongs to one account.
+    claimants = (
+        (
+            await db.execute(
+                select(Agent)
+                .where(Agent.phone_number_id.in_(candidates))
+                .order_by(Agent.created_at, Agent.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if record_owners:
+        owner = next(iter(record_owners))
+        claimants = [agent for agent in claimants if user_id_to_uuid(agent.user_id) == owner]
+    elif len({agent.user_id for agent in claimants}) > 1:
+        logger.error("inbound_number_claimed_by_several_accounts")
+        return None
+    if claimants:
+        return claimants[0]
 
     result = await db.execute(
         select(Agent)
@@ -244,7 +286,13 @@ async def get_agent_by_phone_number(phone_number: str, db: AsyncSession) -> Agen
         )
         .limit(1)
     )
-    return result.scalars().first()
+    agent = result.scalars().first()
+    # An assignment is only as good as the agent's owner: a record must not
+    # route to an agent in another account, however the row came to say so.
+    if agent is not None and user_id_to_uuid(agent.user_id) not in record_owners:
+        logger.error("inbound_number_assigned_across_accounts")
+        return None
+    return agent
 
 
 async def get_agent_workspace_id(agent_id: uuid.UUID, db: AsyncSession) -> uuid.UUID | None:

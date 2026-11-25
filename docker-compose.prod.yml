@@ -10,13 +10,15 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme_in_production}
+      # No default: a database on a password printed in this file is open to
+      # anyone who can reach it. The backend also refuses to start on one.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD to a long random value}
       POSTGRES_DB: ${POSTGRES_DB:-voice_agent}
       PGDATA: /var/lib/postgresql/data/pgdata
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-postgres}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -29,11 +31,11 @@ services:
     image: redis:7-alpine
     container_name: synthiq-redis
     restart: unless-stopped
-    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-changeme_in_production}
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:?set REDIS_PASSWORD to a long random value}
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-changeme_in_production}", "ping"]
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:?set REDIS_PASSWORD to a long random value}", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -49,9 +51,12 @@ services:
     restart: unless-stopped
     environment:
       # Database
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-changeme_in_production}@postgres:5432/${POSTGRES_DB:-voice_agent}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD to a long random value}@postgres:5432/${POSTGRES_DB:-voice_agent}
       # Redis
-      REDIS_URL: redis://:${REDIS_PASSWORD:-changeme_in_production}@redis:6379/0
+      REDIS_URL: redis://:${REDIS_PASSWORD:?set REDIS_PASSWORD to a long random value}@redis:6379/0
+      # The entrypoint waits for Redis with redis-cli, which needs the
+      # password on its own; without it the wait never ends.
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD to a long random value}
       # Security
       # Signs login tokens and the tokens that admit a carrier's media stream
       # to an agent. No default: the app refuses to start on a placeholder,
@@ -72,9 +77,20 @@ services:
       # The origin the embed snippet points customers' sites at: the widget
       # script and the embed page are served by the frontend.
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
-      # Admin credentials
-      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@synthiq.io}
-      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-changeme}
+      # The first administrator, created on the first start against an empty
+      # database. No defaults: a known address with a known password is a
+      # working superuser login for anyone. The backend refuses to start on
+      # a password this repository has ever shipped.
+      ADMIN_EMAIL: ${ADMIN_EMAIL:?set ADMIN_EMAIL to the first administrator's address}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?set ADMIN_PASSWORD to a long random value}
+      # Whether strangers may create accounts. Closed unless set to true; the
+      # administrator creates accounts at POST /api/v1/auth/users.
+      ALLOW_PUBLIC_SIGNUP: ${ALLOW_PUBLIC_SIGNUP:-false}
+      # /docs, /redoc and /openapi.json. Off unless set to true.
+      ENABLE_API_DOCS: ${ENABLE_API_DOCS:-false}
+      # Bearer token a scraper presents to read /metrics. Empty: /metrics
+      # answers 404.
+      METRICS_TOKEN: ${METRICS_TOKEN:-}
       ADMIN_NAME: ${ADMIN_NAME:-Admin}
       # Telephony. Only what is listed here reaches the container, which is why
       # setting these in the deployment platform alone is not enough.
@@ -121,8 +137,11 @@ services:
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
       REDIS_HOST: redis
-    ports:
-      - "8000:8000"
+    # Reached through the reverse proxy on the compose network, which is
+    # where TLS ends. Not published on the host: a published port answers
+    # over plain HTTP beside the proxy, to anyone who can reach the server.
+    expose:
+      - "8000"
     depends_on:
       postgres:
         condition: service_healthy
@@ -150,8 +169,8 @@ services:
     environment:
       NEXT_PUBLIC_API_URL: ${BACKEND_URL:-http://backend:8000}
       NEXT_PUBLIC_WS_URL: ${BACKEND_WS_URL:-ws://backend:8000}
-    ports:
-      - "3000:3000"
+    expose:
+      - "3000"
     depends_on:
       - backend
     networks:

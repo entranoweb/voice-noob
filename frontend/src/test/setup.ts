@@ -4,8 +4,32 @@ import React from "react";
 import { afterAll, afterEach, beforeAll, vi } from "vitest";
 import { server } from "../../tests/mocks/server";
 
-// Start MSW server before all tests
-beforeAll(() => server.listen({ onUnhandledRequest: "warn" }));
+// A request with no handler FAILS the test that made it. With "warn" a
+// component could call a route the backend does not have (the "Run Tests"
+// button did, for months) and every test still passed. MSW's own "error" mode
+// is not enough: it rejects the request, the component swallows the rejection
+// and the test stays green. So unhandled requests are collected here and the
+// afterEach below throws on them. Each handler in tests/mocks/handlers.ts must
+// match a route the backend really serves.
+const unhandledRequests: string[] = [];
+
+function failOnUnhandledRequests(when: string) {
+  const seen = unhandledRequests.splice(0);
+  if (seen.length > 0) {
+    throw new Error(
+      `${when}: request(s) with no mock handler: ${[...new Set(seen)].join(", ")}. ` +
+        "Add a handler that matches a real backend route, or stop making the call."
+    );
+  }
+}
+
+beforeAll(() =>
+  server.listen({
+    onUnhandledRequest(request) {
+      unhandledRequests.push(`${request.method} ${new URL(request.url).pathname}`);
+    },
+  })
+);
 
 // Mock framer-motion to avoid animation issues in tests
 vi.mock("framer-motion", () => {
@@ -46,6 +70,7 @@ vi.mock("framer-motion", () => {
 afterEach(() => {
   cleanup();
   server.resetHandlers();
+  failOnUnhandledRequests("During this test");
 });
 
 // Mock Next.js router
@@ -143,4 +168,5 @@ beforeAll(() => {
 afterAll(() => {
   console.error = originalError;
   server.close();
+  failOnUnhandledRequests("After the last test in this file");
 });

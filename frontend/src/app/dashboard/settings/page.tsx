@@ -54,6 +54,7 @@ import {
   Mic,
   Volume2,
   Phone,
+  AlertTriangle,
 } from "lucide-react";
 
 interface Workspace {
@@ -249,10 +250,14 @@ const ProviderSelector = memo(function ProviderSelector({
 });
 
 export default function SettingsPage() {
-  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string>("all");
+  // null until the user picks: the page then opens on the default workspace,
+  // not on the account level. Calls read keys from the agent's workspace only
+  // (backend/app/api/settings.py, get_user_api_keys: "no fallback to user-level
+  // settings"), so a key saved at account level shows as set and is never used.
+  const [chosenWorkspaceId, setChosenWorkspaceId] = useState<string | null>(null);
 
   // Fetch workspaces
-  const { data: workspaces = [] } = useQuery<Workspace[]>({
+  const { data: workspaces = [], isSuccess: workspacesLoaded } = useQuery<Workspace[]>({
     queryKey: ["workspaces"],
     queryFn: async () => {
       const response = await api.get("/api/v1/workspaces");
@@ -260,10 +265,16 @@ export default function SettingsPage() {
     },
   });
 
+  const defaultWorkspace = workspaces.find((ws) => ws.is_default) ?? workspaces[0];
+  const selectedWorkspaceId = chosenWorkspaceId ?? defaultWorkspace?.id ?? "all";
+  const setSelectedWorkspaceId = setChosenWorkspaceId;
+
   // Fetch existing settings for selected workspace
   const { data: settings } = useQuery({
     queryKey: ["settings", selectedWorkspaceId],
     queryFn: () => fetchSettings(selectedWorkspaceId === "all" ? undefined : selectedWorkspaceId),
+    // Wait for the workspace list, or the first read is the account level.
+    enabled: workspacesLoaded,
   });
 
   const voiceAiProviders = API_KEY_PROVIDERS.filter((p) => p.category === "voice-ai");
@@ -288,16 +299,16 @@ export default function SettingsPage() {
             onValueChange={(value) => {
               setSelectedWorkspaceId(value);
               const wsName =
-                value === "all" ? "All Workspaces" : workspaces.find((ws) => ws.id === value)?.name;
+                value === "all" ? "Account level" : workspaces.find((ws) => ws.id === value)?.name;
               toast.info(`Switched to ${wsName}`);
             }}
           >
             <SelectTrigger className="h-8 w-[220px] text-sm">
               <FolderOpen className="mr-2 h-3.5 w-3.5" />
-              <SelectValue placeholder="All Workspaces" />
+              <SelectValue placeholder="Choose a workspace" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">All Workspaces (Admin)</SelectItem>
+              <SelectItem value="all">Account level (not used by calls)</SelectItem>
               {workspaces.map((ws) => (
                 <SelectItem key={ws.id} value={ws.id}>
                   {ws.name}
@@ -307,6 +318,23 @@ export default function SettingsPage() {
           </Select>
         </div>
       </div>
+
+      {selectedWorkspaceId === "all" && workspacesLoaded && (
+        <div
+          role="alert"
+          className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm"
+        >
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
+          <p>
+            <span className="font-medium">Keys saved here are not used for calls.</span> A call
+            reads its keys from the workspace its agent belongs to, with no fallback to the account
+            level.{" "}
+            {workspaces.length > 0
+              ? "Choose a workspace above before saving a key."
+              : "Create a workspace first, then save your keys in it."}
+          </p>
+        </div>
+      )}
 
       <Tabs defaultValue="api-keys" className="w-full">
         <div className="flex items-center justify-between">

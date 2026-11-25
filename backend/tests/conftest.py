@@ -9,6 +9,11 @@ import os
 # with DEBUG off because that is what production runs with. CI sets its own
 # value; this only fills the gap for a local run.
 os.environ.setdefault("SECRET_KEY", "test-only-signing-key-never-used-outside-the-test-suite")
+# Read no env file. Without this the suite picks up the developer's own
+# backend/.env: after the quick start that file sets PUBLIC_URL to localhost and
+# the inbound-call test that checks the stream address fails on it. CI has no
+# such file, so this also makes a local run see what CI sees.
+os.environ["SETTINGS_ENV_FILE"] = ""
 # The application's rate limiter counts in Redis. The suite counts in memory so
 # a run needs no Redis and limits cannot leak between runs sharing one; the
 # shared-store behaviour has its own tests (tests/unit/test_rate_limit_store.py).

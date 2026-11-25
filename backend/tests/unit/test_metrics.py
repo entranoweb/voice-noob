@@ -212,15 +212,23 @@ class TestMetricsEndpoint:
     def test_metrics_endpoint_returns_prometheus_format(
         self,
         enable_metrics: Any,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Test that metrics endpoint returns Prometheus format."""
+        """Test that metrics endpoint returns Prometheus format.
+
+        Outside DEBUG the endpoint answers only a scraper that presents
+        METRICS_TOKEN; who is refused is covered in test_production_guards.
+        """
         from fastapi import FastAPI
 
+        from app.core.config import settings
+
+        monkeypatch.setattr(settings, "METRICS_TOKEN", "scrape-secret")
         app = FastAPI()
         app.include_router(get_metrics_router())
 
         client = TestClient(app)
-        response = client.get("/metrics")
+        response = client.get("/metrics", headers={"Authorization": "Bearer scrape-secret"})
 
         assert response.status_code == 200
         assert "text/plain" in response.headers["content-type"]
