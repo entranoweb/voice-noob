@@ -6,8 +6,9 @@ code generated; no name or path the uploader sent is kept anywhere.
 """
 
 import uuid
+from datetime import datetime
 
-from sqlalchemy import Float, ForeignKey, Integer, String, UniqueConstraint, Uuid
+from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, UniqueConstraint, Uuid
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, TimestampMixin
@@ -50,6 +51,10 @@ class CallerAudio(Base, TimestampMixin):
     sample_rate: Mapped[int] = mapped_column(Integer, nullable=False)
     channels: Mapped[int] = mapped_column(Integer, nullable=False)
     sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Set when retention deleted the file. The row stays as a record that there
+    # was a recording and that it expired, so the call page can say so instead
+    # of looking as if nothing was ever recorded.
+    expired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     def __repr__(self) -> str:
         return f"<CallerAudio {self.id} {self.track}>"

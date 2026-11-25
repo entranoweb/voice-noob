@@ -42,6 +42,8 @@ type Loaded =
 interface Props {
   audio: CallAudioRef[];
   markers: AudioMarker[];
+  /** The call had recordings and retention has deleted them. */
+  expired?: boolean;
 }
 
 /**
@@ -52,7 +54,7 @@ interface Props {
  * Without audio, this says so: it never draws a player that cannot play.
  */
 export const CallAudio = forwardRef<CallAudioHandle, Props>(function CallAudio(
-  { audio, markers },
+  { audio, markers, expired = false },
   ref
 ) {
   const elements = useRef<Record<string, HTMLAudioElement | null>>({});
@@ -111,8 +113,9 @@ export const CallAudio = forwardRef<CallAudioHandle, Props>(function CallAudio(
         </CardHeader>
         <CardContent>
           <p className="text-sm text-muted-foreground" role="status">
-            No audio is stored for this call. It was not recorded, was not uploaded, or has passed
-            its retention period and been deleted.
+            {expired
+              ? "Recording expired. The audio of this call was deleted when its retention period ended; the timeline below is kept."
+              : "No audio is stored for this call. It was not recorded or was not uploaded."}
           </p>
         </CardContent>
       </Card>

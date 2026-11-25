@@ -80,6 +80,7 @@ services:
       # lists. Each workspace sets how long audio is kept (30 days unless changed).
       CALLER_AUDIO_DIR: ${CALLER_AUDIO_DIR:-/app/data/caller-audio}
       CALLER_AUDIO_MAX_BYTES: ${CALLER_AUDIO_MAX_BYTES:-67108864}
+      CALLER_AUDIO_EXPIRY_INTERVAL_MINUTES: ${CALLER_AUDIO_EXPIRY_INTERVAL_MINUTES:-60}
       # CORS - Allow frontend domain
       CORS_ORIGINS: '["${FRONTEND_URL:-http://localhost:3000}"]'
       # The origin the embed snippet points customers' sites at: the widget

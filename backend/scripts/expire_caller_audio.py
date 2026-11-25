@@ -3,10 +3,9 @@
     uv run python scripts/expire_caller_audio.py --dry-run   # count, delete nothing
     uv run python scripts/expire_caller_audio.py             # delete
 
-The same deletion runs inside the retention sweep, but that sweep is off unless
-``RETENTION_SWEEP_ENABLED=true`` (and its first run only counts). A deployment
-that keeps the sweep off, or wants audio cleared on a fixed schedule, runs this
-from cron or the platform's scheduled-task feature, once a day:
+The backend already does this by itself (at start-up and hourly, see
+``CALLER_AUDIO_EXPIRY_INTERVAL_MINUTES``). This script is an extra, for a manual pass or
+a cron job:
 
     docker compose exec -T backend python scripts/expire_caller_audio.py
 

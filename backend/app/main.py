@@ -42,6 +42,7 @@ from app.middleware.security import SecurityHeadersMiddleware
 from app.monitoring import get_metrics_router, loop_lag
 from app.monitoring.tracing import configure_tracing, shutdown_tracing
 from app.services.call_registry import set_shutting_down, wait_for_calls_to_drain
+from app.services.caller_audio import start_audio_expiry_worker, stop_audio_expiry_worker
 from app.services.campaign_worker import start_campaign_worker, stop_campaign_worker
 from app.services.data_protection import start_retention_worker, stop_retention_worker
 
@@ -132,6 +133,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:  # noqa: PLR0912
         except Exception:
             logger.exception("Failed to start retention worker - retention will not run")
 
+    # Expiry of call audio. Always on, with a pass at start-up, so that the
+    # retention period the product states is carried out without anyone
+    # scheduling anything. (The sweep above is a separate, opt-in thing.)
+    try:
+        await start_audio_expiry_worker()
+        logger.info("Audio expiry worker started")
+    except Exception:
+        logger.exception("Failed to start audio expiry worker - audio will not expire")
+
     # Event-loop lag gauge: the saturation signal for real-time audio.
     # Cheap (one 100ms-interval task) and safe to run everywhere.
     loop_lag.start()
@@ -162,6 +172,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:  # noqa: PLR0912
                 )
         except Exception:
             logger.exception("connection_draining_error")
+
+    try:
+        await stop_audio_expiry_worker()
+    except Exception:
+        logger.exception("Error stopping audio expiry worker")
 
     # Stop retention worker
     try:

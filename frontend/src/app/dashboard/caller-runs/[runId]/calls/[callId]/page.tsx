@@ -321,7 +321,12 @@ export default function CallerCallPage() {
             </Card>
           )}
 
-          <CallAudio ref={player} audio={audio} markers={markers} />
+          <CallAudio
+            ref={player}
+            audio={audio}
+            markers={markers}
+            expired={call?.audio_expired ?? false}
+          />
 
           <Card>
             <CardHeader>

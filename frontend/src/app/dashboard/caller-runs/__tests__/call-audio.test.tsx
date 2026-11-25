@@ -181,12 +181,23 @@ describe("call audio on the call page", () => {
 
     const note = await screen.findByText(/No audio is stored for this call\./);
     expect(note).toHaveTextContent("No audio is stored for this call.");
-    expect(note).toHaveTextContent("retention period");
+    expect(note).toHaveTextContent("not recorded or was not uploaded");
     expect(container.querySelector("audio")).toBeNull();
     expect(screen.queryByRole("group", { name: "Markers on the recording" })).toBeNull();
     const timeline = screen.getByRole("list", { name: "Call timeline" });
     expect(within(timeline).queryAllByRole("button")).toHaveLength(0);
     expect(within(timeline).getAllByRole("listitem")).toHaveLength(3);
+  });
+
+  it("says the recording expired, not that none was made, with no broken player", async () => {
+    serve({ ...call, audio: [], audio_expired: true });
+
+    const { container } = render(<CallerCallPage />);
+
+    expect(await screen.findByText(/Recording expired\./)).toBeInTheDocument();
+    expect(screen.queryByText(/No audio is stored/)).toBeNull();
+    expect(container.querySelector("audio")).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
   it("treats a server that does not send the audio list as having none", async () => {

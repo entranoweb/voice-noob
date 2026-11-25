@@ -12,6 +12,7 @@ Every sound here is a generated tone; no recording of anyone is used.
 
 from __future__ import annotations
 
+import asyncio
 import io
 import math
 import struct
@@ -38,6 +39,7 @@ from app.services.audio_store import (
     inspect_wav,
     parse_range,
 )
+from app.services.caller_audio import AudioExpiryWorker, expire_audio_once
 from app.services.data_protection import cleanup_expired_data
 from tests.test_api.test_caller_runs import _bundle, _post, _someone_elses_run
 
@@ -625,9 +627,22 @@ class TestRetention:
         assert remaining == {Path(young_key).name, Path(kept_key).name}
         assert Path(old_key).name not in remaining
         async with _sessions(test_engine)() as session:
-            ids = set((await session.execute(sa.select(CallerAudio.id))).scalars().all())
-        assert ids == {young_id, kept_id}
-        assert old_id not in ids
+            live = set(
+                (
+                    await session.execute(
+                        sa.select(CallerAudio.id).where(CallerAudio.expired_at.is_(None))
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            marked = (
+                await session.execute(
+                    sa.select(CallerAudio.expired_at).where(CallerAudio.id == old_id)
+                )
+            ).scalar_one()
+        assert live == {young_id, kept_id}
+        assert marked is not None, "the row stays, marked expired, so the page can say so"
 
     @pytest.mark.asyncio
     async def test_the_period_is_a_workspace_setting_with_a_default_of_30_and_limits(
@@ -649,3 +664,159 @@ class TestRetention:
         unchanged = await client.put(url, json={"audio_retention_days": None, "name": "Renamed"})
         assert unchanged.status_code == 200
         assert unchanged.json()["audio_retention_days"] == 90
+
+
+async def _call_with_old_audio(
+    client: AsyncClient,
+    workspace: Workspace,
+    engine: Any,
+    *,
+    age_days: float,
+    file: str = "run-001.json",
+) -> tuple[str, str, str]:
+    """A stored run whose first call has an agent recording of this age. Returns run, call, key."""
+    response = await _post(client, workspace.id, _bundle())
+    assert response.status_code in (200, 201), response.text
+    run_pk = response.json()["run"]["id"]
+    detail = (await client.get(f"{RUNS}/{run_pk}")).json()
+    calls = {f"run-{c['position']:03d}.json": c["id"] for c in detail["calls"]}
+    async with _sessions(engine)() as session:
+        run = (
+            await session.execute(sa.select(CallerRun).where(CallerRun.id == uuid.UUID(run_pk)))
+        ).scalar_one()
+        call = (
+            await session.execute(
+                sa.select(CallerCall).where(
+                    CallerCall.id == uuid.UUID(calls[file]),
+                )
+            )
+        ).scalar_one()
+    _, key = await _put_audio_row(engine, run, call, age_days=age_days)
+    return run_pk, calls[file], key
+
+
+class TestExpiryRunsByItself:
+    """Nothing here uses the script or turns the retention sweep on."""
+
+    @pytest.mark.asyncio
+    async def test_a_pass_deletes_expired_audio_and_leaves_younger_audio(
+        self,
+        authenticated_test_client: tuple[AsyncClient, User],
+        test_workspace: Workspace,
+        test_engine: Any,
+        audio_dir: Path,
+    ) -> None:
+        client, _ = authenticated_test_client
+        assert settings.RETENTION_SWEEP_ENABLED is False
+        _, _, old_key = await _call_with_old_audio(client, test_workspace, test_engine, age_days=31)
+        _, _, young_key = await _call_with_old_audio(
+            client, test_workspace, test_engine, age_days=2, file="run-002.json"
+        )
+
+        counts = await expire_audio_once(_sessions(test_engine))
+
+        assert counts == {"expired": 1, "failed": 0}
+        assert {p.name for p in _files(audio_dir)} == {Path(young_key).name}
+        assert Path(old_key).name not in {p.name for p in _files(audio_dir)}
+        # A second pass has nothing left to do.
+        assert await expire_audio_once(_sessions(test_engine)) == {"expired": 0, "failed": 0}
+
+    @pytest.mark.asyncio
+    async def test_the_worker_does_a_pass_as_soon_as_it_starts(
+        self,
+        authenticated_test_client: tuple[AsyncClient, User],
+        test_workspace: Workspace,
+        test_engine: Any,
+        audio_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import app.db.session as db_session
+
+        client, _ = authenticated_test_client
+        _, _, key = await _call_with_old_audio(client, test_workspace, test_engine, age_days=40)
+        monkeypatch.setattr(db_session, "AsyncSessionLocal", _sessions(test_engine))
+        worker = AudioExpiryWorker()
+
+        await worker.start()
+        try:
+            for _ in range(100):
+                if not _files(audio_dir):
+                    break
+                await asyncio.sleep(0.05)
+        finally:
+            await worker.stop()
+
+        assert Path(key).name not in {p.name for p in _files(audio_dir)}
+
+    @pytest.mark.asyncio
+    async def test_the_call_says_the_recording_expired_and_serves_nothing(
+        self,
+        authenticated_test_client: tuple[AsyncClient, User],
+        test_workspace: Workspace,
+        test_engine: Any,
+    ) -> None:
+        client, _ = authenticated_test_client
+        run_pk, call_id, _ = await _call_with_old_audio(
+            client, test_workspace, test_engine, age_days=31
+        )
+        await expire_audio_once(_sessions(test_engine))
+
+        detail = (await client.get(f"{RUNS}/{run_pk}/calls/{call_id}")).json()
+
+        assert detail["audio"] == []
+        assert detail["audio_expired"] is True
+        gone = await client.get(_audio_url(run_pk, call_id, "agent"))
+        assert gone.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_audio_past_its_period_is_never_served_even_before_a_pass_has_run(
+        self,
+        authenticated_test_client: tuple[AsyncClient, User],
+        test_workspace: Workspace,
+        test_engine: Any,
+        audio_dir: Path,
+    ) -> None:
+        client, _ = authenticated_test_client
+        run_pk, call_id, _ = await _call_with_old_audio(
+            client, test_workspace, test_engine, age_days=31
+        )
+        assert len(_files(audio_dir)) == 1
+
+        served = await client.get(_audio_url(run_pk, call_id, "agent"))
+
+        assert served.status_code == 404
+        assert _files(audio_dir) == [], "asking for it deleted it"
+
+    @pytest.mark.asyncio
+    async def test_a_call_that_never_had_audio_does_not_say_expired(
+        self,
+        authenticated_test_client: tuple[AsyncClient, User],
+        test_workspace: Workspace,
+    ) -> None:
+        client, _ = authenticated_test_client
+        run_pk, calls = await _stored_run(client, test_workspace)
+
+        detail = (await client.get(f"{RUNS}/{run_pk}/calls/{calls['run-001.json']}")).json()
+
+        assert detail["audio"] == []
+        assert detail["audio_expired"] is False
+
+    @pytest.mark.asyncio
+    async def test_a_file_that_will_not_delete_is_reported_and_tried_again(
+        self,
+        authenticated_test_client: tuple[AsyncClient, User],
+        test_workspace: Workspace,
+        test_engine: Any,
+        audio_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        client, _ = authenticated_test_client
+        await _call_with_old_audio(client, test_workspace, test_engine, age_days=31)
+        real_delete = LocalDiskAudioStore.delete
+        monkeypatch.setattr(LocalDiskAudioStore, "delete", lambda _self, _key: False)
+
+        counts = await expire_audio_once(_sessions(test_engine))
+        assert counts == {"expired": 0, "failed": 1}
+        monkeypatch.setattr(LocalDiskAudioStore, "delete", real_delete)
+        again = await expire_audio_once(_sessions(test_engine))
+        assert again == {"expired": 1, "failed": 0}

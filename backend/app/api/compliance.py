@@ -937,6 +937,7 @@ async def _build_export(current_user: CurrentUser, db: AsyncSession) -> DataExpo
         select(CallerAudio, Workspace.audio_retention_days)
         .join(Workspace, Workspace.id == CallerAudio.workspace_id)
         .where(CallerAudio.workspace_id.in_(workspace_ids) if workspace_ids else false())
+        .where(CallerAudio.expired_at.is_(None))
         .order_by(CallerAudio.created_at)
     )
     caller_audio_data: list[dict[str, object]] = [

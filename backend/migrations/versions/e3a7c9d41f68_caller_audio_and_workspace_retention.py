@@ -46,6 +46,7 @@ def upgrade() -> None:
         sa.Column('sample_rate', sa.Integer(), nullable=False),
         sa.Column('channels', sa.Integer(), nullable=False),
         sa.Column('sha256', sa.String(length=64), nullable=False),
+        sa.Column('expired_at', sa.DateTime(timezone=True), nullable=True),
         sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
         sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
         sa.ForeignKeyConstraint(['workspace_id'], ['workspaces.id'], ondelete='CASCADE'),

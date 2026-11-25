@@ -203,6 +203,8 @@ export interface CallerCallDetail {
   notes: Record<string, string>;
   /** The recorded sides still stored. Absent from older servers; empty when there are none. */
   audio?: CallAudioRef[];
+  /** True when the call had recordings and retention has deleted them. */
+  audio_expired?: boolean;
 }
 
 export async function listCallerRuns(

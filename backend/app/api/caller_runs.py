@@ -40,7 +40,7 @@ from app.services.audio_store import (
     inspect_wav,
     parse_range,
 )
-from app.services.caller_audio import delete_audio
+from app.services.caller_audio import delete_audio, expire_audio
 from app.services.caller_results import (
     GRADED_OUTCOMES,
     MAX_BUNDLE_BYTES,
@@ -186,6 +186,8 @@ class CallDetail(BaseModel):
     notes: dict[str, str]
     # The recorded sides of this call that are still stored; empty when there are none.
     audio: list[AudioRef]
+    # True when the call had recordings and retention has deleted them.
+    audio_expired: bool = False
 
 
 # =============================================================================
@@ -588,7 +590,11 @@ async def get_call(
     excluded = next(
         (item for item in (run.excluded or []) if item.get("call_id") == str(call.id)), None
     )
-    recordings = (
+    # Expire this workspace's due audio first, so a recording past its period is
+    # never listed or served in the gap before the periodic pass runs.
+    await expire_audio(db, get_audio_store(), workspace_ids=[run.workspace_id])
+    await db.commit()
+    stored = (
         (
             await db.execute(
                 select(CallerAudio)
@@ -599,6 +605,8 @@ async def get_call(
         .scalars()
         .all()
     )
+    recordings = [r for r in stored if r.expired_at is None]
+    audio_expired = bool(stored) and not recordings
     return {
         "id": str(call.id),
         "run": {"id": str(run.id), "run_id": run.run_id, "target_label": run.target_label},
@@ -630,6 +638,7 @@ async def get_call(
             if isinstance(raw.get(key), str) and raw[key]
         },
         "audio": [_audio_ref(run.id, call.id, row) for row in recordings],
+        "audio_expired": audio_expired,
     }
 
 
@@ -686,6 +695,7 @@ async def upload_audio(
     row.sample_rate = info.sample_rate
     row.channels = info.channels
     row.sha256 = hashlib.sha256(data).hexdigest()
+    row.expired_at = None
     db.add(row)
     try:
         await db.commit()
@@ -717,12 +727,15 @@ async def get_audio(
     not exist: 404.
     """
     run, _ = await _owned_run(db, run_pk, current_user.id)
+    await expire_audio(db, get_audio_store(), workspace_ids=[run.workspace_id])
+    await db.commit()
     row = (
         await db.execute(
             select(CallerAudio).where(
                 CallerAudio.run_pk == run.id,
                 CallerAudio.call_id == call_id,
                 CallerAudio.track == track,
+                CallerAudio.expired_at.is_(None),
             )
         )
     ).scalar_one_or_none()
