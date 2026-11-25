@@ -78,6 +78,7 @@ def run_directory(
             },
             "labels_unverified": [],
             "synthetic_clips": [],
+            "states_expectations": True,
             **((extra or {}).get(index, {})),
         }
         if with_manifest:
@@ -321,3 +322,97 @@ def test_a_phone_leg_drops_the_direct_connection_caveat(tmp_path: Path) -> None:
     assert not any("direct connection" in limit for limit in found["not_shown"])
     assert any("over a phone line (leg: phone)" in limit for limit in found["not_shown"])
     assert any("was not recorded for every batch" in limit for limit in found["not_shown"])
+
+
+# --- an ungradeable scenario behind the runs: no report ---------------------------
+
+
+def test_acceptance_refuses_runs_made_from_a_scenario_that_states_no_expectations(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    runs = run_directory(
+        tmp_path,
+        ["passed"] * 58 + ["ungraded"],
+        extra={58: {"states_expectations": False}},
+    )
+    with pytest.raises(acceptance.Refused, match=r"s058\.json.*states no expectations"):
+        acceptance.build([runs])
+    code, text = page(runs)
+    assert code == 2 and text == ""
+    assert "states no expectations" in capsys.readouterr().out
+    assert not (tmp_path / "report.json").exists()
+
+
+def test_acceptance_refuses_when_the_batch_held_back_an_ungradeable_scenario(
+    tmp_path: Path,
+) -> None:
+    runs = run_directory(tmp_path, ["passed"] * 59)
+    write_json(
+        runs / "batch.json",
+        {
+            "out": str(runs),
+            "ran": 59,
+            "blocked": [
+                {
+                    "scenario_file": "bare.json",
+                    "scenario": "x",
+                    "repeat": 1,
+                    "reason": "UNGRADEABLE: the scenario states no expectations, so no call "
+                    "could pass it (state them, or allow ungradeable scenarios for this batch)",
+                }
+            ],
+        },
+    )
+    with pytest.raises(acceptance.Refused, match=r"bare\.json"):
+        acceptance.build([runs])
+
+
+def test_acceptance_refuses_a_run_stored_before_expectations_were_recorded(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    runs = run_directory(tmp_path, ["passed"] * 59)
+    old = json.loads((runs / "run-007.json").read_text(encoding="utf-8"))
+    del old["states_expectations"]  # the format before this field existed
+    write_json(runs / "run-007.json", old)
+    with pytest.raises(acceptance.Refused, match="run runs/run-007 predates expectation"):
+        acceptance.build([runs])
+    code, text = page(runs)
+    assert code == 2 and text == ""
+    assert "predates expectation recording: re-run it" in capsys.readouterr().out
+    assert not (tmp_path / "report.json").exists()
+
+
+def test_acceptance_accepts_runs_whose_scenarios_state_expectations(tmp_path: Path) -> None:
+    runs = run_directory(tmp_path, ["passed"] * 59)
+    assert acceptance.build([runs])["verdict"] == acceptance.MET
+
+
+# --- chains -----------------------------------------------------------------------
+
+
+def test_a_chain_call_that_asks_nothing_cannot_pass_so_the_chain_cannot_either() -> None:
+    """Why ``validate --strict`` needs no chain case: no path leads to "passed" without checks.
+
+    ``grading.grade`` returns "ungraded" when a call has no checks, and
+    ``chain.chain_outcome`` says "passed" only when every call passed.
+    """
+    from test_post_merge_review import END, record, trace
+
+    from synthiq_caller.chain import chain_outcome
+    from synthiq_caller.grading import grade
+    from synthiq_caller.scenario import parse_scenario
+
+    bare = parse_scenario(
+        {
+            "name": "asks nothing",
+            "persona": {"facts": {"name": "Alice Wonderland"}},
+            "steps": [{"when": "help", "clips": ["x.wav"]}],
+            "hangup_after": "goodbye",
+            "max_seconds": 20,
+            "expect": {"tools": [], "fields": []},
+        }
+    )
+    assert not bare.states_expectations()
+    graded = grade(bare, record(ended=END), trace())
+    assert graded.outcome == "ungraded"
+    assert chain_outcome(["passed", graded.outcome]) == "ungraded"

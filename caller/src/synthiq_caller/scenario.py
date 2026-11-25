@@ -35,6 +35,11 @@ APPOINTMENT_LEVELS = ("books", "moves")
 WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
 
 
+# What a batch writes in front of the reason it held a scenario back for stating no
+# expectations. ``acceptance`` reads it back from ``batch.json``.
+UNGRADEABLE = "UNGRADEABLE"
+
+
 @dataclass(frozen=True)
 class Step:
     """What the caller does when the agent says something matching ``when``."""

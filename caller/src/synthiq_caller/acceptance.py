@@ -39,8 +39,10 @@ from typing import Any
 from synthiq_caller import manifest, scorecard
 from synthiq_caller.jsonio import write_json
 from synthiq_caller.report import gate_reading, summarise
+from synthiq_caller.scenario import UNGRADEABLE
 from synthiq_caller.scorecard import _STYLE, _e, _span, _table
 from synthiq_caller.stats import calls_needed, wilson_interval
+from synthiq_caller.validation import ungradeable_why
 
 MET = "The claim is met"
 NOT_ENOUGH = "Not enough calls to support the claim"
@@ -275,6 +277,39 @@ def _not_shown(report: dict[str, Any]) -> list[str]:
     return limits
 
 
+def _ungradeable_behind(roots: list[Path]) -> list[str]:
+    """The scenario files behind these runs that state no expectations, one line each.
+
+    Two places say so: a run records ``states_expectations`` when it is placed, and a
+    batch that held a scenario back for it says so in ``batch.json``. The same check as
+    ``validate --strict``, read from the runs because the scenario files are not here.
+    A chain's calls are placed through the same path, so each carries the field too.
+
+    Fails closed: a run with no ``states_expectations`` at all was stored before it was
+    recorded, so nothing says whether it asked anything of its call. It is refused, not
+    let through (``Refused``).
+    """
+    found: dict[str, str] = {}
+    for root in roots:
+        for path in sorted(root.glob("run-*.json")):
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            stated = payload.get("states_expectations")
+            if stated is None:
+                raise Refused(
+                    f"run {root.name}/{path.stem} predates expectation recording: re-run it"
+                )
+            if stated is False:
+                file = str(payload.get("scenario_file", path.name))
+                found.setdefault(f"{root.name}/{file}", ungradeable_why(file))
+        batch = root / "batch.json"
+        if batch.is_file():
+            for item in json.loads(batch.read_text(encoding="utf-8")).get("blocked", []):
+                if str(item.get("reason", "")).startswith(UNGRADEABLE):
+                    file = str(item.get("scenario_file", "?"))
+                    found.setdefault(f"{root.name}/{file}", ungradeable_why(file))
+    return list(found.values())
+
+
 def build(
     directories: list[Path] | list[str],
     *,
@@ -301,6 +336,13 @@ def build(
             "these runs include a rehearsal against a scripted stand-in, not an agent. A "
             "rehearsal shows that the rig runs and nothing about any agent, so no acceptance "
             "report is made from one."
+        )
+    held = _ungradeable_behind(roots)
+    if held:
+        raise Refused(
+            "these runs rest on scenarios that cannot be graded, so no acceptance report is "
+            "made: " + "; ".join(held) + ". State their expectations (expect.*), then run them "
+            "again."
         )
     try:
         mixed = manifest.refuse_mixed(roots, allow=allow_mixed)

@@ -50,6 +50,13 @@ A new engine is one leg and one trace reader. Nothing else changes.
   into a scenario skeleton.
 - **Scenario set** (`scenarios/sophie/`): a 20-call script for one agent.
 
+## Set up a new target
+
+`docs/ONBOARDING.md` is the step-by-step guide: `synthiq-caller init <dir>`
+scaffolds a target folder that runs on the fake leg, `synthiq-caller doctor`
+checks the machine, and `docs/SCENARIO-REFERENCE.md` (made from the scenario
+schema by `synthiq-caller reference`) lists every key a scenario takes.
+
 ## Run it
 
 ```
@@ -109,6 +116,7 @@ corrected, without calling.
 
 ```
 uv run synthiq-caller validate scenarios/sophie --clips <clip bank dir>
+uv run synthiq-caller validate scenarios/sophie --strict                   # CI and acceptance: ungradeable is an error
 uv run synthiq-caller batch scenarios/sophie --leg elevenlabs-socket --agent <agent id>     --clips <clip bank dir> --repeats 3 --out runs/
 uv run synthiq-caller report runs/ --summary-only
 uv run synthiq-caller regrade runs/ --scenarios scenarios/sophie      # after fixing a scenario; no calls
@@ -276,7 +284,9 @@ What the result claims, and does not:
   agent says on a new call. Persona facts are empty, `mutates` is `unknown`, and
   **no expectations are stated**.
 * So `validate` prints `UNGRADEABLE until expectations are stated` (exit code 0:
-  the file is unfinished, not broken), and `run`/`batch` hold the scenario back
+  the file is unfinished, not broken; `validate --strict` turns exactly this into
+  an error, exit 1, and is what the CI gate and `acceptance` apply: it is only
+  about gradeability, so an unverified label does not fail it), and `run`/`batch` hold the scenario back
   (`--allow-ungradeable` places the call anyway; it can only ever be ungraded,
   never passed). Add `expect` entries, set `mutates`, and mark clips checked
   (or use `overrides.json`) before using it as a test.

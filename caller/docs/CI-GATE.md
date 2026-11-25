@@ -42,7 +42,11 @@ it checks. Protect `.github/` with branch protection or CODEOWNERS.
    the list, an empty list, a set name that is not a plain folder name, a set
    that cannot be loaded, and any scenario or chain whose `mutates` is more
    than the batch's own `--allow-mutating none` allows. A scenario that does
-   not say what it changes counts as changing something.
+   not say what it changes counts as changing something. It also refuses a set
+   holding a scenario that states no expectations (it could never pass): the
+   same check as `synthiq-caller validate --strict`, one function used by both.
+   The workflow then runs `validate --strict` as a step of its own, so the log
+   shows it, still before the bank and the batch, so before any call.
 2. **Bank** (`ci_gate bank`): writes generated tones for the clips the set names.
 3. **Batch** on `--leg fake` with `--allow-mutating none`. The caller's own
    mutation guard holds a second time, so a mutating scenario is "not run".

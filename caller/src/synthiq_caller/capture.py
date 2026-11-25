@@ -238,6 +238,13 @@ def run(args: argparse.Namespace) -> int:
         return 2
     key = os.environ.get(args.key_env, "")
     out = Path(args.out)
+    if args.region:
+        from synthiq_caller.onboarding import REGIONS
+
+        if args.api not in (API, REGIONS[args.region]):
+            print(f"capture: --region {args.region} and --api name different addresses; give one")
+            return 2
+        args.api = REGIONS[args.region]
     try:
         document = capture(
             args.conversation, out, key, api=args.api, force=args.force, wait_s=args.wait
@@ -265,6 +272,12 @@ def register(sub: Any) -> None:
     parser.add_argument("--out", required=True, help="case directory to write, e.g. cases/<name>/")
     parser.add_argument(
         "--api", default=API, help="API address (a regional host, if the account has one)"
+    )
+    parser.add_argument(
+        "--region",
+        default="",
+        choices=["", "global", "us", "eu", "in", "sg"],
+        help="the account's region, instead of --api (`doctor --region` lists the addresses)",
     )
     parser.add_argument("--key-env", default=DEFAULT_KEY_ENV, help="variable holding the API key")
     parser.add_argument(
