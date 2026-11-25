@@ -197,6 +197,15 @@ class Scenario:
     # scenario (it transfers the caller, say). Without it, a call the agent
     # ends early has not reached its end and cannot pass.
     agent_may_end: bool = False
+    # Texts in a tool's reply that mean the system under test was not in the
+    # state this scenario needs, by tool name or fragment:
+    # ``{"register_patient": ["DUPLICATE_FOUND"]}``. A call that goes wrong after
+    # one of these is void with fault "fixture", not a failure of the agent.
+    fixture_faults: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    # Parts of the appointment this scenario leaves to the target's profile
+    # (``target.py``) and which the profile in use did not give. A scenario with
+    # any is not run: its booking could not be judged.
+    missing_target: tuple[str, ...] = ()
 
 
 class ScenarioError(ValueError):
@@ -286,9 +295,17 @@ def _fallback(raw: Any) -> Step | None:
     )
 
 
-def parse_scenario(data: dict[str, Any]) -> Scenario:
+def parse_scenario(
+    data: dict[str, Any], target: dict[str, Any] | None = None, key: str = ""
+) -> Scenario:
+    """Make a scenario of ``data``, filled in from the target's profile when one is given.
+
+    ``key`` is the scenario's file name without its ending: the name its
+    appointment goes under in the profile's ``bookings``.
+    """
     if not isinstance(data.get("name"), str) or not data["name"]:
         raise ScenarioError("a scenario needs a name")
+    target = target or {}
     raw_steps = data.get("steps")
     if not isinstance(raw_steps, list) or not raw_steps:
         raise ScenarioError("a scenario needs at least one step")
@@ -323,6 +340,23 @@ def parse_scenario(data: dict[str, Any]) -> Scenario:
         raise ScenarioError(f"unknown persona facts: {unknown}")
 
     raw_expect = data.get("expect") or {}
+    # Parts of the appointment that belong to the system under test, not to
+    # the caller's intent, come from the target's profile (``target.py``).
+    left_to_target = [str(part) for part in raw_expect.get("booking_from_target", ())]
+    unknown_parts = sorted(set(left_to_target) - set(BookingExpectation.__dataclass_fields__))
+    if unknown_parts:
+        raise ScenarioError(f"expect.booking_from_target names unknown parts: {unknown_parts}")
+    raw_booking = raw_expect.get("booking")
+    if left_to_target or (target and raw_booking is not None):
+        if raw_booking is not None and not isinstance(raw_booking, dict):
+            raise ScenarioError("expect.booking must be an object")
+        common = {k: target[k] for k in ("timezone", "naive_times") if target.get(k)}
+        raw_booking = {
+            **common,
+            **(raw_booking or {}),
+            **((target.get("bookings") or {}).get(key) or {}),
+        }
+    missing_target = tuple(part for part in left_to_target if not (raw_booking or {}).get(part))
     expect = Expectations(
         tools=tuple(
             ToolExpectation(
@@ -340,12 +374,13 @@ def parse_scenario(data: dict[str, Any]) -> Scenario:
         agent_says=tuple(_pattern(str(p)) for p in raw_expect.get("agent_says", ())),
         agent_never_says=tuple(_pattern(str(p)) for p in raw_expect.get("agent_never_says", ())),
         read_back={str(k): str(v) for k, v in (raw_expect.get("read_back") or {}).items()},
-        booking=parse_booking(raw_expect.get("booking")),
+        booking=parse_booking(raw_booking),
     )
     if any(not t.name_contains for t in expect.tools):
         raise ScenarioError("a tool expectation needs 'name' or 'name_contains'")
     outcomes: dict[str, ToolOutcome] = {}
-    for tool, raw_outcome in (data.get("tool_outcomes") or {}).items():
+    raw_outcomes = {**(target.get("tool_outcomes") or {}), **(data.get("tool_outcomes") or {})}
+    for tool, raw_outcome in raw_outcomes.items():
         if not isinstance(raw_outcome, dict) or not raw_outcome.get("path"):
             raise ScenarioError(f"tool_outcomes[{tool!r}] needs a 'path' into the tool's reply")
         outcomes[str(tool)] = ToolOutcome(
@@ -377,10 +412,18 @@ def parse_scenario(data: dict[str, Any]) -> Scenario:
         description=str(data.get("description", "")),
         clean_state=bool(data.get("clean_state", False)),
         fallback=_fallback(data.get("fallback")),
-        identity_budget=int(data.get("identity_budget", 0)),
+        identity_budget=int(data.get("identity_budget") or target.get("identity_budget") or 0),
         identity_attempts=max(1, int(data.get("identity_attempts", 1))),
         tool_outcomes=outcomes,
         agent_may_end=bool(data.get("agent_may_end", False)),
+        fixture_faults={
+            str(tool): tuple(str(text) for text in texts)
+            for tool, texts in {
+                **(target.get("fixture_faults") or {}),
+                **(data.get("fixture_faults") or {}),
+            }.items()
+        },
+        missing_target=missing_target,
     )
 
 
@@ -401,8 +444,8 @@ def read_scenario_file(path: str | Path) -> dict[str, Any]:
     return data
 
 
-def load_scenario(path: str | Path) -> Scenario:
+def load_scenario(path: str | Path, target: dict[str, Any] | None = None) -> Scenario:
     data = read_scenario_file(path)
     if "chain" in data:
         raise ScenarioError("this file declares a chain of calls; load it with load_chain")
-    return parse_scenario(data)
+    return parse_scenario(data, target, Path(path).stem)

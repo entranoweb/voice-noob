@@ -18,8 +18,10 @@ Outcomes, and who is charged with each (``fault``):
 * ``failed``: a check did not hold (fault ``agent``), or the call never
   connected, died before its end, or ran to the time limit (fault ``unknown``:
   the agent, the platform or the line; counted as a failure, not dropped).
-* ``void``: the test rig spoiled the call (fault ``rig``): it had no answer to
-  a question, or it broke. Not a mark against the agent; re-run and reported.
+* ``void``: the call shows nothing about the agent. The test rig spoiled it
+  (fault ``rig``): it had no answer to a question, or it broke. Or the system
+  under test was not in the state the scenario needs (fault ``fixture``): a tool
+  said so in its own reply. Not a mark against the agent; re-run and reported.
 * ``ungradeable``: the call cannot be judged as the scenario stands: it writes
   an appointment and says nothing of what the appointment should be, or a
   result it depends on was withheld by the platform.
@@ -652,6 +654,26 @@ def booking_checks(
     return checks
 
 
+def fixture_fault(trace: Trace, marks: dict[str, tuple[str, ...]]) -> str:
+    """The first tool reply that carries one of the scenario's fixture marks, or "".
+
+    ``marks`` maps a tool (its name or a fragment) to texts which, found in that
+    tool's reply or error, mean the system was not in the state the scenario
+    needs: ``{"register_patient": ["DUPLICATE_FOUND"]}``.
+    """
+    for call in trace.tool_calls:
+        for tool, texts in marks.items():
+            if tool.casefold() not in call.name.casefold():
+                continue
+            said = " ".join(
+                str(part) for part in (call.result, call.outputs, call.error) if part
+            ).casefold()
+            for text in texts:
+                if text.casefold() in said:
+                    return f"tool '{call.name}' reported {text}"
+    return ""
+
+
 def _at_path(value: Any, path: str) -> Any:
     for part in path.split("."):
         if not isinstance(value, dict) or part not in value:
@@ -881,10 +903,20 @@ def grade(
     agent_wrong = [c for c in wrong if not any(mark in c.what for mark in how_it_ended)]
 
     spoiled = not acceptable or bool(wrong) or bool(unknown)
-    if unanswered and not normal and spoiled and not said_forbidden:
-        # The caller went silent on a question. Whatever followed is the rig's doing.
+    if unanswered and spoiled and not said_forbidden:
+        # The caller went silent on a question. Whatever followed is the rig's
+        # doing, however the call then ended: an agent that gives up on a silent
+        # caller says goodbye, and that goodbye is the scenario's own last line.
         result.outcome, result.fault = "void", "rig"
         result.reason = f"the caller had no answer to: {unanswered[-1]!r}"
+        return result
+    not_ready = fixture_fault(trace, scenario.fixture_faults)
+    if not_ready and spoiled and not said_forbidden:
+        # The system under test said, in its own words, that it was not in the
+        # state this scenario needs (the caller it should register is already
+        # there). The call shows nothing about the agent; fix the fixture, re-run.
+        result.outcome, result.fault = "void", "fixture"
+        result.reason = f"the system under test was not ready for this scenario: {not_ready}"
         return result
     if wrong:
         result.outcome = "failed"

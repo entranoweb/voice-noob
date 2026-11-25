@@ -1,0 +1,421 @@
+{
+ "source": "live re-run of 25 November 2026, run 5, scrubbed and cut down",
+ "scenario_file": "06-mri-how-to-submit-referral.json",
+ "record": {
+  "scenario": "New patient books an MRI: self-pay, asks how to submit the referral",
+  "call_ref": "conv_fixture_5",
+  "ended": "caller hung up: scenario end",
+  "duration_s": 116.62,
+  "timeline": [
+   {
+    "t": 0.41,
+    "kind": "agent",
+    "text": "Hi, this is Sophie from ClinWell. How can I help you today?"
+   },
+   {
+    "t": 11.58,
+    "kind": "agent",
+    "text": "Of course. Could I take your full name, please?"
+   },
+   {
+    "t": 20.97,
+    "kind": "agent",
+    "text": "Thanks. And have you been to see us before?"
+   },
+   {
+    "t": 27.59,
+    "kind": "agent",
+    "text": "Happy to help. What's bringing you in to see us?"
+   },
+   {
+    "t": 34.64,
+    "kind": "agent",
+    "text": "I'm sorry to hear that."
+   },
+   {
+    "t": 38.24,
+    "kind": "agent",
+    "text": "I'll get you registered. Could I take your date of birth, please?"
+   },
+   {
+    "t": 48.38,
+    "kind": "agent",
+    "text": "And the best mobile number to reach you on, please?"
+   },
+   {
+    "t": 56.88,
+    "kind": "agent",
+    "text": "Thanks. And could I take your postcode, please? It helps us confirm it's you when you call again."
+   },
+   {
+    "t": 68.49,
+    "kind": "agent",
+    "text": "And will you be using health insurance for this, or paying yourself?"
+   },
+   {
+    "t": 77.88,
+    "kind": "agent",
+    "text": "Of course. For an MRI scan, the self-pay fee is £375 per body part. Is that all right?"
+   },
+   {
+    "t": 91.24,
+    "kind": "agent",
+    "text": "Let me just check I've got that right, reference honey kingfisher ship. I have the name Kushal Kamble, with the date of birth 15 November 1994. Is that right?"
+   },
+   {
+    "t": 109.03,
+    "kind": "agent",
+    "text": "I'm sorry, I couldn't quite finish setting that up from here. Let me pop you through to reception and they'll take it from there."
+   },
+   {
+    "t": 116.38,
+    "kind": "agent",
+    "text": "Sorry, I couldn't connect you just now. You can reach the team directly on 01234 567 890 and they'll pick this up. Thanks for getting in touch with the the clinic, take care. Goodbye."
+   }
+  ],
+  "said": [
+   {
+    "t": 5.02,
+    "step_index": 3,
+    "field": "",
+    "intended": "Sophie, can you book an MRI appointment for me?",
+    "clips": [
+     "clip"
+    ],
+    "dtmf": "",
+    "seconds": 3.0,
+    "talk_over": false,
+    "answering": "Hi, this is Sophie from ClinWell. How can I help you today?",
+    "heard": [
+     "Sophie, can you book an MRI appointment for me?"
+    ],
+    "labels_unverified": true,
+    "fallback": false,
+    "synthetic_clips": []
+   },
+   {
+    "t": 15.83,
+    "step_index": 4,
+    "field": "name",
+    "intended": "Uh, my name is Kushal Kamble.",
+    "clips": [
+     "clip"
+    ],
+    "dtmf": "",
+    "seconds": 2.34,
+    "talk_over": false,
+    "answering": "Of course. Could I take your full name, please?",
+    "heard": [
+     "Uh, my name is Kushal Kamble."
+    ],
+    "labels_unverified": true,
+    "fallback": false,
+    "synthetic_clips": []
+   },
+   {
+    "t": 25.12,
+    "step_index": 5,
+    "field": "",
+    "intended": "No.",
+    "clips": [
+     "clip"
+    ],
+    "dtmf": "",
+    "seconds": 0.52,
+    "talk_over": false,
+    "answering": "Thanks. And have you been to see us before?",
+    "heard": [
+     "No."
+    ],
+    "labels_unverified": true,
+    "fallback": false,
+    "synthetic_clips": []
+   },
+   {
+    "t": 31.72,
+    "step_index": 12,
+    "field": "",
+    "intended": "Having shoulder pain.",
+    "clips": [
+     "clip"
+    ],
+    "dtmf": "",
+    "seconds": 1.16,
+    "talk_over": false,
+    "answering": "Happy to help. What's bringing you in to see us?",
+    "heard": [
+     "Having shoulder pain."
+    ],
+    "labels_unverified": true,
+    "fallback": false,
+    "synthetic_clips": []
+   },
+   {
+    "t": 42.81,
+    "step_index": 11,
+    "field": "date_of_birth",
+    "intended": "Fifth of November, nineteen ninety-four.",
+    "clips": [
+     "clip"
+    ],
+    "dtmf": "",
+    "seconds": 2.72,
+    "talk_over": false,
+    "answering": "I'll get you registered. Could I take your date of birth, please?",
+    "heard": [
+     "15th of November, 1994."
+    ],
+    "labels_unverified": true,
+    "fallback": false,
+    "synthetic_clips": []
+   },
+   {
+    "t": 51.75,
+    "step_index": 9,
+    "field": "phone",
+    "intended": "Zero seven eight three nine five three nine five.",
+    "clips": [
+     "clip"
+    ],
+    "dtmf": "",
+    "seconds": 3.26,
+    "talk_over": false,
+    "answering": "And the best mobile number to reach you on, please?",
+    "heard": [
+     "078-395-395."
+    ],
+    "labels_unverified": true,
+    "fallback": false,
+    "synthetic_clips": []
+   },
+   {
+    "t": 63.45,
+    "step_index": 10,
+    "field": "postcode",
+    "intended": "U one six one B E.",
+    "clips": [
+     "clip"
+    ],
+    "dtmf": "",
+    "seconds": 3.26,
+    "talk_over": false,
+    "answering": "Thanks. And could I take your postcode, please? It helps us confirm it's you when you call again.",
+    "heard": [
+     "U16 1BE."
+    ],
+    "labels_unverified": true,
+    "fallback": false,
+    "synthetic_clips": []
+   },
+   {
+    "t": 73.66,
+    "step_index": 6,
+    "field": "",
+    "intended": "Paying myself.",
+    "clips": [
+     "clip"
+    ],
+    "dtmf": "",
+    "seconds": 0.92,
+    "talk_over": false,
+    "answering": "And will you be using health insurance for this, or paying yourself?",
+    "heard": [
+     "Pay myself."
+    ],
+    "labels_unverified": true,
+    "fallback": false,
+    "synthetic_clips": []
+   },
+   {
+    "t": 87.75,
+    "step_index": 1,
+    "field": "",
+    "intended": "That's fine.",
+    "clips": [
+     "clip"
+    ],
+    "dtmf": "",
+    "seconds": 0.8,
+    "talk_over": false,
+    "answering": "Of course. For an MRI scan, the self-pay fee is £375 per body part. Is that all right?",
+    "heard": [
+     "That's fine."
+    ],
+    "labels_unverified": true,
+    "fallback": false,
+    "synthetic_clips": []
+   },
+   {
+    "t": 105.47,
+    "step_index": 2,
+    "field": "",
+    "intended": "Correct.",
+    "clips": [
+     "clip"
+    ],
+    "dtmf": "",
+    "seconds": 0.66,
+    "talk_over": false,
+    "answering": "I've got that right, reference honey kingfisher ship. I have the name Kushal Kamble, with the date of birth 15 November 1994. Is that right?",
+    "heard": [
+     "Correct."
+    ],
+    "labels_unverified": true,
+    "fallback": false,
+    "synthetic_clips": []
+   }
+  ],
+  "unanswered": []
+ },
+ "trace": {
+  "call_ref": "conv_fixture_5",
+  "tool_calls": [
+   {
+    "name": "sophie_v2_identify_returning_patient",
+    "arguments": {},
+    "result": {
+     "success": true
+    },
+    "ok": true,
+    "step_id": "T1",
+    "t": 20,
+    "error": "",
+    "outputs": {
+     "status": "not_found",
+     "callerIntent": "mri",
+     "intentEchoVersion": "2",
+     "postcodeOnFile": "False"
+    }
+   },
+   {
+    "name": "sophie_v2_check_scope",
+    "arguments": {},
+    "result": {
+     "success": true,
+     "scopeStatus": "in_scope",
+     "scopeRestricted": false
+    },
+    "ok": true,
+    "step_id": "NP_SCOPE",
+    "t": 37,
+    "error": "",
+    "outputs": {
+     "scopeDecision": "allow",
+     "scopeQuestionSpoken": "",
+     "outOfScopeOfferSpoken": ""
+    }
+   },
+   {
+    "name": "sophie_v2_new_patient_check",
+    "arguments": {},
+    "result": {
+     "success": true
+    },
+    "ok": true,
+    "step_id": "NP_CHECK",
+    "t": 48,
+    "error": "",
+    "outputs": {
+     "newPatientStatus": "none"
+    }
+   },
+   {
+    "name": "sophie_v2_new_patient_fee",
+    "arguments": {},
+    "result": {
+     "success": true
+    },
+    "ok": true,
+    "step_id": "NP_FEE",
+    "t": 77,
+    "error": "",
+    "outputs": {
+     "feeKnown": "True",
+     "feeLine": "For an MRI scan, the self-pay fee is £375 per body part.",
+     "allFeesLine": "",
+     "feeOutOfScope": "False"
+    }
+   },
+   {
+    "name": "sophie_v2_prepare_register_patient",
+    "arguments": {},
+    "result": {
+     "success": true
+    },
+    "ok": true,
+    "step_id": "NP_PREP",
+    "t": 91,
+    "error": "",
+    "outputs": {
+     "readBackCode": "honey kingfisher ship",
+     "registerReadBack": "the name Kushal Kamble, with the date of birth 15 November 1994"
+    }
+   },
+   {
+    "name": "sophie_v2_register_patient",
+    "arguments": {},
+    "result": "Error code: 409. Details: HTTP 409",
+    "ok": false,
+    "step_id": "MR",
+    "t": 108,
+    "error": "{\"success\":false,\"code\":\"DUPLICATE_FOUND\",\"safeMessageKey\":\"register_patient_duplicate_found\"}",
+    "outputs": {}
+   },
+   {
+    "name": "transfer_to_number",
+    "arguments": {},
+    "result": {
+     "result_type": "transfer_to_number_error",
+     "status": "error",
+     "error": "Transfer to number tool is only available for phone calls powered by Twilio, Exotel, SIP trunking, Amazon Connect, or Voximplant",
+     "details": null
+    },
+    "ok": false,
+    "step_id": "TRANSFER_RECEPTION",
+    "t": 116,
+    "error": "",
+    "outputs": {}
+   }
+  ],
+  "step_path": [
+   "I0",
+   "I1",
+   "I1_REASK",
+   "I1_AGAIN",
+   "T1",
+   "I2",
+   "SAY_BEEN_BEFORE",
+   "BB1",
+   "NEW_PATIENT_ENTRY",
+   "SAY_NP_REACT",
+   "NP_SCOPE",
+   "NP_SCOPER",
+   "SAY_NP_ASK_DETAILS",
+   "NP_NAME",
+   "NP_CHECK",
+   "NP_CHECKR",
+   "SAY_NP_ASK_PHONE",
+   "NP_PHONE",
+   "SAY_NP_ASK_POSTCODE",
+   "NP_POSTCODE",
+   "SAY_NP_ASK_INSURANCE",
+   "NP_INS",
+   "NP_FEE",
+   "NP_FEER",
+   "SAY_NP_FEE",
+   "NP_FEEA",
+   "NP_PREP",
+   "SAY_NP_CONFIRM",
+   "NP_C0",
+   "MR",
+   "SAY_NP_FAILED",
+   "TRANSFER_RECEPTION",
+   "SAY_TRANSFER_FAILED"
+  ],
+  "termination": "Client disconnected: 1006"
+ },
+ "graded_then": {
+  "outcome": "failed",
+  "fault": "agent"
+ }
+}

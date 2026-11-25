@@ -1,0 +1,60 @@
+{
+  "name": "original-clinic",
+  "notes": "The clinic the caller's recordings were made against: one clinician, its own bookable days and times. The times below are what that clinic offered when each recording was made.",
+  "timezone": "Europe/London",
+  "identity_budget": 2,
+  "fixture_faults": {
+    "sophie_v2_register_patient": [
+      "DUPLICATE_FOUND"
+    ]
+  },
+  "bookings": {
+    "01-consultation-self-pay-shoulder": {
+      "time_from": "16:30",
+      "time_to": "16:30"
+    },
+    "02-consultation-insured-wednesday": {
+      "weekdays": [
+        "wednesday"
+      ],
+      "time_from": "09:00",
+      "time_to": "09:00"
+    },
+    "04-consultation-self-pay-knee": {
+      "time_from": "12:30",
+      "time_to": "12:30"
+    },
+    "05-mri-insured-from-my-doctor": {
+      "weekdays": [
+        "wednesday"
+      ],
+      "time_from": "10:00",
+      "time_to": "10:00"
+    },
+    "06-mri-how-to-submit-referral": {
+      "weekdays": [
+        "wednesday"
+      ],
+      "time_from": "10:00",
+      "time_to": "10:00"
+    },
+    "07-mri-any-wednesday": {
+      "weekdays": [
+        "wednesday"
+      ],
+      "time_from": "10:00",
+      "time_to": "10:00"
+    },
+    "08-rearrange-adam-armstrong": {
+      "weekdays": [
+        "monday"
+      ],
+      "time_from": "12:00",
+      "time_to": "12:00"
+    },
+    "09-rearrange-ashley-arnold": {
+      "time_from": "16:00",
+      "time_to": "16:00"
+    }
+  }
+}

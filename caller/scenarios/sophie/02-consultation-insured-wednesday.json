@@ -21,6 +21,14 @@
       "max_uses": 2
     },
     {
+      "when": "for yourself,? or (?:for )?someone else|for you or (?:for )?someone else",
+      "clips": [
+        "booking_for_myself"
+      ],
+      "intended": "It's for myself.",
+      "max_uses": 2
+    },
+    {
       "when": "i have the name|that's the name",
       "clips": [
         "2026-11-23T130234Z_eeab_10_confirm_details"
@@ -163,15 +171,15 @@
     "booking": {
       "tool": "sophie_v2_book",
       "type": "consultation",
-      "weekdays": [
-        "wednesday"
-      ],
-      "time_from": "09:00",
-      "time_to": "09:00",
       "start_keys": [
         "bookedDisplayTime"
       ]
-    }
+    },
+    "booking_from_target": [
+      "time_from",
+      "time_to",
+      "weekdays"
+    ]
   },
   "tool_outcomes": {
     "sophie_v2_verify_identity": {

@@ -176,7 +176,9 @@ def validate(args: argparse.Namespace) -> int:
             header=args.check_requires_header,
             timeout_s=args.check_requires_timeout,
         )
-    rows = validate_directory(args.scenarios, _bank(args) if args.clips else None, checker)
+    rows = validate_directory(
+        args.scenarios, _bank(args) if args.clips else None, checker, _target(args)
+    )
     for row in rows:
         print(row.line())
     unchecked = sum(row.requires_state == "unchecked" for row in rows)
@@ -328,8 +330,23 @@ def _clipbank(args: argparse.Namespace) -> int:
     return 0
 
 
+def _target(args: argparse.Namespace) -> dict[str, Any] | None:
+    """The profile of the system under test, when one was named."""
+    from synthiq_caller.target import load_target
+
+    path = getattr(args, "target", "")
+    return load_target(path) if path else None
+
+
+TARGET_HELP = (
+    "the profile of the system under test (see target.py): its bookable times, time zone "
+    "and fixture marks. Scenarios that leave parts of their appointment to it are not run "
+    "without it"
+)
+
+
 def _batch(args: argparse.Namespace) -> int:
-    scenarios = load_scenarios(args.scenarios)
+    scenarios = load_scenarios(args.scenarios, _target(args))
     chains = load_chains(args.scenarios)
     if args.only:
         scenarios = [(f, s) for f, s in scenarios if any(o in f for o in args.only)]
@@ -413,6 +430,7 @@ def main(argv: list[str] | None = None) -> int:
     bat = sub.add_parser("batch", help="run a directory of scenarios with the safety guards on")
     bat.add_argument("scenarios")
     bat.add_argument("--leg", required=True, choices=LEGS)
+    bat.add_argument("--target", default="", help=TARGET_HELP)
     bat.add_argument("--agent", default="")
     bat.add_argument(
         "--fake-agent",
@@ -507,6 +525,7 @@ def main(argv: list[str] | None = None) -> int:
     reg = sub.add_parser("regrade", help="grade stored runs again; places no calls")
     reg.add_argument("directory")
     reg.add_argument("--scenarios", required=True)
+    reg.add_argument("--target", default="", help=TARGET_HELP)
     reg.add_argument("--reread", action="store_true", help="fetch missing or empty traces again")
     reg.add_argument(
         "--reread-all",
@@ -547,6 +566,7 @@ def main(argv: list[str] | None = None) -> int:
     val = sub.add_parser("validate", help="check a directory of scenarios, and its clips")
     val.add_argument("scenarios")
     val.add_argument("--clips", default=None)
+    val.add_argument("--target", default="", help=TARGET_HELP)
     val.add_argument("--env-file", default=None)
     val.add_argument(
         "--check-requires-command",

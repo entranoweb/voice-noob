@@ -90,16 +90,16 @@
     "fields": [],
     "booking": {
       "tool": "sophie_v2_reschedule_appointment",
-      "weekdays": [
-        "monday"
-      ],
-      "time_from": "12:00",
-      "time_to": "12:00",
       "start_keys": [
         "newDisplayTime",
         "displayTime"
       ]
-    }
+    },
+    "booking_from_target": [
+      "time_from",
+      "time_to",
+      "weekdays"
+    ]
   },
   "tool_outcomes": {
     "sophie_v2_verify_identity": {

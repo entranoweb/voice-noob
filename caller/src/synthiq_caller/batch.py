@@ -364,9 +364,20 @@ def _scenario_files(directory: str | Path) -> list[Path]:
     return sorted(p for p in root.iterdir() if p.suffix.lower() in (".json", ".yaml", ".yml"))
 
 
-def load_scenarios(directory: str | Path) -> list[tuple[str, Scenario]]:
-    """Every single-call scenario file in ``directory``, in name order."""
-    return [(p.name, load_scenario(p)) for p in _scenario_files(directory) if not is_chain_file(p)]
+def load_scenarios(
+    directory: str | Path, target: dict[str, Any] | None = None
+) -> list[tuple[str, Scenario]]:
+    """Every single-call scenario file in ``directory``, in name order.
+
+    ``target`` is the profile of the system under test (``target.py``); a
+    scenario that leaves parts of its appointment to the profile is held back by
+    the batch when they are not given.
+    """
+    return [
+        (p.name, load_scenario(p, target))
+        for p in _scenario_files(directory)
+        if not is_chain_file(p)
+    ]
 
 
 def load_chains(directory: str | Path) -> list[tuple[str, Chain]]:
@@ -539,6 +550,14 @@ async def run_batch(
             return
         if scenario.missing_clips:
             block(f"missing clips: {list(scenario.missing_clips)}")
+            return
+        if scenario.missing_target:
+            # Run without them, the booking would be judged on less than the
+            # scenario means, or on another system's times.
+            block(
+                f"the target profile does not give {list(scenario.missing_target)} for this "
+                "scenario's appointment (--target)"
+            )
             return
         if prereq is not None and scenario.requires.strip():
             # What the scenario needs on the system under test is not there: a

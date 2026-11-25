@@ -22,6 +22,14 @@
       "max_uses": 2
     },
     {
+      "when": "for yourself,? or (?:for )?someone else|for you or (?:for )?someone else",
+      "clips": [
+        "booking_for_myself"
+      ],
+      "intended": "It's for myself.",
+      "max_uses": 2
+    },
+    {
       "when": "fee is|self-pay fee|pounds",
       "clips": [
         "2026-11-24T095122Z_xecc_11_confirm_fee"

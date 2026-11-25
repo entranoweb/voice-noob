@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from synthiq_caller.batch import load_chains, load_scenarios
 from synthiq_caller.chain import variables_in
@@ -29,6 +30,8 @@ class Row:
     needs_recordings: int = 0
     requires_state: str = "none"
     requires_detail: str = ""
+    # Parts of the appointment the target profile should give and does not.
+    missing_target: list[str] = field(default_factory=list)
 
     @property
     def problem(self) -> bool:
@@ -48,9 +51,14 @@ class Row:
         loud = self.requires_state not in ("none", "met")
         requires = f"requires {self.requires_state.upper() if loud else self.requires_state}"
         detail = f" ({self.requires_detail})" if self.requires_detail else ""
+        target = (
+            f"  TARGET PROFILE LACKS {self.missing_target}, will not run"
+            if self.missing_target
+            else ""
+        )
         return (
             f"{self.file:<44} mutates={self.mutates:<10} {self.shape}  "
-            f"{clips}{needs}  {requires}{detail}"
+            f"{clips}{needs}  {requires}{detail}{target}"
         )
 
 
@@ -61,10 +69,13 @@ def _clips_state(bank: ClipBank | None, missing: list[str]) -> str:
 
 
 def validate_directory(
-    directory: str | Path, bank: ClipBank | None, checker: PrereqChecker | None
+    directory: str | Path,
+    bank: ClipBank | None,
+    checker: PrereqChecker | None,
+    target: dict[str, Any] | None = None,
 ) -> list[Row]:
     rows: list[Row] = []
-    for file, scenario in load_scenarios(directory):
+    for file, scenario in load_scenarios(directory, target):
         missing: list[str] = []
         if bank is not None:
             # The fallback's clips are played too, when a question has no step.
@@ -90,6 +101,7 @@ def validate_directory(
                 needs_recordings=len(scenario.missing_clips),
                 requires_state=prereq.state,
                 requires_detail=prereq.detail,
+                missing_target=list(scenario.missing_target),
             )
         )
     for file, chain in load_chains(directory):

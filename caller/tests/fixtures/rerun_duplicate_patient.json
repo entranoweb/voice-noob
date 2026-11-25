@@ -1,0 +1,400 @@
+{
+ "source": "live re-run of 25 November 2026, run 4, scrubbed and cut down",
+ "scenario_file": "05-mri-insured-from-my-doctor.json",
+ "record": {
+  "scenario": "New patient books an MRI: insured, referral 'from my doctor', not yet sent",
+  "call_ref": "conv_fixture_4",
+  "ended": "caller hung up: scenario end",
+  "duration_s": 126.59,
+  "timeline": [
+   {
+    "t": 0.38,
+    "kind": "agent",
+    "text": "Hi, this is Sophie from ClinWell. How can I help you today?"
+   },
+   {
+    "t": 11.94,
+    "kind": "agent",
+    "text": "Of course. Could I take your full name, please?"
+   },
+   {
+    "t": 20.09,
+    "kind": "agent",
+    "text": "Thanks. And have you been to see us before?"
+   },
+   {
+    "t": 28.22,
+    "kind": "agent",
+    "text": "Happy to help. What's bringing you in to see us?"
+   },
+   {
+    "t": 36.44,
+    "kind": "agent",
+    "text": "I'm sorry to hear that."
+   },
+   {
+    "t": 40.09,
+    "kind": "agent",
+    "text": "I'll get you registered. Could I take your date of birth, please?"
+   },
+   {
+    "t": 51.42,
+    "kind": "agent",
+    "text": "And the best mobile number to reach you on, please?"
+   },
+   {
+    "t": 62.99,
+    "kind": "agent",
+    "text": "Thanks. And could I take your postcode, please? It helps us confirm it's you when you call again."
+   },
+   {
+    "t": 78.77,
+    "kind": "agent",
+    "text": "And will you be using health insurance for this, or paying yourself?"
+   },
+   {
+    "t": 89.12,
+    "kind": "agent",
+    "text": "And which insurer are you with?"
+   },
+   {
+    "t": 98.7,
+    "kind": "agent",
+    "text": "Let me just check I've got that right, reference ginger swan pagoda. I have the name Alfie Adam, with the date of birth 2 December 1992. Is that right?"
+   },
+   {
+    "t": 119.03,
+    "kind": "agent",
+    "text": "I'm sorry, I couldn't quite finish setting that up from here. Let me pop you through to reception and they'll take it from there."
+   },
+   {
+    "t": 126.27,
+    "kind": "agent",
+    "text": "Sorry, I couldn't connect you just now. You can reach the team directly on 01234 567 890 and they'll pick this up. Thanks for getting in touch with the the clinic, take care. Goodbye."
+   }
+  ],
+  "said": [
+   {
+    "t": 5.06,
+    "step_index": 1,
+    "field": "",
+    "intended": "Sophie, can you book an MRI appointment for me?",
+    "clips": [
+     "clip"
+    ],
+    "dtmf": "",
+    "seconds": 3.0,
+    "talk_over": false,
+    "answering": "Hi, this is Sophie from ClinWell. How can I help you today?",
+    "heard": [
+     "Sophie, can you book an MRI appointment for me?"
+    ],
+    "labels_unverified": true,
+    "fallback": false,
+    "synthetic_clips": []
+   },
+   {
+    "t": 16.44,
+    "step_index": 3,
+    "field": "name",
+    "intended": "It's Alfie Adam.",
+    "clips": [
+     "clip"
+    ],
+    "dtmf": "",
+    "seconds": 1.72,
+    "talk_over": false,
+    "answering": "Of course. Could I take your full name, please?",
+    "heard": [
+     "It's Alfie Adam."
+    ],
+    "labels_unverified": true,
+    "fallback": false,
+    "synthetic_clips": []
+   },
+   {
+    "t": 25.14,
+    "step_index": 4,
+    "field": "",
+    "intended": "No, I haven't.",
+    "clips": [
+     "clip"
+    ],
+    "dtmf": "",
+    "seconds": 0.98,
+    "talk_over": false,
+    "answering": "Thanks. And have you been to see us before?",
+    "heard": [
+     "No, I haven't."
+    ],
+    "labels_unverified": true,
+    "fallback": false,
+    "synthetic_clips": []
+   },
+   {
+    "t": 33.24,
+    "step_index": 14,
+    "field": "",
+    "intended": "Having shoulder pain.",
+    "clips": [
+     "clip"
+    ],
+    "dtmf": "",
+    "seconds": 1.24,
+    "talk_over": false,
+    "answering": "Happy to help. What's bringing you in to see us?",
+    "heard": [
+     "Having shoulder pain."
+    ],
+    "labels_unverified": true,
+    "fallback": false,
+    "synthetic_clips": []
+   },
+   {
+    "t": 46.14,
+    "step_index": 13,
+    "field": "date_of_birth",
+    "intended": "Second of December, nineteen ninety-two.",
+    "clips": [
+     "clip"
+    ],
+    "dtmf": "",
+    "seconds": 2.4,
+    "talk_over": false,
+    "answering": "I'm sorry to hear that. I'll get you registered. Could I take your date of birth, please?",
+    "heard": [
+     "2nd of December, 1992."
+    ],
+    "labels_unverified": true,
+    "fallback": false,
+    "synthetic_clips": []
+   },
+   {
+    "t": 57.22,
+    "step_index": 11,
+    "field": "phone",
+    "intended": "Zero seven eight three nine four seven eight.",
+    "clips": [
+     "clip"
+    ],
+    "dtmf": "",
+    "seconds": 3.72,
+    "talk_over": false,
+    "answering": "And the best mobile number to reach you on, please?",
+    "heard": [
+     "078-39478."
+    ],
+    "labels_unverified": true,
+    "fallback": false,
+    "synthetic_clips": []
+   },
+   {
+    "t": 72.22,
+    "step_index": 12,
+    "field": "postcode",
+    "intended": "S one five zero A D.",
+    "clips": [
+     "clip"
+    ],
+    "dtmf": "",
+    "seconds": 4.64,
+    "talk_over": false,
+    "answering": "Thanks. And could I take your postcode, please? It helps us confirm it's you when you call again.",
+    "heard": [
+     "S15 0AD."
+    ],
+    "labels_unverified": true,
+    "fallback": false,
+    "synthetic_clips": []
+   },
+   {
+    "t": 86.31,
+    "step_index": 6,
+    "field": "",
+    "intended": "Health insurance.",
+    "clips": [
+     "clip"
+    ],
+    "dtmf": "",
+    "seconds": 1.0,
+    "talk_over": false,
+    "answering": "And will you be using health insurance for this, or paying yourself?",
+    "heard": [
+     "Health insurance."
+    ],
+    "labels_unverified": true,
+    "fallback": false,
+    "synthetic_clips": []
+   },
+   {
+    "t": 95.03,
+    "step_index": 5,
+    "field": "",
+    "intended": "Bupa.",
+    "clips": [
+     "clip"
+    ],
+    "dtmf": "",
+    "seconds": 0.62,
+    "talk_over": false,
+    "answering": "And which insurer are you with?",
+    "heard": [
+     "Bupa."
+    ],
+    "labels_unverified": true,
+    "fallback": false,
+    "synthetic_clips": []
+   },
+   {
+    "t": 115.44,
+    "step_index": 2,
+    "field": "",
+    "intended": "Correct.",
+    "clips": [
+     "clip"
+    ],
+    "dtmf": "",
+    "seconds": 0.7,
+    "talk_over": false,
+    "answering": " check I've got that right, reference ginger swan pagoda. I have the name Alfie Adam, with the date of birth 2 December 1992. Is that right?",
+    "heard": [
+     "Correct."
+    ],
+    "labels_unverified": true,
+    "fallback": false,
+    "synthetic_clips": []
+   }
+  ],
+  "unanswered": []
+ },
+ "trace": {
+  "call_ref": "conv_fixture_4",
+  "tool_calls": [
+   {
+    "name": "sophie_v2_identify_returning_patient",
+    "arguments": {},
+    "result": {
+     "success": true
+    },
+    "ok": true,
+    "step_id": "T1",
+    "t": 19,
+    "error": "",
+    "outputs": {
+     "status": "not_found",
+     "callerIntent": "mri",
+     "intentEchoVersion": "2",
+     "postcodeOnFile": "False"
+    }
+   },
+   {
+    "name": "sophie_v2_check_scope",
+    "arguments": {},
+    "result": {
+     "success": true,
+     "scopeStatus": "in_scope",
+     "scopeRestricted": false
+    },
+    "ok": true,
+    "step_id": "NP_SCOPE",
+    "t": 39,
+    "error": "",
+    "outputs": {
+     "scopeDecision": "allow",
+     "scopeQuestionSpoken": "",
+     "outOfScopeOfferSpoken": ""
+    }
+   },
+   {
+    "name": "sophie_v2_new_patient_check",
+    "arguments": {},
+    "result": {
+     "success": true
+    },
+    "ok": true,
+    "step_id": "NP_CHECK",
+    "t": 51,
+    "error": "",
+    "outputs": {
+     "newPatientStatus": "none"
+    }
+   },
+   {
+    "name": "sophie_v2_prepare_register_patient",
+    "arguments": {},
+    "result": {
+     "success": true
+    },
+    "ok": true,
+    "step_id": "NP_PREP",
+    "t": 98,
+    "error": "",
+    "outputs": {
+     "readBackCode": "ginger swan pagoda",
+     "registerReadBack": "the name Alfie Adam, with the date of birth 2 December 1992"
+    }
+   },
+   {
+    "name": "sophie_v2_register_patient",
+    "arguments": {},
+    "result": "Error code: 409. Details: HTTP 409",
+    "ok": false,
+    "step_id": "MR",
+    "t": 118,
+    "error": "{\"success\":false,\"code\":\"DUPLICATE_FOUND\",\"safeMessageKey\":\"register_patient_duplicate_found\"}",
+    "outputs": {}
+   },
+   {
+    "name": "transfer_to_number",
+    "arguments": {},
+    "result": {
+     "result_type": "transfer_to_number_error",
+     "status": "error",
+     "error": "Transfer to number tool is only available for phone calls powered by Twilio, Exotel, SIP trunking, Amazon Connect, or Voximplant",
+     "details": null
+    },
+    "ok": false,
+    "step_id": "TRANSFER_RECEPTION",
+    "t": 126,
+    "error": "",
+    "outputs": {}
+   }
+  ],
+  "step_path": [
+   "I0",
+   "I1",
+   "T1",
+   "I2",
+   "SAY_BEEN_BEFORE",
+   "BB1",
+   "NEW_PATIENT_ENTRY",
+   "SAY_NP_REACT",
+   "NP_SCOPE",
+   "NP_SCOPER",
+   "SAY_NP_ASK_DETAILS",
+   "NP_NAME",
+   "NP_CHECK",
+   "NP_CHECKR",
+   "SAY_NP_ASK_PHONE",
+   "NP_PHONE",
+   "SAY_NP_ASK_POSTCODE",
+   "NP_POSTCODE",
+   "SAY_NP_ASK_INSURANCE",
+   "NP_INS",
+   "SAY_NP_ASK_PROVIDER",
+   "NP_PROV",
+   "NP_PREP",
+   "SAY_NP_CONFIRM",
+   "NP_C0",
+   "MR",
+   "SAY_NP_FAILED",
+   "TRANSFER_RECEPTION",
+   "SAY_TRANSFER_FAILED"
+  ],
+  "termination": "Client disconnected: 1000"
+ },
+ "graded_then": {
+  "outcome": "failed",
+  "fault": "agent"
+ }
+}
