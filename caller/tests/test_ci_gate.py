@@ -8,8 +8,10 @@ from typing import Any
 import pytest
 
 from synthiq_caller import ci_gate
+from synthiq_caller.batch import load_chains
 from synthiq_caller.ci_gate import GateRefused
 from synthiq_caller.cli import main
+from synthiq_caller.scenario import ScenarioError
 
 CALLER = Path(__file__).parent.parent
 SETS = CALLER / "ci" / "scenarios"
@@ -280,3 +282,50 @@ def test_the_workflow_validates_strictly_before_the_batch() -> None:
     strict = text.index("synthiq-caller validate")
     assert "--strict" in text[strict : strict + 120]
     assert text.index("ci_gate check") < strict < text.index("synthiq-caller batch")
+
+
+# --- a chain with a call that states no expectations ------------------------------
+
+
+def write_chain(folder: Path, second_expects: bool) -> None:
+    def call(call_id: str, expects: bool) -> dict[str, Any]:
+        return {
+            "id": call_id,
+            "mutates": "none",
+            "persona": {"facts": {"name": "Alice Wonderland"}},
+            "steps": [{"when": "how can i help", "clips": ["ci-opener"]}],
+            "hangup_after": "mobile number",
+            "max_seconds": 20,
+            "expect": {"tools": [{"name_contains": "lookup"}] if expects else [], "fields": []},
+        }
+
+    data = {"name": "look up twice", "chain": [call("first", True), call("second", second_expects)]}
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "chain.json").write_text(json.dumps(data), encoding="utf-8")
+
+
+def test_a_chain_call_that_states_nothing_never_loads(tmp_path: Path) -> None:
+    """A chain cannot be ungradeable: ``parse_chain`` refuses any call with no expectation.
+
+    (``chain.py``: "chain call ... expects nothing"). So there is no chain case in
+    ``validate --strict``; a chain that would be one is already an error, with or
+    without the flag, and it names the step.
+    """
+    write_chain(tmp_path, second_expects=False)
+    with pytest.raises(ScenarioError, match="chain call 'second' expects nothing"):
+        load_chains(tmp_path)
+
+
+def test_validate_strict_passes_a_chain_whose_every_call_states_expectations(
+    tmp_path: Path,
+) -> None:
+    write_chain(tmp_path, second_expects=True)
+    assert main(["validate", str(tmp_path), "--strict"]) == 0
+
+
+def test_the_gate_refuses_a_chain_with_a_call_that_states_nothing(tmp_path: Path) -> None:
+    write_chain(tmp_path, second_expects=False)
+    with pytest.raises(GateRefused, match="cannot be loaded.*chain call 'second' expects nothing"):
+        ci_gate.check_scenarios(tmp_path)
+    write_chain(tmp_path, second_expects=True)
+    assert ci_gate.check_scenarios(tmp_path) == 1
