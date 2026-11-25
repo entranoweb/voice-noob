@@ -370,7 +370,10 @@ async def test_a_scenario_runs_end_to_end_over_the_phone_leg(tmp_path: Path) -> 
     leg = await make_leg(fake, lines=lines)
 
     record = await Director(
-        scenario, leg, ClipBank(tmp_path, allow_unknown_provenance=True), turn_settings=FAST
+        scenario,
+        leg,
+        ClipBank(tmp_path, allow_unknown_provenance=True, allow_missing_consent=True),
+        turn_settings=FAST,
     ).run()
     await fake.wait_finished()
 
@@ -556,6 +559,7 @@ def test_dry_run_places_no_call_and_prints_what_it_would_send(
             str(tmp_path / "runs"),
             "--dry-run",
             "--allow-unknown-provenance",
+            "--allow-missing-consent",
         ],
         env={},
     )

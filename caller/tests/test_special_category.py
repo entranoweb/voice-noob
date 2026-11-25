@@ -57,6 +57,20 @@ def test_unknown_provenance_does_not_lift_the_consent_rule(tmp_path: Path) -> No
     assert "consent record missing" in bank.refusal("opener")
 
 
+@pytest.mark.parametrize("row", [{}, {"provenance": "mystery"}], ids=["blank", "unrecognised"])
+def test_unknown_provenance_needs_basis_and_consent_like_a_real_clip(
+    row: dict[str, str], tmp_path: Path
+) -> None:
+    # Before the consent fields, a blank provenance meant real: it must not slip past the gate.
+    bank = ClipBank(write_bank(tmp_path, {"opener": row}), allow_unknown_provenance=True)
+    assert "consent record missing" in bank.refusal("opener")
+    both = ClipBank(tmp_path, allow_unknown_provenance=True, allow_missing_consent=True)
+    assert both.refusal("opener") == ""
+    filled = {**row, "lawful_basis": "a basis", "consent_ref": "rec-1"}
+    ok = ClipBank(write_bank(tmp_path / "ok", {"opener": filled}), allow_unknown_provenance=True)
+    assert ok.refusal("opener") == ""
+
+
 def test_any_non_empty_basis_is_accepted(tmp_path: Path) -> None:
     row = {**FULL, "lawful_basis": "art6 legitimate interests; art9 2(h) health care"}
     assert Consent.from_row(row).problems() == []

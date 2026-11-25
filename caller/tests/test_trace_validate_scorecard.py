@@ -360,6 +360,7 @@ async def test_a_batch_writes_the_agents_apostrophes_as_they_were_spoken(tmp_pat
         turn_settings=FAST,
         allow_unverified_clips=True,  # a bank with no manifest: nobody has checked it
         allow_unknown_provenance=True,
+        allow_missing_consent=True,
     )
 
     raw = (out / "run-001.json").read_bytes()
@@ -427,6 +428,7 @@ async def test_the_after_call_hook_is_given_the_conversation_and_the_stored_run(
         turn_settings=FAST,
         allow_unverified_clips=True,
         allow_unknown_provenance=True,
+        allow_missing_consent=True,
     )
 
     stored = json.loads((out / "run-001.json").read_text(encoding="utf-8"))
@@ -451,6 +453,7 @@ async def test_a_hook_that_fails_is_written_into_the_run_it_was_for(tmp_path: Pa
         turn_settings=FAST,
         allow_unverified_clips=True,
         allow_unknown_provenance=True,
+        allow_missing_consent=True,
     )
 
     stored = json.loads((out / "run-001.json").read_text(encoding="utf-8"))

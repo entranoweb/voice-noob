@@ -267,7 +267,12 @@ class ClipBank:
         missing: list[str] = []
         for name in dict.fromkeys(names):
             info = self.info(name)
-            lacks = info.consent.record_missing() if info is not None else []
+            # A clip with no manifest row says nothing of itself: it lacks both.
+            lacks = (
+                info.consent.record_missing()
+                if info is not None
+                else ["lawful_basis", "consent_ref"]
+            )
             if lacks:
                 missing.append(f"{name}: no {' or '.join(lacks)}")
         return missing

@@ -137,8 +137,13 @@ class Consent:
         return self.kind == "real"
 
     def record_missing(self) -> list[str]:
-        """What a real clip must carry before it may be played: a basis and a consent record."""
-        if not self.special_category:
+        """What a clip must carry before it may be played: a basis and a consent record.
+
+        A real clip needs both. So does one whose provenance is unknown: before this
+        rule a blank provenance meant real, so it is treated as real until someone says
+        otherwise. Only a clip that says it is synthetic needs neither.
+        """
+        if self.kind == "synthetic":
             return []
         return [name for name in ("lawful_basis", "consent_ref") if not getattr(self, name)]
 
