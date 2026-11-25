@@ -207,10 +207,13 @@ def build(
     class_reasons["not_run"] = {}
     for (_, reason), count in not_run.items():
         class_reasons["not_run"][reason] = class_reasons["not_run"].get(reason, 0) + count
-    baseline = make_baseline(summary, source=", ".join(root.name for root in roots))
+    shape = combine([check_completeness(root) for root in roots])
+    baseline = make_baseline(
+        summary, source=", ".join(root.name for root in roots), completeness=shape.status
+    )
     card: dict[str, Any] = {
         "title": title or "Scorecard",
-        "completeness": combine([check_completeness(root) for root in roots]).to_json(),
+        "completeness": shape.to_json(),
         "generated": datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC"),
         "sources": [root.name for root in roots],
         "calls": summary.runs,

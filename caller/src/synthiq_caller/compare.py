@@ -36,13 +36,16 @@ class Baseline:
     scenarios: dict[str, list[int]] = field(default_factory=dict)
     chains: dict[str, list[int]] = field(default_factory=dict)
     version: int = VERSION
+    # What the directory this was made from was: complete, unknown, ... (empty: not recorded).
+    completeness: str = ""
 
     def to_json(self) -> dict[str, Any]:
         return asdict(self)
 
 
-def make_baseline(summary: Summary, source: str = "") -> Baseline:
+def make_baseline(summary: Summary, source: str = "", completeness: str = "") -> Baseline:
     return Baseline(
+        completeness=completeness,
         created=datetime.now(UTC).isoformat(timespec="seconds"),
         source=source,
         scenarios={name: [p, t] for name, (p, t) in summary.by_scenario.items()},
@@ -64,6 +67,7 @@ def load_baseline(path: str | Path) -> Baseline:
     return Baseline(
         created=str(data.get("created", "")),
         source=str(data.get("source", "")),
+        completeness=str(data.get("completeness", "")),
         scenarios={str(k): [int(v[0]), int(v[1])] for k, v in data.get("scenarios", {}).items()},
         chains={str(k): [int(v[0]), int(v[1])] for k, v in data.get("chains", {}).items()},
     )

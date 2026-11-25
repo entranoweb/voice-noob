@@ -714,3 +714,40 @@ def test_an_upload_bundle_says_whether_it_is_the_whole_of_what_was_planned(
     old = upload.build_bundle(run_directory(tmp_path / "c", ["passed"], with_manifest=False))
     assert old["summary"]["completeness"]["status"] == "unknown"
     assert old["summary"]["completeness"]["unstamped"] == 1
+
+
+def test_nothing_says_met_for_a_directory_that_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    out = planned(tmp_path, ["passed"] * 58)
+    copy_run(out, 1, 59)
+    assert cli.main(["gate", str(out)]) == 1
+    text = capsys.readouterr().out
+    assert "is met" not in text
+    assert "not judged: the directory is INCOMPLETE" in text
+    assert "59 of 59" not in text
+
+
+def test_a_baseline_records_the_completeness_of_what_it_was_made_from(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    whole = planned(tmp_path / "w", ["passed"] * 3)
+    stored = baseline_of(whole, tmp_path)
+    assert read(stored)["completeness"] == "complete"
+    capsys.readouterr()
+    assert cli.main(["compare", str(whole), "--baseline", str(stored), "--fail-on", "any"]) == 0
+    assert "warning: the baseline's completeness" not in capsys.readouterr().out
+
+    legacy = run_directory(tmp_path / "l", ["passed"] * 3, with_manifest=False)
+    old = tmp_path / "old.json"
+    assert cli.main(["baseline", str(legacy), "--out", str(old)]) == 0
+    assert read(old)["completeness"] == "unknown"
+    capsys.readouterr()
+    cli.main(["compare", str(whole), "--baseline", str(old), "--fail-on", "any"])
+    assert "warning: the baseline's completeness is unknown" in capsys.readouterr().out
+
+    bad = read(stored)
+    bad["completeness"] = "incomplete"
+    write_json(stored, bad)
+    assert cli.main(["compare", str(whole), "--baseline", str(stored), "--fail-on", "any"]) == 1
+    assert "it is not a baseline" in capsys.readouterr().out

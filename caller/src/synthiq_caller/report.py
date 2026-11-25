@@ -349,6 +349,10 @@ def gate_reading(
     share = unjudged / attempted if attempted else 1.0
     refused = []
     if completeness is not None and completeness.bad:
+        # The counts include files that are not the planned calls (copies, extras), so no
+        # reading of them is shown as met or not met.
+        by_call = by_scenario = f"not judged: the directory is {completeness.status.upper()}"
+        met_calls = met = False
         # The numbers describe the calls that are here, not the calls that were planned.
         refused.append(
             f"the directory is {completeness.status.upper()} ("

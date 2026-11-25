@@ -75,7 +75,12 @@ acceptance) judges only the calls that ran and says so in the output and in the 
 
 `compare` fails (both `--fail-on` modes) when a scenario has fewer graded calls than the
 baseline was made from: a batch that lost a call, or its manifest, does not read as "same". More
-calls than the baseline is not a failure. Wherever completeness is printed, the number of run
+calls than the baseline is not a failure. A baseline records the completeness of the directory
+it was made from; `compare` warns when that is unknown (or not recorded, for baselines made
+before this) and refuses a baseline made from an incomplete or altered directory. On a refused
+directory the by-call and by-scenario lines say `not judged: the directory is INCOMPLETE`
+instead of a met / not-met reading, because their counts include files that are not the
+planned calls. Wherever completeness is printed, the number of run
 files with no digest is printed too.
 
 ## The digest

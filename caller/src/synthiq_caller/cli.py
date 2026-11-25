@@ -1255,7 +1255,9 @@ def _main(argv: list[str] | None = None) -> int:
             return 1
         for line in shape.lines():
             print(line)
-        stored = make_baseline(summarise(args.directory), source=str(args.directory))
+        stored = make_baseline(
+            summarise(args.directory), source=str(args.directory), completeness=shape.status
+        )
         save_baseline(stored, args.out)
         print(f"baseline of {len(stored.scenarios)} scenario(s), {len(stored.chains)} chain(s)")
         return 0
@@ -1264,8 +1266,27 @@ def _main(argv: list[str] | None = None) -> int:
         if not Path(args.directory).is_dir():
             print(f"ERROR: {args.directory}: not a directory of runs")
             return 2
+        if (
+            baseline.completeness == completeness.INCOMPLETE
+            or baseline.completeness == completeness.ALTERED
+        ):
+            print(
+                f"ERROR: {args.baseline}: the baseline was made from a directory that was "
+                f"{baseline.completeness.upper()}; it is not a baseline. Make it again."
+            )
+            return 1
         shape = completeness.check(args.directory)
         changes = compare(baseline, summarise(args.directory))
+        if baseline.completeness in ("", completeness.UNKNOWN):
+            print(
+                "warning: the baseline's completeness is "
+                + (
+                    "unknown (made from a directory with no plan)"
+                    if baseline.completeness
+                    else "not recorded (made before baselines recorded it)"
+                )
+                + ": it may be made from part of a run"
+            )
         print(render_comparison(baseline, changes))
         print()
         for line in shape.lines():
