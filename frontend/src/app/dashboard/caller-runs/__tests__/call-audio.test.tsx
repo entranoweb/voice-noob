@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { http, HttpResponse } from "msw";
 import userEvent from "@testing-library/user-event";
+import { fireEvent } from "@testing-library/react";
 import { render, screen, server, waitFor, within } from "@/test/test-utils";
 import type { CallerCallDetail } from "@/lib/api/caller-runs";
 import CallerCallPage from "../[runId]/calls/[callId]/page";
@@ -159,6 +160,28 @@ describe("call audio on the call page", () => {
     // Both sides are moved, so they stay in step.
     expect(played.positions).toEqual([6.5, 6.5]);
     expect(played.plays).toBe(1);
+  });
+
+  it("reads the length from the audio element when metadata loads, not from the event afterwards", async () => {
+    serve(call);
+    const { container } = render(<CallerCallPage />);
+    await waitFor(() => expect(container.querySelectorAll("audio")).toHaveLength(2));
+    const [first, second] = Array.from(container.querySelectorAll("audio")) as [
+      HTMLAudioElement,
+      HTMLAudioElement,
+    ];
+    Object.defineProperty(first, "duration", { value: 20, configurable: true });
+    Object.defineProperty(second, "duration", { value: 21, configurable: true });
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    // React clears currentTarget once the handler returns. A state updater that
+    // reads it runs later, at render time, and crashes the page.
+    fireEvent.loadedMetadata(first);
+    fireEvent.loadedMetadata(second);
+
+    expect(errors).not.toHaveBeenCalled();
+    expect(screen.getByRole("list", { name: "Call timeline" })).toBeInTheDocument();
+    errors.mockRestore();
   });
 
   it("moves the recording when a marker is clicked", async () => {
