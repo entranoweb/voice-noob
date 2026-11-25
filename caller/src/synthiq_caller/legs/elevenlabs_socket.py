@@ -25,7 +25,11 @@ from __future__ import annotations
 
 import base64
 import json
+import re
+import time
+import uuid
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -33,6 +37,7 @@ import websockets
 
 from synthiq_caller.leg import AgentAudio, AgentText, Closed, Heard, Interrupted, LegEvent
 from synthiq_caller.mulaw import lin2ulaw, ulaw2lin
+from synthiq_caller.recording import CallRecorder
 
 API = "https://api.elevenlabs.io/v1"
 
@@ -46,7 +51,13 @@ def _rate(fmt: str) -> int:
 
 class ElevenLabsSocketLeg:
     def __init__(
-        self, api_key: str, agent_id: str, *, api: str = API, keypad_as_message: bool = False
+        self,
+        api_key: str,
+        agent_id: str,
+        *,
+        api: str = API,
+        keypad_as_message: bool = False,
+        audio_dir: str = "",
     ) -> None:
         self._key = api_key
         self._agent_id = agent_id
@@ -56,6 +67,13 @@ class ElevenLabsSocketLeg:
         self._call_ref: str | None = None
         self._in_fmt = "pcm_16000"
         self._out_fmt = "pcm_16000"
+        # Two files per call (what the rig played, what the agent said), kept
+        # when a folder is given: the same fields as a phone leg's recording.
+        self._audio_dir = audio_dir
+        self._recorder = CallRecorder(16000) if audio_dir else None
+        self._t0 = time.monotonic()
+        self._file_stem = uuid.uuid4().hex
+        self.audio: dict[str, Any] = {}
 
     @property
     def input_rate(self) -> int:
@@ -76,10 +94,15 @@ class ElevenLabsSocketLeg:
             url = response.json()["signed_url"]
         self._ws = await websockets.connect(url, max_size=None)
         await self._ws.send(json.dumps({"type": "conversation_initiation_client_data"}))
+        self._t0 = time.monotonic()
 
     async def send_pcm(self, pcm: bytes) -> None:
         if self._ws is None:
             return
+        if self._recorder is not None:
+            self._recorder.put(
+                "caller", time.monotonic() - self._t0, pcm, source_rate=self.input_rate
+            )
         payload = pcm
         if self._in_fmt.startswith("ulaw"):
             payload = lin2ulaw(pcm)
@@ -127,7 +150,15 @@ class ElevenLabsSocketLeg:
                 elif kind == "audio":
                     b64 = message.get("audio_event", {}).get("audio_base_64")
                     if b64:
-                        yield self._decode_audio(b64)
+                        chunk = self._decode_audio(b64)
+                        if self._recorder is not None:
+                            self._recorder.put(
+                                "agent",
+                                time.monotonic() - self._t0,
+                                chunk.pcm,
+                                source_rate=chunk.rate,
+                            )
+                        yield chunk
                 elif kind == "agent_response":
                     text = message.get("agent_response_event", {}).get("agent_response", "")
                     if text:
@@ -149,3 +180,23 @@ class ElevenLabsSocketLeg:
     async def close(self) -> None:
         if self._ws is not None:
             await self._ws.close()
+        self._save_audio()
+
+    def details(self) -> dict[str, Any]:
+        """What a stored run keeps about the line: the audio files, when there are any."""
+        return {"audio": dict(self.audio)} if self.audio else {}
+
+    def _save_audio(self) -> None:
+        if self._recorder is None or self.audio or self._recorder.empty:
+            return
+        directory = Path(self._audio_dir)
+        stem = re.sub(r"[^A-Za-z0-9_-]", "", self._call_ref or "") or self._file_stem
+        try:
+            saved = self._recorder.save(directory, f"{stem}-{self._file_stem[:8]}")
+        except OSError as error:
+            self.audio = {"error": f"the audio could not be written: {error}"}
+            return
+        # Relative to the folder that holds the audio folder: the run directory.
+        for track in ("caller", "agent"):
+            saved[track] = f"{directory.name}/{saved[track]}"
+        self.audio = saved

@@ -124,8 +124,14 @@ def _build(args: argparse.Namespace) -> tuple[Leg, TraceReader | None]:
         if not args.agent:
             raise SystemExit("--agent is required for the elevenlabs-socket leg")
         key = _secret("ELEVENLABS_API_KEY", args.env_file)
+        out = getattr(args, "out", None)
         leg = ElevenLabsSocketLeg(
-            key, args.agent, keypad_as_message=getattr(args, "keypad_as_message", False)
+            key,
+            args.agent,
+            keypad_as_message=getattr(args, "keypad_as_message", False),
+            audio_dir=str(Path(out) / "audio")
+            if out and not getattr(args, "no_audio", False)
+            else "",
         )
         return leg, _trace_reader(args)
     raise SystemExit(f"unknown or unbuilt leg: {args.leg}")
@@ -573,6 +579,7 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--out", required=True)
     run.add_argument("--env-file", default=None)
     run.add_argument("--no-trace", action="store_true", help="do not read the agent's trace")
+    run.add_argument("--no-audio", action="store_true", help="keep no per-side WAV files")
     run.add_argument("--trace", choices=TRACES, default="elevenlabs", help="where the trace is")
     run.add_argument(
         "--allow-mutating",
@@ -611,7 +618,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     _phone_arguments(bat)
     bat.add_argument("--no-record", action="store_true", help="phone: no carrier recording")
-    bat.add_argument("--no-audio", action="store_true", help="phone: keep no per-side WAV files")
+    bat.add_argument(
+        "--no-audio", action="store_true", help="keep no per-side WAV files (either leg)"
+    )
     bat.add_argument(
         "--trace-window",
         type=float,

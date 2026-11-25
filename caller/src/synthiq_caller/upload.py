@@ -237,6 +237,81 @@ def post_bundle(
     raise UploadError(f"upload refused ({response.status_code}): {_detail(response)}")
 
 
+def audio_files(root: Path, runs: list[dict[str, Any]]) -> list[tuple[str, str, Path | None, str]]:
+    """The recordings the run files refer to: (run file, track, path or None, why not).
+
+    A call whose file names no audio is not listed: nothing was asked for. A file
+    the run names that is not there, or a recording the rig says it could not
+    write, is listed with the reason, so that it is said and not skipped.
+    """
+    found: list[tuple[str, str, Path | None, str]] = []
+    base = root.resolve()
+    for run_entry in runs:
+        audio = (run_entry.get("payload") or {}).get("audio")
+        if not isinstance(audio, dict):
+            continue
+        name = str(run_entry["file"])
+        if audio.get("error"):
+            found.append((name, "-", None, str(audio["error"])))
+            continue
+        for track in ("caller", "agent"):
+            relative = audio.get(track)
+            if not isinstance(relative, str) or not relative:
+                continue
+            path = (base / relative).resolve()
+            if not path.is_relative_to(base):
+                found.append((name, track, None, "the path leaves the run directory"))
+            elif not path.is_file():
+                found.append((name, track, None, f"{relative} is not there"))
+            else:
+                found.append((name, track, path, ""))
+    return found
+
+
+def post_audio(
+    root: Path,
+    runs: list[dict[str, Any]],
+    *,
+    api: str,
+    token: str,
+    run_pk: str,
+    client: httpx.Client | None = None,
+    timeout_s: float = 300.0,
+) -> tuple[int, list[str]]:
+    """Send each recording as its own request. Returns (sent, one line per failure)."""
+    sent = 0
+    failures: list[str] = []
+    owned = client is None
+    client = client or httpx.Client(timeout=timeout_s)
+    try:
+        for name, track, path, why in audio_files(root, runs):
+            label = f"{name} {track}"
+            if path is None:
+                failures.append(f"{label}: {why}")
+                continue
+            try:
+                response = client.put(
+                    f"{api.rstrip('/')}/api/v1/caller/runs/{run_pk}/audio",
+                    params={"file": name, "track": track},
+                    content=path.read_bytes(),
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "Content-Type": "audio/wav",
+                    },
+                )
+            except (httpx.HTTPError, OSError) as error:
+                failures.append(f"{label}: {error.__class__.__name__}")
+                continue
+            if response.status_code == 200:
+                sent += 1
+            else:
+                failures.append(f"{label}: refused ({response.status_code}) {_detail(response)}")
+    finally:
+        if owned:
+            client.close()
+    return sent, failures
+
+
 def _token(env_name: str, env_file: str | None) -> str:
     value = os.environ.get(env_name, "")
     if not value and env_file:
@@ -280,12 +355,9 @@ def run(args: argparse.Namespace) -> int:
             raise UploadError(
                 "--api and --workspace are required (or use --bundle-out to only pack)"
             )
+        token = _token(args.token_env, args.env_file)
         answer = post_bundle(
-            body,
-            api=args.api,
-            workspace=args.workspace,
-            token=_token(args.token_env, args.env_file),
-            replace=args.replace,
+            body, api=args.api, workspace=args.workspace, token=token, replace=args.replace
         )
     except UploadError as error:
         print(f"upload failed: {error}")
@@ -298,6 +370,29 @@ def run(args: argparse.Namespace) -> int:
     )
     if stored.get("id"):
         print(f"dashboard: /dashboard/caller-runs/{stored['id']}")
+    if not stored.get("id"):
+        wanted = audio_files(Path(args.directory), bundle["runs"])
+        if wanted:
+            print(
+                "audio NOT uploaded: the server did not say which run it stored "
+                f"({len(wanted)} files)"
+            )
+            return 1
+        return 0
+    sent, failures = post_audio(
+        Path(args.directory),
+        bundle["runs"],
+        api=args.api,
+        token=token,
+        run_pk=str(stored["id"]),
+    )
+    if sent or failures:
+        print(f"audio: {sent} file(s) uploaded")
+    if failures:
+        print(f"AUDIO UPLOAD FAILED for {len(failures)} file(s); the run itself was stored:")
+        for line in failures:
+            print(f"  {line}")
+        return 1
     return 0
 
 
