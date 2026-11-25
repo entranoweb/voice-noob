@@ -52,7 +52,7 @@ CLIPS_DIR = "clips"
 SCENARIO_DIR = "scenarios"
 SCENARIO_FILE = "scenarios/scenario.json"
 PAD_S = 0.5
-EXTRA_COLUMNS = ("label_status", "provenance")
+EXTRA_COLUMNS = ("label_status", "provenance", "lawful_basis", "consent_ref")
 LOW_ENERGY_RMS = 150.0
 
 
@@ -186,6 +186,9 @@ def _write_manifest(path: Path, rows: list[dict[str, str]]) -> None:
                     "checked_by_human": "",  # nobody has listened
                     "label_status": "unverified",
                     "provenance": "real-call",
+                    # Special-category data: a person fills these in; nothing is guessed.
+                    "lawful_basis": "",
+                    "consent_ref": "",
                 }
             )
 
@@ -359,6 +362,11 @@ def run(args: argparse.Namespace) -> int:
             "the caller's first or last syllable."
         )
     print("  every clip: label unverified, provenance real-call. Labels are a machine's reading.")
+    print(
+        f"  Fill in lawful_basis and consent_ref for every clip in {case / CLIPS_DIR}: "
+        "these are recordings of a person (special-category data) and a batch, run or phone "
+        "call will refuse them until both are filled."
+    )
     if result["not_placed"]:
         print(f"  not placed: {result['not_placed']}")
     print(f"  {case / SCENARIO_FILE}: UNGRADEABLE until expectations are stated.")

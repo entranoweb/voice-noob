@@ -289,10 +289,12 @@ async def test_unchecked_clips_are_refused_unless_allowed_and_then_marked(tmp_pa
     write_clips(directory, ("opener.wav", "dob.wav", "postcode.wav"))
     with (directory / "manifest.csv").open("w", encoding="utf-8", newline="") as handle:
         writer = csv.writer(handle)
-        writer.writerow(["clip", "review", "checked_by_human"])
-        writer.writerow(["opener", "", "sam"])
-        writer.writerow(["dob", "low_energy", ""])
-        writer.writerow(["postcode", "", ""])
+        writer.writerow(
+            ["clip", "review", "checked_by_human", "provenance", "lawful_basis", "consent_ref"]
+        )
+        writer.writerow(["opener", "", "sam", "real", "a basis", "rec-1"])
+        writer.writerow(["dob", "low_energy", "", "real", "a basis", "rec-1"])
+        writer.writerow(["postcode", "", "", "real", "a basis", "rec-1"])
     raw = ClipBank(directory)
     assert raw.verified("opener") and not raw.verified("dob")
     assert raw.label_doubts(["opener.wav", "dob.wav"]) == [

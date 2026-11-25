@@ -20,9 +20,17 @@ that names it.
 
 A bank can be given further directories. They hold clips the first does not,
 each with its own manifest. A manifest's ``provenance`` column says where a clip
-came from: a recording of a real caller (the default) or a synthetic voice. A
-synthetic clip is not evidence of how the agent hears real people, and every
-result it touches says so.
+came from: a recording of a real caller or a synthetic voice. A clip whose row
+does not say (an older manifest, or no row) has *unknown* provenance, which is
+not "real": a batch will not play it unless told to, and every result it touches
+says so. A synthetic clip is not evidence of how the agent hears real people,
+and every result it touches says so too. The other consent and provenance
+columns are described in ``consent.py``.
+
+**Removal.** ``synthiq-caller forget`` deletes a clip's audio and writes a record
+to ``removals.jsonl`` beside the manifest (``removals.py``). A bank reads that
+log, so a clip removed there is ruled out the way an excluded one is, even if a
+copy of its file is put back.
 """
 
 from __future__ import annotations
@@ -31,10 +39,15 @@ import csv
 import json
 import subprocess
 import wave
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import date
 from pathlib import Path
 from typing import Any
+
+from synthiq_caller import consent as consent_rules
+from synthiq_caller.clipid import clip_id
+from synthiq_caller.consent import UNKNOWN, Consent
+from synthiq_caller.removals import read_removed
 
 OVERRIDES_FILE = "overrides.json"
 
@@ -64,7 +77,7 @@ def load_overrides(directory: Path) -> dict[str, Override]:
         raise ValueError(f"{path}: expected an object with a 'clips' object")
     found: dict[str, Override] = {}
     for name, raw in entries.items():
-        clip = Path(str(name)).stem
+        clip = clip_id(str(name))
         if not isinstance(raw, dict):
             raise ValueError(f"{path}: {name}: expected an object")
         reason, when = str(raw.get("reason", "")).strip(), str(raw.get("date", "")).strip()
@@ -92,12 +105,28 @@ class ClipInfo:
     checked_by_human: bool
     # Doubts the builder raised about this clip (empty when it raised none).
     review: str = ""
-    # "real", or a description starting "synthetic".
-    provenance: str = "real"
+    # Where the clip came from and what may be done with it (``consent.py``).
+    consent: Consent = field(default_factory=Consent)
+    # Which manifest's directory the row was read from.
+    folder: str = ""
+
+    @property
+    def provenance(self) -> str:
+        """``real``, ``synthetic`` or ``unknown`` (a manifest that does not say)."""
+        return self.consent.kind
 
     @property
     def synthetic(self) -> bool:
-        return self.provenance.strip().lower().startswith("synthetic")
+        return self.provenance == "synthetic"
+
+    @property
+    def special_category(self) -> bool:
+        """True for a real caller's recording (UK GDPR Article 9 data)."""
+        return self.consent.special_category
+
+    @property
+    def confirmed(self) -> bool:
+        return self.checked_by_human or bool(self.consent.label_confirmed_by)
 
 
 def silence(seconds: float, rate: int) -> bytes:
@@ -128,7 +157,20 @@ def resample_with_ffmpeg(path: Path, rate: int) -> bytes:
 
 
 class ClipBank:
-    def __init__(self, directory: str | Path, extra: tuple[str | Path, ...] = ()) -> None:
+    def __init__(
+        self,
+        directory: str | Path,
+        extra: tuple[str | Path, ...] = (),
+        *,
+        allow_unknown_provenance: bool = False,
+        allow_missing_consent: bool = False,
+    ) -> None:
+        # Every playback goes through ``pcm``, which refuses a clip past its retention
+        # date, always, and a clip whose provenance is unknown unless this is set.
+        self.allow_unknown_provenance = allow_unknown_provenance
+        # A real clip is special-category data: it needs a lawful basis and a consent record
+        # to be played. This is its own switch; allowing unknown provenance never lifts it.
+        self.allow_missing_consent = allow_missing_consent
         self.directory = Path(directory)
         self.directories = [self.directory, *(Path(d) for d in extra)]
         self._info: dict[str, ClipInfo] = {}
@@ -142,7 +184,7 @@ class ClipBank:
             with manifest.open(encoding="utf-8", newline="") as handle:
                 for row in csv.DictReader(handle):
                     info = ClipInfo(
-                        clip=row.get("clip", ""),
+                        clip=clip_id(row.get("clip") or ""),
                         call=row.get("call", ""),
                         category=row.get("category", ""),
                         secs=float(row.get("secs") or 0),
@@ -150,10 +192,13 @@ class ClipBank:
                         question=row.get("question", ""),
                         checked_by_human=bool((row.get("checked_by_human") or "").strip()),
                         review=(row.get("review") or "").strip(),
-                        provenance=(row.get("provenance") or "").strip() or "real",
+                        consent=Consent.from_row(row),
+                        folder=str(folder),
                     )
                     self._info[info.clip] = info
         self.overrides = load_overrides(self.directory)
+        # What ``forget`` removed, from every directory: a clip removed from any is gone.
+        self.removed = read_removed(self.directories)
         for override in self.overrides.values():
             known = self._info.get(override.clip)
             if known is not None and override.label:
@@ -163,7 +208,11 @@ class ClipBank:
                 )
 
     def excluded(self, name: str) -> Override | None:
-        override = self.overrides.get(Path(name).stem)
+        stem = clip_id(name)
+        gone = self.removed.get(stem)
+        if gone is not None:
+            return Override(stem, f"removed, see {gone.removal}", gone.date, exclude=True)
+        override = self.overrides.get(stem)
         return override if override is not None and override.exclude else None
 
     def excluded_in(self, names: list[str]) -> list[str]:
@@ -171,7 +220,7 @@ class ClipBank:
         return list(dict.fromkeys(name for name in names if self.excluded(name)))
 
     def info(self, name: str) -> ClipInfo | None:
-        return self._info.get(Path(name).stem)
+        return self._info.get(clip_id(name))
 
     def verified(self, name: str) -> bool:
         """True when a person has confirmed what this clip says.
@@ -182,7 +231,7 @@ class ClipBank:
         """
         info = self.info(name)
         # A synthetic clip was made from its text, so its label is known.
-        return info is not None and (info.checked_by_human or info.synthetic)
+        return info is not None and (info.confirmed or info.synthetic)
 
     def synthetic(self, name: str) -> bool:
         """True when the clip is a synthetic voice, not a recording of a caller."""
@@ -196,10 +245,51 @@ class ClipBank:
             info = self.info(name)
             if info is None:
                 doubts.append(f"{name}: not in the manifest")
-            elif not (info.checked_by_human or info.synthetic):
+            elif not (info.confirmed or info.synthetic):
                 why = f"flagged {info.review}, " if info.review else ""
                 doubts.append(f"{name}: {why}not checked by a person")
         return doubts
+
+    def provenance_unknown(self, names: list[str]) -> list[str]:
+        """Each clip in ``names`` whose manifest row does not say where it came from, once."""
+        unknown: list[str] = []
+        for name in dict.fromkeys(names):
+            info = self.info(name)
+            if info is None:
+                unknown.append(f"{name}: not in the manifest")
+            elif info.provenance == UNKNOWN:
+                said = f"provenance {info.consent.provenance!r}" if info.consent.provenance else ""
+                unknown.append(f"{name}: {said or 'no provenance in the manifest'}")
+        return unknown
+
+    def consent_missing(self, names: list[str]) -> list[str]:
+        """Each real clip in ``names`` with no lawful basis or consent record, once."""
+        missing: list[str] = []
+        for name in dict.fromkeys(names):
+            info = self.info(name)
+            # A clip with no manifest row says nothing of itself: it lacks both.
+            lacks = (
+                info.consent.record_missing()
+                if info is not None
+                else ["lawful_basis", "consent_ref"]
+            )
+            if lacks:
+                missing.append(f"{name}: no {' or '.join(lacks)}")
+        return missing
+
+    def expired_in(self, names: list[str], today: date | None = None) -> list[str]:
+        """Those of ``names`` past their ``retain_until`` date, with the date, once each."""
+        day = today or consent_rules.today_utc()
+        late: list[str] = []
+        for name in dict.fromkeys(names):
+            info = self.info(name)
+            if info is not None and info.consent.expired(day):
+                late.append(f"{name}: retain_until {info.consent.retain_until}")
+        return late
+
+    def infos(self) -> list[ClipInfo]:
+        """Every clip the manifests describe."""
+        return list(self._info.values())
 
     def path(self, name: str) -> Path:
         ruled_out = self.excluded(name)
@@ -215,8 +305,22 @@ class ClipBank:
                 return candidate
         raise FileNotFoundError(f"clip not found in bank: {name}")
 
+    def refusal(self, name: str) -> str:
+        """Why ``name`` may not be played; empty when it may. The one rule every playback obeys."""
+        info = self.info(name)
+        if info is not None and info.consent.expired(consent_rules.today_utc()):
+            return f"{name}: past its retention date (retain_until {info.consent.retain_until!r})"
+        if not self.allow_unknown_provenance and self.provenance_unknown([name]):
+            return f"{name}: provenance not recorded; allow unknown provenance to play it"
+        if not self.allow_missing_consent and self.consent_missing([name]):
+            return f"{name}: consent record missing; allow missing consent to play it"
+        return ""
+
     def pcm(self, name: str, rate: int) -> bytes:
         """16-bit mono PCM at ``rate``. ffmpeg is used only when the file differs."""
+        refused = self.refusal(name)
+        if refused:
+            raise ClipExcluded(f"clip not played: {refused}")
         path = self.path(name)
         try:
             with wave.open(str(path), "rb") as wav:
