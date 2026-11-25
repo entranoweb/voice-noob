@@ -449,3 +449,42 @@ def test_a_batch_holds_back_an_ungradeable_scenario_unless_allowed(tmp_path: Pat
     assert "NOT RUN: UNGRADEABLE" in plan
     permitted = dry_run(scenarios, [], leg="fake", allow_mutating="all", allow_ungradeable=True)
     assert "UNGRADEABLE" not in "\n".join(permitted)
+
+
+def _git_repo(root: Path, ignore: str = "") -> Path:
+    import subprocess
+
+    root.mkdir()
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    (root / ".gitignore").write_text(ignore, encoding="utf-8")
+    return root
+
+
+def test_a_capture_inside_a_repository_is_refused_unless_git_ignores_it(tmp_path: Path) -> None:
+    repo = _git_repo(tmp_path / "repo", "cases/\n")
+    platform = Platform()
+    with pytest.raises(CaptureError, match="inside a git work tree"):
+        capture("c", repo / "elsewhere" / "case", KEY, transport=platform.transport)
+    assert platform.requests == []  # refused before any request
+    assert not (repo / "elsewhere").exists()
+    capture("c", repo / "cases" / "case", KEY, transport=platform.transport)
+    assert (repo / "cases" / "case" / "audio.wav").exists()
+
+
+def test_a_capture_outside_any_work_tree_is_allowed(tmp_path: Path) -> None:
+    capture("c", tmp_path / "plain" / "case", KEY, transport=Platform().transport)
+    assert (tmp_path / "plain" / "case" / "capture.json").exists()
+
+
+def test_the_default_cases_directory_is_ignored_by_the_repository() -> None:
+    import subprocess
+
+    here = Path(__file__).parent.parent
+    ignored = subprocess.run(
+        ["git", "-C", str(here), "check-ignore", "-q", str(here / "cases" / "x" / "audio.wav")]
+    )
+    assert ignored.returncode == 0
+    ignored = subprocess.run(
+        ["git", "-C", str(here), "check-ignore", "-q", str(here / "cases" / "x" / "capture.json")]
+    )
+    assert ignored.returncode == 0

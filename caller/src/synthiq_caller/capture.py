@@ -23,6 +23,7 @@ import argparse
 import asyncio
 import hashlib
 import os
+import subprocess
 from datetime import UTC, datetime
 from importlib import metadata
 from pathlib import Path
@@ -95,9 +96,34 @@ def _rig_version() -> str:
         return "unknown"
 
 
-def _inside_git_tree(path: Path) -> bool:
-    here = path.resolve()
-    return any((parent / ".git").exists() for parent in (here, *here.parents))
+def _refuse_inside_repository(out: Path) -> None:
+    """A case holds a real person's voice: never write it where git could pick it up.
+
+    Outside any work tree is fine. Inside one, only a path git itself says is
+    ignored (``git check-ignore``) is allowed.
+    """
+    here = out.resolve()
+    start = next((p for p in (here, *here.parents) if p.is_dir()), Path("/"))
+    try:
+        inside = subprocess.run(
+            ["git", "-C", str(start), "rev-parse", "--is-inside-work-tree"],
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return  # no git on this machine: no work tree to be in
+    if inside.returncode != 0 or inside.stdout.strip() != "true":
+        return
+    ignored = subprocess.run(
+        ["git", "-C", str(start), "check-ignore", "-q", str(here / CAPTURE_FILE)],
+        capture_output=True,
+    )
+    if ignored.returncode != 0:
+        raise CaptureError(
+            f"{out} is inside a git work tree and is not ignored by it. A capture holds a "
+            "recording of a person; nothing was fetched or written. Choose a directory "
+            "outside the repository, or one git ignores (cases/ under caller/ is)."
+        )
 
 
 def _scrub(text: str, secret: str) -> str:
@@ -157,6 +183,7 @@ def capture(
         raise CaptureError("no API key: set the environment variable named by --key-env")
     if not conversation_id.strip() or "/" in conversation_id:
         raise CaptureError(f"not a conversation id: {conversation_id!r}")
+    _refuse_inside_repository(out)
     _check_target(out, force)
     reader = ElevenLabsTraceReader(api_key, api=api, wait_s=wait_s, transport=transport)
     try:
@@ -226,11 +253,6 @@ def run(args: argparse.Namespace) -> int:
         print(f"  {audio['file']}  ({audio['bytes']} bytes)")
     else:
         print(f"  AUDIO NOT CAPTURED: {audio['reason_missing']}. `ingest` cannot cut clips.")
-    if _inside_git_tree(out):
-        print(
-            "  WARNING: this directory is inside a git work tree. It holds a recording of a "
-            "person and their machine-transcribed words; do not commit it."
-        )
     print("The transcript is a machine's reading, not the truth of what was said.")
     return 0 if audio["captured"] else 1
 

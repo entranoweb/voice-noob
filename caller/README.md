@@ -282,7 +282,9 @@ What the result claims, and does not:
   (or use `overrides.json`) before using it as a test.
 
 The case directory holds a recording of a person and their machine-transcribed
-words. Keep it outside the repository.
+words. `capture` refuses an `--out` inside a git work tree unless git ignores
+it (`git check-ignore`); `caller/cases/` is ignored, so `--out cases/<name>/`
+works and anything else in the repository does not.
 
 ## Tests
 
