@@ -89,6 +89,7 @@
     ],
     "fields": [],
     "booking": {
+      "tool": "sophie_v2_reschedule_appointment",
       "weekdays": [
         "monday"
       ],

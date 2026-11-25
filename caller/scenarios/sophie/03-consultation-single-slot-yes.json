@@ -154,6 +154,7 @@
       "postcode"
     ],
     "booking": {
+      "tool": "sophie_v2_book",
       "type": "consultation",
       "start_keys": [
         "bookedDisplayTime"

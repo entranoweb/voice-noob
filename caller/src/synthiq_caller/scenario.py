@@ -87,6 +87,10 @@ class ToolExpectation:
     # Named values the tool must have reported back (``ToolCall.outputs``): for a
     # lookup, ``{"status": "not_found"}``. Compared like ``arguments``.
     outputs: dict[str, str] = field(default_factory=dict)
+    # Only read with ``ok`` false. By default "is refused" is about how the
+    # matter ended: a refusal the agent then got past does not count. Set this
+    # for a scenario that only needs the tool to have refused once on the way.
+    at_least_once: bool = False
 
 
 @dataclass(frozen=True)
@@ -113,6 +117,14 @@ class BookingExpectation:
     status: str = ""
     # The time zone the day and time are stated in.
     timezone: str = "Europe/London"
+    # The zone the system under test writes a start time in when it gives no
+    # offset ("2026-07-01 08:30:00"). A database that stores UTC without saying
+    # so is "UTC". Empty means the same zone as ``timezone``.
+    naive_times: str = ""
+    # The tool that writes the appointment (its whole name, or a fragment). The
+    # booked values are read from that tool's calls only, never from a lookup
+    # that happens to carry a start time. Not used when a read-back holds them.
+    tool: str = ""
     # Names the appointment's parts travel under, when the defaults do not fit.
     start_keys: tuple[str, ...] = ()
     type_keys: tuple[str, ...] = ()
@@ -181,6 +193,10 @@ class Scenario:
     # name, or failing that a fragment). A tool not listed is read by the
     # platform's own success flag.
     tool_outcomes: dict[str, ToolOutcome] = field(default_factory=dict)
+    # The agent ending the call before ``hangup_after`` is a proper end for this
+    # scenario (it transfers the caller, say). Without it, a call the agent
+    # ends early has not reached its end and cannot pass.
+    agent_may_end: bool = False
 
 
 class ScenarioError(ValueError):
@@ -200,6 +216,21 @@ _ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 def _keys(raw: dict[str, Any], name: str) -> tuple[str, ...]:
     return tuple(str(k) for k in raw.get(name, ()))
+
+
+def _zone(value: Any, name: str) -> str:
+    text = str(value or "")
+    if not text:
+        return ""
+    from synthiq_caller.zones import UnknownZone, time_zone
+
+    try:
+        time_zone(text)
+    except UnknownZone as error:
+        raise ScenarioError(f"expect.booking.{name}: {error}") from error
+    # A machine with no zone database at all raises NoZoneDatabase, which says
+    # what to install. That is not a fault in the scenario, so it is not caught.
+    return text
 
 
 def parse_booking(raw: Any) -> BookingExpectation:
@@ -230,7 +261,9 @@ def parse_booking(raw: Any) -> BookingExpectation:
         appointment_type=str(raw.get("appointment_type", raw.get("type", ""))),
         clinician=str(raw.get("clinician", "")),
         status=str(raw.get("status", "")),
-        timezone=str(raw.get("timezone", "Europe/London")),
+        timezone=_zone(raw.get("timezone", "Europe/London"), "timezone"),
+        naive_times=_zone(raw.get("naive_times", ""), "naive_times"),
+        tool=str(raw.get("tool", "")),
         start_keys=_keys(raw, "start_keys"),
         type_keys=_keys(raw, "type_keys"),
         clinician_keys=_keys(raw, "clinician_keys"),
@@ -299,6 +332,7 @@ def parse_scenario(data: dict[str, Any]) -> Scenario:
                 called=bool(t.get("called", True)),
                 arguments={str(k): str(v) for k, v in (t.get("arguments") or {}).items()},
                 outputs={str(k): str(v) for k, v in (t.get("outputs") or {}).items()},
+                at_least_once=bool(t.get("at_least_once", False)),
             )
             for t in raw_expect.get("tools", ())
         ),
@@ -346,6 +380,7 @@ def parse_scenario(data: dict[str, Any]) -> Scenario:
         identity_budget=int(data.get("identity_budget", 0)),
         identity_attempts=max(1, int(data.get("identity_attempts", 1))),
         tool_outcomes=outcomes,
+        agent_may_end=bool(data.get("agent_may_end", False)),
     )
 
 

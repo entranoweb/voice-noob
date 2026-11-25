@@ -99,6 +99,7 @@
     ],
     "fields": [],
     "booking": {
+      "tool": "sophie_v2_reschedule_appointment",
       "time_from": "16:00",
       "time_to": "16:00",
       "start_keys": [

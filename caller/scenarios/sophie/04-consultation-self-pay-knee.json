@@ -167,6 +167,7 @@
       "postcode"
     ],
     "booking": {
+      "tool": "sophie_v2_book",
       "type": "consultation",
       "time_from": "12:30",
       "time_to": "12:30",

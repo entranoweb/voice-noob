@@ -68,6 +68,11 @@ class Summary:
     # Every placed call left out of "of graded", with its reason.
     excluded: list[Excluded] = field(default_factory=list)
     by_scenario: dict[str, list[int]] = field(default_factory=dict)  # name -> [passed, graded]
+    # name -> [passed, placed and not void]. A call that could not be graded is
+    # in the second number and not the first: it shows nothing, so it counts against.
+    by_scenario_placed: dict[str, list[int]] = field(default_factory=dict)
+    # Calls placed against a scripted stand-in for the agent (``--leg fake``).
+    rehearsals: int = 0
     fields: dict[str, FieldTally] = field(default_factory=dict)
     failures: list[Failure] = field(default_factory=list)
     blocked: list[dict[str, Any]] = field(default_factory=list)
@@ -101,6 +106,13 @@ def summarise(directory: str | Path) -> Summary:
         summary.runs += 1
         name = graded["scenario"]
         tally = summary.by_scenario.setdefault(name, [0, 0])
+        placed = summary.by_scenario_placed.setdefault(name, [0, 0])
+        if outcome != "void":
+            placed[1] += 1
+        if outcome == "passed":
+            placed[0] += 1
+        if payload.get("rehearsal"):
+            summary.rehearsals += 1
         if outcome in ("passed", "failed"):
             tally[1] += 1
             if outcome == "passed":
@@ -176,14 +188,32 @@ def summarise(directory: str | Path) -> Summary:
 
 
 def scenario_level(summary: Summary) -> tuple[int, int, int]:
-    """(scenarios passing every graded call, passing at least one, with a graded call)."""
-    graded = [(p, t) for p, t in summary.by_scenario.values() if t]
-    return sum(p == t for p, t in graded), sum(p > 0 for p, _ in graded), len(graded)
+    """(scenarios passing every call placed, passing at least one, scenarios placed).
+
+    A scenario passes only when every one of its calls passed, calls the rig
+    itself spoiled aside. A call that was placed and could not be graded counts
+    against its scenario: one pass beside two ungraded calls shows one call, not
+    a scenario. A scenario with nothing but void calls is in the total and not
+    among the passes.
+    """
+    placed = list(summary.by_scenario_placed.values())
+    return (
+        sum(t > 0 and p == t for p, t in placed),
+        sum(p > 0 for p, _ in placed),
+        len(placed),
+    )
 
 
 def render(summary: Summary) -> str:
     graded = summary.passed + summary.failed
-    lines = [
+    lines = []
+    if summary.rehearsals:
+        lines.append(
+            f"REHEARSAL: {summary.rehearsals} of {summary.runs} call(s) were placed against a "
+            "scripted stand-in, not an agent. They show that the rig runs; they show nothing "
+            "about any agent."
+        )
+    lines += [
         f"calls: {summary.runs}",
         f"passed: {describe(summary.passed, graded)}",
         f"  of graded:    {describe(summary.passed, graded)}",
@@ -193,7 +223,7 @@ def render(summary: Summary) -> str:
     if scenarios:
         low, high = wilson_interval(every, scenarios)
         lines.append(
-            f"  by scenario:  {every} of {scenarios} scenarios passed every graded call "
+            f"  by scenario:  {every} of {scenarios} scenarios passed every call placed "
             f"({every / scenarios:.0%}; 95% interval {low:.0%} to {high:.0%}); "
             f"{some} passed at least once"
         )

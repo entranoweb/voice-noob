@@ -95,6 +95,19 @@ def _trace_reader(args: argparse.Namespace) -> TraceReader:
     return ElevenLabsTraceReader(_secret("ELEVENLABS_API_KEY", args.env_file))
 
 
+LEGS = ["elevenlabs-socket", "fake"]
+
+
+def _build_fake(args: argparse.Namespace, scenario_file: str) -> tuple[Leg, TraceReader | None]:
+    """A scripted stand-in for the agent: a rehearsal of the rig, not a test of anything."""
+    from synthiq_caller.legs.fake import FakeLeg, ScriptedTraceReader, script_for
+
+    if not getattr(args, "fake_agent", ""):
+        raise SystemExit("--fake-agent (a script file, or a directory of them) is required")
+    script = script_for(args.fake_agent, scenario_file)
+    return FakeLeg(list(script.lines)), ScriptedTraceReader(script.trace)
+
+
 def _build(args: argparse.Namespace) -> tuple[Leg, TraceReader | None]:
     """The only place a leg name is turned into engine-specific objects."""
     if args.leg == "elevenlabs-socket":
@@ -189,28 +202,54 @@ def _scorecard(args: argparse.Namespace) -> int:
     return 0
 
 
-def _gate(directory: str, rate: float, confidence: float) -> int:
+def _gate(directory: str, rate: float, confidence: float, max_unjudged: float = 0.1) -> int:
     """Judge a batch against a claimed pass rate. Exit 0 only when it is demonstrated.
 
     Two readings are printed. By call, every placed call that is not void counts
     and anything not passed counts against. By scenario, a scenario counts once
     and passes only if every one of its calls passed: the reading that does not
-    treat repeats of the same audio as independent evidence.
+    treat repeats of the same audio as independent evidence. A call that was
+    placed and could not be graded counts against in both.
+
+    Void calls and calls that were never placed are in neither reading, so a
+    batch could meet the numbers on the part of itself that happened to run.
+    ``max_unjudged`` is the share of what was attempted that may go unjudged
+    (void, ungraded, ungradeable, not run) before the gate is refused whatever
+    the numbers say. A rehearsal against a scripted agent never meets a gate.
     """
     summary = summarise(directory)
     counted = summary.runs - summary.void
     met_calls, _, by_call = gate(summary.passed, counted, rate, confidence)
     every, _, scenarios = scenario_level(summary)
-    unproven = sum(1 for p, t in summary.by_scenario.values() if not t)
-    met, _, by_scenario = gate(every, scenarios + unproven, rate, confidence)
+    met, _, by_scenario = gate(every, scenarios, rate, confidence)
+    not_run = len(summary.blocked)
+    unjudged = summary.void + summary.ungraded + summary.ungradeable + not_run
+    attempted = summary.runs + not_run
+    share = unjudged / attempted if attempted else 1.0
     print(f"by call:     {by_call}")
     print(f"by scenario: {by_scenario}")
     print(
-        f"counted: {counted} call(s); left out as void (the rig's fault, re-run them): "
-        f"{summary.void}. Calls that could not be graded count against."
+        f"attempted: {attempted} call(s); placed {summary.runs}; counted {counted}. "
+        f"Not judged: {unjudged} ({share:.0%}): void {summary.void} (the rig's fault, re-run "
+        f"them), ungraded {summary.ungraded}, ungradeable {summary.ungradeable}, "
+        f"not run {not_run}. Calls that were placed and could not be graded count against."
     )
     if met_calls and not met:
         print("The by-call reading is met only by counting repeats as independent calls.")
+    refused = []
+    if summary.rehearsals:
+        refused.append(
+            f"{summary.rehearsals} call(s) are rehearsals against a scripted stand-in, not an agent"
+        )
+    if share > max_unjudged:
+        refused.append(
+            f"{share:.0%} of what was attempted was not judged, more than the "
+            f"{max_unjudged:.0%} allowed (--max-unjudged); the numbers above describe only "
+            "the part that was"
+        )
+    if refused:
+        print("NOT met: " + "; ".join(refused) + ".")
+        return 1
     return 0 if met else 1
 
 
@@ -306,6 +345,14 @@ def _batch(args: argparse.Namespace) -> int:
         path=Path(args.name_budget_file) if args.name_budget_file else None,
     )
     out = Path(args.out)
+    rehearsal = args.leg == "fake"
+    if rehearsal:
+        if not args.fake_agent:
+            raise SystemExit("--fake-agent (a script file, or a directory of them) is required")
+        print(
+            "REHEARSAL: these calls go to a scripted stand-in, not an agent. Every run is "
+            "marked as a rehearsal and no gate can be met by one.\n"
+        )
     result = asyncio.run(
         run_batch(
             scenarios,
@@ -325,6 +372,8 @@ def _batch(args: argparse.Namespace) -> int:
             allow_unverified_clips=args.allow_unverified_clips,
             space_names=args.space_names,
             prereq=_checker(args),
+            make_leg_for=(lambda file: _build_fake(args, file)) if rehearsal else None,
+            rehearsal=rehearsal,
         )
     )
     print(f"ran {result.ran}, not run {len(result.blocked)}, chains {result.chains}")
@@ -363,8 +412,15 @@ def main(argv: list[str] | None = None) -> int:
 
     bat = sub.add_parser("batch", help="run a directory of scenarios with the safety guards on")
     bat.add_argument("scenarios")
-    bat.add_argument("--leg", required=True, choices=["elevenlabs-socket"])
+    bat.add_argument("--leg", required=True, choices=LEGS)
     bat.add_argument("--agent", default="")
+    bat.add_argument(
+        "--fake-agent",
+        default="",
+        help="with --leg fake: the scripted agent, as one script file or a directory holding "
+        "one per scenario file (default.json for the rest). A rehearsal of the rig only: "
+        "its runs are marked and can meet no gate",
+    )
     bat.add_argument("--clips", required=True)
     bat.add_argument("--repeats", type=int, default=1)
     bat.add_argument("--max-parallel", type=int, default=1)
@@ -480,6 +536,13 @@ def main(argv: list[str] | None = None) -> int:
     gat.add_argument("directory")
     gat.add_argument("--rate", type=float, default=0.95)
     gat.add_argument("--confidence", type=float, default=0.95)
+    gat.add_argument(
+        "--max-unjudged",
+        type=float,
+        default=0.1,
+        help="the share of attempted calls that may go unjudged (void, ungraded, "
+        "ungradeable, not run) before the gate is refused whatever the numbers say",
+    )
 
     val = sub.add_parser("validate", help="check a directory of scenarios, and its clips")
     val.add_argument("scenarios")
@@ -558,7 +621,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "clipbank":
         return _clipbank(args)
     if args.command == "gate":
-        return _gate(args.directory, args.rate, args.confidence)
+        return _gate(args.directory, args.rate, args.confidence, args.max_unjudged)
 
     # One scenario goes through the same guards as a batch of them.
     scenario = load_scenario(args.scenario)

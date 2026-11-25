@@ -83,6 +83,7 @@ def parse_call(call: dict[str, Any], call_ref: str = "") -> Trace:
     trace = Trace(
         call_ref=call_ref or str(call.get("call_id") or ""),
         termination=str(call.get("disconnection_reason") or ""),
+        final=call.get("call_status") in _FINISHED,
     )
     # tool_call_id -> where the call sits in trace.tool_calls, until its result arrives.
     waiting: dict[str, int] = {}

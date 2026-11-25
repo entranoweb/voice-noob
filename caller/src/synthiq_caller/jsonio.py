@@ -23,6 +23,26 @@ def write_json(path: Path, payload: Any) -> None:
     path.write_text(to_text(payload), encoding="utf-8", newline="\n")
 
 
+def write_new_json(path: Path, payload: Any) -> None:
+    """Write a file that must not exist yet. A run already stored is never replaced."""
+    with path.open("x", encoding="utf-8", newline="\n") as handle:
+        handle.write(to_text(payload))
+
+
+def next_index(directory: Path, prefix: str) -> int:
+    """One more than the highest number among ``<prefix>-NNN.json`` in ``directory``.
+
+    Counting the files would hand out a number already in use as soon as one
+    file was missing from the sequence.
+    """
+    highest = 0
+    for path in directory.glob(f"{prefix}-*.json"):
+        digits = path.stem[len(prefix) + 1 :]
+        if digits.isdigit():
+            highest = max(highest, int(digits))
+    return highest
+
+
 def utf8_console() -> None:
     """Make printed reports UTF-8 even when redirected to a file on Windows.
 

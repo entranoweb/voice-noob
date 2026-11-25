@@ -155,6 +155,7 @@ def record_with(heard_dob: str) -> RunRecord:
     return RunRecord(
         scenario=SCENARIO.name,
         call_ref="c",
+        ended="caller hung up: scenario end",
         said=[said(0, "name", "It's Elliot Allen."), said(1, "date_of_birth", heard_dob)],
     )
 

@@ -67,7 +67,9 @@ def validate_directory(
     for file, scenario in load_scenarios(directory):
         missing: list[str] = []
         if bank is not None:
-            for step in scenario.steps:
+            # The fallback's clips are played too, when a question has no step.
+            answers = [*scenario.steps, *([scenario.fallback] if scenario.fallback else [])]
+            for step in answers:
                 for clip in step.clips:
                     if clip.startswith("missing/") and scenario.missing_clips:
                         continue  # declared as not yet recorded; a batch will not run it
@@ -94,7 +96,8 @@ def validate_directory(
         missing = []
         if bank is not None:
             for call in chain.calls:
-                for raw_step in call.raw.get("steps", ()):
+                raw_answers = [*call.raw.get("steps", ()), call.raw.get("fallback") or {}]
+                for raw_step in raw_answers:
                     for clip in raw_step.get("clips", ()):
                         if variables_in(clip) or (
                             str(clip).startswith("missing/") and call.missing_clips

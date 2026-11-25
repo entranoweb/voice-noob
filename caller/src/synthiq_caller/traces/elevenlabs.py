@@ -94,6 +94,7 @@ def parse_conversation(conversation: dict[str, Any], call_ref: str = "") -> Trac
             or conversation.get("termination_reason")
             or ""
         ),
+        final=conversation.get("status") in ("done", "failed"),
     )
     for turn in conversation.get("transcript") or []:
         at = turn.get("time_in_call_secs")
