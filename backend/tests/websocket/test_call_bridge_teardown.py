@@ -83,8 +83,13 @@ class _LiveSession:
     instances: ClassVar[list[_LiveSession]] = []
     tool_seconds: ClassVar[float] = 0.0
     transcript: ClassVar[str] = "User: hello"
+    # What cancelling a tool mid-query did to the real database session: the
+    # driver connection is invalidated and the session refuses to be used until
+    # it is rolled back. SQLAlchemy raises PendingRollbackError for it.
+    invalidate_db_on_cancel: ClassVar[bool] = False
 
-    def __init__(self, **_: Any) -> None:
+    def __init__(self, **kwargs: Any) -> None:
+        self.db = kwargs.get("db")
         self.connection = _LiveConnection()
         self.closed = asyncio.Event()
         self.closed_at: float | None = None
@@ -113,6 +118,9 @@ class _LiveSession:
             await asyncio.sleep(type(self).tool_seconds)
         except asyncio.CancelledError:
             self.tool_cancelled = True
+            if type(self).invalidate_db_on_cancel and self.db is not None:
+                connection = await self.db.connection()
+                await connection.invalidate()
             raise
         self.tool_finished = True
         return {"success": True}
@@ -209,6 +217,7 @@ async def open_call(
     monkeypatch.setattr(telephony_ws, "GPTRealtimeSession", _LiveSession)
     _LiveSession.instances = []
     _LiveSession.tool_seconds = 0.0
+    _LiveSession.invalidate_db_on_cancel = False
 
     if carrier == "twilio":
         # The Twilio fixture agent stores no transcript; this one is asked to.
@@ -769,3 +778,109 @@ class TestPersistenceFailure:
         assert record.termination_reason is None
         errors = [e for e in logs if e.get("event") == "call_persistence_failed"]
         assert [e["step"] for e in errors] == ["termination_reason"]
+
+
+@pytest.mark.parametrize("open_call", CARRIERS, indirect=True)
+class TestCallEndBookkeeping:
+    """What the end of a call leaves behind in the registry and on the record."""
+
+    @pytest.mark.asyncio
+    async def test_a_call_that_dies_while_it_is_registering_leaves_no_registry_key(
+        self, open_call: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The registry write lands, and the task that issued it is cancelled
+        # before it returns (Redis: HSET answered, EXPIRE still to come). The
+        # model closing right after the start frame cancels the carrier task
+        # exactly there.
+        keys: set[str] = set()
+
+        async def _register(call_id: str, **_: Any) -> bool:
+            keys.add(call_id)
+            await asyncio.sleep(0.3)
+            return True
+
+        async def _unregister(call_id: str) -> bool:
+            keys.discard(call_id)
+            return True
+
+        monkeypatch.setattr(telephony_ws, "register_call", _register)
+        monkeypatch.setattr(telephony_ws, "unregister_call", _unregister)
+        async with open_call.call() as call:
+            _session().connection.close()
+            assert await _carrier_closed(call, deadline_s=3.0) == 1000
+
+        assert keys == set(), "the call's registry key outlived the call"
+        await _no_bridge_tasks_left()
+
+    @pytest.mark.asyncio
+    async def test_a_tool_cancelled_after_the_grace_does_not_lose_the_transcript(
+        self, open_call: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(settings, "CALL_TOOL_GRACE_S", 0.2)
+        _LiveSession.tool_seconds = 60.0
+        _LiveSession.invalidate_db_on_cancel = True
+        async with open_call.call() as call:
+            session = _session()
+            await call.media()
+            session.connection.push(
+                "response.function_call_arguments.done",
+                call_id="fc-1",
+                name="book_appointment",
+                arguments="{}",
+            )
+            await asyncio.sleep(0.1)
+            await call.stop()
+            await _closed_within(session, 3.0)
+            assert session.tool_cancelled
+
+        record = await open_call.record()
+        assert record.transcript == "User: hello"
+        assert record.termination_reason == "caller_hangup"
+        await _no_bridge_tasks_left()
+
+    @pytest.mark.asyncio
+    async def test_the_server_closing_the_socket_for_a_restart_is_not_a_caller_hangup(
+        self, open_call: Any, registry: dict[str, list[str]]
+    ) -> None:
+        # Uvicorn answers SIGTERM by closing every websocket with 1012.
+        async with open_call.call() as call:
+            await call.media()
+            session = _session()
+
+            await call.ws.disconnect(code=1012)
+            await _closed_within(session, HANG_UP_BUDGET_S)
+
+        record = await open_call.record()
+        assert record.termination_reason == "pipeline_error"
+        assert record.transcript == "User: hello"
+        assert registry["unregistered"] == [open_call.provider_call_id]
+        await _no_bridge_tasks_left()
+
+
+def test_the_shutdown_budgets_fit_inside_each_other() -> None:
+    """Drain, then worker kill, then container kill: each must outlast the last.
+
+    The worker has ``graceful_timeout`` to finish: the bridges' tool grace and
+    database writes, then the registry drain. Gunicorn kills it after that, and
+    the container runtime kills gunicorn after ``stop_grace_period``. A drain
+    longer than the worker's budget is a promise nothing can keep.
+    """
+    import importlib.util
+    import re
+    from pathlib import Path
+
+    backend = Path(__file__).resolve().parents[2]
+    spec = importlib.util.spec_from_file_location("gunicorn_conf", backend / "gunicorn.conf.py")
+    assert spec is not None
+    assert spec.loader is not None
+    conf = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(conf)
+
+    compose = (backend.parent / "docker-compose.prod.yml").read_text()
+    found = re.findall(r"^\s+stop_grace_period:\s*(\d+)s\s*$", compose, flags=re.MULTILINE)
+    assert len(found) == 1, "the backend service must set stop_grace_period, in seconds"
+    stop_grace_s = float(found[0])
+
+    worker_work_s = settings.CALL_TOOL_GRACE_S + settings.SHUTDOWN_DRAIN_TIMEOUT
+    assert worker_work_s < conf.graceful_timeout
+    assert conf.graceful_timeout < stop_grace_s
