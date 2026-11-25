@@ -258,14 +258,23 @@ def _ungradeable_behind(roots: list[Path]) -> list[str]:
 
     Two places say so: a run records ``states_expectations`` when it is placed, and a
     batch that held a scenario back for it says so in ``batch.json``. The same check as
-    ``validate --strict``, read from the runs because the scenario files are not here. A
-    run stored before the field existed says nothing either way and is not counted.
+    ``validate --strict``, read from the runs because the scenario files are not here.
+    A chain's calls are placed through the same path, so each carries the field too.
+
+    Fails closed: a run with no ``states_expectations`` at all was stored before it was
+    recorded, so nothing says whether it asked anything of its call. It is refused, not
+    let through (``Refused``).
     """
     found: dict[str, str] = {}
     for root in roots:
         for path in sorted(root.glob("run-*.json")):
             payload = json.loads(path.read_text(encoding="utf-8"))
-            if payload.get("states_expectations") is False:
+            stated = payload.get("states_expectations")
+            if stated is None:
+                raise Refused(
+                    f"run {root.name}/{path.stem} predates expectation recording: re-run it"
+                )
+            if stated is False:
                 file = str(payload.get("scenario_file", path.name))
                 found.setdefault(f"{root.name}/{file}", ungradeable_why(file))
         batch = root / "batch.json"

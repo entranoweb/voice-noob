@@ -68,6 +68,8 @@ Exit code 0 means the claim is met, 1 that it is not or that there are too few c
 - There are no runs.
 - Any run is a rehearsal against a scripted stand-in.
 - The same scenario file answers to more than one version across the runs. `--allow-mixed-scenarios` goes on and lists the versions on the page.
+- Any run rests on a scenario that states no expectations (the same check as `validate --strict`). Each run records `states_expectations` when it is placed, and a batch that held such a scenario back says so in `batch.json`; either one refuses the report and names the file. There is no switch: state the expectations and run the scenario again.
+- Any run has no `states_expectations` field at all. It was stored before the field existed, so nothing says whether it asked anything of its call: the report is refused with "run <directory>/<run> predates expectation recording: re-run it". Chain calls are placed the same way and carry the field too.
 - A directory has no manifest. `--allow-no-manifest` goes on and the page says what could not be recorded.
 
 ### Numbers
