@@ -187,6 +187,8 @@ class Plan:
     case_kept: list[Path] = field(default_factory=list)
     # The skeleton scenarios ``ingest`` wrote beside the clips; they hold the call's words.
     case_scenarios: list[Path] = field(default_factory=list)
+    # Scenario directories beside a clip bank (or its case) that were not scanned.
+    unscanned: list[Path] = field(default_factory=list)
     uploaded: list[Path] = field(default_factory=list)
     # The recordings the clips were cut from (ids from the manifests), and any found.
     sources: list[str] = field(default_factory=list)
@@ -323,7 +325,7 @@ def _rewrite_scenario(node: Any, stems: list[str], removal: str) -> list[str]:
     if not isinstance(node, dict):
         return []
     changed: list[str] = []
-    spoken: dict[str, str] = {}  # normalised words -> the clip they came from
+    spoken: dict[str, tuple[str, str]] = {}  # normalised words -> (clip, step field)
     answers = [*(node.get("steps") or []), node.get("fallback")]
     for answer in answers:
         clips = answer.get("clips") if isinstance(answer, dict) else None
@@ -344,59 +346,95 @@ def _rewrite_scenario(node: Any, stems: list[str], removal: str) -> list[str]:
         if gone:
             changed += _blank_words(node, answer, gone[0], spoken)
     if spoken:
-        changed += _blank_expectations(node, spoken)
+        changed += _blank_elsewhere(node, spoken)
     for call in [*(node.get("chain") or []), *(node.get("calls") or [])]:
         changed += _rewrite_scenario(call, stems, removal)
     return changed
 
 
 def _blank_words(
-    node: dict[str, Any], answer: dict[str, Any], stem: str, spoken: dict[str, str]
+    node: dict[str, Any], answer: dict[str, Any], stem: str, spoken: dict[str, tuple[str, str]]
 ) -> list[str]:
     """Blank the step's ``intended`` and the persona fact it answers (its ``field``).
 
-    ``spoken`` collects the words found, so the same words can be blanked elsewhere in the
-    scenario. A fact no step ties to a clip is left unless it holds those same words, and
-    ``describe`` says so.
+    ``spoken`` collects the words found (normalised, with the clip and the step's field), so
+    the same words can be blanked elsewhere in the scenario by ``_blank_elsewhere``.
     """
     changed: list[str] = []
+    name = answer.get("field")
+    tie = name if isinstance(name, str) else ""
     intended = answer.get("intended")
     if isinstance(intended, str) and intended and intended != _blanked(stem):
         if _same_words(intended):
-            spoken[_same_words(intended)] = stem
+            spoken[_same_words(intended)] = (stem, tie)
         answer["intended"] = _blanked(stem)
         changed.append(stem)
     persona = node.get("persona")
     facts = persona.get("facts") if isinstance(persona, dict) else None
-    name = answer.get("field")
-    if isinstance(facts, dict) and isinstance(name, str) and name in facts:
-        held = facts[name]
+    if isinstance(facts, dict) and tie and tie in facts:
+        held = facts[tie]
         if isinstance(held, str) and held and held != _blanked(stem):
             if _same_words(held):
-                spoken[_same_words(held)] = stem
-            facts[name] = _blanked(stem)
+                spoken[_same_words(held)] = (stem, tie)
+            facts[tie] = _blanked(stem)
             changed.append(stem)
     return changed
 
 
-def _blank_expectations(node: dict[str, Any], spoken: dict[str, str]) -> list[str]:
-    """Blank any value in ``persona`` or ``expect`` that holds words a removed clip said."""
+# A short answer ("yes", "ok") is also what an unrelated check expects. It is blanked only
+# where the scenario ties it to the clip's step (the same ``field``), never matched elsewhere.
+SPECIFIC_LETTERS = 8
+
+
+def _specific(words: str) -> bool:
+    return len(words.split()) >= 2 or len(words) >= SPECIFIC_LETTERS
+
+
+def _span(words: str) -> re.Pattern[str]:
+    """The words wherever they sit in a longer string, whatever the case or punctuation."""
+    parts = [re.escape(w) for w in words.split()]
+    return re.compile(r"(?<!\w)" + r"[\W_]+".join(parts) + r"(?!\w)", re.IGNORECASE)
+
+
+def _blank_elsewhere(node: dict[str, Any], spoken: dict[str, tuple[str, str]]) -> list[str]:
+    """Blank what a removed clip said wherever else the scenario holds it.
+
+    Every string in the scenario is searched (persona, expect, description, intended, and any
+    other field), inside longer strings too: ``My name is <words> thanks`` keeps the rest.
+    Specific words (two or more, or eight letters or more) are replaced wherever they are. Short
+    ones only where the value sits beside the step's ``field``, since "yes" is also what an
+    unrelated check expects. Field names, check names and ``clips`` lists are not touched.
+    """
     changed: list[str] = []
 
-    def walk(item: Any) -> Any:
-        if isinstance(item, dict):
-            return {key: walk(value) for key, value in item.items()}
-        if isinstance(item, list):
-            return [walk(value) for value in item]
-        if isinstance(item, str) and _same_words(item) in spoken:
-            stem = spoken[_same_words(item)]
-            changed.append(stem)
-            return _blanked(stem)
-        return item
+    def text(value: str, tied: str) -> str:
+        for words, (stem, tie) in spoken.items():
+            if not (_specific(words) or (tied and tied == tie)):
+                continue
+            if _same_words(value) == words:
+                changed.append(stem)
+                return _blanked(stem)
+            if _specific(words):
+                value, count = _span(words).subn(_blanked(stem), value)
+                changed.extend([stem] * count)
+        return value
 
-    for part in ("persona", "expect"):
-        if part in node:
-            node[part] = walk(node[part])
+    def walk(item: Any, tied: str) -> Any:
+        if isinstance(item, dict):
+            here = item["field"] if isinstance(item.get("field"), str) else tied
+            return {
+                key: value
+                if key in ("clips", "missing_clips", "field", "tool_arg")
+                else walk(value, here)
+                for key, value in item.items()
+            }
+        if isinstance(item, list):
+            return [walk(value, tied) for value in item]
+        return text(item, tied) if isinstance(item, str) else item
+
+    for key in list(node):
+        if key not in ("clips", "missing_clips"):
+            node[key] = walk(node[key], "")
     return changed
 
 
@@ -787,9 +825,9 @@ def _plan_cases(plan: Plan, banks: list[Path], *, keep_text: bool) -> None:
     """
     for bank in banks:
         case = bank.parent
-        if bank.name != CLIPS_DIR or not all(
-            (case / name).is_file() for name in (CAPTURE_FILE, "conversation.json")
-        ):
+        # capture.json is what stays when a run that died took the conversation and audio:
+        # the case is still the case, and its scenarios still hold the words.
+        if bank.name != CLIPS_DIR or not (case / CAPTURE_FILE).is_file():
             continue
         came_from_here = (
             any(p.is_relative_to(bank) for p in plan.audio)
@@ -858,8 +896,34 @@ def make_plan(
     _plan_scenarios(
         plan, [*scenarios, *(d for d in plan.case_scenarios if d.resolve() not in given)]
     )
+    scanned = [d.resolve() for d in [*scenarios, *plan.case_scenarios]]
+    plan.unscanned = _unscanned(banks, scanned)
     _plan_results(plan, results, keep_text=keep_text)
     return plan
+
+
+def _unscanned(banks: list[Path], scanned: list[Path]) -> list[Path]:
+    """``scenarios`` directories up to three levels under a bank's parent that nobody scanned.
+
+    A scenario kept in one of them may hold the words a removed clip said; ``forget`` only
+    rewrites the directories it was given, so these are named rather than left silent.
+    """
+    found: list[Path] = []
+    for bank in banks:
+        root = bank.parent
+        for pattern in (SCENARIO_DIR, f"*/{SCENARIO_DIR}", f"*/*/{SCENARIO_DIR}"):
+            for path in sorted(root.glob(pattern)):
+                relative = path.relative_to(root)
+                if any(part.startswith(".") for part in relative.parts) or not path.is_dir():
+                    continue
+                resolved = path.resolve()
+                if resolved.is_relative_to(bank.resolve()) or any(
+                    resolved.is_relative_to(d) for d in scanned
+                ):
+                    continue
+                if path not in found:
+                    found.append(path)
+    return found
 
 
 def describe(
@@ -896,13 +960,20 @@ def describe(
     ]
     if plan.scenarios:
         lines.append(
-            "  what the removed clips said is blanked in each step's intended, in the persona "
-            "fact it answered (its field) and in any expectation that holds the same words; "
-            "the names of the fields and checks stay. NOT removed: any other persona fact, "
+            "  what the removed clips said is blanked wherever the scenario holds it, inside "
+            "longer text too; a short answer (one word under eight letters) only where the "
+            "scenario ties it to the step. The names of the fields and checks stay. "
+            "NOT removed: any other persona fact, "
             "which may still hold what the caller said. Remove or edit persona facts by hand in:"
         )
         lines += [f"    {p}" for p in plan.scenarios]
     lines += [f"  CANNOT rewrite {p} ({why}); it names a clip" for p, why in plan.unreadable]
+    if plan.unscanned:
+        lines.append(
+            "  WARNING: scenario directories found here were NOT scanned (a scenario in one may "
+            "still hold what the removed clips said; name each with --scenarios and run again):"
+        )
+        lines += [f"    {p}" for p in plan.unscanned]
     for path, clips in plan.results.items():
         lines.append(f"  {verb} mark result with {MARK}: {path} ({', '.join(clips)})")
         if path in plan.redact:
@@ -1002,6 +1073,7 @@ def execute(
     why: str,
     request_ref: str,
     keep_text: bool = False,
+    verify: Callable[[], list[str]] | None = None,
 ) -> tuple[str, list[str]]:
     """Carry the plan out; return the id of the record and what failed (empty when nothing).
 
@@ -1042,12 +1114,6 @@ def execute(
         else:
             done[counter] += n
 
-    for audio in plan.audio:
-        attempt("delete", audio, partial(_delete_clip, audio, banks, plan.stems), "audio_files")
-    for audio in plan.call_audio:
-        attempt("delete", audio, partial(audio.unlink, missing_ok=True), "audio_files")
-    for audio in plan.case_files:
-        attempt("delete", audio, partial(audio.unlink, missing_ok=True), "audio_files")
     for path in plan.scenarios:
         attempt(
             "rewrite",
@@ -1055,6 +1121,12 @@ def execute(
             partial(_rewrite_file, path, plan.stems, removal),
             "scenarios",
         )
+    for audio in plan.audio:
+        attempt("delete", audio, partial(_delete_clip, audio, banks, plan.stems), "audio_files")
+    for audio in plan.call_audio:
+        attempt("delete", audio, partial(audio.unlink, missing_ok=True), "audio_files")
+    for audio in plan.case_files:
+        attempt("delete", audio, partial(audio.unlink, missing_ok=True), "audio_files")
     for path, why_not in plan.unreadable:
         failed.append(f"rewrite {_label(path)}: {why_not} (it names a clip and was not changed)")
     for path, todo in plan.results.items():
@@ -1081,6 +1153,12 @@ def execute(
             "overrides",
             len(clips),
         )
+    if verify is not None:
+        # "complete" is only written when a fresh plan finds nothing left to do
+        try:
+            failed += verify()
+        except Exception as error:  # noqa: BLE001 - a check that cannot run is not a pass
+            failed.append(f"re-check after the run: {type(error).__name__}: {error}")
     removals.append(
         log,
         {
@@ -1095,6 +1173,20 @@ def execute(
         },
     )
     return removal, failed
+
+
+def _left_to_do(plan: Plan) -> list[str]:
+    """What a plan still has to do, one line per kind; empty when there is nothing."""
+    kinds = {
+        "audio file(s) still present": len(plan.audio)
+        + len(plan.call_audio)
+        + len(plan.case_files),
+        "scenario file(s) still holding the words": len(plan.scenarios),
+        "stored result(s) not yet marked": len(plan.results),
+        "manifest row(s) still present": sum(map(len, plan.rows.values())),
+        "override(s) still present": sum(map(len, plan.overrides.values())),
+    }
+    return [f"{count} {what}" for what, count in kinds.items() if count]
 
 
 def run(args: argparse.Namespace) -> int:
@@ -1154,6 +1246,18 @@ def run(args: argparse.Namespace) -> int:
         return 0
     if not (plan.changes or pending):
         return _still_open(banks)
+
+    def recheck() -> list[str]:
+        again = make_plan(
+            args.target,
+            banks,
+            [Path(p) for p in args.scenarios],
+            [Path(p) for p in args.results],
+            keep_text=args.keep_text,
+            recordings=[Path(p) for p in args.recordings],
+        )
+        return [f"left to do after the run: {line}" for line in _left_to_do(again)]
+
     try:
         removal, failed = execute(
             plan,
@@ -1162,6 +1266,7 @@ def run(args: argparse.Namespace) -> int:
             why=args.reason,
             request_ref=args.request_ref,
             keep_text=args.keep_text,
+            verify=recheck,
         )
     except OSError as error:
         print(f"forget: INCOMPLETE: the removal log could not be written ({error!r})")

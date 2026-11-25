@@ -57,6 +57,10 @@ which exits 1 when the live leg is not ready. Even when it says the settings are
 present, that is only the settings: nothing was called, and only a call shows
 the platform accepts the key.
 
+The fake leg is judged on a folder: every scenario in `scenarios/` is read with the
+loader a run uses, so a file that does not load fails it. `doctor` with no folder
+checks only the machine and prints `fake leg: not checked`, never `ready`.
+
 `env.example` lists the variable names and holds no values. Use another variable
 with `--key-env <NAME>`. The key should be read-only where the platform allows
 it: `capture` only reads.
@@ -72,8 +76,9 @@ synthiq-caller doctor . --region <region>
 ```
 
 It prints the address that region maps to. `capture`, `run`, `batch` and `regrade` take the same word with
-`--region <region>`, or read it from `ELEVENLABS_REGION`; an unknown name is an
-error, never the global host. To check the address answers at all, add `--check-network`;
+`--region <region>`, or read it from `ELEVENLABS_REGION`; `doctor` reads it from there too; an unknown name, from the flag or the
+environment, is an
+error (exit 1), never the global host. To check the address answers at all, add `--check-network`;
 that is the only thing that touches the network, and it sends no key.
 
 ## Step 3. Fetch a sample of recent calls

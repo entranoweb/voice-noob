@@ -541,3 +541,158 @@ def test_the_guide_does_not_rely_on_an_alias_and_says_batch_exits_0_on_failed_ru
     assert ".venv/bin" in guide
     assert "exits 0 even when runs failed" in guide and "--fail-under" in guide
     assert "live leg" in guide and "--live" in guide
+
+
+# --- review round: resumable forget, blanking inside text, doctor region and folder -----
+
+
+def forget_case(case: Path, clip: str, *extra: str) -> int:
+    return cli.main(["forget", clip, "--clips", str(case / "clips"), "--operator", OP, *extra])
+
+
+def test_an_interrupted_forget_is_finished_by_a_rerun(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from synthiq_caller import forget
+
+    case, clip = case_with_words(tmp_path)
+
+    def die(*args: Any, **kwargs: Any) -> None:
+        raise KeyboardInterrupt
+
+    with monkeypatch.context() as patched:
+        patched.setattr(forget, "_rewrite_file", die)
+        with pytest.raises(KeyboardInterrupt):
+            forget_case(case, clip)
+    capsys.readouterr()
+    assert forget_case(case, clip) == 0
+    assert WORDS not in everything(case)
+    assert "complete" in capsys.readouterr().out
+
+
+def test_a_case_whose_conversation_an_earlier_run_deleted_still_loses_its_words(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """What an older run left: audio and conversation gone, the scenario still has the words."""
+    case, clip = case_with_words(tmp_path)
+    for name in ("conversation.json", "transcript.txt"):
+        (case / name).unlink(missing_ok=True)
+    for audio in case.glob("audio.*"):
+        audio.unlink()
+    assert WORDS in everything(case)
+    assert forget_case(case, clip) == 0
+    assert WORDS not in everything(case)
+    assert "complete" in capsys.readouterr().out
+
+
+def test_forget_does_not_say_complete_while_a_planned_item_remains(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from synthiq_caller import forget
+
+    case, clip = case_with_words(tmp_path)
+    monkeypatch.setattr(forget, "_rewrite_file", lambda *a, **k: None)  # "succeeds", does nothing
+    assert forget_case(case, clip) == 1
+    out = capsys.readouterr().out
+    assert "INCOMPLETE" in out and "scenario file(s) still holding the words" in out
+    assert " complete;" not in out
+
+
+def test_the_words_are_blanked_inside_longer_strings(tmp_path: Path) -> None:
+    case, clip = case_with_words(tmp_path)
+    path = case / "scenarios" / "scenario.json"
+    scenario = json.loads(path.read_text(encoding="utf-8"))
+    scenario["description"] = f"The caller says my name is {WORDS.lower()}, thanks."
+    scenario["persona"]["facts"]["other"] = f"My name is {WORDS} thanks"
+    scenario["expect"]["fields"].append({"field": "x", "contains": f"Hello {WORDS}!"})
+    path.write_text(json.dumps(scenario), encoding="utf-8")
+    assert forget_case(case, clip) == 0
+    assert WORDS.lower() not in everything(case).lower()
+    after = json.loads(path.read_text(encoding="utf-8"))
+    assert after["persona"]["facts"]["other"] == f"My name is [removed: {clip}] thanks"
+    assert after["expect"]["fields"][-1] == {"field": "x", "contains": f"Hello [removed: {clip}]!"}
+    assert after["description"].endswith(", thanks.") and "[removed:" in after["description"]
+
+
+def test_a_short_answer_is_not_blanked_in_an_unrelated_check() -> None:
+    from synthiq_caller import forget
+
+    node = {
+        "steps": [{"clips": ["c1.wav"], "intended": "Yes", "field": "confirm"}],
+        "persona": {"facts": {"confirm": "Yes", "other": "yes"}},
+        "expect": {
+            "fields": [
+                {"field": "confirm", "equals": "yes"},
+                {"field": "agent_said", "contains": "yes"},
+            ],
+            "tools": [{"name_contains": "lookup", "arguments": {"q": "yes"}}],
+        },
+    }
+    forget._rewrite_scenario(node, ["c1"], "rm_x")
+    blank = "[removed: c1]"
+    assert node["steps"][0]["intended"] == blank
+    assert node["persona"]["facts"] == {"confirm": blank, "other": "yes"}
+    assert node["expect"]["fields"][0]["equals"] == blank  # tied to the step's field
+    assert node["expect"]["fields"][1]["contains"] == "yes"  # another check: unchanged
+    assert node["expect"]["tools"][0]["arguments"] == {"q": "yes"}
+
+
+def test_forget_warns_about_a_scenario_directory_it_was_not_given(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    case, clip = case_with_words(tmp_path)
+    other = case / "extra" / "scenarios"
+    other.mkdir(parents=True)
+    (other / "s.json").write_text(json.dumps({"steps": [], "note": WORDS}), encoding="utf-8")
+    assert forget_case(case, clip, "--dry-run") == 0
+    out = capsys.readouterr().out
+    assert "NOT scanned" in out and str(other) in out
+    assert str(case / "scenarios") not in out.split("NOT scanned", 1)[1]
+    forget_case(case, clip, "--dry-run", "--scenarios", str(other))
+    assert "NOT scanned" not in capsys.readouterr().out
+
+
+def test_doctor_uses_the_region_the_environment_names(no_network: None) -> None:
+    ok = onboarding.doctor(environ={"ELEVENLABS_REGION": "eu"})
+    assert next(c for c in ok if c.name == "region").detail.startswith("eu:")
+    flag = onboarding.doctor(region="global", environ={"ELEVENLABS_REGION": "bogus"})
+    assert next(c for c in flag if c.name == "region").status == "ok"
+    bad = onboarding.doctor(environ={"ELEVENLABS_REGION": "bogus"})
+    assert next(c for c in bad if c.name == "region").status == "FAIL"
+
+
+def test_doctor_refuses_an_unknown_region_from_the_environment(
+    monkeypatch: pytest.MonkeyPatch, no_network: None
+) -> None:
+    monkeypatch.setenv("ELEVENLABS_REGION", "bogus")
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "k")
+    monkeypatch.setattr("shutil.which", lambda name: "/bin/ffmpeg")
+    assert cli.main(["doctor"]) == 1
+    assert cli.main(["doctor", "--live"]) == 1
+
+
+def test_doctor_does_not_call_a_scenario_file_that_only_holds_a_brace_ready(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("shutil.which", lambda name: "/bin/ffmpeg")
+    assert cli.main(["init", str(tmp_path / "t")]) == 0
+    for path in (tmp_path / "t" / "scenarios").glob("*.json"):
+        path.write_text("{", encoding="utf-8")
+    capsys.readouterr()
+    assert cli.main(["doctor", str(tmp_path / "t"), "--fake-only"]) == 1
+    out = capsys.readouterr().out
+    assert "fake leg: NOT READY" in out and "do not load" in out
+
+
+def test_bare_doctor_says_the_fake_leg_was_not_checked(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, no_network: None
+) -> None:
+    monkeypatch.setattr("shutil.which", lambda name: "/bin/ffmpeg")
+    monkeypatch.delenv("ELEVENLABS_REGION", raising=False)
+    cli.main(["doctor"])
+    out = capsys.readouterr().out
+    assert "fake leg: not checked" in out and "fake leg: ready" not in out

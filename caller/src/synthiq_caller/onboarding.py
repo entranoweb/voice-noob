@@ -34,7 +34,8 @@ import httpx
 
 from synthiq_caller.jsonio import to_text
 from synthiq_caller.legs.fake import RATE, tone
-from synthiq_caller.regions import REGIONS, UnknownRegion, api_for
+from synthiq_caller.regions import REGIONS, UnknownRegion, api_for, region_setting
+from synthiq_caller.scenario import parse_scenario, read_scenario_file
 from synthiq_caller.target import TargetError, parse_target
 
 DEFAULT_KEY_ENV = "ELEVENLABS_API_KEY"
@@ -281,6 +282,28 @@ def _ignored(gitignore: Path, entry: str) -> bool:
     return entry in lines or entry.rstrip("/") in lines
 
 
+def _check_scenarios(scenarios: Path) -> Check:
+    """Each ``*.json`` is read with the loader a run uses: a file that only holds ``{`` fails."""
+    files = sorted(scenarios.glob("*.json")) if scenarios.is_dir() else []
+    if not files:
+        return Check("scenarios", "FAIL", f"0 file(s) in {scenarios.name}/")
+    bad: list[str] = []
+    for path in files:
+        try:
+            data = read_scenario_file(path)
+            if "chain" not in data:
+                parse_scenario(data, None, path.stem)
+        except Exception as error:  # noqa: BLE001 - any reason the loader refuses it
+            bad.append(
+                f"{path.name}: {str(error).splitlines()[0] if str(error) else type(error).__name__}"
+            )
+    if bad:
+        return Check(
+            "scenarios", "FAIL", f"{len(bad)} of {len(files)} do not load: " + "; ".join(bad)
+        )
+    return Check("scenarios", "ok", f"{len(files)} file(s) in {scenarios.name}/, each loads")
+
+
 def _check_folder(directory: Path) -> list[Check]:
     checks: list[Check] = []
     target = directory / "target.json"
@@ -294,11 +317,7 @@ def _check_folder(directory: Path) -> list[Check]:
             checks.append(Check("target.json", "ok", "parses as a target profile"))
         except (TargetError, ValueError) as error:
             checks.append(Check("target.json", "FAIL", str(error)))
-    scenarios = directory / "scenarios"
-    count = len(list(scenarios.glob("*.json"))) if scenarios.is_dir() else 0
-    checks.append(
-        Check("scenarios", "ok" if count else "FAIL", f"{count} file(s) in {scenarios.name}/")
-    )
+    checks.append(_check_scenarios(directory / "scenarios"))
     gitignore = directory / ".gitignore"
     missing = [e for e in ("cases/", "clips/") if not _ignored(gitignore, e)]
     checks.append(
@@ -328,7 +347,7 @@ def _check_network(api: str, transport: httpx.BaseTransport | None) -> Check:
 def doctor(
     *,
     directory: Path | None = None,
-    region: str = "global",
+    region: str = "",
     key_env: str = DEFAULT_KEY_ENV,
     fake_only: bool = False,
     check_network: bool = False,
@@ -357,13 +376,14 @@ def doctor(
     else:
         checks.append(Check("key", "FAIL", f"{key_env} is not set in the environment", "live"))
     api: str | None
+    chosen = region_setting(region, env)  # the flag, else ELEVENLABS_REGION, else global
     try:
-        api = api_for(region)
+        api = api_for(chosen)
     except UnknownRegion as error:
         api = None
-        checks.append(Check("region", "FAIL", str(error)))  # a mistake on the command line
+        checks.append(Check("region", "FAIL", str(error)))  # a mistake in the setting
     else:
-        checks.append(Check("region", "ok", f"{region}: {api}", "live"))
+        checks.append(Check("region", "ok", f"{chosen}: {api}", "live"))
     if directory is not None:
         checks.extend(_check_folder(directory))
     if not check_network or fake_only:
@@ -406,7 +426,12 @@ def run_doctor(args: argparse.Namespace) -> int:
     for check in checks:
         print(check.line())
     fake_ready, live_state, live_ready = verdicts(checks, fake_only=args.fake_only)
-    print(f"\nfake leg: {'ready' if fake_ready else 'NOT READY'}")
+    if args.directory:
+        print(f"\nfake leg: {'ready' if fake_ready else 'NOT READY'}")
+    elif fake_ready:
+        print("\nfake leg: not checked (no folder given; pass the folder `init` made)")
+    else:
+        print("\nfake leg: NOT READY")
     print(f"live leg: {live_state}")
     if not fake_ready:
         failed = [c for c in checks if c.status == "FAIL" and c.needed_by == "fake"]
@@ -427,7 +452,11 @@ def register(sub: Any) -> None:
     ini.set_defaults(handler=run_init)
     doc = sub.add_parser("doctor", help="check this machine and, if given, a target folder")
     doc.add_argument("directory", nargs="?", default="", help="a folder made by `init`")
-    doc.add_argument("--region", default="global", help=f"one of {', '.join(REGIONS)}")
+    doc.add_argument(
+        "--region",
+        default="",
+        help=f"one of {', '.join(REGIONS)}; default: ELEVENLABS_REGION, else global",
+    )
     doc.add_argument("--key-env", default=DEFAULT_KEY_ENV, help="variable holding the API key")
     doc.add_argument("--fake-only", action="store_true", help="skip what only a real target needs")
     doc.add_argument(
