@@ -66,7 +66,12 @@ from synthiq_caller.reset import CommandReset, HttpReset, NoReset, Reset
 from synthiq_caller.scenario import ScenarioError, load_scenario
 from synthiq_caller.stats import describe
 from synthiq_caller.traces.base import TraceReader
-from synthiq_caller.validation import load_problems, ungradeable_problems, validate_directory
+from synthiq_caller.validation import (
+    load_problems,
+    ungradeable_problems,
+    validate_bank,
+    validate_directory,
+)
 
 
 def _secret(name: str, env_file: str | None) -> str:
@@ -178,6 +183,9 @@ def report(directory: str, *, details: bool = True, fail_under: float | None = N
     return code
 
 
+BANK_LINES = 10  # findings of one kind listed before the rest are only counted
+
+
 def validate(args: argparse.Namespace) -> int:
     """Parse every scenario and chain; check clips against a bank and prerequisites if asked.
 
@@ -205,6 +213,22 @@ def validate(args: argparse.Namespace) -> int:
         return 1
     for row in rows:
         print(row.line())
+    findings = validate_bank(_bank(args)) if args.clips else []
+    if findings:
+        print(f"\nclip bank ({len(findings)} finding(s)):")
+        shown: dict[str, int] = {}
+        for finding in findings:
+            shown[finding.kind] = shown.get(finding.kind, 0) + 1
+            if finding.problem or shown[finding.kind] <= BANK_LINES:
+                print("  " + finding.line())
+        for kind, count in shown.items():
+            if count > BANK_LINES and kind not in (
+                "past retention",
+                "invalid field",
+                "consent record missing",
+                "unfinished removal",
+            ):
+                print(f"  ... {count - BANK_LINES} more {kind} finding(s) not listed")
     unchecked = sum(row.requires_state == "unchecked" for row in rows)
     if unchecked:
         print(
@@ -226,7 +250,8 @@ def validate(args: argparse.Namespace) -> int:
             f"\n{len(strict)} scenario(s) cannot be graded and --strict is on: state their "
             "expectations (expect.*) before they go into a gate or an acceptance run."
         )
-    return 1 if strict or any(row.problem for row in rows) else 0
+    broken = any(row.problem for row in rows) or any(f.problem for f in findings)
+    return 1 if strict or broken else 0
 
 
 def _scorecard(args: argparse.Namespace) -> int:
@@ -312,7 +337,11 @@ def _checker(args: argparse.Namespace) -> PrereqChecker | None:
 
 
 def _bank(args: argparse.Namespace) -> ClipBank:
-    return ClipBank(args.clips, extra=tuple(getattr(args, "clips_extra", None) or ()))
+    return ClipBank(
+        args.clips,
+        extra=tuple(getattr(args, "clips_extra", None) or ()),
+        allow_missing_consent=bool(getattr(args, "allow_missing_consent", False)),
+    )
 
 
 def _named_secret(env_name: str, env_file: str | None) -> str:
@@ -409,7 +438,30 @@ def _clipbank(args: argparse.Namespace) -> int:
     if args.clipbank_command == "build":
         from synthiq_caller.clipbank.build import build
 
-        summary = build(Path(args.recordings), Path(args.out), pad_s=args.pad)
+        given = {
+            "provenance": args.provenance,
+            "source_kind": args.source_kind,
+            "speaker_ref": args.speaker_ref,
+            "lawful_basis": args.lawful_basis,
+            "consent_ref": args.consent_ref,
+            "recorded_on": args.recorded_on,
+            "retain_until": args.retain_until,
+        }
+        per_call = (
+            json.loads(Path(args.call_fields).read_text(encoding="utf-8"))
+            if args.call_fields
+            else {}
+        )
+        try:
+            summary = build(
+                Path(args.recordings),
+                Path(args.out),
+                pad_s=args.pad,
+                consent={k: v for k, v in given.items() if v},
+                consent_by_call=per_call,
+            )
+        except ValueError as error:
+            raise SystemExit(f"clipbank build: {error}") from error
         print(json.dumps(summary, indent=1))
         return 0
     from synthiq_caller.clipbank.from_call import scenario_from_call
@@ -510,6 +562,8 @@ def _batch(args: argparse.Namespace) -> int:
                 reset=_reset(args),
                 read_back=_read_back(args),
                 allow_unverified_clips=args.allow_unverified_clips,
+                allow_unknown_provenance=args.allow_unknown_provenance,
+                allow_missing_consent=args.allow_missing_consent,
                 space_names=args.space_names,
                 prereq=_checker(args),
                 leg_name=args.leg,
@@ -613,6 +667,18 @@ def main(argv: list[str] | None = None) -> int:
     )
     run.add_argument("--allow-unverified-clips", action="store_true")
     run.add_argument(
+        "--allow-unknown-provenance",
+        action="store_true",
+        help="play clips whose manifest does not say if they are real or synthetic; "
+        "results are marked 'provenance unknown'",
+    )
+    run.add_argument(
+        "--allow-missing-consent",
+        action="store_true",
+        help="play real clips that have no lawful basis or consent record (special-category "
+        "data); results say 'consent record missing'. Not implied by --allow-unknown-provenance",
+    )
+    run.add_argument(
         "--allow-ungradeable",
         action="store_true",
         help="place a call for a scenario that states no expectations; it can only be ungraded",
@@ -693,6 +759,18 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="play clips whose label no person has confirmed; results are marked "
         "'labels unverified'",
+    )
+    bat.add_argument(
+        "--allow-unknown-provenance",
+        action="store_true",
+        help="play clips whose manifest does not say if they are real or synthetic; "
+        "results are marked 'provenance unknown'",
+    )
+    bat.add_argument(
+        "--allow-missing-consent",
+        action="store_true",
+        help="play real clips that have no lawful basis or consent record (special-category "
+        "data); results say 'consent record missing'. Not implied by --allow-unknown-provenance",
     )
     bat.add_argument(
         "--clips-extra",
@@ -846,6 +924,11 @@ def main(argv: list[str] | None = None) -> int:
     val = sub.add_parser("validate", help="check a directory of scenarios, and its clips")
     val.add_argument("scenarios")
     val.add_argument("--clips", default=None)
+    val.add_argument(
+        "--allow-missing-consent",
+        action="store_true",
+        help="report real clips with no lawful basis or consent record without failing",
+    )
     val.add_argument("--target", default="", help=TARGET_HELP)
     val.add_argument("--env-file", default=None)
     val.add_argument(
@@ -886,6 +969,27 @@ def main(argv: list[str] | None = None) -> int:
     bank_build.add_argument("--recordings", required=True)
     bank_build.add_argument("--out", required=True)
     bank_build.add_argument("--pad", type=float, default=0.15)
+    from synthiq_caller.consent import PROVENANCES, SOURCE_KINDS
+
+    bank_build.add_argument(
+        "--provenance",
+        choices=PROVENANCES,
+        default="real",
+        help="what the recordings are: a person's voice (real) or a made one (synthetic)",
+    )
+    bank_build.add_argument("--source-kind", choices=SOURCE_KINDS, default="")
+    bank_build.add_argument("--speaker-ref", default="", help="opaque id, spk_..., never a name")
+    bank_build.add_argument(
+        "--lawful-basis", default="", help="Article 6 basis and Article 9 condition"
+    )
+    bank_build.add_argument("--consent-ref", default="", help="where the consent record is held")
+    bank_build.add_argument("--recorded-on", default="", help="YYYY-MM-DD")
+    bank_build.add_argument("--retain-until", default="", help="YYYY-MM-DD")
+    bank_build.add_argument(
+        "--call-fields",
+        default="",
+        help='JSON {"<call id>": {"speaker_ref": ..., ...}} for fields that differ per call',
+    )
     bank_scn = bank_sub.add_parser("scenario")
     bank_scn.add_argument("--clips", required=True)
     bank_scn.add_argument("--call", required=True)
@@ -893,6 +997,9 @@ def main(argv: list[str] | None = None) -> int:
     from synthiq_caller.upload import register as register_upload
 
     register_upload(sub)
+    from synthiq_caller.forget import register as register_forget
+
+    register_forget(sub)
     from synthiq_caller.capture import register as register_capture
 
     register_capture(sub)  # also adds `ingest`
@@ -902,7 +1009,7 @@ def main(argv: list[str] | None = None) -> int:
     # named by environment variable.
     args.argv_raw = list(argv) if argv is not None else sys.argv[1:]
     utf8_console()
-    if args.command in ("upload", "capture", "ingest"):
+    if args.command in ("upload", "forget", "capture", "ingest"):
         return int(args.handler(args))
     if args.command == "report":
         return report(args.directory, details=not args.summary_only, fail_under=args.fail_under)
@@ -987,6 +1094,8 @@ def main(argv: list[str] | None = None) -> int:
             read_trace=not args.no_trace,
             settle_s=2.0,
             allow_unverified_clips=args.allow_unverified_clips,
+            allow_unknown_provenance=args.allow_unknown_provenance,
+            allow_missing_consent=args.allow_missing_consent,
         )
     )
     manifest.close_batch(out, batch_id)

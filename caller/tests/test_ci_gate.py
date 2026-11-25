@@ -27,7 +27,11 @@ def write_scenario(folder: Path, name: str, mutates: str | None, expectations: b
         "steps": [{"when": "how can i help", "clips": ["ci-opener"]}],
         "hangup_after": "mobile number",
         "max_seconds": 20,
-        "expect": {"tools": [{"name_contains": "lookup"}] if expectations else [], "fields": []},
+        "expect": {
+            "tools": [],
+            "fields": [],
+            "agent_says": ["how can i help"] if expectations else [],
+        },
     }
     if mutates is not None:
         data["mutates"] = mutates

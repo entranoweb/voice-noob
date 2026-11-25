@@ -267,7 +267,10 @@ def test_ingest_cuts_the_callers_turns_and_marks_every_clip_unverified(tmp_path:
         assert "coarse_cut" in row["review"].split()
         assert (case / "clips" / f"{row['clip']}.wav").stat().st_size > 44
     # P8 owns consent, retention and the speaker reference: nothing here invents them.
-    assert not {"consent_ref", "lawful_basis", "speaker_ref", "retain_until"} & set(rows[0])
+    # The two mandatory consent columns are written EMPTY, so the gate refuses the
+    # clips until a person fills them in.
+    assert not rows[0].get("speaker_ref") and not rows[0].get("retain_until")
+    assert rows[0]["lawful_basis"] == "" and rows[0]["consent_ref"] == ""
     bank = ClipBank(case / "clips")
     names = [r["clip"] for r in rows]
     assert not any(bank.verified(n) for n in names)
@@ -377,7 +380,25 @@ def test_validate_reports_a_skeleton_as_ungradeable_not_ok_and_not_an_error(
     assert len(rows) == 1
     assert not rows[0].states_expectations
     assert "UNGRADEABLE until expectations are stated" in rows[0].line()
-    assert not rows[0].problem  # not an error: an unfinished file, said loudly
+    # Not an error for being unfinished, said loudly. The clips are real recordings,
+    # so until lawful_basis and consent_ref are filled in validate fails, for that only.
+    assert rows[0].consent_missing and rows[0].problem
+    code = main(["validate", str(case / "scenarios"), "--clips", str(case / "clips")])
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "CONSENT RECORD MISSING" in out
+    filled = (case / "clips" / "manifest.csv").read_text(encoding="utf-8").splitlines()
+    import csv as _csv
+
+    with (case / "clips" / "manifest.csv").open(encoding="utf-8", newline="") as handle:
+        table = list(_csv.DictReader(handle))
+    for row in table:
+        row["lawful_basis"], row["consent_ref"] = "basis", "rec-0001"
+    with (case / "clips" / "manifest.csv").open("w", encoding="utf-8", newline="") as handle:
+        out_w = _csv.DictWriter(handle, fieldnames=list(table[0]))
+        out_w.writeheader()
+        out_w.writerows(table)
+    assert filled
     code = main(["validate", str(case / "scenarios"), "--clips", str(case / "clips")])
     out = capsys.readouterr().out
     assert code == 0

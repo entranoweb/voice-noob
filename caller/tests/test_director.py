@@ -36,7 +36,7 @@ def bank(tmp_path: Path) -> ClipBank:
         "dob,call-1,dob,0,0.3,0.3,5th July 1987,date of birth?,\n",
         encoding="utf-8",
     )
-    return ClipBank(tmp_path)
+    return ClipBank(tmp_path, allow_unknown_provenance=True, allow_missing_consent=True)
 
 
 def overlaps(a: list[tuple[float, float]], b: list[tuple[float, float]]) -> bool:

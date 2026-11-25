@@ -11,6 +11,10 @@ Three guards sit in front of every call:
   lock the name and fail every later call for the wrong reason. A scenario says
   how many checks its target allows (``identity_budget``) and how many one call
   spends (``identity_attempts``).
+* **The clip provenance.** A clip whose manifest row does not say where it came
+  from (real or synthetic) is not played unless the batch was told to allow it,
+  and then every result it touches says "provenance unknown". A clip past its
+  retention date is never played.
 * **The clip labels.** A clip whose label no person has confirmed is not played
   unless the batch was told to allow it, and then every result it touches says
   "labels unverified".
@@ -32,6 +36,7 @@ that does not pass.
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import re
 import time
@@ -427,6 +432,8 @@ async def run_batch(
     reset: Reset | None = None,
     read_back: ReadBack | None = None,
     allow_unverified_clips: bool = False,
+    allow_unknown_provenance: bool = False,
+    allow_missing_consent: bool = False,
     allow_ungradeable: bool = False,
     space_names: bool = False,
     prereq: PrereqChecker | None = None,
@@ -448,6 +455,11 @@ async def run_batch(
     budget = budget if budget is not None else NameBudget()
     hooks = hooks if hooks is not None else NoHooks()
     out.mkdir(parents=True, exist_ok=True)
+    # The bank enforces this at playback too, so no path to a clip can skip the check. The
+    # caller's bank is not changed: this run plays from a copy.
+    clips = copy.copy(clips)
+    clips.allow_unknown_provenance = allow_unknown_provenance
+    clips.allow_missing_consent = allow_missing_consent
     result = BatchResult(out=str(out), rehearsal=rehearsal)
     gate = asyncio.Semaphore(max(1, max_parallel))
     # The highest number in use, not a count: after a gap a count would name a
@@ -477,6 +489,22 @@ async def run_batch(
             # Found here, before the call: at play time it would break the call
             # half-way and leave a failure that is nobody's but the rig's.
             raise NotRun(f"excluded clips: {ruled_out}")
+        late = clips.expired_in(played)
+        if late:
+            raise NotRun(f"clips past their retention date: {late[:3]}; remove or re-consent them")
+        unknown = clips.provenance_unknown(played)
+        if unknown and not allow_unknown_provenance:
+            raise NotRun(
+                f"clip provenance not recorded ({len(unknown)}): {unknown[:3]}; "
+                "record it in the manifest, or allow unknown provenance for this batch"
+            )
+        no_consent = clips.consent_missing(played)
+        if no_consent and not allow_missing_consent:
+            raise NotRun(
+                f"real clips without a lawful basis or consent record ({len(no_consent)}): "
+                f"{no_consent[:3]}; record them in the manifest, or allow missing consent "
+                "for this batch"
+            )
         doubts = clips.label_doubts(played)
         if doubts and not allow_unverified_clips:
             raise NotRun(
@@ -553,6 +581,10 @@ async def run_batch(
             "read_back_error": read_back_error,
             "hook_error": "",
             "labels_unverified": doubts,
+            # Clips played whose manifest does not say where they came from.
+            "provenance_unknown": unknown,
+            # Real clips (special-category data) played with no lawful basis or consent record.
+            "consent_missing": no_consent,
             # Clips played in this call that are a synthetic voice, not a recorded caller.
             "synthetic_clips": sorted({c for said in record.said for c in said.synthetic_clips}),
             "grade": graded.to_json(),
@@ -817,10 +849,14 @@ def regrade(out: Path, scenarios: list[tuple[str, Scenario]]) -> int:
     """
     by_file = dict(scenarios)
     changed = 0
+    skipped = 0
     for path in sorted(out.glob("run-*.json")):
         payload = json.loads(path.read_text(encoding="utf-8"))
         scenario = by_file.get(payload.get("scenario_file", ""))
         if scenario is None:
+            continue
+        if _was_redacted(payload):
+            skipped += 1
             continue
         record = RunRecord.from_json(payload["record"])
         trace = Trace.from_json(payload["trace"]) if payload.get("trace") else None
@@ -831,7 +867,24 @@ def regrade(out: Path, scenarios: list[tuple[str, Scenario]]) -> int:
             payload["grade"] = fresh
             write_json(path, payload)
             changed += 1
+    _say_skipped(skipped)
     return changed
+
+
+def _was_redacted(payload: dict[str, Any]) -> bool:
+    """Whether ``forget`` marked this stored result (redacted, or kept under ``--keep-text``).
+
+    A redacted result would only fail on what is left; one kept with its text was played
+    with a clip that is gone, and the scenario has been rewritten since, so a new grade
+    would not be the grade of that call. Either way the stored grade stays.
+    """
+    marks = payload.get("clips_removed")
+    return isinstance(marks, list) and any(isinstance(m, dict) for m in marks)
+
+
+def _say_skipped(count: int) -> None:
+    if count:
+        print(f"{count} results of removed clips not regraded (their stored grade is kept)")
 
 
 def regrade_chains(out: Path, chains: list[tuple[str, Chain]]) -> int:
@@ -842,12 +895,16 @@ def regrade_chains(out: Path, chains: list[tuple[str, Chain]]) -> int:
     """
     by_file = dict(chains)
     changed = 0
+    skipped = 0
     for path in sorted(out.glob("run-*.json")):
         payload = json.loads(path.read_text(encoding="utf-8"))
         link = payload.get("chain")
         chain = by_file.get(link["file"]) if link else None
         call = next((c for c in chain.calls if c.id == link["id"]), None) if chain else None
         if call is None:
+            continue
+        if _was_redacted(payload):
+            skipped += 1
             continue
         try:
             scenario = call.scenario(payload.get("variables") or {})
@@ -874,4 +931,5 @@ def regrade_chains(out: Path, chains: list[tuple[str, Chain]]) -> int:
         if outcome != stored["outcome"]:
             stored["outcome"] = outcome
         write_json(path, stored)
+    _say_skipped(skipped)
     return changed
