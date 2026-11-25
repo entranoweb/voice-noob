@@ -148,15 +148,22 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v5
 
-      # Report only, deliberately, until the backend bumps and the python-jose
-      # replacement land (85 advisories in 12 packages on 24 Nov 2026, two with
-      # no fixed version). Make this blocking by 8 Dec 2026 or delete it.
-      - name: Backend advisories (report only)
+      # Blocking. The lock (runtime and dev groups) had no known advisory on
+      # 25 Nov 2026, after the bumps and the python-jose removal; any new one
+      # fails the build. There is no ignore list: a finding is fixed by a
+      # version bump, or this step is changed in review with the reason written
+      # here. Needs the advisory service, so an outage of it fails the job too.
+      - name: Backend advisories (blocks)
         working-directory: backend
-        continue-on-error: true
         run: |
-          uv export --frozen --no-hashes --no-emit-project -o /tmp/requirements.txt
-          uvx pip-audit -r /tmp/requirements.txt --disable-pip --no-deps
+          uv export --frozen --no-hashes --no-emit-project -o "$RUNNER_TEMP/backend-requirements.txt"
+          uvx pip-audit@2.10.1 -r "$RUNNER_TEMP/backend-requirements.txt" --disable-pip --no-deps
+
+      - name: Caller advisories (blocks)
+        working-directory: caller
+        run: |
+          uv export --frozen --no-hashes --no-emit-project -o "$RUNNER_TEMP/caller-requirements.txt"
+          uvx pip-audit@2.10.1 -r "$RUNNER_TEMP/caller-requirements.txt" --disable-pip --no-deps
 
   frontend:
     name: Frontend
