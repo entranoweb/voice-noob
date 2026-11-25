@@ -290,6 +290,7 @@ def _gate(
     *,
     allow_mixed: bool = False,
     require_complete: bool = False,
+    allow_held_back: bool = False,
 ) -> int:
     """Judge a batch against a claimed pass rate. Exit 0 only when it is demonstrated.
 
@@ -306,7 +307,7 @@ def _gate(
     except manifest.MixedScenarios as error:
         print(f"NOT met: {error}")
         return 1
-    read = gate_reading(summary, rate, confidence, max_unjudged, shape)
+    read = gate_reading(summary, rate, confidence, max_unjudged, shape, allow_held_back)
     if require_complete and shape.unknown:
         read.refused.append(f"completeness could not be shown: {shape.reason}")
     for line in shape.lines():
@@ -318,6 +319,14 @@ def _gate(
         f"Not judged: {read.unjudged} ({read.share:.0%}): void {read.void} (the rig's fault, "
         f"re-run them), ungraded {read.ungraded}, ungradeable {read.ungradeable}, "
         f"not run {read.not_run}. Calls that were placed and could not be graded count against."
+    )
+    print(
+        f"held back: {read.held_back} of {shape.planned or read.attempted} planned call(s)"
+        + (
+            " (--allow-held-back: the verdict judges only the calls that ran)"
+            if read.held_back and read.held_back_allowed
+            else ""
+        )
     )
     if read.met_calls and not read.met_scenarios:
         print("The by-call reading is met only by counting repeats as independent calls.")
@@ -367,6 +376,7 @@ def _acceptance(args: argparse.Namespace) -> int:
             allow_mixed=args.allow_mixed_scenarios,
             allow_no_manifest=args.allow_no_manifest,
             require_complete=args.require_complete,
+            allow_held_back=args.allow_held_back,
             title=args.title,
         )
     except acceptance.Refused as error:
@@ -1021,6 +1031,12 @@ def _main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="judge runs made against different versions of one scenario file anyway",
     )
+    gat.add_argument(
+        "--allow-held-back",
+        action="store_true",
+        help="judge only the calls that ran when the rig held some planned calls back. "
+        "Without it a held-back call means the claim is not met; the output says when this is used",
+    )
     gat.add_argument("--rate", type=float, default=0.95)
     gat.add_argument("--confidence", type=float, default=0.95)
     gat.add_argument(
@@ -1062,6 +1078,12 @@ def _main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="also refuse runs whose completeness is unknown (made before plans were recorded). "
         "Without it they are reported with 'completeness unknown' and judged on what is there",
+    )
+    acc.add_argument(
+        "--allow-held-back",
+        action="store_true",
+        help="judge only the calls that ran when the rig held some planned calls back. "
+        "Without it a held-back call means the claim is not met; the output says when this is used",
     )
     acc.add_argument(
         "--allow-no-manifest",
@@ -1264,6 +1286,7 @@ def _main(argv: list[str] | None = None) -> int:
             args.max_unjudged,
             allow_mixed=args.allow_mixed_scenarios,
             require_complete=args.require_complete,
+            allow_held_back=args.allow_held_back,
         )
 
     # One scenario goes through the same guards as a batch of them.

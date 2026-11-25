@@ -303,6 +303,9 @@ class GateReading:
     ungradeable: int
     # Why the gate is refused whatever the numbers say (empty when it is not).
     refused: list[str] = field(default_factory=list)
+    # Planned calls the rig chose not to place, and whether the claim was told to go on anyway.
+    held_back: int = 0
+    held_back_allowed: bool = False
 
     @property
     def met(self) -> bool:
@@ -316,6 +319,7 @@ def gate_reading(
     confidence: float,
     max_unjudged: float = 0.1,
     completeness: Completeness | None = None,
+    allow_held_back: bool = False,
 ) -> GateReading:
     """Judge a summary against a claimed pass rate.
 
@@ -336,7 +340,10 @@ def gate_reading(
     met_calls, shown_calls, by_call = gate(summary.passed, counted, rate, confidence)
     every, _, scenarios = scenario_level(summary)
     met, shown, by_scenario = gate(every, scenarios, rate, confidence)
-    not_run = len(summary.blocked)
+    held_back = completeness.held_back if completeness is not None else 0
+    # batch.json and the plan are two records of the same thing; the larger is the one that
+    # does not let a call go unmentioned.
+    not_run = max(len(summary.blocked), held_back)
     unjudged = summary.void + summary.ungraded + summary.ungradeable + not_run
     attempted = summary.runs + not_run
     share = unjudged / attempted if attempted else 1.0
@@ -347,6 +354,11 @@ def gate_reading(
             f"the directory is {completeness.status.upper()} ("
             + "; ".join(completeness.problems[:2])
             + "): the calls here are not the calls that were planned"
+        )
+    if held_back and not allow_held_back:
+        refused.append(
+            f"{held_back} planned call(s) were held back and did not run: the claim is about "
+            "every planned call (--allow-held-back judges only the calls that ran)"
         )
     if summary.rehearsals:
         refused.append(
@@ -381,6 +393,8 @@ def gate_reading(
         ungraded=summary.ungraded,
         ungradeable=summary.ungradeable,
         refused=refused,
+        held_back=held_back,
+        held_back_allowed=allow_held_back,
     )
 
 

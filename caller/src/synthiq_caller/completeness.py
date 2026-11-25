@@ -125,11 +125,20 @@ class Completeness:
         return self.status == UNKNOWN
 
     def lines(self) -> list[str]:
+        lines = self._lines()
+        if self.unstamped and self.status != ALTERED:
+            lines.append(
+                f"  {self.unstamped} run file(s) carry no integrity digest (written before the "
+                "rig stamped them): an edit of those cannot be seen"
+            )
+        return lines
+
+    def _lines(self) -> list[str]:
         if self.status == COMPLETE:
-            held = f", {self.held_back} held back" if self.held_back else ""
+            held = f"; {self.held_back} HELD BACK and not run" if self.held_back else ""
             return [
                 f"completeness: all {self.planned} planned call(s) are accounted for "
-                f"({self.planned - self.held_back} recorded{held})"
+                f"({self.planned - self.held_back} run{held})"
             ]
         head = {
             INCOMPLETE: f"INCOMPLETE: {self.accounted} of {self.planned} planned call(s) are "
@@ -150,6 +159,7 @@ class Completeness:
             "planned": self.planned,
             "accounted": self.accounted,
             "held_back": self.held_back,
+            "unstamped": self.unstamped,
             "problems": list(self.problems),
             "reason": self.reason,
         }
@@ -195,11 +205,20 @@ def check(directory: str | Path) -> Completeness:
 
     result = Completeness(status=COMPLETE)
     problems = result.problems
+    edits = 0
     for name, payload in {**runs, **chains}.items():
         verdict = altered(payload)
         if verdict is None:
             result.unstamped += 1
+            if str(payload.get("batch", "")) in ids:
+                # The rig stamps every file it writes under a plan, so a stripped digest
+                # is an edit, not an old file.
+                edits += 1
+                problems.append(
+                    f"{name}: its integrity digest is gone (removed after the rig wrote it)"
+                )
         elif verdict:
+            edits += 1
             problems.append(f"{name}: changed after the rig wrote it (its digest does not match)")
 
     # A file deleted from a directory the rig has no plan for: batch.json knows how many ran.
@@ -224,6 +243,34 @@ def check(directory: str | Path) -> Completeness:
             if c.get("batch") == batch
         }
         gave_up = {_key(h.get("file"), h.get("repeat")) for h in entry.get("held_back", [])}
+        planned_runs = {
+            _key(u.get("file"), u.get("repeat")) for u in units if u.get("kind") != "chain"
+        }
+        planned_chains = {
+            _key(u.get("file"), u.get("repeat")) for u in units if u.get("kind") == "chain"
+        }
+        counted: dict[tuple[str, str, int], list[str]] = {}
+        for name, p in runs.items():
+            if p.get("batch") == batch and "chain" not in p:
+                key = _key(p.get("scenario_file"), p.get("repeat"))
+                counted.setdefault(("run", *key), []).append(name)
+        for name, c in chains.items():
+            if c.get("batch") == batch:
+                key = _key(c.get("chain_file"), c.get("repeat"))
+                counted.setdefault(("chain", *key), []).append(name)
+        surplus: list[str] = []
+        for (kind, file, repeat), names in counted.items():
+            known = planned_chains if kind == "chain" else planned_runs
+            if (file, repeat) not in known:
+                surplus += names
+            else:
+                surplus += names[1:]
+        if surplus:
+            problems.append(
+                f"batch {batch}: {len(surplus)} file(s) are not in the plan or repeat a call "
+                f"already recorded (first: {sorted(surplus)[0]}): copied or added; they are not "
+                "counted as calls"
+            )
         never: list[str] = []
         for unit in units:
             key = _key(unit.get("file"), unit.get("repeat"))
@@ -260,8 +307,7 @@ def check(directory: str | Path) -> Completeness:
 
     unplanned = sum(1 for p in runs.values() if str(p.get("batch", "")) not in ids)
     if problems:
-        edited = sum("changed after the rig wrote it" in p for p in problems)
-        result.status = ALTERED if edited == len(problems) else INCOMPLETE
+        result.status = ALTERED if edits == len(problems) else INCOMPLETE
     elif not planned_entries:
         result.status = UNKNOWN
         result.reason = (

@@ -335,6 +335,7 @@ def build(
     allow_mixed: bool = False,
     allow_no_manifest: bool = False,
     require_complete: bool = False,
+    allow_held_back: bool = False,
     title: str = "",
     generated: str = "",
 ) -> dict[str, Any]:
@@ -368,7 +369,7 @@ def build(
 
     card = scorecard.build(roots)
     whole = completeness.combine([completeness.check(root) for root in roots])
-    read = gate_reading(summary, claim, confidence, max_unjudged, whole)
+    read = gate_reading(summary, claim, confidence, max_unjudged, whole, allow_held_back)
     if require_complete and whole.unknown:
         read.refused.append(f"completeness could not be shown: {whole.reason}")
     graded = summary.passed + summary.failed
@@ -409,8 +410,15 @@ def build(
         "confidence": confidence,
         "verdict": verdict,
         "verdict_reason": why
-        + (f" (completeness unknown: {whole.reason})" if whole.unknown else ""),
+        + (f" (completeness unknown: {whole.reason})" if whole.unknown else "")
+        + (
+            f" ({read.held_back} planned call(s) held back and not run; --allow-held-back was "
+            "used, so the claim is about the calls that ran)"
+            if read.held_back and allow_held_back
+            else ""
+        ),
         "completeness": whole.to_json(),
+        "held_back": {"planned_calls_not_run": read.held_back, "allowed": allow_held_back},
         "made_with": _provenance(roots, allow_no_manifest, mixed),
         "clips": _clips(roots),
         "counts": {

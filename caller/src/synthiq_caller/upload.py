@@ -167,7 +167,13 @@ def build_bundle(
         "batch": (completeness.read_object(batch_file) if batch_file.exists() else None),
         # This package's own reading of the directory, sent beside the raw files
         # so the server can show it without knowing how it was worked out.
-        "summary": asdict(summarise(root)),
+        "summary": {
+            **asdict(summarise(root)),
+            # Whether what is sent is the whole of what was planned, so that a part of a run
+            # is not shown as the whole of it. ``override`` is true when --allow-incomplete
+            # sent a directory that was known not to be complete.
+            "completeness": {**shape.to_json(), "override": bool(shape.bad and allow_incomplete)},
+        },
         "runs": [
             {
                 "file": path.name,

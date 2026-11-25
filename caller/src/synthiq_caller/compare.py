@@ -181,10 +181,11 @@ def comparison_failures(
     """Why a comparison should fail a pipeline, one line each; empty when it should not.
 
     ``never`` never fails. ``beyond-noise`` fails on a drop beyond noise. ``any`` fails on any
-    drop, and on a baseline scenario that is gone from the batch. Both fail when the
-    directory is not what was planned (a call that never ran, a file removed or edited), and
-    when nothing of the baseline was found at all: an empty or wrong directory has no
-    regression in it because it has nothing in it.
+    drop, and on a baseline scenario that is gone from the batch. Both fail on a scenario with
+    fewer graded calls than the baseline was made from, when the directory is not what was
+    planned (a call that never ran, a file removed or edited), and when nothing of the baseline
+    was found at all: an empty or wrong directory has no regression in it because it has
+    nothing in it.
     """
     if fail_on == "never":
         return []
@@ -197,6 +198,13 @@ def comparison_failures(
             f"none of the baseline's {len(scenarios)} scenario(s) is in this batch: nothing "
             "was compared"
         )
+    # Fewer graded calls than the baseline was made from is less evidence, not "same": a batch
+    # that lost a call (or a whole manifest) must not read as an unchanged one.
+    reasons += [
+        f"{c.kind} {c.name}: {c.after[1]} graded call(s) now, {c.before[1]} in the baseline"
+        for c in changes
+        if c.before is not None and c.after is not None and 0 < c.after[1] < c.before[1]
+    ]
     if fail_on == "any":
         reasons += [f"{c.kind} {c.name}: {c.verdict}" for c in changes if c.regressed]
         reasons += [

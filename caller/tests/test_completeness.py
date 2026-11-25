@@ -18,7 +18,7 @@ from test_acceptance import run_directory
 from test_manifest import LOOKUP, rehearse
 from test_post_merge_review import write_clips
 
-from synthiq_caller import batch, cli, completeness, manifest
+from synthiq_caller import batch, cli, completeness, manifest, upload
 from synthiq_caller.jsonio import write_json
 
 
@@ -47,7 +47,14 @@ def planned(
     entry["status"] = status
     entry["held_back"] = held_back or []
     write_json(out / "manifest.json", document)
+    stamp_all(out)
     return out
+
+
+def stamp_all(out: Path) -> None:
+    """The digest the rig puts on every run it writes under a plan."""
+    for path in out.glob("run-*.json"):
+        write_json(path, completeness.stamp(read(path)))
 
 
 def planned_more(out: Path, extra_units: int) -> None:
@@ -537,7 +544,7 @@ def test_gate_prints_the_clip_warnings_acceptance_prints_and_does_not_change_its
         run["consent_missing"] = ["dob.wav: no basis"]
         run["provenance_unknown"] = ["opener.wav: unknown"]
         run["labels_unverified"] = ["dob.wav: a recogniser's reading"]
-        write_json(path, run)
+        write_json(path, completeness.stamp(run))  # the rig's own write: stamped
     assert cli.main(["gate", str(out)]) == 0  # the verdict is the numbers', as before
     text = capsys.readouterr().out
     assert "consent record missing" in text
@@ -555,7 +562,8 @@ def test_upload_refuses_an_incomplete_directory_unless_told_and_never_changes_th
     whole = tmp_path / "whole.json"
     assert cli.main(["upload", str(out), "--bundle-out", str(whole)]) == 0
     assert "completeness" not in read(whole)  # the format is not ours to change
-    assert "completeness" not in read(whole)["summary"]
+    # The bundle's own shape is as it was; what it says about itself is in the summary.
+    assert read(whole)["summary"]["completeness"]["status"] == "complete"
     drop_run(out, 2)
     part = tmp_path / "part.json"
     assert cli.main(["upload", str(out), "--bundle-out", str(part)]) == 1
@@ -577,3 +585,132 @@ def test_the_plan_names_every_scenario_and_repeat_before_a_call_is_placed(tmp_pa
     ]
     assert completeness.check(out).status == completeness.COMPLETE
     assert manifest.load(out) is not None
+
+
+# --- review round: copies, held-back calls, stripped digests, bundles, counts --------------
+
+
+def copy_run(out: Path, source: int, target: int) -> None:
+    """A run file copied under a new number: same batch, same digest, same call."""
+    (out / f"run-{target:03d}.json").write_text(
+        (out / f"run-{source:03d}.json").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+
+
+def test_a_copied_run_beyond_the_plan_is_not_counted_as_a_call(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    out = planned(tmp_path, ["passed"] * 58)
+    copy_run(out, 1, 59)  # 59 files for a plan of 58: "59 of 59, met"
+    shape = completeness.check(out)
+    assert shape.status == completeness.INCOMPLETE
+    assert "not in the plan or repeat" in shape.problems[0]
+    assert cli.main(["gate", str(out)]) == 1
+    assert "INCOMPLETE" in capsys.readouterr().out
+    assert cli.main(["acceptance", str(out), "--out", str(tmp_path / "r.html")]) == 1
+
+
+def test_a_plan_cut_short_with_a_run_left_over_is_incomplete(tmp_path: Path) -> None:
+    out = planned(tmp_path, ["passed"] * 3)
+    document = read(out / "manifest.json")
+    document["entries"][0]["plan"]["units"].pop()  # 3 became 2; the third run stays
+    write_json(out / "manifest.json", document)
+    shape = completeness.check(out)
+    assert shape.status == completeness.INCOMPLETE
+    assert cli.main(["gate", str(out), "--rate", "0.5"]) == 1
+
+
+def held_batch(tmp_path: Path, ran: int, held: int) -> Path:
+    out = planned(tmp_path, ["passed"] * ran)
+    document = read(out / "manifest.json")
+    entry = document["entries"][0]
+    for n in range(held):
+        entry["plan"]["units"].append({"file": f"held{n}.json", "repeat": 1, "kind": "run"})
+        entry["held_back"].append({"file": f"held{n}.json", "repeat": 1, "reason": "clip"})
+    write_json(out / "manifest.json", document)
+    return out
+
+
+def test_held_back_calls_are_not_run_and_the_claim_is_not_met_by_default(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    out = held_batch(tmp_path, 59, 20)  # 79 planned, 20 held back, 59 passed
+    assert cli.main(["gate", str(out)]) == 1
+    text = capsys.readouterr().out
+    assert "not run 20" in text
+    assert "held back: 20 of 79" in text
+    assert "held back and did not run" in text
+    assert cli.main(["acceptance", str(out), "--out", str(tmp_path / "r.json")]) == 1
+    report = read(tmp_path / "r.json") if (tmp_path / "r.json").exists() else {}
+    assert report.get("verdict") != "met"
+
+
+def test_allow_held_back_judges_the_calls_that_ran_and_says_so(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    out = held_batch(tmp_path, 59, 2)
+    assert cli.main(["gate", str(out), "--allow-held-back", "--max-unjudged", "0.5"]) == 0
+    text = capsys.readouterr().out
+    assert "held back: 2 of 61" in text
+    assert "--allow-held-back" in text
+
+
+def test_a_run_with_its_digest_stripped_in_a_planned_directory_is_altered(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    out = planned(tmp_path, ["passed"] * 4)
+    payload = read(out / "run-002.json")
+    payload.pop("integrity")
+    write_json(out / "run-002.json", payload)
+    assert completeness.check(out).status == completeness.ALTERED
+    assert cli.main(["gate", str(out), "--rate", "0.5"]) == 1
+    assert "digest is gone" in capsys.readouterr().out
+
+
+def test_the_unstamped_count_is_shown_where_completeness_is_printed(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    out = run_directory(tmp_path, ["passed"] * 3, with_manifest=False)  # old: no plan, no digest
+    shape = completeness.check(out)
+    assert shape.unknown and shape.unstamped == 3
+    assert any("3 run file(s) carry no integrity digest" in line for line in shape.lines())
+    assert shape.to_json()["unstamped"] == 3
+
+
+def test_compare_fails_when_the_batch_has_fewer_calls_than_the_baseline(tmp_path: Path) -> None:
+    stored = baseline_of(planned(tmp_path / "good", ["passed"] * 3), tmp_path)
+    # Same scenarios, but no manifest or plan: the batch lost a call and its completeness.
+    short = planned(tmp_path / "short", ["passed"] * 3)
+    drop_run(short, 3)
+    for name in ("manifest.json", "batch.json"):
+        (short / name).unlink(missing_ok=True)
+    assert cli.main(["compare", str(short), "--baseline", str(stored), "--fail-on", "any"]) == 1
+
+    # Fewer calls of a scenario than the baseline was made from is less evidence, not "same".
+    thin = planned(tmp_path / "thin", ["passed"] * 2)
+    for name in ("manifest.json", "batch.json"):
+        (thin / name).unlink(missing_ok=True)
+    bigger = read(stored)
+    bigger["scenarios"] = {name: [3, 3] for name in bigger["scenarios"]}
+    write_json(stored, bigger)
+    for mode in ("any", "beyond-noise"):
+        assert cli.main(["compare", str(thin), "--baseline", str(stored), "--fail-on", mode]) == 1
+
+
+def test_an_upload_bundle_says_whether_it_is_the_whole_of_what_was_planned(
+    tmp_path: Path,
+) -> None:
+    whole = upload.build_bundle(planned(tmp_path / "a", ["passed"] * 3))
+    said = whole["summary"]["completeness"]
+    assert said["status"] == "complete" and said["planned"] == 3 and said["override"] is False
+
+    part = planned(tmp_path / "b", ["passed"] * 3)
+    drop_run(part, 2)
+    sent = upload.build_bundle(part, allow_incomplete=True)["summary"]["completeness"]
+    assert sent["status"] == "incomplete"
+    assert sent["planned"] == 3 and sent["accounted"] == 2
+    assert sent["override"] is True and sent["problems"]
+
+    old = upload.build_bundle(run_directory(tmp_path / "c", ["passed"], with_manifest=False))
+    assert old["summary"]["completeness"]["status"] == "unknown"
+    assert old["summary"]["completeness"]["unstamped"] == 1

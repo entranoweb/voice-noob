@@ -23,8 +23,8 @@ recorded, and is every recorded file still as the rig wrote it?
 | State | Meaning |
 |---|---|
 | complete | every planned call is accounted for |
-| incomplete | planned calls never ran, a run file was removed, or `batch.json` counts more placed calls than there are run files |
-| altered | a run file no longer matches the digest the rig stamped on it |
+| incomplete | planned calls never ran, a run file was removed, `batch.json` counts more placed calls than there are run files, or a batch has files that are not in its plan or repeat a call already recorded (a copied or added run: never counted as a call) |
+| altered | a run file no longer matches the digest the rig stamped on it, or a run in a planned directory has had its digest removed |
 | unknown | the directory was made before plans were recorded; a missing call cannot be seen |
 
 ## What each command does
@@ -36,7 +36,7 @@ recorded, and is every recorded file still as the rig wrote it?
 | `report --fail-under` | as before | threshold not met, exit 1 | prints `completeness unknown`, exits by the numbers |
 | `compare` | as before | `--fail-on any` and `beyond-noise` exit 1 | warns |
 | `baseline` | writes | writes nothing, exit 1 | warns |
-| `upload` | as before | refused unless `--allow-incomplete`; the bundle format is not changed | warns |
+| `upload` | as before | refused unless `--allow-incomplete`; the bundle's summary carries `completeness` (status, planned, accounted, held back, unstamped, problems, and `override`: true when `--allow-incomplete` sent a directory known not to be complete) | warns; the summary says `unknown` |
 | `scorecard` | as before | the card records `completeness` | records `unknown` |
 | `regrade` | as before | warns first (regrading cannot make a call happen) | as before |
 
@@ -62,6 +62,22 @@ A directory that does not exist exits 2.
 - `gate` prints the consent, provenance and unverified-label warnings acceptance prints. They do
   not change its verdict.
 
+## Held-back calls
+
+A call the rig held back is accounted for, but it did not run. Planned 79, 20 held back, 59 passed
+is not a pass of the plan. `gate` and `acceptance` count held-back calls as "not run" (in the
+"Not judged" figure and the "attempted" denominator), print `held back: N of M planned` beside
+the verdict, and are NOT met while any call was held back. `--allow-held-back` (gate and
+acceptance) judges only the calls that ran and says so in the output and in the report
+(`held_back.allowed`).
+
+## Counts and the baseline
+
+`compare` fails (both `--fail-on` modes) when a scenario has fewer graded calls than the
+baseline was made from: a batch that lost a call, or its manifest, does not read as "same". More
+calls than the baseline is not a failure. Wherever completeness is printed, the number of run
+files with no digest is printed too.
+
 ## The digest
 
 Each run and chain file the rig writes carries `integrity.sha256` over the rest of the file. A
@@ -78,6 +94,10 @@ refuses it by default; each says "completeness unknown". A run file deleted from
 seen when `batch.json` records more placed calls than there are files.
 
 ## Not covered
+
+A run file copied in from another directory with the same batch id and a call the plan lacks is
+caught; one that swaps in for a recorded call of the same batch (same file, same repeat) is not.
+Accidental-edit protection only.
 
 Only a call the rig planned is counted. Phone-leg server runs and `forget`'s own bookkeeping are
 outside this check.
