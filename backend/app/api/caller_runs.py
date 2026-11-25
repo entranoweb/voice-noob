@@ -34,6 +34,7 @@ from app.services.caller_results import (
     ParsedBundle,
     failures_by_fault_class,
     field_tallies,
+    is_rehearsal,
     outcome_counts,
     parse_bundle,
     rate,
@@ -84,6 +85,9 @@ class RunSummary(BaseModel):
     # Calls by outcome as written (passed, failed, void, ungradeable, ungraded, ...),
     # with `synthetic_calls` and `labels_unverified_calls` beside them.
     outcome_counts: dict[str, int]
+    # A run placed against a scripted stand-in (`batch --leg fake`), not an agent.
+    # Derived from stored counts and the label; no column of its own.
+    rehearsal: bool
     of_graded: Rate
     of_attempted: Rate
 
@@ -182,6 +186,7 @@ def _summary(run: CallerRun, workspace_name: str | None) -> dict[str, Any]:
         "not_run": run.not_run,
         "excluded_count": len(run.excluded or []),
         "outcome_counts": run.outcome_counts or {},
+        "rehearsal": is_rehearsal(run.outcome_counts, run.target_label),
         "of_graded": rate(run.passed, run.graded),
         "of_attempted": rate(run.passed, run.attempted),
     }
@@ -315,7 +320,7 @@ def _rows(bundle: ParsedBundle, workspace_id: uuid.UUID, user_id: int) -> Caller
         passed=bundle.passed,
         failed=bundle.failed,
         not_run=len(bundle.not_run),
-        outcome_counts=outcome_counts(bundle.calls),
+        outcome_counts=outcome_counts(bundle.calls, rehearsal=bundle.raw.get("rehearsal") is True),
         excluded=excluded,
         chains=bundle.chains,
         raw=bundle.raw,
