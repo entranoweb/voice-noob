@@ -139,7 +139,9 @@ None of this has been run against a live system; it is tested with fakes only.
 - `after_call` may name `{call_ref}` (the platform's conversation id), `{run_file}`,
   `{run_id}`, `{scenario_file}` and `{repeat}` inside any argument. A reference that is
   not a plain id is never handed over. This is where a step that records "this call
-  created these rows, they are the rig's to remove" belongs.
+  created these rows, they are the rig's to remove" belongs. With
+  `"only_when_mutating": true` it is skipped for a call whose scenario says
+  `"mutates": "none"`; a scenario that does not say what it changes still gets it.
 - `allow_mutating` is the most a batch may change on this system. It does **not** switch
   mutation on; `--allow-mutating` on the batch still does that. A batch that asks for
   more than the profile permits stops before anything is loaded or run.

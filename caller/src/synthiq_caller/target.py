@@ -31,7 +31,8 @@ A profile may also say how the rig reaches this system around a call:
       "allow_mutating": "books",
       "reset":       {"command": ["node", "tools/fixture.js", "restore"], "timeout_s": 180},
       "before_call": {"command": ["node", "tools/fixture.js", "check"]},
-      "after_call":  {"command": ["node", "tools/fixture.js", "adopt", "{call_ref}"]},
+      "after_call":  {"command": ["node", "tools/fixture.js", "adopt", "{call_ref}"],
+                      "only_when_mutating": true},
       "read_back":   {"command": ["python", "scripts/read_back_sql.py", "--queries", "q.json"]}
     }
 
@@ -39,7 +40,9 @@ Each command is a list: a program and its arguments. It is never a single
 string and never goes through a shell (``external.py``). ``allow_mutating`` is
 the most this system may be changed by a batch; it does not switch mutation on
 (the batch's own ``--allow-mutating`` does that), it refuses a batch that asks
-for more. What the batch is given on its command line wins over the profile.
+for more. ``only_when_mutating`` on ``after_call`` skips it for a call whose
+scenario states it changes nothing. What the batch is given on its command line
+wins over the profile.
 """
 
 from __future__ import annotations
@@ -65,8 +68,11 @@ class TargetError(ValueError):
 
 
 def _check_command(name: str, raw: Any) -> None:
-    if not isinstance(raw, dict) or set(raw) - {"command", "timeout_s"}:
+    allowed = {"command", "timeout_s"} | ({"only_when_mutating"} if name == "after_call" else set())
+    if not isinstance(raw, dict) or set(raw) - allowed:
         raise TargetError(f"'{name}' is an object with a 'command' and, if wanted, a 'timeout_s'")
+    if not isinstance(raw.get("only_when_mutating", False), bool):
+        raise TargetError(f"'{name}.only_when_mutating' is true or false")
     command = raw.get("command")
     if (
         not isinstance(command, list)

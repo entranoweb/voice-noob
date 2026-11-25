@@ -138,6 +138,10 @@ class ShellHooks:
     before: str | Sequence[str] = ""
     after: str | Sequence[str] = ""
     timeout_s: float = 120.0
+    # Skip the after command for a call whose scenario states it changes nothing
+    # (``mutates: none``): a step that records what a call created has nothing
+    # to record. A scenario that does not say what it changes still gets it.
+    after_only_when_mutating: bool = False
 
     async def _run(
         self,
@@ -199,6 +203,8 @@ class ShellHooks:
     async def after_call(
         self, scenario_file: str, scenario: Scenario, repeat: int, call: CallInfo | None = None
     ) -> None:
+        if self.after_only_when_mutating and scenario.mutates == "none":
+            return
         await self._run(self.after, "after", scenario_file, scenario, repeat, call)
 
 

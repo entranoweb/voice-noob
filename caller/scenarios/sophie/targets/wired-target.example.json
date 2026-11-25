@@ -37,6 +37,7 @@
       "--conversation",
       "{call_ref}"
     ],
+    "only_when_mutating": true,
     "timeout_s": 180
   },
   "read_back": {

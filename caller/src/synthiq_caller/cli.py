@@ -295,7 +295,14 @@ def _hooks(args: argparse.Namespace) -> Hooks:
     if not (before or after):
         return NoHooks()
     limits = [command_of(target, name)[1] for name in ("before_call", "after_call")]
-    return ShellHooks(before=before, after=after, timeout_s=max([120.0, *filter(None, limits)]))
+    return ShellHooks(
+        before=before,
+        after=after,
+        timeout_s=max([120.0, *filter(None, limits)]),
+        # The profile's own after command only; one given on the command line runs always.
+        after_only_when_mutating=not args.after_call
+        and bool(((target or {}).get("after_call") or {}).get("only_when_mutating")),
+    )
 
 
 def _reset(args: argparse.Namespace, dry: bool = False) -> Reset | None:

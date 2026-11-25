@@ -74,6 +74,12 @@ def describe_hook(hooks: Hooks | None, phase: str) -> str:
     return type(hooks).__name__
 
 
+def _after_for(hooks: Hooks | None, after: str, mutates: str) -> str:
+    """The after command as it applies to one call: skipped when the call changes nothing."""
+    skipped = isinstance(hooks, ShellHooks) and hooks.after_only_when_mutating and mutates == "none"
+    return "skipped: this call changes nothing (only_when_mutating)" if after and skipped else after
+
+
 def _call_lines(
     reset_text: str, before: str, read_back: str, after: str, leg: str, clean: bool, label: str
 ) -> list[str]:
@@ -132,7 +138,15 @@ def dry_run(
             lines.append(f"  NOT RUN: {why}")
             continue
         would_run += 1
-        lines += _call_lines(reset_text, before, held, after, leg, scenario.clean_state, "one call")
+        lines += _call_lines(
+            reset_text,
+            before,
+            held,
+            _after_for(hooks, after, scenario.mutates),
+            leg,
+            scenario.clean_state,
+            "one call",
+        )
     for file, chain in chains:
         lines.append(f"{file}  chain  mutates={chain.mutates}  clean_state={chain.clean_state}")
         refused = [c.id for c in chain.calls if c.mutates not in allowed]
@@ -154,7 +168,8 @@ def dry_run(
         if chain.clean_state:
             lines.append(f"  reset:      {reset_text}  (once, before the first call)")
         for call in chain.calls:
-            lines += _call_lines("", before, held, after, leg, False, f"call {call.id!r}")
+            mine = _after_for(hooks, after, call.mutates)
+            lines += _call_lines("", before, held, mine, leg, False, f"call {call.id!r}")
     lines += [
         "",
         f"{would_run} of {len(scenarios) + len(chains)} file(s) would be run. Clip labels, the "

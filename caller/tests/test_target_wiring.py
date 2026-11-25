@@ -271,6 +271,29 @@ async def test_a_hook_given_as_a_list_fills_the_reference_inside_one_argument_on
     ]
 
 
+async def test_an_adopt_step_marked_only_when_mutating_is_skipped_for_a_call_that_changes_nothing(
+    bank: ClipBank, tmp_path: Path
+) -> None:
+    log = tmp_path / "log.txt"
+    hooks = ShellHooks(after=log_command(log, "adopt", "{call_ref}"), after_only_when_mutating=True)
+    looks = scenario_data(name="looks", mutates="none", clean_state=False)
+    unsaid = scenario_data(name="does not say", clean_state=False)
+    del unsaid["mutates"]
+    await run_batch(
+        [("a.json", parse_scenario(looks)), ("b.json", parse_scenario(unsaid))],
+        agents([[REGISTERED], [REGISTERED]]),
+        bank,
+        tmp_path / "out",
+        allow_mutating="all",
+        hooks=hooks,
+        turn_settings=FAST,
+    )
+    # Once: for the scenario that does not state it changes nothing.
+    assert len(log.read_text(encoding="utf-8").splitlines()) == 1
+    with pytest.raises(TargetError, match="unknown|object with"):
+        parse_target({"name": "t", "reset": {"command": ["x"], "only_when_mutating": True}})
+
+
 # --- chains read the profile ---------------------------------------------------------
 
 
