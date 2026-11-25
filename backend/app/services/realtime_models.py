@@ -7,8 +7,8 @@ never sent to the provider, and needs no migration.
 
 Browser keys use the GA endpoint, `POST /v1/realtime/client_secrets`, with the
 session wrapped as `{"session": {"type": "realtime", ...}}`, and the response
-carries the key as `value`. The beta endpoint (`/v1/realtime/sessions`, with
-`client_secret.value`) is gone.
+carries the key as `value`. The old beta sessions endpoint, which put the key under
+`client_secret.value`, is gone.
 """
 
 from __future__ import annotations
