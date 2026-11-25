@@ -899,7 +899,7 @@ def describe(
             "  what the removed clips said is blanked in each step's intended, in the persona "
             "fact it answered (its field) and in any expectation that holds the same words; "
             "the names of the fields and checks stay. NOT removed: any other persona fact, "
-            "which may still hold what the caller said. Check these by hand in:"
+            "which may still hold what the caller said. Remove or edit persona facts by hand in:"
         )
         lines += [f"    {p}" for p in plan.scenarios]
     lines += [f"  CANNOT rewrite {p} ({why}); it names a clip" for p, why in plan.unreadable]
