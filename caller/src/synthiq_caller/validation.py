@@ -39,6 +39,10 @@ class Row:
     expired_clips: list[str] = field(default_factory=list)
     # Clips named whose manifest row says nothing of where they came from.
     unknown_provenance: list[str] = field(default_factory=list)
+    # Real clips named that have no lawful basis or consent record; a batch will not play them.
+    consent_missing: list[str] = field(default_factory=list)
+    # True when ``--allow-missing-consent`` was given: they are reported, not a problem.
+    consent_allowed: bool = False
     # What the scenario says it still needs recorded (see ``missing_clips``).
     missing_recordings: list[str] = field(default_factory=list)
 
@@ -47,6 +51,7 @@ class Row:
         return (
             self.clips_state == "missing"
             or bool(self.expired_clips)
+            or (bool(self.consent_missing) and not self.consent_allowed)
             or self.requires_state in ("unmet", "error")
         )
 
@@ -73,6 +78,16 @@ class Row:
             if self.unknown_provenance
             else ""
         )
+        no_consent = (
+            f"  CONSENT RECORD MISSING: {len(self.consent_missing)} real clip(s)"
+            + (
+                ", allowed for this run"
+                if self.consent_allowed
+                else ", a batch needs --allow-missing-consent"
+            )
+            if self.consent_missing
+            else ""
+        )
         loud = self.requires_state not in ("none", "met")
         requires = f"requires {self.requires_state.upper() if loud else self.requires_state}"
         detail = f" ({self.requires_detail})" if self.requires_detail else ""
@@ -83,7 +98,7 @@ class Row:
         )
         return (
             f"{self.file:<44} mutates={self.mutates:<10} {self.shape}  "
-            f"{clips}{expired}{unknown}{needs}  {requires}{detail}{target}"
+            f"{clips}{expired}{unknown}{no_consent}{needs}  {requires}{detail}{target}"
         )
 
 
@@ -95,11 +110,15 @@ def _clips_state(bank: ClipBank | None, missing: list[str]) -> str:
 
 def _retention(
     bank: ClipBank | None, named: list[str], today: date | None
-) -> tuple[list[str], list[str]]:
-    """The clips among ``named`` past retention, and those with no provenance."""
+) -> tuple[list[str], list[str], list[str]]:
+    """The clips among ``named`` past retention, with no provenance, and real but unrecorded."""
     if bank is None:
-        return [], []
-    return bank.expired_in(named, today), bank.provenance_unknown(named)
+        return [], [], []
+    return (
+        bank.expired_in(named, today),
+        bank.provenance_unknown(named),
+        bank.consent_missing(named),
+    )
 
 
 @dataclass
@@ -108,9 +127,12 @@ class BankFinding:
     # "past retention", "invalid field", "no provenance" or "gap".
     kind: str
     detail: str
+    allowed: bool = False
 
     @property
     def problem(self) -> bool:
+        if self.kind == "consent record missing":
+            return not self.allowed
         return self.kind in ("past retention", "invalid field", "unfinished removal")
 
     def line(self) -> str:
@@ -137,6 +159,16 @@ def validate_bank(bank: ClipBank, today: date | None = None) -> list[BankFinding
             found.append(BankFinding(info.clip, "invalid field", problem))
         if info.provenance == "unknown" and not consent.provenance:
             found.append(BankFinding(info.clip, "no provenance", "the manifest does not say"))
+        if lacks := consent.record_missing():
+            found.append(
+                BankFinding(
+                    info.clip,
+                    "consent record missing",
+                    f"a real clip (special-category data) has no {' or '.join(lacks)}"
+                    + ("; allowed for this run" if bank.allow_missing_consent else ""),
+                    allowed=bank.allow_missing_consent,
+                )
+            )
         if gaps := consent.gaps():
             found.append(BankFinding(info.clip, "gap", f"no {', '.join(gaps)}"))
     for line in removals.unfinished_lines(bank.directories):
@@ -170,7 +202,7 @@ def validate_directory(
                         missing.append(str(ruled_out))
                     except FileNotFoundError:
                         missing.append(clip)
-        late, unknown = _retention(bank, named, today)
+        late, unknown, no_consent = _retention(bank, named, today)
         prereq = requires_state(file, scenario.name, scenario.requires, checker)
         rows.append(
             Row(
@@ -183,6 +215,8 @@ def validate_directory(
                 missing_recordings=list(scenario.missing_clips),
                 expired_clips=late,
                 unknown_provenance=unknown,
+                consent_missing=no_consent,
+                consent_allowed=bank is not None and bank.allow_missing_consent,
                 requires_state=prereq.state,
                 requires_detail=prereq.detail,
                 missing_target=list(scenario.missing_target),
@@ -207,7 +241,7 @@ def validate_directory(
                             missing.append(str(ruled_out))
                         except FileNotFoundError:
                             missing.append(str(clip))
-        late, unknown = _retention(bank, named, today)
+        late, unknown, no_consent = _retention(bank, named, today)
         prereq = requires_state(file, chain.name, chain.requires, checker)
         calls = " > ".join(f"{call.id}({call.mutates})" for call in chain.calls)
         rows.append(
@@ -221,6 +255,8 @@ def validate_directory(
                 missing_recordings=[text for call in chain.calls for text in call.missing_clips],
                 expired_clips=late,
                 unknown_provenance=unknown,
+                consent_missing=no_consent,
+                consent_allowed=bank is not None and bank.allow_missing_consent,
                 requires_state=prereq.state,
                 requires_detail=prereq.detail,
                 missing_target=[

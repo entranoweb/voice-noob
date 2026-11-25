@@ -427,6 +427,7 @@ async def run_batch(
     read_back: ReadBack | None = None,
     allow_unverified_clips: bool = False,
     allow_unknown_provenance: bool = False,
+    allow_missing_consent: bool = False,
     space_names: bool = False,
     prereq: PrereqChecker | None = None,
     make_leg_for: LegFactoryFor | None = None,
@@ -451,6 +452,7 @@ async def run_batch(
     # caller's bank is not changed: this run plays from a copy.
     clips = copy.copy(clips)
     clips.allow_unknown_provenance = allow_unknown_provenance
+    clips.allow_missing_consent = allow_missing_consent
     result = BatchResult(out=str(out), rehearsal=rehearsal)
     gate = asyncio.Semaphore(max(1, max_parallel))
     # The highest number in use, not a count: after a gap a count would name a
@@ -488,6 +490,13 @@ async def run_batch(
             raise NotRun(
                 f"clip provenance not recorded ({len(unknown)}): {unknown[:3]}; "
                 "record it in the manifest, or allow unknown provenance for this batch"
+            )
+        no_consent = clips.consent_missing(played)
+        if no_consent and not allow_missing_consent:
+            raise NotRun(
+                f"real clips without a lawful basis or consent record ({len(no_consent)}): "
+                f"{no_consent[:3]}; record them in the manifest, or allow missing consent "
+                "for this batch"
             )
         doubts = clips.label_doubts(played)
         if doubts and not allow_unverified_clips:
@@ -564,6 +573,8 @@ async def run_batch(
             "labels_unverified": doubts,
             # Clips played whose manifest does not say where they came from.
             "provenance_unknown": unknown,
+            # Real clips (special-category data) played with no lawful basis or consent record.
+            "consent_missing": no_consent,
             # Clips played in this call that are a synthetic voice, not a recorded caller.
             "synthetic_clips": sorted({c for said in record.said for c in said.synthetic_clips}),
             "grade": graded.to_json(),
@@ -822,10 +833,14 @@ def regrade(out: Path, scenarios: list[tuple[str, Scenario]]) -> int:
     """
     by_file = dict(scenarios)
     changed = 0
+    skipped = 0
     for path in sorted(out.glob("run-*.json")):
         payload = json.loads(path.read_text(encoding="utf-8"))
         scenario = by_file.get(payload.get("scenario_file", ""))
         if scenario is None:
+            continue
+        if _was_redacted(payload):
+            skipped += 1
             continue
         record = RunRecord.from_json(payload["record"])
         trace = Trace.from_json(payload["trace"]) if payload.get("trace") else None
@@ -836,7 +851,19 @@ def regrade(out: Path, scenarios: list[tuple[str, Scenario]]) -> int:
             payload["grade"] = fresh
             write_json(path, payload)
             changed += 1
+    _say_skipped(skipped)
     return changed
+
+
+def _was_redacted(payload: dict[str, Any]) -> bool:
+    """Whether ``forget`` redacted this stored result: grading what is left would only fail it."""
+    marks = payload.get("clips_removed")
+    return isinstance(marks, list) and any(isinstance(m, dict) and m.get("redacted") for m in marks)
+
+
+def _say_skipped(count: int) -> None:
+    if count:
+        print(f"{count} redacted results not regraded (their stored grade is kept)")
 
 
 def regrade_chains(out: Path, chains: list[tuple[str, Chain]]) -> int:
@@ -847,12 +874,16 @@ def regrade_chains(out: Path, chains: list[tuple[str, Chain]]) -> int:
     """
     by_file = dict(chains)
     changed = 0
+    skipped = 0
     for path in sorted(out.glob("run-*.json")):
         payload = json.loads(path.read_text(encoding="utf-8"))
         link = payload.get("chain")
         chain = by_file.get(link["file"]) if link else None
         call = next((c for c in chain.calls if c.id == link["id"]), None) if chain else None
         if call is None:
+            continue
+        if _was_redacted(payload):
+            skipped += 1
             continue
         try:
             scenario = call.scenario(payload.get("variables") or {})
@@ -879,4 +910,5 @@ def regrade_chains(out: Path, chains: list[tuple[str, Chain]]) -> int:
         if outcome != stored["outcome"]:
             stored["outcome"] = outcome
         write_json(path, stored)
+    _say_skipped(skipped)
     return changed

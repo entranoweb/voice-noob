@@ -424,8 +424,17 @@ def realistic_result(clip: str) -> dict[str, object]:
             "call_ref": "fake-call",
             "outcome": "failed",
             "checks": [
-                {"what": f"name is {SENTINEL}", "passed": False, "why": f"heard {SENTINEL}"},
-                {"what": "tool 'check_patient' is called", "passed": True},
+                {
+                    "what": f"name is {SENTINEL}",
+                    "label": "field name reaches a tool as said",
+                    "passed": False,
+                    "why": f"heard {SENTINEL}",
+                },
+                {
+                    "what": "tool 'check_patient' is called",
+                    "label": "tool check_patient called and succeeds",
+                    "passed": True,
+                },
             ],
             "fields": [
                 {
@@ -458,6 +467,15 @@ def test_redaction_reaches_every_free_text_field_of_the_result(
     # what stays: outcome, fault class, which checks passed, timings, tool names, clip ids
     assert data["grade"]["outcome"] == "failed" and data["grade"]["fault"] == "storage"
     assert [c["passed"] for c in data["grade"]["checks"]] == [False, True]
+    # each check still says which check it was: a value-free label, not blanked
+    assert [c["what"] for c in data["grade"]["checks"]] == [
+        "field name reaches a tool as said",
+        "tool check_patient called and succeeds",
+    ]
+    assert [c["label"] for c in data["grade"]["checks"]] == [
+        "field name reaches a tool as said",
+        "tool check_patient called and succeeds",
+    ]
     assert data["record"]["duration_s"] == 2.17
     assert [e["t"] for e in data["record"]["timeline"]] == [0.0, 0.66, 2.16, 2.17]
     assert data["record"]["said"][0]["seconds"] == 0.25

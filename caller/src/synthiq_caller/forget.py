@@ -437,11 +437,80 @@ def _redacted_result(data: dict[str, Any], removal: str) -> tuple[dict[str, Any]
     marker = f"[redacted {removal}]"
     out = dict(data)
     for part in _TEXT_PARTS:
-        if part in out:
+        if part == "grade" and isinstance(out.get(part), dict):
+            out[part] = _scrub_grade(out[part], marker, found)
+        elif part in out:
             out[part] = _scrub(
                 out[part], marker, part, found, keep=not part.startswith("read_back")
             )
+    _scrub_chain(out, marker, found)
     return out, sorted(found)
+
+
+def _scrub_grade(grade: dict[str, Any], marker: str, found: set[str]) -> dict[str, Any]:
+    """The grade with its text redacted but each check still named.
+
+    A check's ``what`` can hold what was said or expected, so it is replaced by the check's
+    ``label`` (its kind and the field or tool it is about, no values) and the label stays.
+    A check stored without a label cannot be named safely, and is redacted whole.
+    """
+    rest = {k: v for k, v in grade.items() if k != "checks"}
+    out = _scrub(rest, marker, "grade", found)
+    checks = grade.get("checks")
+    if not isinstance(checks, list):
+        return {**out, **({"checks": checks} if "checks" in grade else {})}
+    held: list[Any] = []
+    for index, check in enumerate(checks):
+        if not isinstance(check, dict):
+            held.append(_scrub(check, marker, f"grade.checks[{index}]", found))
+            continue
+        others = {k: v for k, v in check.items() if k not in ("what", "label")}
+        row = _scrub(others, marker, f"grade.checks[{index}]", found)
+        label, what = check.get("label"), check.get("what")
+        if "label" in check:
+            row["label"] = label
+        if isinstance(label, str) and label:
+            row["what"] = label
+            if _is_text(what) and what != label:
+                found.add("grade.checks[*].what")
+        elif _is_text(what):
+            row["what"] = marker
+            found.add("grade.checks[*].what")
+        elif "what" in check:
+            row["what"] = what
+        held.append(row)
+    # Keep the grade's own key order, with the checks where they were.
+    return {k: (held if k == "checks" else out.get(k, v)) for k, v in grade.items()}
+
+
+def _is_text(value: object) -> bool:
+    return isinstance(value, str) and bool(value) and not _is_redacted(value)
+
+
+def _scrub_chain(out: dict[str, Any], marker: str, found: set[str]) -> None:
+    """A chain result's captured values and free-text reasons, changed in place on ``out``.
+
+    The variable names stay (they say what the chain carries); the values are what was
+    said on the call, taken from its trace.
+    """
+    variables = out.get("variables")
+    if isinstance(variables, dict):
+        held = {k: marker if _is_text(v) else v for k, v in variables.items()}
+        if held != variables:
+            found.add("variables")
+        out["variables"] = held
+    if _is_text(out.get("reason")):
+        out["reason"] = marker
+        found.add("reason")
+    calls = out.get("calls")
+    if isinstance(calls, list):
+        rows: list[Any] = []
+        for row in calls:
+            if isinstance(row, dict) and _is_text(row.get("reason")):
+                row = {**row, "reason": marker}
+                found.add("calls[*].reason")
+            rows.append(row)
+        out["calls"] = rows
 
 
 def _text_fields(data: dict[str, Any]) -> list[str]:
@@ -483,8 +552,15 @@ def _plan_results(plan: Plan, directories: list[Path], *, keep_text: bool) -> No
             used = list(dict.fromkeys(used))
             done = {str(m.get("clip")) for m in data.get(MARK, []) if isinstance(m, dict)}
             todo = [s for s in used if s not in done]
-            if todo:
+            chain_fields = (
+                _text_fields(data)
+                if used and not keep_text and path.name.startswith("chain-")
+                else []
+            )
+            if todo or chain_fields:
                 plan.results[path] = todo
+            if chain_fields:
+                plan.redact[path] = chain_fields
         for path in files:
             if not _is_result(path) and _mentioned(_strings(_read_json(path)), stems):
                 plan.mentioned.append(path)
@@ -554,7 +630,9 @@ def make_plan(
     return plan
 
 
-def describe(plan: Plan, *, dry: bool, keep_text: bool = False) -> list[str]:
+def describe(
+    plan: Plan, *, dry: bool, keep_text: bool = False, finishing: list[str] | None = None
+) -> list[str]:
     verb = "would" if dry else "will"
     lines = [
         f"{'DRY RUN: nothing is changed. ' if dry else ''}forget {plan.target}: "
@@ -576,7 +654,7 @@ def describe(plan: Plan, *, dry: bool, keep_text: bool = False) -> list[str]:
     if plan.redact:
         lines.append(f"  {KEPT_NOTE}")
         lines.append(
-            "  NOT redacted: batch and chain summaries (marked only), uploads, scorecards, "
+            "  NOT redacted: batch summaries (marked only), uploads, scorecards, "
             "acceptance pages, call recordings"
         )
     if keep_text:
@@ -600,7 +678,9 @@ def describe(plan: Plan, *, dry: bool, keep_text: bool = False) -> list[str]:
             "the files)."
         )
         lines += [f"    {p}" for p in plan.source_files]
-    if not plan.changes:
+    if not plan.changes and finishing:
+        lines += [f"  finishing earlier unfinished removal {removal}" for removal in finishing]
+    elif not plan.changes:
         lines.append("  nothing to change: already removed, or no stored file uses these clips")
     lines.append(UPLOAD_REMINDER)
     if plan.uploaded:
@@ -794,13 +874,18 @@ def run(args: argparse.Namespace) -> int:
     except ForgetError as error:
         print(f"forget: {error}")
         return 2
-    for line in describe(plan, dry=args.dry_run, keep_text=args.keep_text):
-        print(line)
     pending = [
         r
         for r in removals.unfinished(banks)
         if {clip_id(str(c)) for c in r["clips"]} <= set(plan.stems)
     ]
+    for line in describe(
+        plan,
+        dry=args.dry_run,
+        keep_text=args.keep_text,
+        finishing=[str(r["removal"]) for r in pending],
+    ):
+        print(line)
     if args.dry_run or not (plan.changes or pending):
         return 0
     try:

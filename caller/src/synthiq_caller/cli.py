@@ -208,6 +208,7 @@ def validate(args: argparse.Namespace) -> int:
             if count > BANK_LINES and kind not in (
                 "past retention",
                 "invalid field",
+                "consent record missing",
                 "unfinished removal",
             ):
                 print(f"  ... {count - BANK_LINES} more {kind} finding(s) not listed")
@@ -303,7 +304,11 @@ def _checker(args: argparse.Namespace) -> PrereqChecker | None:
 
 
 def _bank(args: argparse.Namespace) -> ClipBank:
-    return ClipBank(args.clips, extra=tuple(getattr(args, "clips_extra", None) or ()))
+    return ClipBank(
+        args.clips,
+        extra=tuple(getattr(args, "clips_extra", None) or ()),
+        allow_missing_consent=bool(getattr(args, "allow_missing_consent", False)),
+    )
 
 
 def _named_secret(env_name: str, env_file: str | None) -> str:
@@ -523,6 +528,7 @@ def _batch(args: argparse.Namespace) -> int:
                 read_back=_read_back(args),
                 allow_unverified_clips=args.allow_unverified_clips,
                 allow_unknown_provenance=args.allow_unknown_provenance,
+                allow_missing_consent=args.allow_missing_consent,
                 space_names=args.space_names,
                 prereq=_checker(args),
                 leg_name=args.leg,
@@ -630,6 +636,12 @@ def main(argv: list[str] | None = None) -> int:
         help="play clips whose manifest does not say if they are real or synthetic; "
         "results are marked 'provenance unknown'",
     )
+    run.add_argument(
+        "--allow-missing-consent",
+        action="store_true",
+        help="play real clips that have no lawful basis or consent record (special-category "
+        "data); results say 'consent record missing'. Not implied by --allow-unknown-provenance",
+    )
     run.add_argument("--clips-extra", action="append", default=[], help="a further clip bank")
     run.add_argument("--name-budget", type=int, default=2, help="identity checks per name")
     run.add_argument("--target-label", default="", help=TARGET_LABEL_HELP)
@@ -705,6 +717,12 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="play clips whose manifest does not say if they are real or synthetic; "
         "results are marked 'provenance unknown'",
+    )
+    bat.add_argument(
+        "--allow-missing-consent",
+        action="store_true",
+        help="play real clips that have no lawful basis or consent record (special-category "
+        "data); results say 'consent record missing'. Not implied by --allow-unknown-provenance",
     )
     bat.add_argument(
         "--clips-extra",
@@ -858,6 +876,11 @@ def main(argv: list[str] | None = None) -> int:
     val = sub.add_parser("validate", help="check a directory of scenarios, and its clips")
     val.add_argument("scenarios")
     val.add_argument("--clips", default=None)
+    val.add_argument(
+        "--allow-missing-consent",
+        action="store_true",
+        help="report real clips with no lawful basis or consent record without failing",
+    )
     val.add_argument("--target", default="", help=TARGET_HELP)
     val.add_argument("--env-file", default=None)
     val.add_argument(
@@ -890,7 +913,7 @@ def main(argv: list[str] | None = None) -> int:
     bank_build.add_argument("--recordings", required=True)
     bank_build.add_argument("--out", required=True)
     bank_build.add_argument("--pad", type=float, default=0.15)
-    from synthiq_caller.consent import LAWFUL_BASES, PROVENANCES, SOURCE_KINDS
+    from synthiq_caller.consent import PROVENANCES, SOURCE_KINDS
 
     bank_build.add_argument(
         "--provenance",
@@ -900,7 +923,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     bank_build.add_argument("--source-kind", choices=SOURCE_KINDS, default="")
     bank_build.add_argument("--speaker-ref", default="", help="opaque id, spk_..., never a name")
-    bank_build.add_argument("--lawful-basis", choices=LAWFUL_BASES, default="")
+    bank_build.add_argument(
+        "--lawful-basis", default="", help="Article 6 basis and Article 9 condition"
+    )
     bank_build.add_argument("--consent-ref", default="", help="where the consent record is held")
     bank_build.add_argument("--recorded-on", default="", help="YYYY-MM-DD")
     bank_build.add_argument("--retain-until", default="", help="YYYY-MM-DD")
@@ -1010,6 +1035,7 @@ def main(argv: list[str] | None = None) -> int:
             settle_s=2.0,
             allow_unverified_clips=args.allow_unverified_clips,
             allow_unknown_provenance=args.allow_unknown_provenance,
+            allow_missing_consent=args.allow_missing_consent,
         )
     )
     manifest.close_batch(out, batch_id)

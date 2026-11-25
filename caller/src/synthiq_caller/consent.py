@@ -10,8 +10,8 @@ speaker or looks at the audio.
 ``source_ref``      the call's or session's id on the platform it came from
 ``speaker_ref``     an opaque id ``spk_<8-32 lowercase letters and digits>``
 ``provenance``      ``real`` (a recording of a person) or ``synthetic``
-``lawful_basis``    one of the UK GDPR Article 6(1) bases (``LAWFUL_BASES``)
-``consent_ref``     where the consent record is held (a pointer, never the record)
+``lawful_basis``    Article 6 basis and Article 9 condition, as written (real: required)
+``consent_ref``     where the consent record is held (a pointer only; real: required)
 ``recorded_on``     ``YYYY-MM-DD``
 ``retain_until``    ``YYYY-MM-DD``; the clip may not be used after this day
 ``label_confirmed_by``  opaque reviewer id ``rev_...``, who listened and confirmed
@@ -33,16 +33,6 @@ from datetime import UTC, date, datetime
 SOURCE_KINDS = ("call", "session")
 PROVENANCES = ("real", "synthetic")
 UNKNOWN = "unknown"
-
-# UK GDPR Article 6(1)(a) to (f), by the word this tool uses for each.
-LAWFUL_BASES = (
-    "consent",
-    "contract",
-    "legal_obligation",
-    "vital_interests",
-    "public_task",
-    "legitimate_interests",
-)
 
 SPEAKER_PREFIX = "spk"
 REVIEWER_PREFIX = "rev"
@@ -137,6 +127,21 @@ class Consent:
             return "real"
         return UNKNOWN
 
+    @property
+    def special_category(self) -> bool:
+        """True for every real caller's recording: a voice, and what it says about health.
+
+        UK GDPR Article 9 needs a condition as well as an Article 6 basis. The owner
+        records both in ``lawful_basis``; this tool does not judge which.
+        """
+        return self.kind == "real"
+
+    def record_missing(self) -> list[str]:
+        """What a real clip must carry before it may be played: a basis and a consent record."""
+        if not self.special_category:
+            return []
+        return [name for name in ("lawful_basis", "consent_ref") if not getattr(self, name)]
+
     def expired(self, today: date) -> bool:
         """True when ``retain_until`` is before ``today``, or is written and cannot be read.
 
@@ -165,8 +170,7 @@ class Consent:
             note(opaque_id_problem(self.speaker_ref, SPEAKER_PREFIX, "speaker_ref"))
         if self.provenance and self.kind == UNKNOWN:
             found.append(f"provenance {self.provenance!r} is not one of {list(PROVENANCES)}")
-        if self.lawful_basis and self.lawful_basis not in LAWFUL_BASES:
-            found.append(f"lawful_basis {self.lawful_basis!r} is not one of {list(LAWFUL_BASES)}")
+        # Which basis applies is the owner's call, per clip source: any non-empty text is kept.
         if self.consent_ref:
             note(reference_problem(self.consent_ref, "consent_ref"))
         if self.lawful_basis == "consent" and not self.consent_ref:
@@ -194,7 +198,7 @@ class Consent:
         """What a real recording should carry and does not. Not an error; a thing to fill in."""
         if self.kind != "real":
             return []
-        wanted = ("speaker_ref", "lawful_basis", "recorded_on", "retain_until")
+        wanted = ("speaker_ref", "recorded_on", "retain_until")
         return [name for name in wanted if not getattr(self, name)]
 
 

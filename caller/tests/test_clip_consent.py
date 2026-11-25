@@ -101,8 +101,6 @@ def test_every_field_parses_and_a_complete_row_has_no_problems() -> None:
         ("speaker_ref", "+44 7700 900123", "phone number"),
         ("speaker_ref", "spk_07700900123", "phone number"),
         ("provenance", "maybe", "provenance"),
-        ("lawful_basis", "because", "lawful_basis"),
-        ("lawful_basis", "vital_interest", "lawful_basis"),
         ("consent_ref", "jane@example.test", "consent_ref"),
         ("consent_ref", "has spaces", "consent_ref"),
         ("recorded_on", "01/10/2026", "recorded_on"),
@@ -126,14 +124,11 @@ def test_consent_as_the_basis_needs_a_record_and_a_confirmation_needs_a_date() -
     assert any("without label_confirmed_by" in p for p in no_who)
 
 
-def test_every_lawful_basis_in_the_set_is_accepted_and_nothing_else() -> None:
+def test_any_non_empty_lawful_basis_is_accepted_and_none_is_judged() -> None:
     for basis in (
         "consent",
-        "contract",
-        "legal_obligation",
-        "vital_interests",
-        "public_task",
-        "legitimate_interests",
+        "Art 6(1)(a) consent; Art 9(2)(a) explicit consent",
+        "because",
     ):
         assert Consent.from_row({**FULL, "lawful_basis": basis}).problems() == []
 

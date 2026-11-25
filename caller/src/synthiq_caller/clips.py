@@ -120,6 +120,11 @@ class ClipInfo:
         return self.provenance == "synthetic"
 
     @property
+    def special_category(self) -> bool:
+        """True for a real caller's recording (UK GDPR Article 9 data)."""
+        return self.consent.special_category
+
+    @property
     def confirmed(self) -> bool:
         return self.checked_by_human or bool(self.consent.label_confirmed_by)
 
@@ -158,10 +163,14 @@ class ClipBank:
         extra: tuple[str | Path, ...] = (),
         *,
         allow_unknown_provenance: bool = False,
+        allow_missing_consent: bool = False,
     ) -> None:
         # Every playback goes through ``pcm``, which refuses a clip past its retention
         # date, always, and a clip whose provenance is unknown unless this is set.
         self.allow_unknown_provenance = allow_unknown_provenance
+        # A real clip is special-category data: it needs a lawful basis and a consent record
+        # to be played. This is its own switch; allowing unknown provenance never lifts it.
+        self.allow_missing_consent = allow_missing_consent
         self.directory = Path(directory)
         self.directories = [self.directory, *(Path(d) for d in extra)]
         self._info: dict[str, ClipInfo] = {}
@@ -253,6 +262,16 @@ class ClipBank:
                 unknown.append(f"{name}: {said or 'no provenance in the manifest'}")
         return unknown
 
+    def consent_missing(self, names: list[str]) -> list[str]:
+        """Each real clip in ``names`` with no lawful basis or consent record, once."""
+        missing: list[str] = []
+        for name in dict.fromkeys(names):
+            info = self.info(name)
+            lacks = info.consent.record_missing() if info is not None else []
+            if lacks:
+                missing.append(f"{name}: no {' or '.join(lacks)}")
+        return missing
+
     def expired_in(self, names: list[str], today: date | None = None) -> list[str]:
         """Those of ``names`` past their ``retain_until`` date, with the date, once each."""
         day = today or consent_rules.today_utc()
@@ -288,6 +307,8 @@ class ClipBank:
             return f"{name}: past its retention date (retain_until {info.consent.retain_until!r})"
         if not self.allow_unknown_provenance and self.provenance_unknown([name]):
             return f"{name}: provenance not recorded; allow unknown provenance to play it"
+        if not self.allow_missing_consent and self.consent_missing([name]):
+            return f"{name}: consent record missing; allow missing consent to play it"
         return ""
 
     def pcm(self, name: str, rate: int) -> bytes:

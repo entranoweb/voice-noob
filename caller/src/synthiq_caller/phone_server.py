@@ -63,6 +63,7 @@ def open_bank(args: argparse.Namespace, scenario: Scenario) -> ClipBank:
         args.clips,
         extra=tuple(args.clips_extra),
         allow_unknown_provenance=args.allow_unknown_provenance,
+        allow_missing_consent=args.allow_missing_consent,
     )
     played = [clip for step in scenario.steps for clip in step.clips]
     if scenario.fallback is not None:
@@ -238,6 +239,11 @@ def main(argv: list[str] | None = None, env: Mapping[str, str] | None = None) ->
         "--allow-unknown-provenance",
         action="store_true",
         help="play clips whose manifest does not say if they are real or synthetic",
+    )
+    parser.add_argument(
+        "--allow-missing-consent",
+        action="store_true",
+        help="play real clips with no lawful basis or consent record (special-category data)",
     )
     parser.add_argument("--out", default="")
     parser.add_argument("--public-url", default="")
