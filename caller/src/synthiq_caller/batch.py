@@ -58,7 +58,13 @@ from synthiq_caller.leg import Leg
 from synthiq_caller.prereq import PrereqChecker, requires_state
 from synthiq_caller.readback import ReadBack, ReadBackContext
 from synthiq_caller.reset import Reset, ResetContext, ResetFailed
-from synthiq_caller.scenario import MUTATION_LEVELS, Scenario, ScenarioError, load_scenario
+from synthiq_caller.scenario import (
+    MUTATION_LEVELS,
+    UNGRADEABLE,
+    Scenario,
+    ScenarioError,
+    load_scenario,
+)
 from synthiq_caller.traces.base import Trace, TraceReader
 from synthiq_caller.turns import TurnSettings
 
@@ -535,6 +541,9 @@ async def run_batch(
             "leg": leg_name or kind,
             **line,
             "mutates": scenario.mutates,
+            # Whether the scenario asked anything of the call; ``acceptance`` refuses
+            # runs made from one that did not.
+            "states_expectations": scenario.states_expectations(),
             "repeat": repeat,
             "record": record.to_json(),
             "trace": trace.to_json() if trace else None,
@@ -583,7 +592,7 @@ async def run_batch(
 
         if not allow_ungradeable and not scenario.states_expectations():
             block(
-                "UNGRADEABLE: the scenario states no expectations, so no call could pass it "
+                f"{UNGRADEABLE}: the scenario states no expectations, so no call could pass it "
                 "(state them, or allow ungradeable scenarios for this batch)"
             )
             return

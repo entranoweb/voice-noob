@@ -13,7 +13,9 @@
   whose ``mutates`` is more than the batch's own ``--allow-mutating none`` lets
   through (``batch.ALLOWED``). That is the caller's mutation guard, used as it
   is: a scenario that does not say what it changes is ``unknown`` and is
-  refused like one that books.
+  refused like one that books;
+* any scenario states no expectations, so no call could pass it: the same check
+  as ``synthiq-caller validate --strict`` (``validation.ungradeable_problems``).
 
 The batch run afterwards still passes ``--allow-mutating none``, so the guard
 holds twice. Nothing here reads a secret or opens a connection.
@@ -36,6 +38,7 @@ from synthiq_caller.batch import ALLOWED, load_chains, load_scenarios
 from synthiq_caller.chain import Chain
 from synthiq_caller.legs.fake import RATE, tone
 from synthiq_caller.scenario import Scenario, ScenarioError
+from synthiq_caller.validation import ungradeable_problems, validate_directory
 
 SET_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
@@ -102,6 +105,14 @@ def check_scenarios(directory: str | Path) -> int:
         raise GateRefused(
             "mutating scenarios are refused: this workflow places no call that could change "
             "anything. Remove or mark read-only: " + ", ".join(refused)
+        )
+    # The same check as ``synthiq-caller validate --strict``: a scenario that asks
+    # nothing of a call can never pass, so the job stops before any call is placed.
+    ungradeable = ungradeable_problems(validate_directory(root, None, None))
+    if ungradeable:
+        raise GateRefused(
+            "scenarios that cannot be graded are refused (state their expectations): "
+            + "; ".join(ungradeable)
         )
     return len(scenarios) + len(chains)
 

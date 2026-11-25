@@ -321,3 +321,53 @@ def test_a_phone_leg_drops_the_direct_connection_caveat(tmp_path: Path) -> None:
     assert not any("direct connection" in limit for limit in found["not_shown"])
     assert any("over a phone line (leg: phone)" in limit for limit in found["not_shown"])
     assert any("was not recorded for every batch" in limit for limit in found["not_shown"])
+
+
+# --- an ungradeable scenario behind the runs: no report ---------------------------
+
+
+def test_acceptance_refuses_runs_made_from_a_scenario_that_states_no_expectations(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    runs = run_directory(
+        tmp_path,
+        ["passed"] * 58 + ["ungraded"],
+        extra={58: {"states_expectations": False}},
+    )
+    with pytest.raises(acceptance.Refused, match=r"s058\.json.*states no expectations"):
+        acceptance.build([runs])
+    code, text = page(runs)
+    assert code == 2 and text == ""
+    assert "states no expectations" in capsys.readouterr().out
+    assert not (tmp_path / "report.json").exists()
+
+
+def test_acceptance_refuses_when_the_batch_held_back_an_ungradeable_scenario(
+    tmp_path: Path,
+) -> None:
+    runs = run_directory(tmp_path, ["passed"] * 59)
+    write_json(
+        runs / "batch.json",
+        {
+            "out": str(runs),
+            "ran": 59,
+            "blocked": [
+                {
+                    "scenario_file": "bare.json",
+                    "scenario": "x",
+                    "repeat": 1,
+                    "reason": "UNGRADEABLE: the scenario states no expectations, so no call "
+                    "could pass it (state them, or allow ungradeable scenarios for this batch)",
+                }
+            ],
+        },
+    )
+    with pytest.raises(acceptance.Refused, match=r"bare\.json"):
+        acceptance.build([runs])
+
+
+def test_acceptance_accepts_runs_whose_scenarios_state_expectations(tmp_path: Path) -> None:
+    runs = run_directory(
+        tmp_path, ["passed"] * 59, extra={n: {"states_expectations": True} for n in range(59)}
+    )
+    assert acceptance.build([runs])["verdict"] == acceptance.MET

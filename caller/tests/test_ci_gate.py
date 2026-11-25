@@ -18,14 +18,14 @@ BASELINE = CALLER / "baselines" / "smoke.json"
 WORKFLOW = CALLER.parent / ".github" / "workflows" / "caller-scheduled.yml"
 
 
-def write_scenario(folder: Path, name: str, mutates: str | None) -> None:
+def write_scenario(folder: Path, name: str, mutates: str | None, expectations: bool = True) -> None:
     data: dict[str, Any] = {
         "name": name,
         "persona": {"facts": {"name": "Alice Wonderland"}},
         "steps": [{"when": "how can i help", "clips": ["ci-opener"]}],
         "hangup_after": "mobile number",
         "max_seconds": 20,
-        "expect": {"tools": [], "fields": []},
+        "expect": {"tools": [{"name_contains": "lookup"}] if expectations else [], "fields": []},
     }
     if mutates is not None:
         data["mutates"] = mutates
@@ -250,3 +250,33 @@ def test_the_workflow_keeps_its_promises() -> None:
     assert re.search(r"^permissions:\n  contents: read$", text, re.MULTILINE)
     # The check runs before the batch does.
     assert text.index("ci_gate check") < text.index("synthiq-caller batch")
+
+
+# --- a set that cannot be graded is refused before any call (strict validate) -----
+
+
+def test_a_set_with_a_scenario_that_states_no_expectations_is_refused(tmp_path: Path) -> None:
+    write_scenario(tmp_path, "graded", "none")
+    write_scenario(tmp_path, "bare", "none", expectations=False)
+    with pytest.raises(GateRefused, match=r"bare\.json.*states no expectations"):
+        ci_gate.check_scenarios(tmp_path)
+
+
+def test_the_command_exits_one_for_an_ungradeable_set_and_names_it(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    write_scenario(tmp_path / "set", "bare", "none", expectations=False)
+    args = ["check", "--target", "t", "--allowed", "t", "--root", str(tmp_path), "--set", "set"]
+    assert ci_gate.main(args) == 1
+    assert "bare.json" in capsys.readouterr().err
+
+
+def test_the_committed_smoke_set_is_gradeable() -> None:
+    assert ci_gate.check_scenarios(SETS / "smoke") == 2
+
+
+def test_the_workflow_validates_strictly_before_the_batch() -> None:
+    text = WORKFLOW.read_text(encoding="utf-8")
+    strict = text.index("synthiq-caller validate")
+    assert "--strict" in text[strict : strict + 120]
+    assert text.index("ci_gate check") < strict < text.index("synthiq-caller batch")
