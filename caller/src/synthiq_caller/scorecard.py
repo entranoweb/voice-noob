@@ -55,10 +55,15 @@ def merged(summaries: list[Summary]) -> Summary:
         total.excluded += one.excluded
         for who, count in one.faults.items():
             total.faults[who] = total.faults.get(who, 0) + count
+        total.rehearsals += one.rehearsals
         for name, (passed, graded) in one.by_scenario.items():
             tally = total.by_scenario.setdefault(name, [0, 0])
             tally[0] += passed
             tally[1] += graded
+        for name, (passed, placed) in one.by_scenario_placed.items():
+            tally = total.by_scenario_placed.setdefault(name, [0, 0])
+            tally[0] += passed
+            tally[1] += placed
         for name, field_tally in one.fields.items():
             into = total.fields.setdefault(name, FieldTally())
             for key, value in asdict(field_tally).items():

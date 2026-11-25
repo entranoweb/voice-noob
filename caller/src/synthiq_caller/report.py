@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from synthiq_caller.stats import describe, wilson_interval
+from synthiq_caller.stats import describe, gate, wilson_interval
 
 
 @dataclass
@@ -252,6 +252,105 @@ def scenario_level(summary: Summary) -> tuple[int, int, int]:
         sum(t > 0 and p == t for p, t in placed),
         sum(p > 0 for p, _ in placed),
         len(placed),
+    )
+
+
+@dataclass
+class GateReading:
+    """A set of calls judged against a claimed pass rate (see ``gate_reading``)."""
+
+    rate: float
+    confidence: float
+    max_unjudged: float
+    passed: int
+    # Placed and not void: what the by-call reading is out of.
+    counted: int
+    met_calls: bool
+    shown_calls: float
+    by_call: str
+    # Scenarios that passed every call placed, and scenarios placed.
+    every: int
+    scenarios: int
+    met_scenarios: bool
+    shown_scenarios: float
+    by_scenario: str
+    attempted: int
+    placed: int
+    not_run: int
+    unjudged: int
+    share: float
+    void: int
+    ungraded: int
+    ungradeable: int
+    # Why the gate is refused whatever the numbers say (empty when it is not).
+    refused: list[str] = field(default_factory=list)
+
+    @property
+    def met(self) -> bool:
+        """The claim is demonstrated: by scenario, and nothing refuses it."""
+        return self.met_scenarios and not self.refused
+
+
+def gate_reading(
+    summary: Summary, rate: float, confidence: float, max_unjudged: float = 0.1
+) -> GateReading:
+    """Judge a summary against a claimed pass rate.
+
+    Two readings. By call, every placed call that is not void counts and
+    anything not passed counts against. By scenario, a scenario counts once and
+    passes only if every one of its calls passed: the reading that does not
+    treat repeats of the same audio as independent evidence, and the one that
+    decides. A call that was placed and could not be graded counts against in
+    both.
+
+    Void calls and calls that were never placed are in neither reading, so a
+    batch could meet the numbers on the part of itself that happened to run.
+    ``max_unjudged`` is the share of what was attempted that may go unjudged
+    (void, ungraded, ungradeable, not run) before the gate is refused whatever
+    the numbers say. A rehearsal against a scripted agent never meets a gate.
+    """
+    counted = summary.runs - summary.void
+    met_calls, shown_calls, by_call = gate(summary.passed, counted, rate, confidence)
+    every, _, scenarios = scenario_level(summary)
+    met, shown, by_scenario = gate(every, scenarios, rate, confidence)
+    not_run = len(summary.blocked)
+    unjudged = summary.void + summary.ungraded + summary.ungradeable + not_run
+    attempted = summary.runs + not_run
+    share = unjudged / attempted if attempted else 1.0
+    refused = []
+    if summary.rehearsals:
+        refused.append(
+            f"{summary.rehearsals} call(s) are rehearsals against a scripted stand-in, not an agent"
+        )
+    if share > max_unjudged:
+        refused.append(
+            f"{share:.0%} of what was attempted was not judged, more than the "
+            f"{max_unjudged:.0%} allowed (--max-unjudged); the numbers above describe only "
+            "the part that was"
+        )
+    return GateReading(
+        rate=rate,
+        confidence=confidence,
+        max_unjudged=max_unjudged,
+        passed=summary.passed,
+        counted=counted,
+        met_calls=met_calls,
+        shown_calls=shown_calls,
+        by_call=by_call,
+        every=every,
+        scenarios=scenarios,
+        met_scenarios=met,
+        shown_scenarios=shown,
+        by_scenario=by_scenario,
+        attempted=attempted,
+        placed=summary.runs,
+        not_run=not_run,
+        unjudged=unjudged,
+        share=share,
+        void=summary.void,
+        ungraded=summary.ungraded,
+        ungradeable=summary.ungradeable,
+        refused=refused,
     )
 
 

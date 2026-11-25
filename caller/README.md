@@ -298,4 +298,9 @@ five outcomes and who each is charged to, booking expectations, reading a tool's
 outcome from its reply, unverified and synthetic clips, the identity budget, and
 the `gate` command (how many calls a claimed pass rate needs).
 
+[docs/MANIFEST-AND-ACCEPTANCE.md](docs/MANIFEST-AND-ACCEPTANCE.md) covers the
+run manifest every batch writes (rig commit, scenario and clip hashes, target)
+and the `acceptance` command, which turns run directories into one dated page:
+what was tested, what passed, and what that does not show.
+
 See also `docs/TARGETS-REHEARSAL-AND-SAFETY.md`: target profiles (`--target`), rehearsing a batch without an agent (`--leg fake`), and the rules tightened after the post-merge review.

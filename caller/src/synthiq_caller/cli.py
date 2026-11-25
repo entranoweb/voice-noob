@@ -15,6 +15,7 @@
     synthiq-caller baseline runs/ --out baseline.json
     synthiq-caller compare runs-new/ --baseline baseline.json --fail-on beyond-noise
     synthiq-caller gate runs/ --rate 0.95 --confidence 0.95
+    synthiq-caller acceptance runs/a runs/b --claim 0.95 --out report.html
     synthiq-caller clipbank build --recordings <dir> --out <dir outside any repo>
     synthiq-caller clipbank scenario --clips <dir> --call <call id>
 
@@ -32,6 +33,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from synthiq_caller import manifest
 from synthiq_caller.batch import (
     ALLOWED,
     BatchResult,
@@ -59,10 +61,10 @@ from synthiq_caller.jsonio import utf8_console
 from synthiq_caller.leg import Leg
 from synthiq_caller.prereq import CommandChecker, HttpChecker, PrereqChecker
 from synthiq_caller.readback import CommandReadBack, HttpReadBack, NoReadBack, ReadBack
-from synthiq_caller.report import fail_under_exit, render, scenario_level, summarise
+from synthiq_caller.report import fail_under_exit, gate_reading, render, summarise
 from synthiq_caller.reset import CommandReset, HttpReset, NoReset, Reset
 from synthiq_caller.scenario import load_scenario
-from synthiq_caller.stats import describe, gate
+from synthiq_caller.stats import describe
 from synthiq_caller.traces.base import TraceReader
 from synthiq_caller.validation import validate_directory
 
@@ -217,52 +219,55 @@ def _scorecard(args: argparse.Namespace) -> int:
 def _gate(directory: str, rate: float, confidence: float, max_unjudged: float = 0.1) -> int:
     """Judge a batch against a claimed pass rate. Exit 0 only when it is demonstrated.
 
-    Two readings are printed. By call, every placed call that is not void counts
-    and anything not passed counts against. By scenario, a scenario counts once
-    and passes only if every one of its calls passed: the reading that does not
-    treat repeats of the same audio as independent evidence. A call that was
-    placed and could not be graded counts against in both.
-
-    Void calls and calls that were never placed are in neither reading, so a
-    batch could meet the numbers on the part of itself that happened to run.
-    ``max_unjudged`` is the share of what was attempted that may go unjudged
-    (void, ungraded, ungradeable, not run) before the gate is refused whatever
-    the numbers say. A rehearsal against a scripted agent never meets a gate.
+    The rule is ``report.gate_reading``; this prints it.
     """
-    summary = summarise(directory)
-    counted = summary.runs - summary.void
-    met_calls, _, by_call = gate(summary.passed, counted, rate, confidence)
-    every, _, scenarios = scenario_level(summary)
-    met, _, by_scenario = gate(every, scenarios, rate, confidence)
-    not_run = len(summary.blocked)
-    unjudged = summary.void + summary.ungraded + summary.ungradeable + not_run
-    attempted = summary.runs + not_run
-    share = unjudged / attempted if attempted else 1.0
-    print(f"by call:     {by_call}")
-    print(f"by scenario: {by_scenario}")
+    read = gate_reading(summarise(directory), rate, confidence, max_unjudged)
+    print(f"by call:     {read.by_call}")
+    print(f"by scenario: {read.by_scenario}")
     print(
-        f"attempted: {attempted} call(s); placed {summary.runs}; counted {counted}. "
-        f"Not judged: {unjudged} ({share:.0%}): void {summary.void} (the rig's fault, re-run "
-        f"them), ungraded {summary.ungraded}, ungradeable {summary.ungradeable}, "
-        f"not run {not_run}. Calls that were placed and could not be graded count against."
+        f"attempted: {read.attempted} call(s); placed {read.placed}; counted {read.counted}. "
+        f"Not judged: {read.unjudged} ({read.share:.0%}): void {read.void} (the rig's fault, "
+        f"re-run them), ungraded {read.ungraded}, ungradeable {read.ungradeable}, "
+        f"not run {read.not_run}. Calls that were placed and could not be graded count against."
     )
-    if met_calls and not met:
+    if read.met_calls and not read.met_scenarios:
         print("The by-call reading is met only by counting repeats as independent calls.")
-    refused = []
-    if summary.rehearsals:
-        refused.append(
-            f"{summary.rehearsals} call(s) are rehearsals against a scripted stand-in, not an agent"
-        )
-    if share > max_unjudged:
-        refused.append(
-            f"{share:.0%} of what was attempted was not judged, more than the "
-            f"{max_unjudged:.0%} allowed (--max-unjudged); the numbers above describe only "
-            "the part that was"
-        )
-    if refused:
-        print("NOT met: " + "; ".join(refused) + ".")
+    if read.refused:
+        print("NOT met: " + "; ".join(read.refused) + ".")
         return 1
-    return 0 if met else 1
+    return 0 if read.met else 1
+
+
+def _acceptance(args: argparse.Namespace) -> int:
+    """Write the acceptance report. 0: the claim is met. 1: it is not. 2: no report was made."""
+    from synthiq_caller import acceptance
+
+    try:
+        found = acceptance.build(
+            [Path(d) for d in args.directories],
+            claim=args.claim,
+            confidence=args.confidence,
+            max_unjudged=args.max_unjudged,
+            allow_mixed=args.allow_mixed_scenarios,
+            allow_no_manifest=args.allow_no_manifest,
+            title=args.title,
+        )
+    except acceptance.Refused as error:
+        print(f"acceptance report refused: {error}")
+        return 2
+    out = acceptance.write(found, args.out)
+    print(f"{found['verdict']}: {found['verdict_reason']}.  ->  {out}")
+    return 0 if found["verdict"] == acceptance.MET else 1
+
+
+TARGET_LABEL_HELP = (
+    "a name for the system under test, written into the run manifest and onto reports; "
+    "keep it neutral"
+)
+TARGET_VERSION_HELP = (
+    "the version or configuration of the system under test, as you state it; the rig does "
+    "not ask the platform, and reports say the version is as stated"
+)
 
 
 def _checker(args: argparse.Namespace) -> PrereqChecker | None:
@@ -454,13 +459,15 @@ def _batch(args: argparse.Namespace) -> int:
         from synthiq_caller.phone_batch import environment, open_phone_batch
 
         phone = open_phone_batch(args, environment(args.env_file), out)
+    bank = _bank(args)
+    batch_id = manifest.open_for(args, out, args.scenarios, scenarios, chains, bank)
 
     async def go() -> BatchResult:
         try:
             return await run_batch(
                 scenarios,
                 phone.make_leg if phone is not None else (lambda: _build(args)),
-                _bank(args),
+                bank,
                 out,
                 repeats=args.repeats,
                 max_parallel=args.max_parallel,
@@ -479,8 +486,10 @@ def _batch(args: argparse.Namespace) -> int:
                 leg_name=args.leg,
                 make_leg_for=(lambda file: _build_fake(args, file)) if rehearsal else None,
                 rehearsal=rehearsal,
+                batch_id=batch_id,
             )
         finally:
+            manifest.close_batch(out, batch_id)
             if phone is not None:
                 await phone.aclose()
 
@@ -575,6 +584,8 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--allow-unverified-clips", action="store_true")
     run.add_argument("--clips-extra", action="append", default=[], help="a further clip bank")
     run.add_argument("--name-budget", type=int, default=2, help="identity checks per name")
+    run.add_argument("--target-label", default="", help=TARGET_LABEL_HELP)
+    run.add_argument("--target-version", default="", help=TARGET_VERSION_HELP)
 
     rep = sub.add_parser("report", help="summarise a directory of runs")
     rep.add_argument("directory")
@@ -590,6 +601,8 @@ def main(argv: list[str] | None = None) -> int:
     bat.add_argument("scenarios")
     bat.add_argument("--leg", required=True, choices=LEGS)
     bat.add_argument("--target", default="", help=TARGET_HELP)
+    bat.add_argument("--target-label", default="", help=TARGET_LABEL_HELP)
+    bat.add_argument("--target-version", default="", help=TARGET_VERSION_HELP)
     bat.add_argument(
         "--dry-run",
         action="store_true",
@@ -723,6 +736,12 @@ def main(argv: list[str] | None = None) -> int:
     reg.add_argument("--agent", default="-")
     reg.add_argument("--trace", choices=TRACES, default="elevenlabs", help="where the trace is")
     reg.add_argument("--env-file", default=None)
+    reg.add_argument(
+        "--allow-mixed-scenarios",
+        action="store_true",
+        help="regrade even though the stored runs were made against different versions of "
+        "the same scenario file; all of them then answer to the scenarios as they are now",
+    )
 
     base = sub.add_parser("baseline", help="store a batch's pass counts to compare against")
     base.add_argument("directory")
@@ -755,6 +774,32 @@ def main(argv: list[str] | None = None) -> int:
     _phone_arguments(pre)
     pre.add_argument("--env-file", default=None)
     pre.add_argument("--no-trace", action="store_true", help="the calls will not be graded")
+
+    acc = sub.add_parser(
+        "acceptance", help="one dated page: what was tested, what passed, what it does not show"
+    )
+    acc.add_argument("directories", nargs="+")
+    acc.add_argument("--claim", type=float, default=0.95, help="the pass rate being claimed")
+    acc.add_argument("--confidence", type=float, default=0.95)
+    acc.add_argument("--out", required=True, help="the page to write; its data goes beside it")
+    acc.add_argument("--title", default="")
+    acc.add_argument(
+        "--max-unjudged",
+        type=float,
+        default=0.1,
+        help="as for gate: the share of attempted calls that may go unjudged",
+    )
+    acc.add_argument(
+        "--allow-mixed-scenarios",
+        action="store_true",
+        help="report on runs made against different versions of a scenario file; the page "
+        "lists the versions and says they are not one test",
+    )
+    acc.add_argument(
+        "--allow-no-manifest",
+        action="store_true",
+        help="report on runs that have no manifest; the page says what could not be recorded",
+    )
 
     val = sub.add_parser("validate", help="check a directory of scenarios, and its clips")
     val.add_argument("scenarios")
@@ -800,6 +845,9 @@ def main(argv: list[str] | None = None) -> int:
     register_upload(sub)
 
     args = parser.parse_args(argv)
+    # Kept for the run manifest. Secrets are never on the command line: they are
+    # named by environment variable.
+    args.argv_raw = list(argv) if argv is not None else sys.argv[1:]
     utf8_console()
     if args.command == "upload":
         return int(args.handler(args))
@@ -810,6 +858,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "batch":
         return _batch(args)
     if args.command == "regrade":
+        try:
+            manifest.refuse_mixed(
+                [args.directory],
+                allow=args.allow_mixed_scenarios,
+                remedy="Regrading would grade them all against the scenarios as they are now",
+            )
+        except manifest.MixedScenarios as error:
+            print(f"regrade refused: {error}")
+            return 2
         if args.reread or args.reread_all:
             reader = _reread_reader(args)
             if reader is not None:
@@ -818,8 +875,18 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 print(f"traces fetched again: {fetched}")
         profile = _target(args)
-        changed = regrade(Path(args.directory), load_scenarios(args.scenarios, profile))
-        changed += regrade_chains(Path(args.directory), load_chains(args.scenarios, profile))
+        scenarios = load_scenarios(args.scenarios, profile)
+        chains = load_chains(args.scenarios, profile)
+        changed = regrade(Path(args.directory), scenarios)
+        changed += regrade_chains(Path(args.directory), chains)
+        manifest.record_regrade(
+            args.directory,
+            scenarios=manifest.scenario_identity(
+                args.scenarios, [file for file, _ in scenarios] + [file for file, _ in chains]
+            ),
+            changed=changed,
+            argv=args.argv_raw,
+        )
         print(f"regraded: {changed} run(s) changed")
         return report(args.directory, details=False)
     if args.command == "validate":
@@ -842,18 +909,24 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "clipbank":
         return _clipbank(args)
+    if args.command == "acceptance":
+        return _acceptance(args)
     if args.command == "gate":
         return _gate(args.directory, args.rate, args.confidence, args.max_unjudged)
 
     # One scenario goes through the same guards as a batch of them.
     scenario = load_scenario(args.scenario)
     out = Path(args.out)
+    one = [(Path(args.scenario).name, scenario)]
+    clip_bank = _bank(args)
+    batch_id = manifest.open_for(args, out, Path(args.scenario).parent, one, [], clip_bank)
     result = asyncio.run(
         run_batch(
-            [(Path(args.scenario).name, scenario)],
+            one,
             lambda: _build(args),
-            _bank(args),
+            clip_bank,
             out,
+            batch_id=batch_id,
             repeats=args.repeats,
             allow_mutating=args.allow_mutating,
             budget=NameBudget(limit=args.name_budget),
@@ -862,6 +935,7 @@ def main(argv: list[str] | None = None) -> int:
             allow_unverified_clips=args.allow_unverified_clips,
         )
     )
+    manifest.close_batch(out, batch_id)
     for held_back in result.blocked:
         print(f"not run: {held_back.reason}")
     return report(str(out))
