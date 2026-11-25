@@ -1003,13 +1003,26 @@ def main(argv: list[str] | None = None) -> int:
     from synthiq_caller.capture import register as register_capture
 
     register_capture(sub)  # also adds `ingest`
+    from synthiq_caller.onboarding import register as register_onboarding
+    from synthiq_caller.reference import register as register_reference
+
+    register_onboarding(sub)  # `init` and `doctor`
+    register_reference(sub)
 
     args = parser.parse_args(argv)
     # Kept for the run manifest. Secrets are never on the command line: they are
     # named by environment variable.
     args.argv_raw = list(argv) if argv is not None else sys.argv[1:]
     utf8_console()
-    if args.command in ("upload", "forget", "capture", "ingest"):
+    if args.command in (
+        "upload",
+        "forget",
+        "capture",
+        "ingest",
+        "init",
+        "doctor",
+        "reference",
+    ):
         return int(args.handler(args))
     if args.command == "report":
         return report(args.directory, details=not args.summary_only, fail_under=args.fail_under)
