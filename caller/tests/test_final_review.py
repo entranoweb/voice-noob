@@ -10,9 +10,10 @@ from test_clip_consent import FULL, forget_args, forget_world, write_bank, write
 from test_forget_review import SENTINEL, realistic_result
 from test_reset_chains_readback import BOOKED, CANCELLED, agents, chain_data
 
-from synthiq_caller import cli, removals
+from synthiq_caller import acceptance, cli, removals, scorecard
 from synthiq_caller.batch import load_chains, regrade, run_batch
 from synthiq_caller.clips import ClipBank
+from synthiq_caller.report import render, summarise
 
 
 def bare_world(tmp_path: Path, rows: dict[str, dict[str, str]] | None = None) -> dict[str, Path]:
@@ -116,3 +117,25 @@ async def test_calls_after_a_forgotten_one_lose_the_values_it_captured(tmp_path:
         assert "apt-77" not in file.read_text(encoding="utf-8"), file.name
         assert "Wednesday 3rd" not in file.read_text(encoding="utf-8"), file.name
     assert json.loads(second.read_text(encoding="utf-8"))["clips_removed"][0]["redacted"] is True
+
+
+async def test_consent_record_missing_is_said_in_every_page_a_person_reads(tmp_path: Path) -> None:
+    bank = ClipBank(
+        write_bank(tmp_path / "bank", {"opener": {**FULL, "consent_ref": ""}, "dob": FULL}),
+        allow_missing_consent=True,
+    )
+    out = tmp_path / "out"
+    await run_batch(
+        [("a.json", scenario("a"))], agent, bank, out, turn_settings=FAST,
+        allow_missing_consent=True,
+    )  # fmt: skip
+    stored = json.loads((out / "run-001.json").read_text(encoding="utf-8"))
+    assert stored["consent_missing"]
+    assert "consent record missing" in render(summarise(str(out)))
+    card = scorecard.build([out])
+    assert "Consent record missing" in scorecard.render_html(card)
+    report = acceptance.build([out], allow_mixed=True, allow_no_manifest=True)
+    assert report["clips"]["consent_missing"] == ["opener.wav"]
+    page = acceptance.render_html(report)
+    assert "Consent record missing" in page
+    assert any("consent record missing" in line for line in report["not_shown"])

@@ -63,6 +63,8 @@ class Summary:
     synthetic_calls: int = 0
     # Calls that played a clip whose manifest did not say where it came from.
     provenance_unknown_calls: int = 0
+    # Calls that played a clip with no lawful basis or consent record, allowed for the run.
+    consent_missing_calls: int = 0
     # Calls that played a clip that has since been removed (``forget``).
     removed_clip_calls: int = 0
     # Cannot be judged as the scenario stands (see ``grading.py``).
@@ -226,6 +228,8 @@ def summarise(directory: str | Path) -> Summary:
             summary.synthetic_calls += 1
         if payload.get("provenance_unknown"):
             summary.provenance_unknown_calls += 1
+        if payload.get("consent_missing"):
+            summary.consent_missing_calls += 1
         if payload.get("clips_removed"):
             summary.removed_clip_calls += 1
     for path in sorted(root.glob("chain-*.json")):
@@ -443,6 +447,11 @@ def render(summary: Summary) -> str:
                 f"  provenance unknown: {summary.provenance_unknown_calls} call(s) played a clip "
                 "whose manifest does not say if it is a real recording or a synthetic voice, "
                 "or on what basis it is held"
+            )
+        if summary.consent_missing_calls:
+            lines.append(
+                f"  consent record missing: {summary.consent_missing_calls} call(s) played a clip "
+                "with no lawful basis or consent record, allowed for the run"
             )
         if summary.removed_clip_calls:
             lines.append(

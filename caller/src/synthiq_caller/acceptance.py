@@ -143,6 +143,8 @@ def _clips(roots: list[Path]) -> dict[str, Any]:
     unverified_calls = synthetic_calls = calls = 0
     unknown: set[str] = set()
     unknown_calls = 0
+    no_consent: set[str] = set()
+    no_consent_calls = 0
     for root in roots:
         for path in sorted(root.glob("run-*.json")):
             payload = json.loads(path.read_text(encoding="utf-8"))
@@ -158,6 +160,9 @@ def _clips(roots: list[Path]) -> dict[str, Any]:
             lost = [str(c).partition(": ")[0] for c in payload.get("provenance_unknown") or []]
             unknown.update(lost)
             unknown_calls += bool(lost)
+            bare = [str(c).partition(": ")[0] for c in payload.get("consent_missing") or []]
+            no_consent.update(bare)
+            no_consent_calls += bool(bare)
     return {
         "calls": calls,
         "unverified": [{"clip": c, "why": w} for c, w in sorted(unverified.items())],
@@ -166,6 +171,8 @@ def _clips(roots: list[Path]) -> dict[str, Any]:
         "synthetic_calls": synthetic_calls,
         "provenance_unknown": sorted(unknown),
         "provenance_unknown_calls": unknown_calls,
+        "consent_missing": sorted(no_consent),
+        "consent_missing_calls": no_consent_calls,
     }
 
 
@@ -232,6 +239,11 @@ def _not_shown(report: dict[str, Any]) -> list[str]:
         limits.append(
             f"{clips['provenance_unknown_calls']} call(s) played a clip whose manifest does not "
             "say if it is a real recording or a synthetic voice."
+        )
+    if clips["consent_missing"]:
+        limits.append(
+            f"{clips['consent_missing_calls']} call(s) played a clip with no lawful basis or "
+            "consent record (consent record missing), allowed for the run."
         )
     if clips["unverified"]:
         limits.append(
@@ -522,6 +534,13 @@ def _clip_section(report: dict[str, Any]) -> list[str]:
             f"<p>{_span('warn', 'Provenance unknown.')} {clips['provenance_unknown_calls']} of "
             f"{clips['calls']} call(s) played a clip whose manifest does not say if it is a "
             f"real recording or a synthetic voice: {names}.</p>"
+        )
+    if clips["consent_missing"]:
+        names = ", ".join(f"<code>{_e(c)}</code>" for c in clips["consent_missing"])
+        parts.append(
+            f"<p>{_span('warn', 'Consent record missing.')} {clips['consent_missing_calls']} of "
+            f"{clips['calls']} call(s) played a clip with no lawful basis or consent record, "
+            f"allowed for the run: {names}.</p>"
         )
     if clips["synthetic"]:
         names = ", ".join(f"<code>{_e(c)}</code>" for c in clips["synthetic"])
