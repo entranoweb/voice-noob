@@ -7,7 +7,7 @@ from typing import Any
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import desc, select
+from sqlalchemy import case, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -215,6 +215,52 @@ async def list_calls(
         page=page,
         page_size=page_size,
         total_pages=total_pages,
+    )
+
+
+class CallStatsResponse(BaseModel):
+    """Figures over every call the user has, computed in the database."""
+
+    total_calls: int
+    completed_calls: int
+    inbound_calls: int
+    outbound_calls: int
+    total_duration_seconds: int
+    # Over every call, whatever its status. 0 when there are no calls.
+    average_duration_seconds: float
+
+
+# Declared before "/{call_id}" so "stats" is not read as a call id.
+@router.get("/stats", response_model=CallStatsResponse)
+async def get_call_stats(
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+) -> CallStatsResponse:
+    """Counts and average duration over all of the current user's calls.
+
+    The dashboard used to work these out from the five newest calls it had
+    loaded for its list, which is not the population the figures are labelled as.
+    """
+    user_uuid = user_id_to_uuid(current_user.id)
+    row = (
+        await db.execute(
+            select(
+                func.count(CallRecord.id),
+                func.coalesce(func.sum(case((CallRecord.status == "completed", 1), else_=0)), 0),
+                func.coalesce(func.sum(case((CallRecord.direction == "inbound", 1), else_=0)), 0),
+                func.coalesce(func.sum(case((CallRecord.direction == "outbound", 1), else_=0)), 0),
+                func.coalesce(func.sum(CallRecord.duration_seconds), 0),
+            ).where(CallRecord.user_id == user_uuid)
+        )
+    ).one()
+    total, completed, inbound, outbound, duration = (int(value) for value in row)
+    return CallStatsResponse(
+        total_calls=total,
+        completed_calls=completed,
+        inbound_calls=inbound,
+        outbound_calls=outbound,
+        total_duration_seconds=duration,
+        average_duration_seconds=round(duration / total, 1) if total else 0.0,
     )
 
 

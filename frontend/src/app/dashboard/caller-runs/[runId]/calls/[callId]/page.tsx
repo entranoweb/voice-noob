@@ -92,10 +92,23 @@ function toolOutcome(call: ToolCall): string {
   return `result: ${compact(call.result) || "none"}`;
 }
 
+/** The platform withheld this tool's result: not checked, and not a refusal by the agent. */
+function isUnavailable(call: ToolCall): boolean {
+  const args = call.arguments;
+  return (
+    call.result === "unavailable" ||
+    (typeof args === "object" && args !== null && "_unavailable" in args)
+  );
+}
+
 function toolLine(call: ToolCall): Line {
   return {
     t: typeof call.t === "number" ? call.t : null,
-    who: call.ok === false ? "Tool call refused" : "Tool call",
+    who: isUnavailable(call)
+      ? "Tool call, result unavailable"
+      : call.ok === false
+        ? "Tool call refused"
+        : "Tool call",
     text: `${call.name ?? "?"}(${compact(call.arguments)})`,
     detail: toolOutcome(call),
     marker: "tool",

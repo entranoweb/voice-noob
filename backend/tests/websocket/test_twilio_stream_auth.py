@@ -13,6 +13,7 @@ returns, and the token taken out of that TwiML the way Twilio would.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -61,7 +62,9 @@ class _Connection:
 
     async def __anext__(self) -> Any:
         if not self._events:
-            raise StopAsyncIteration
+            # A live model socket goes quiet, it does not end. Ending here would
+            # read as the model closing, which the bridge answers by hanging up.
+            await asyncio.Event().wait()
         return self._events.pop(0)
 
 

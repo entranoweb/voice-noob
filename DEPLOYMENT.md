@@ -149,6 +149,9 @@ Names and defaults are from `backend/app/core/config.py`.
 | `TWILIO_AUTH_TOKEN` | unset | Fallback for Twilio signature checks. See below |
 | `TELNYX_PUBLIC_KEY` | unset | Fallback for Telnyx signature checks, after the owning workspace's own key. See below |
 | `RATE_LIMIT_STORAGE_URI` | unset | Where rate-limit counts are kept. Unset: Redis at `REDIS_URL`, so every worker shares one count. `memory://` counts per process, which is only right for a single process. While Redis is unreachable the same limits are counted per process until it returns |
+| `CALL_MAX_DURATION_S` | `1800` | Longest a phone call may run, in seconds. Past it the bridge ends the call and records `max_duration`. Replaces a fixed 300 s cap. The model provider's own limit is 60 minutes |
+| `CALL_IDLE_TIMEOUT_S` | `120` | Seconds of no conversation (nobody speaking, no agent audio, no tool running) before the bridge ends the call and records `silence_timeout`. `0` turns it off |
+| `CALL_TOOL_GRACE_S` | `10` | When a call ends while a tool is running, how long the tool may finish before it is cancelled |
 
 Three things follow that are not settings.
 

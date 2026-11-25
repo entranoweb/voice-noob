@@ -207,6 +207,23 @@ class Scenario:
     # any is not run: its booking could not be judged.
     missing_target: tuple[str, ...] = ()
 
+    def states_expectations(self) -> bool:
+        """True when the scenario asks anything of the call at all.
+
+        One that does not can only ever be "ungraded" (``grading.grade``): a
+        call is never passed for having happened. Scenarios written from a
+        captured call start this way, on purpose.
+        """
+        expect = self.expect
+        return bool(
+            expect.tools
+            or expect.fields
+            or expect.agent_says
+            or expect.agent_never_says
+            or expect.read_back
+            or expect.booking.stated()
+        )
+
 
 class ScenarioError(ValueError):
     pass

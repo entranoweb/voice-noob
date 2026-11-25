@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import html
 import json
+import math
 import re
 from dataclasses import asdict
 from datetime import UTC, datetime
@@ -34,6 +35,7 @@ from synthiq_caller.compare import Baseline, compare, make_baseline
 from synthiq_caller.jsonio import write_json
 from synthiq_caller.report import FieldTally, Summary, failing_step, summarise
 from synthiq_caller.stats import describe, wilson_interval
+from synthiq_caller.traces.common import UNAVAILABLE, UNAVAILABLE_KEY
 
 # "unknown": the call was not answered, died or ran out of time; nobody can say whose doing.
 FAULT_CLASSES = ("agent", "scenario", "fixture", "rig", "unknown", "unclassified")
@@ -95,6 +97,15 @@ def _fault(key: str, payload: dict[str, Any], faults: dict[str, str]) -> str:
     return "unclassified"
 
 
+def _has_unavailable(payload: dict[str, Any]) -> bool:
+    """A call in which the platform held back some tool's result (see ``traces.common``)."""
+    calls = (payload.get("trace") or {}).get("tool_calls") or []
+    return any(
+        c.get("result") == UNAVAILABLE or UNAVAILABLE_KEY in (c.get("arguments") or {})
+        for c in calls
+    )
+
+
 def _why_ungraded(payload: dict[str, Any]) -> str:
     if payload["grade"].get("reason"):
         return f"{payload['grade']['outcome']}: {payload['grade']['reason']}"
@@ -124,20 +135,30 @@ def build(
     not_graded: list[dict[str, Any]] = []
     disagreements: dict[str, list[dict[str, Any]]] = {}
     scenario_ungraded: dict[str, int] = {}
+    unavailable_calls = unverified_calls = 0
+    class_reasons: dict[str, dict[str, int]] = {}
     for root in roots:
         for path in sorted(root.glob("run-*.json")):
             payload = json.loads(path.read_text(encoding="utf-8"))
             grade = payload["grade"]
             name, key = grade["scenario"], f"{root.name}/{path.name}"
+            if _has_unavailable(payload):
+                unavailable_calls += 1
+            if payload.get("labels_unverified"):
+                unverified_calls += 1
             if grade["outcome"] not in ("passed", "failed"):
                 # void, ungradeable and ungraded: placed, and in neither count.
                 scenario_ungraded[name] = scenario_ungraded.get(name, 0) + 1
+                why = _why_ungraded(payload)
+                by_reason = class_reasons.setdefault(grade["outcome"], {})
+                by_reason[why] = by_reason.get(why, 0) + 1
                 not_graded.append(
                     {
                         "run": key,
                         "scenario": name,
+                        "outcome": grade["outcome"],
                         "fault": _fault(key, payload, faults),
-                        "reason": _why_ungraded(payload),
+                        "reason": why,
                     }
                 )
             elif grade["outcome"] == "failed":
@@ -180,6 +201,9 @@ def build(
     for item in summary.blocked:
         pair = (str(item.get("scenario_file", "")), str(item.get("reason", "")))
         not_run[pair] = not_run.get(pair, 0) + 1
+    class_reasons["not_run"] = {}
+    for (_, reason), count in not_run.items():
+        class_reasons["not_run"][reason] = class_reasons["not_run"].get(reason, 0) + count
     baseline = make_baseline(summary, source=", ".join(root.name for root in roots))
     card: dict[str, Any] = {
         "title": title or "Scorecard",
@@ -192,6 +216,21 @@ def build(
         "void": summary.void,
         "ungradeable": summary.ungradeable,
         "attempted": summary.runs,
+        "classes": {
+            "passed": summary.passed,
+            "failed": summary.failed,
+            "void": summary.void,
+            "ungradeable": summary.ungradeable,
+            "ungraded": summary.ungraded,
+            "not_run": sum(not_run.values()),
+        },
+        "class_reasons": {
+            name: [{"reason": r, "count": c} for r, c in sorted(found.items())]
+            for name, found in class_reasons.items()
+        },
+        "rehearsals": summary.rehearsals,
+        "unavailable_calls": unavailable_calls,
+        "labels_unverified_calls": unverified_calls,
         "failed_by_fault": dict(sorted(summary.faults.items())),
         "synthetic_calls": summary.synthetic_calls,
         "graded": graded,
@@ -352,6 +391,62 @@ def _range(passed: int, graded: int, interval: list[float]) -> str:
     )
 
 
+def percent(passed: int, total: int) -> str:
+    """A percentage cut down to one decimal place, never rounded up."""
+    return f"{passed * 1000 // total / 10:.1f}%" if total > 0 else "-"
+
+
+def rate_text(passed: int, total: int, word: str) -> str:
+    """Counts first, then the percentage: '2 of 3 graded (66.6%)'."""
+    return f"{passed} of {total} {word} ({percent(passed, total)})"
+
+
+_CLASS_ROWS = (
+    ("passed", "Passed", "ok"),
+    ("failed", "Failed", "bad"),
+    ("void", "Void (rig could not answer)", "warn"),
+    ("ungradeable", "Ungradeable", "warn"),
+    ("ungraded", "Ungraded", "warn"),
+    ("not_run", "Not run", "muted"),
+)
+
+
+def _classes(card: dict[str, Any]) -> list[str]:
+    reasons = card.get("class_reasons", {})
+    rows = []
+    for key, label, css in _CLASS_ROWS:
+        why = "<br>".join(f"{_e(r['reason'])} ({r['count']})" for r in reasons.get(key, []))
+        rows.append([_span(css, label), str(card["classes"][key]), why or _span("muted", "-")])
+    rows.append(
+        [
+            _span("warn" if card["unavailable_calls"] else "muted", "Unavailable"),
+            str(card["unavailable_calls"]),
+            _span("muted", "calls where the platform withheld a tool's result; not checked"),
+        ]
+    )
+    return [
+        "<h2>Every outcome</h2>",
+        _table([("Outcome", False), ("Calls", True), ("Why", False)], rows),
+    ]
+
+
+def _marks(card: dict[str, Any]) -> list[str]:
+    calls = card["calls"]
+    out = []
+    if card.get("rehearsals"):
+        out.append(
+            f'<p class="bad"><strong>REHEARSAL (scripted agent)</strong>: {card["rehearsals"]} '
+            f"of {calls} calls were placed against a scripted stand-in, not an agent. They show "
+            "the rig runs; they show nothing about any agent.</p>"
+        )
+    out.append(
+        f'<p class="meta">Synthetic voice: {card["synthetic_calls"]} of {calls} calls played a '
+        f"synthetic clip. Labels unverified: {card['labels_unverified_calls']} of {calls} calls "
+        "used a clip whose label no person has confirmed.</p>"
+    )
+    return out
+
+
 def _pair(value: list[int] | None) -> str:
     return f"{value[0]} of {value[1]}" if value else _span("muted", "-")
 
@@ -454,18 +549,27 @@ def _fields(card: dict[str, Any]) -> list[str]:
 
 def render_html(card: dict[str, Any]) -> str:
     graded = card["graded"]
-    rate = f"{card['rate']:.0%}" if graded else "none graded"
+    rate = percent(card["passed"], graded) if graded else "none graded"
+    low, high = card["interval"]
+    interval = (
+        f"; 95% interval {math.floor(low * 1000) / 10:.1f}% to {math.floor(high * 1000) / 10:.1f}%"
+    )
     parts = [
         f"<h1>{_e(card['title'])}</h1>",
         f'<p class="meta">Generated {_e(card["generated"])} from '
         f"{_e(', '.join(card['sources']))}. Graded from each call's own tool results and "
         "stored values.</p>",
         f'<p class="headline"><strong>{_e(rate)}</strong> passed: '
-        f"{_e(describe(card['passed'], graded))}</p>",
+        f"{_e(rate_text(card['passed'], graded, 'graded'))}{_e(interval if graded else '')}</p>",
+        f'<p class="meta">Of every call attempted: '
+        f"{_e(rate_text(card['passed'], card['attempted'], 'attempted'))}. Calls the rig spoiled "
+        "or that could not be graded are in this one and not in the first.</p>",
+        *_marks(card),
         f'<p class="meta">{card["calls"]} calls: {card["passed"]} passed, {card["failed"]} '
         f"failed, {card['ungraded']} not graded. Not run: "
         f"{sum(n['count'] for n in card['not_run'])}.</p>",
     ]
+    parts += _classes(card)
     if card.get("comparison"):
         parts += _comparison(card)
 

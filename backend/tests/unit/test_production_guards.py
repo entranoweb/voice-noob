@@ -174,6 +174,21 @@ class TestProductionComposeFile:
         assert backend["ALLOW_PUBLIC_SIGNUP"] == "${ALLOW_PUBLIC_SIGNUP:-false}"
         assert backend["ENABLE_API_DOCS"] == "${ENABLE_API_DOCS:-false}"
 
+    def test_the_call_limits_reach_the_backend(self, compose: dict[str, Any]) -> None:
+        """Settings the app reads must be passed through, or the operator's value
+        never arrives and the documented default is the only one there is."""
+        backend = compose["services"]["backend"]["environment"]
+
+        assert backend["CALL_MAX_DURATION_S"] == "${CALL_MAX_DURATION_S:-1800}"
+        assert backend["CALL_IDLE_TIMEOUT_S"] == "${CALL_IDLE_TIMEOUT_S:-120}"
+        assert backend["CALL_TOOL_GRACE_S"] == "${CALL_TOOL_GRACE_S:-10}"
+        for name, field in (
+            ("CALL_MAX_DURATION_S", 1800),
+            ("CALL_IDLE_TIMEOUT_S", 120),
+            ("CALL_TOOL_GRACE_S", 10),
+        ):
+            assert Settings.model_fields[name].default == field, name
+
     def test_the_backend_image_does_not_run_as_root(self) -> None:
         lines = (REPO / "backend" / "Dockerfile").read_text(encoding="utf-8").splitlines()
         users = [line.split()[1] for line in lines if line.startswith("USER ")]
