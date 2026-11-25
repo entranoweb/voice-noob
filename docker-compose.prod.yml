@@ -49,6 +49,8 @@ services:
       dockerfile: Dockerfile
     container_name: synthiq-backend
     restart: unless-stopped
+    volumes:
+      - caller_audio:/app/data/caller-audio
     environment:
       # Database
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD to a long random value}@postgres:5432/${POSTGRES_DB:-voice_agent}
@@ -72,6 +74,12 @@ services:
       # after it is turned on only counts what it would delete.
       RETENTION_SWEEP_ENABLED: ${RETENTION_SWEEP_ENABLED:-false}
       RETENTION_SWEEP_INTERVAL_HOURS: ${RETENTION_SWEEP_INTERVAL_HOURS:-24}
+      # Where the audio of caller test calls is kept: one WAV file per side of a
+      # call, under a folder per workspace. It must be a persistent volume (the
+      # one below), or every redeploy deletes the recordings the database still
+      # lists. Each workspace sets how long audio is kept (30 days unless changed).
+      CALLER_AUDIO_DIR: ${CALLER_AUDIO_DIR:-/app/data/caller-audio}
+      CALLER_AUDIO_MAX_BYTES: ${CALLER_AUDIO_MAX_BYTES:-67108864}
       # CORS - Allow frontend domain
       CORS_ORIGINS: '["${FRONTEND_URL:-http://localhost:3000}"]'
       # The origin the embed snippet points customers' sites at: the widget
@@ -177,6 +185,8 @@ services:
       - synthiq-network
 
 volumes:
+  caller_audio:
+    driver: local
   postgres_data:
     driver: local
   redis_data:

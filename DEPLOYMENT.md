@@ -137,6 +137,8 @@ Names and defaults are from `backend/app/core/config.py`.
 | `CREDENTIAL_ENCRYPTION_KEYS` | none | Encrypts the provider keys and integration credentials customers store. `<id>:<base64 32-byte key>`, comma separated: the first entry encrypts, every entry can decrypt. The app refuses to start without it unless `DEBUG=true`, and refuses a malformed value always. Every backend instance must share one value. Losing it loses every stored credential |
 | `RETENTION_SWEEP_ENABLED` | `false` | Runs the sweep that deletes call data older than each account's retention period. Off unless set: an upgrade never starts deleting on its own. The first sweep after it is turned on is a rehearsal that only counts and logs what it would delete (`retention_sweep_would_delete`); deletion starts one interval later. An account that never set a period is not swept, and a period under 30 days is refused. Off, the compliance page reports retention as not in force |
 | `RETENTION_SWEEP_INTERVAL_HOURS` | `24` | How often the sweep runs. One process at a time holds a Redis lock, so several workers do not sweep at once |
+| `CALLER_AUDIO_DIR` | `./data/caller-audio` (`/app/data/caller-audio` in `docker-compose.prod.yml`) | Where the audio of caller test calls is stored: one WAV file per side of a call, in a folder per workspace, under names the server generates. **It must be a persistent volume.** The production compose file mounts the named volume `caller_audio` there. On Coolify keep that volume, or mount your own persistent storage at the same path; on the container's own disk the files are lost at each redeploy while the database still lists them, and the call page then reports the recording as gone. Back it up with the database: erasure and retention delete from it, but nothing else copies it |
+| `CALLER_AUDIO_MAX_BYTES` | `67108864` (64 MB) | Largest single audio file accepted. A larger one is refused with 413 and nothing is stored. Only genuine WAV files are kept: the server checks the bytes, never the Content-Type |
 | `PUBLIC_URL` | unset | The backend's public origin. Used for the media stream URL the carrier dials, for the webhook addresses given to carriers, and as the URL a Twilio signature is checked against. Required by the compose file |
 | `ALLOW_UNSIGNED_WEBHOOKS` | `false` | `true` accepts carrier webhooks with no verified signature. For a local rehearsal with no carrier key only. It logs at critical on startup and on every webhook it admits, and the preflight fails on it |
 | `FRONTEND_URL` | unset | Origin the embed snippet points other sites at. Falls back to the first CORS origin, then `PUBLIC_URL` |
@@ -448,6 +450,19 @@ git add -A && git commit -m "Clean build" && git push
 ---
 
 ## Quick Reference
+
+### Call audio and how long it is kept
+
+`synthiq-caller upload` sends the audio of each call after the run itself, one request per file. The audio is kept per workspace for `audio_retention_days` (30 unless the workspace changes it, from 1 to 3650; set it with `PUT /api/v1/workspaces/{id}` and `{"audio_retention_days": 90}`), counted from when the file was stored.
+
+Expired audio is deleted in two ways, and neither is on by default:
+
+1. **The retention sweep** (`RETENTION_SWEEP_ENABLED=true`) deletes expired audio first on every run. It is off unless set, and its first run only counts. Turning it on also starts deleting call data for accounts that set a period, so decide that separately.
+2. **`scripts/expire_caller_audio.py`**, which does only the audio and can be run on its own schedule. Nothing in this repository runs it for you. Schedule it once a day with the platform's scheduled tasks or cron, for example `docker compose exec -T backend python scripts/expire_caller_audio.py`; `--dry-run` counts without deleting. It exits 1 if a file could not be deleted.
+
+Until one of the two runs, audio is **not** deleted when its period ends. Deleting a run, replacing a run on upload, and erasing an account delete the audio at once, files first and then rows; a file that will not delete is reported (the run is kept, or the erasure is marked incomplete) rather than left behind unsaid. Account export lists each stored recording with the date it will be deleted after.
+
+The call page plays audio through the API with the signed-in user's token: the browser cannot attach it to an audio element, so the page downloads each recording and plays it from memory. Long recordings are therefore downloaded whole before they play.
 
 ### Generate Secure Passwords
 

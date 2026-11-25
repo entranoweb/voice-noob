@@ -16,6 +16,11 @@ if TYPE_CHECKING:
     from app.models.user import User
 
 
+DEFAULT_AUDIO_RETENTION_DAYS = 30
+MIN_AUDIO_RETENTION_DAYS = 1
+MAX_AUDIO_RETENTION_DAYS = 3650
+
+
 class Workspace(Base, TimestampMixin):
     """Workspace for organizing agents and CRM data.
 
@@ -52,6 +57,16 @@ class Workspace(Base, TimestampMixin):
         nullable=False,
         default=dict,
         comment="Workspace settings (timezone, business hours, booking rules)",
+    )
+
+    # How long audio of this workspace's caller calls is kept. Counted from when
+    # the audio was stored; changing it applies to audio already stored.
+    audio_retention_days: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=DEFAULT_AUDIO_RETENTION_DAYS,
+        server_default=str(DEFAULT_AUDIO_RETENTION_DAYS),
+        comment="Days call audio is kept before the retention job deletes it",
     )
 
     # Default workspace flag (one per user)
