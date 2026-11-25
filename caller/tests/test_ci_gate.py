@@ -147,6 +147,10 @@ def test_the_batch_guard_it_relies_on_holds_a_mutating_scenario_back(tmp_path: P
             str(bank),
             "--allow-mutating",
             "none",
+            # The scenario states no expectations, and the ungradeable block
+            # (#40) runs before the mutation guard. Lift it here so it is the
+            # guard this test watches hold the booking back.
+            "--allow-ungradeable",
             "--out",
             str(out),
         ]
