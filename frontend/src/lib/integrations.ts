@@ -67,20 +67,6 @@ export const AVAILABLE_INTEGRATIONS: Integration[] = [
         riskLevel: "moderate",
         defaultEnabled: true,
       },
-      {
-        id: "transfer_call",
-        name: "Transfer Call",
-        description: "Transfer the caller to another phone number or human agent",
-        riskLevel: "high",
-        defaultEnabled: true,
-      },
-      {
-        id: "send_dtmf",
-        name: "Send DTMF",
-        description: "Send touch-tone digits for IVR navigation or entering codes",
-        riskLevel: "safe",
-        defaultEnabled: true,
-      },
     ],
   },
   {

@@ -321,6 +321,14 @@ describe("Integration Categories Distribution", () => {
     expect(communication.length).toBeGreaterThanOrEqual(4);
   });
 
+  it("offers only call control tools the backend can actually perform", () => {
+    // transfer_call and send_dtmf reported success and did nothing on a call.
+    // The backend no longer defines them; the UI must not offer them.
+    const callControl = AVAILABLE_INTEGRATIONS.find((i) => i.id === "call_control");
+    const toolIds = (callControl?.tools ?? []).map((t) => t.id);
+    expect(toolIds).toEqual(["end_call"]);
+  });
+
   it("has integrations in productivity category", () => {
     const productivity = AVAILABLE_INTEGRATIONS.filter((i) => i.category === "productivity");
     expect(productivity.length).toBeGreaterThanOrEqual(2);

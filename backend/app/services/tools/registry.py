@@ -239,11 +239,7 @@ class ToolRegistry:
             Tool execution result
         """
         # Call Control tools
-        call_control_tool_names = {
-            "end_call",
-            "transfer_call",
-            "send_dtmf",
-        }
+        call_control_tool_names = {"end_call"}
 
         if tool_name in call_control_tool_names:
             return await CallControlTools.execute_tool(tool_name, arguments)

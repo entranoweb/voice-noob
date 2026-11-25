@@ -28,6 +28,8 @@ import contextlib
 import json
 import time
 import uuid
+from collections.abc import AsyncIterator, Callable, Coroutine
+from dataclasses import dataclass, field
 from typing import Any
 
 import structlog
@@ -35,6 +37,7 @@ from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.stream_token import STREAM_TOKEN_REJECTED, verify_stream_token
 from app.core.stream_token_use import claim_stream_token
 from app.db.session import get_db
@@ -64,6 +67,146 @@ EVENT_LOG_THRESHOLD = 20  # Log first N events, then every 100th
 # than this is not a carrier, and an unauthenticated socket should not be held
 # open waiting for one.
 STREAM_START_DEADLINE_S = 10.0
+
+# What counts as the call being alive for the idle clock: someone speaking, or
+# the agent producing audio or words. Not carrier media frames: those arrive
+# every 20 ms for as long as the line is open, silent or not.
+ACTIVITY_EVENTS = frozenset(
+    {
+        "input_audio_buffer.speech_started",
+        "input_audio_buffer.speech_stopped",
+        "response.output_audio.delta",
+        "response.output_audio_transcript.delta",
+        "conversation.item.input_audio_transcription.completed",
+    }
+)
+
+
+@dataclass
+class _BridgeState:
+    """What the two directions of one call share.
+
+    ``reason`` is why the call ended, set by whichever side saw it first and
+    never overwritten. ``last_activity`` feeds the idle timeout. A tool running
+    is tracked so that neither the idle timeout nor a teardown treats the quiet
+    of a booking write as the end of the conversation.
+    """
+
+    reason: TerminationReason | None = None
+    last_activity: float = field(default_factory=time.monotonic)
+    tools_in_flight: int = 0
+    tools_idle: asyncio.Event = field(default_factory=asyncio.Event)
+
+    def __post_init__(self) -> None:
+        self.tools_idle.set()
+
+    def end(self, reason: TerminationReason) -> None:
+        if self.reason is None:
+            self.reason = reason
+
+    def touch(self) -> None:
+        self.last_activity = time.monotonic()
+
+    @contextlib.asynccontextmanager
+    async def tool_call(self) -> AsyncIterator[None]:
+        self.tools_in_flight += 1
+        self.tools_idle.clear()
+        try:
+            yield
+        finally:
+            self.tools_in_flight -= 1
+            self.touch()
+            if self.tools_in_flight == 0:
+                self.tools_idle.set()
+
+
+def _log_provider_error(event: Any, log: Any) -> None:
+    """Log an OpenAI Realtime ``error`` event at ERROR with what it says.
+
+    The payload is ``{"error": {"type", "code", "message", "param"}}``. ``param``
+    is left out: it names the offending field and can quote what was sent.
+    """
+    error = getattr(event, "error", None)
+    log.error(
+        "realtime_provider_error",
+        error_type=getattr(error, "type", None),
+        error_code=getattr(error, "code", None),
+        error_message=getattr(error, "message", None),
+    )
+
+
+async def _run_bridge(
+    carrier: Callable[[], Coroutine[Any, Any, None]],
+    model: Callable[[], Coroutine[Any, Any, None]],
+    *,
+    state: _BridgeState,
+    websocket: WebSocket,
+    log: Any,
+) -> TerminationReason:
+    """Run both directions of a call until either ends, then end the other.
+
+    ``gather`` waits for both, so a caller who hung up left the model loop
+    waiting on a quiet socket (and a model that closed left the carrier loop
+    feeding a dead one). ``wait(FIRST_COMPLETED)`` returns on the first, the
+    other is cancelled and awaited, and the carrier socket is closed with 1000:
+    Telnyx reconnects on any code outside 1000, 1007, 1008 and 1011.
+
+    Also ends the call at ``CALL_MAX_DURATION_S`` and after ``CALL_IDLE_TIMEOUT_S``
+    with no conversation. If a tool is running when that happens it is given
+    ``CALL_TOOL_GRACE_S`` to finish before being cancelled, so a booking is not
+    abandoned half-written.
+    """
+    carrier_task = asyncio.create_task(carrier(), name="carrier_to_model")
+    model_task = asyncio.create_task(model(), name="model_to_carrier")
+    tasks = {carrier_task, model_task}
+    started = time.monotonic()
+    max_s = settings.CALL_MAX_DURATION_S
+    idle_s = settings.CALL_IDLE_TIMEOUT_S
+
+    try:
+        while True:
+            now = time.monotonic()
+            timeout = started + max_s - now
+            if timeout <= 0:
+                state.end(TerminationReason.MAX_DURATION)
+                log.warning("call_max_duration_reached", max_duration_s=max_s)
+                break
+            if idle_s > 0:
+                # While a tool runs the line is quiet on purpose. Look again
+                # after a full idle period; the tool's end restarts the clock.
+                idle_left = idle_s if state.tools_in_flight else state.last_activity + idle_s - now
+                if idle_left <= 0:
+                    state.end(TerminationReason.SILENCE_TIMEOUT)
+                    log.warning("call_idle_timeout_reached", idle_timeout_s=idle_s)
+                    break
+                timeout = min(timeout, idle_left)
+
+            done, _ = await asyncio.wait(
+                tasks, timeout=timeout, return_when=asyncio.FIRST_COMPLETED
+            )
+            if not done:
+                continue
+            if model_task in done and state.reason is None:
+                # The model socket closed on its own. Nothing the call did.
+                log.warning("realtime_session_closed_unexpectedly")
+                state.end(TerminationReason.PIPELINE_ERROR)
+            state.end(TerminationReason.CALLER_HANGUP)
+            break
+
+        pending = [task for task in tasks if not task.done()]
+        if model_task in pending and state.tools_in_flight:
+            log.info("waiting_for_tool_call_before_teardown", grace_s=settings.CALL_TOOL_GRACE_S)
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(state.tools_idle.wait(), settings.CALL_TOOL_GRACE_S)
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    with contextlib.suppress(Exception):
+        await websocket.close(code=1000, reason="Call ended")
+
+    return state.reason or TerminationReason.UNKNOWN
 
 
 async def _authorise_twilio_stream(
@@ -237,6 +380,7 @@ async def _run_tool_call(
     realtime_session: GPTRealtimeSession,
     turns: AudioTurnRecorder,
     log: Any,
+    state: _BridgeState | None = None,
 ) -> bool:
     """Execute a tool the model asked for and record it for the trace.
 
@@ -244,7 +388,11 @@ async def _run_tool_call(
     """
     log.info("handling_function_call", call_id=event.call_id, name=event.name)
     started_at = time.monotonic()
-    result = await realtime_session.handle_function_call_event(event)
+    if state is None:
+        result = await realtime_session.handle_function_call_event(event)
+    else:
+        async with state.tool_call():
+            result = await realtime_session.handle_function_call_event(event)
     _record_tool_call(turns, event, result, started_at=started_at)
 
     if result.get("action") == "end_call":
@@ -460,7 +608,7 @@ async def save_transcript_to_call_record(
 
 
 @router.websocket("/twilio/{agent_id}")
-async def twilio_media_stream(  # noqa: PLR0915
+async def twilio_media_stream(  # noqa: PLR0912, PLR0915
     websocket: WebSocket,
     agent_id: str,
     db: AsyncSession = Depends(get_db),
@@ -563,7 +711,7 @@ async def twilio_media_stream(  # noqa: PLR0915
             workspace_id=workspace_id,
         ) as realtime_session:
             # Handle Twilio media stream and capture call_sid
-            call_sid = await _handle_twilio_stream(
+            call_sid, termination = await _handle_twilio_stream(
                 websocket=websocket,
                 realtime_session=realtime_session,
                 log=log,
@@ -578,6 +726,8 @@ async def twilio_media_stream(  # noqa: PLR0915
                 await save_transcript_to_call_record(
                     call_sid, transcript, db, log, agent_id=agent.id
                 )
+            if call_sid:
+                await save_termination_reason(call_sid, termination, db, log, agent_id=agent.id)
 
     except WebSocketDisconnect:
         log.info("twilio_websocket_disconnected")
@@ -611,7 +761,7 @@ async def _handle_twilio_stream(  # noqa: PLR0915
     enable_transcript: bool = False,
     on_call_start: Any | None = None,
     initial_start: dict[str, Any] | None = None,
-) -> str:
+) -> tuple[str, TerminationReason]:
     """Handle Twilio Media Stream messages.
 
     Args:
@@ -625,11 +775,12 @@ async def _handle_twilio_stream(  # noqa: PLR0915
             the identifiers it carries are not lost by having been consumed.
 
     Returns:
-        The call_sid for transcript saving
+        The call_sid for transcript saving, and why the call ended.
     """
     stream_sid = ""
     call_sid = ""
     should_end_call = False  # Flag to signal call should end
+    state = _BridgeState()
     already_read: list[dict[str, Any]] = [initial_start] if initial_start else []
 
     async def twilio_to_realtime() -> None:
@@ -671,6 +822,7 @@ async def _handle_twilio_stream(  # noqa: PLR0915
 
                 elif event == "stop":
                     log.info("twilio_stream_stopped")
+                    state.end(TerminationReason.CALLER_HANGUP)
                     break
 
                 elif event == "mark":
@@ -679,8 +831,10 @@ async def _handle_twilio_stream(  # noqa: PLR0915
 
         except WebSocketDisconnect:
             log.info("twilio_to_realtime_disconnected")
+            state.end(TerminationReason.CALLER_HANGUP)
         except Exception as e:
             log.exception("twilio_to_realtime_error", error=str(e))
+            state.end(TerminationReason.PIPELINE_ERROR)
 
     async def realtime_to_twilio() -> None:  # noqa: PLR0912, PLR0915
         """Forward audio from GPT Realtime to Twilio."""
@@ -699,6 +853,8 @@ async def _handle_twilio_stream(  # noqa: PLR0915
             async for event in realtime_session.connection:
                 event_type = event.type
                 event_count += 1
+                if event_type in ACTIVITY_EVENTS:
+                    state.touch()
 
                 # Log all events for debugging
                 if event_count <= EVENT_LOG_THRESHOLD or event_count % 100 == 0:
@@ -711,6 +867,11 @@ async def _handle_twilio_stream(  # noqa: PLR0915
                     triggered = await realtime_session.trigger_initial_greeting()
                     if triggered:
                         log.info("initial_greeting_triggered_after_session_update")
+
+                elif event_type == "error":
+                    _log_provider_error(event, log)
+                    state.end(TerminationReason.PIPELINE_ERROR)
+                    break
 
                 # Handle audio output
                 elif event_type == "response.output_audio.delta":
@@ -754,7 +915,8 @@ async def _handle_twilio_stream(  # noqa: PLR0915
                         call_id=event.call_id,
                         name=event.name,
                     )
-                    result = await realtime_session.handle_function_call_event(event)
+                    async with state.tool_call():
+                        result = await realtime_session.handle_function_call_event(event)
                     # Check if this is an end_call action
                     if result.get("action") == "end_call":
                         log.info("end_call_action_received", reason=result.get("reason"))
@@ -799,6 +961,7 @@ async def _handle_twilio_stream(  # noqa: PLR0915
                     if pending_end_call:
                         log.info("ending_call_after_response_complete")
                         should_end_call = True
+                        state.end(TerminationReason.AGENT_ENDED)
                         break
 
                 # Log other events
@@ -811,27 +974,20 @@ async def _handle_twilio_stream(  # noqa: PLR0915
 
         except Exception as e:
             log.exception("realtime_to_twilio_error", error=str(e))
+            state.end(TerminationReason.PIPELINE_ERROR)
 
-    # Run both directions concurrently with timeout to prevent hung tasks
-    try:
-        await asyncio.wait_for(
-            asyncio.gather(
-                twilio_to_realtime(),
-                realtime_to_twilio(),
-                return_exceptions=True,
-            ),
-            timeout=300.0,  # 5 minute max call duration before forced cleanup
-        )
-    except TimeoutError:
-        log.warning("twilio_bridge_timeout", message="Call exceeded max duration, forcing cleanup")
+    # Run both directions until either ends; the other is then ended with it
+    # and the carrier socket closed (which is what hangs up a Twilio call).
+    termination = await _run_bridge(
+        twilio_to_realtime,
+        realtime_to_twilio,
+        state=state,
+        websocket=websocket,
+        log=log,
+    )
+    log.info("twilio_bridge_ended", termination=termination.value)
 
-    # Close WebSocket to hang up the call if end_call was triggered
-    if should_end_call:
-        log.info("closing_websocket_for_end_call")
-        with contextlib.suppress(Exception):
-            await websocket.close(code=1000, reason="Call ended by agent")
-
-    return call_sid
+    return call_sid, termination
 
 
 @router.websocket("/telnyx/{agent_id}")
@@ -1076,11 +1232,11 @@ async def _handle_telnyx_stream(  # noqa: PLR0915
     stream_id = ""
     call_control_id = ""
     should_end_call = False  # Flag to signal call should end
-    termination = TerminationReason.UNKNOWN
+    state = _BridgeState()
 
     async def telnyx_to_realtime() -> None:
         """Forward audio from Telnyx to GPT Realtime."""
-        nonlocal stream_id, call_control_id, should_end_call, termination
+        nonlocal stream_id, call_control_id, should_end_call
 
         try:
             while not should_end_call:
@@ -1114,21 +1270,24 @@ async def _handle_telnyx_stream(  # noqa: PLR0915
                     # The carrier tore the stream down. On an inbound call that
                     # is the caller hanging up; the agent ending the call takes
                     # the other branch and overwrites this.
-                    termination = TerminationReason.CALLER_HANGUP
+                    state.end(TerminationReason.CALLER_HANGUP)
                     break
 
         except WebSocketDisconnect:
             log.info("telnyx_to_realtime_disconnected")
+            state.end(TerminationReason.CALLER_HANGUP)
         except Exception as e:
             log.exception("telnyx_to_realtime_error", error=str(e))
+            state.end(TerminationReason.PIPELINE_ERROR)
 
-    async def realtime_to_telnyx() -> None:  # noqa: PLR0912
+    async def realtime_to_telnyx() -> None:  # noqa: PLR0912, PLR0915
         """Forward audio from GPT Realtime to Telnyx."""
-        nonlocal should_end_call, termination
+        nonlocal should_end_call
 
         try:
             if not realtime_session.connection:
                 log.error("no_realtime_connection")
+                state.end(TerminationReason.PIPELINE_ERROR)
                 return
 
             pending_end_call = False  # True when end_call requested but waiting for AI to finish
@@ -1136,6 +1295,8 @@ async def _handle_telnyx_stream(  # noqa: PLR0915
 
             async for event in realtime_session.connection:
                 event_type = event.type
+                if event_type in ACTIVITY_EVENTS:
+                    state.touch()
 
                 # Trigger initial greeting after session is configured
                 # This avoids race condition where audio events arrive before listener is ready
@@ -1144,6 +1305,11 @@ async def _handle_telnyx_stream(  # noqa: PLR0915
                     triggered = await realtime_session.trigger_initial_greeting()
                     if triggered:
                         log.info("initial_greeting_triggered_after_session_update")
+
+                elif event_type == "error":
+                    _log_provider_error(event, log)
+                    state.end(TerminationReason.PIPELINE_ERROR)
+                    break
 
                 # Handle audio output
                 elif event_type == "response.output_audio.delta":
@@ -1169,6 +1335,7 @@ async def _handle_telnyx_stream(  # noqa: PLR0915
                             realtime_session=realtime_session,
                             turns=turns,
                             log=log,
+                            state=state,
                         )
                         or pending_end_call
                     )
@@ -1193,7 +1360,7 @@ async def _handle_telnyx_stream(  # noqa: PLR0915
                     if pending_end_call:
                         log.info("ending_call_after_response_complete")
                         should_end_call = True
-                        termination = TerminationReason.AGENT_ENDED
+                        state.end(TerminationReason.AGENT_ENDED)
                         break
 
                 elif event_type == "input_audio_buffer.speech_started":
@@ -1220,25 +1387,18 @@ async def _handle_telnyx_stream(  # noqa: PLR0915
 
         except Exception as e:
             log.exception("realtime_to_telnyx_error", error=str(e))
+            state.end(TerminationReason.PIPELINE_ERROR)
 
-    # Run both directions concurrently with timeout to prevent hung tasks
-    try:
-        await asyncio.wait_for(
-            asyncio.gather(
-                telnyx_to_realtime(),
-                realtime_to_telnyx(),
-                return_exceptions=True,
-            ),
-            timeout=300.0,  # 5 minute max call duration before forced cleanup
-        )
-    except TimeoutError:
-        log.warning("telnyx_bridge_timeout", message="Call exceeded max duration, forcing cleanup")
-        termination = TerminationReason.MAX_DURATION
-
-    # Close WebSocket to hang up the call if end_call was triggered
-    if should_end_call:
-        log.info("closing_websocket_for_end_call")
-        with contextlib.suppress(Exception):
-            await websocket.close(code=1000, reason="Call ended by agent")
+    # Run both directions until either ends; the other is then ended with it
+    # and the carrier socket closed with 1000, which is the code Telnyx does not
+    # answer by reconnecting.
+    termination = await _run_bridge(
+        telnyx_to_realtime,
+        realtime_to_telnyx,
+        state=state,
+        websocket=websocket,
+        log=log,
+    )
+    log.info("telnyx_bridge_ended", termination=termination.value)
 
     return call_control_id, termination
