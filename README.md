@@ -41,11 +41,22 @@ make setup
 
 `make setup` does five things, in this order:
 
-1. Writes `backend/.env` and `frontend/.env`. The backend file gets a generated signing key and a generated admin password, which it prints once. Do not copy `backend/.env.example` by hand: the app refuses to start on its placeholder key.
+1. Writes `backend/.env`, `frontend/.env` and a root `.env`. The backend file gets a generated signing key, a generated key for encrypting stored credentials, a generated database password and a generated admin password, which it prints once. The root file gives the same database password to Docker Compose. Do not copy `backend/.env.example` by hand: the app refuses to start on its placeholders.
 2. Installs the backend, caller and frontend dependencies.
 3. Starts Postgres and Redis in Docker and waits until both are healthy.
 4. Applies the database migrations.
 5. Prints the two commands below.
+
+Without `make`, the same five steps by hand:
+
+```bash
+uv run --no-project python scripts/dev_env.py
+(cd backend && uv sync --all-extras) && (cd caller && uv sync --all-extras) && (cd frontend && npm install)
+docker compose up -d --wait postgres redis
+(cd backend && uv run alembic upgrade head)
+```
+
+Without Docker, use any Postgres 17 and Redis 7 you already run: create a database, then set `DATABASE_URL` and `REDIS_URL` in `backend/.env` to point at them before the migration step.
 
 Then, in two terminals:
 
@@ -68,7 +79,9 @@ Open <http://localhost:3000> and sign in as `admin@example.com` with the passwor
 
 - **Port 5432 or 6379 is already in use.** Stop the other Postgres or Redis, or change the port mapping in `docker-compose.yml` and the matching URL in `backend/.env`.
 - **You ran an older version of this repository.** The local database is now called `voicenoob`. An old Docker volume still holds the previous name: run `make clean`, then `make setup`. This deletes local data.
-- **You want a fresh admin password.** Delete `backend/.env` and run `make setup` again, on an empty database.
+- **You want a fresh admin password.** Delete `backend/.env` and run `make setup` again, on an empty database. The database password is kept, because it is read back from the root `.env`.
+- **The database refuses the password.** The container was first started with a different one, and Postgres only reads it on first start. Run `make clean`, then `make setup`. This deletes local data.
+- **Keep `CREDENTIAL_ENCRYPTION_KEYS`.** Deleting `backend/.env` on a database that already holds provider keys makes them unreadable.
 
 ## Tests
 

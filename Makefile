@@ -4,7 +4,14 @@
 # set it falls back to SQLite, which fails tests that are correct (it drops
 # time zones and cannot build array columns). Each test gets its own schema in
 # this database and drops it afterwards, so it is safe to reuse.
-TEST_DATABASE_URL ?= postgresql+asyncpg://postgres:postgres@localhost:5432/voicenoob_test
+#
+# The password is the one `make setup` generated into the root .env for the
+# compose database. Only that one line is read from the file.
+POSTGRES_PASSWORD ?= $(shell sed -n 's/^POSTGRES_PASSWORD=//p' .env 2>/dev/null)
+ifeq ($(strip $(POSTGRES_PASSWORD)),)
+POSTGRES_PASSWORD := postgres
+endif
+TEST_DATABASE_URL ?= postgresql+asyncpg://postgres:$(POSTGRES_PASSWORD)@localhost:5432/voicenoob_test
 
 help:
 	@echo "Available commands:"

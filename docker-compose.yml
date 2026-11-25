@@ -5,7 +5,9 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      # `make setup` generates this into the root .env. The fallback is for a
+      # database started before that file existed.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       # Must match the database in backend/.env.example and the POSTGRES_DB
       # default in backend/app/core/config.py.
       POSTGRES_DB: voicenoob

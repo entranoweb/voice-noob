@@ -1,5 +1,6 @@
 """Application configuration using Pydantic settings."""
 
+import os
 from typing import Any
 
 from pydantic import PostgresDsn, RedisDsn, field_validator
@@ -24,8 +25,12 @@ PLACEHOLDER_SECRET_KEYS = frozenset(
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
 
+    # SETTINGS_ENV_FILE names the env file to read; empty reads none. The test
+    # suite sets it empty, so a developer's own backend/.env (a local
+    # PUBLIC_URL, say) cannot change what a test sees. Real environment
+    # variables are read either way and always win over the file.
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=os.environ.get("SETTINGS_ENV_FILE", ".env") or None,
         env_file_encoding="utf-8",
         case_sensitive=True,
         extra="ignore",
