@@ -9,17 +9,12 @@ import {
   mockTrendData,
   mockWorkspaceQASettings,
   mockTestScenarios,
-  mockTestRun,
+  mockScenarioRuns,
 } from "./data";
 
 const API_URL = "http://localhost:8000";
 
 export const handlers = [
-  // Health check
-  http.get(`${API_URL}/api/health`, () => {
-    return HttpResponse.json({ status: "ok" });
-  }),
-
   // Telephony phone numbers. The CRM page loads these on mount; without a
   // handler every request fell through MSW to a real backend on :8000, the
   // page never finished loading, and its assertions failed on missing text.
@@ -68,14 +63,6 @@ export const handlers = [
   // Error scenario: 404
   http.get(`${API_URL}/api/v1/crm/contacts/999`, () => {
     return HttpResponse.json({ detail: "Contact not found" }, { status: 404 });
-  }),
-
-  // Error scenario: 401 Unauthorized
-  http.get(`${API_URL}/api/unauthorized`, () => {
-    return HttpResponse.json(
-      { detail: "Not authenticated" },
-      { status: 401 }
-    );
   }),
 
   // QA Status
@@ -199,7 +186,8 @@ export const handlers = [
     if (!scenario) {
       return HttpResponse.json({ detail: "Scenario not found" }, { status: 404 });
     }
-    return HttpResponse.json({ message: "Scenario deleted" });
+    // The backend answers 204 with no body.
+    return new HttpResponse(null, { status: 204 });
   }),
 
   http.post(`${API_URL}/api/v1/testing/scenarios/:id/duplicate`, ({ params }) => {
@@ -222,25 +210,23 @@ export const handlers = [
     });
   }),
 
-  // Test Runs
-  http.post(`${API_URL}/api/v1/testing/runs`, async ({ request }) => {
-    const body = (await request.json()) as Record<string, unknown>;
+  // Test runs. The backend runs ONE scenario per request and stores one run
+  // per scenario; there is no route that starts a group of scenarios.
+  http.post(`${API_URL}/api/v1/testing/run`, async ({ request }) => {
+    const body = (await request.json()) as { scenario_id: string };
     return HttpResponse.json({
-      id: "run-new",
-      agent_id: body.agent_id,
-      status: "pending",
-      total_scenarios: (body.scenario_ids as string[])?.length ?? 0,
-      passed_scenarios: 0,
-      failed_scenarios: 0,
-      results: [],
-      created_at: new Date().toISOString(),
+      message: "Test completed",
+      test_run_id: `run-${body.scenario_id}`,
+      status: mockScenarioRuns[body.scenario_id]?.status ?? "passed",
     });
   }),
 
   http.get(`${API_URL}/api/v1/testing/runs/:id`, ({ params }) => {
-    if (params.id === "run-new") {
-      return HttpResponse.json(mockTestRun);
+    const scenarioId = String(params.id).replace(/^run-/, "");
+    const run = mockScenarioRuns[scenarioId];
+    if (!run) {
+      return HttpResponse.json({ detail: "Test run not found" }, { status: 404 });
     }
-    return HttpResponse.json(mockTestRun);
+    return HttpResponse.json(run);
   }),
 ];

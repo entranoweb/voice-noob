@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useState, useEffect, useRef } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
@@ -34,8 +34,8 @@ import {
   ChevronUp,
 } from "lucide-react";
 import { fetchAgents } from "@/lib/api/agents";
-import { listScenarios, startTestRun, getTestRun } from "@/lib/api/qa";
-import type { TestScenario, TestRun } from "@/lib/api/qa";
+import { listScenarios, runScenario, getTestRun } from "@/lib/api/qa";
+import type { TestScenario } from "@/lib/api/qa";
 import { cn } from "@/lib/utils";
 import { InfoTooltip } from "@/components/ui/info-tooltip";
 
@@ -47,17 +47,31 @@ interface TestRunnerProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   initialSelectedScenarios?: string[];
-  onTestComplete?: (run: TestRun) => void;
+  /** Sent with each run so results are filed under this workspace. */
+  workspaceId?: string;
+  /** Called once, after the last selected scenario has finished. */
+  onTestComplete?: () => void;
 }
 
 interface ScenarioResult {
   scenario_id: string;
   scenario_name: string;
-  status: "pending" | "running" | "passed" | "failed";
+  status: "pending" | "running" | "passed" | "failed" | "error";
   score?: number;
   failure_reason?: string;
   duration_ms?: number;
 }
+
+type Phase = "idle" | "running" | "done";
+
+/**
+ * What a result from this panel does and does not show. Kept as one constant so
+ * the wording under the header and on the QA page cannot drift apart.
+ */
+export const TEXT_HARNESS_NOTICE =
+  "These are text simulations. Each scenario sends the agent's prompt and tools to a text model, " +
+  "which is not the speech model that answers real calls. A pass here does not cover hearing, " +
+  "turn-taking or how the agent behaves on a live call.";
 
 // =============================================================================
 // Component
@@ -67,13 +81,18 @@ export function TestRunner({
   open,
   onOpenChange,
   initialSelectedScenarios = [],
+  workspaceId,
   onTestComplete,
 }: TestRunnerProps) {
   const [selectedAgentId, setSelectedAgentId] = useState<string>("");
   const [selectedScenarios, setSelectedScenarios] = useState<string[]>(initialSelectedScenarios);
-  const [currentRun, setCurrentRun] = useState<TestRun | null>(null);
+  const [phase, setPhase] = useState<Phase>("idle");
+  const [runError, setRunError] = useState<string | null>(null);
   const [scenarioResults, setScenarioResults] = useState<ScenarioResult[]>([]);
   const [expandedResults, setExpandedResults] = useState<Set<string>>(new Set());
+  // Bumped whenever a run is abandoned (sheet closed, reset), so a run that is
+  // still awaiting the backend stops writing into state that has moved on.
+  const runToken = useRef(0);
 
   // Update selected scenarios when initial selection changes
   useEffect(() => {
@@ -85,13 +104,13 @@ export function TestRunner({
   // Reset state when sheet closes
   useEffect(() => {
     if (!open) {
+      runToken.current += 1;
       // Keep results visible for a moment before clearing
       const timer = setTimeout(() => {
-        if (!open) {
-          setCurrentRun(null);
-          setScenarioResults([]);
-          setExpandedResults(new Set());
-        }
+        setPhase("idle");
+        setRunError(null);
+        setScenarioResults([]);
+        setExpandedResults(new Set());
       }, 300);
       return () => clearTimeout(timer);
     }
@@ -110,91 +129,58 @@ export function TestRunner({
     queryFn: () => listScenarios({}),
   });
 
-  // Poll for test run completion
-  const pollForCompletion = useCallback(
-    async (runId: string, scenarioList: TestScenario[]) => {
-      const checkStatus = async () => {
-        try {
-          const run = await getTestRun(runId);
-          setCurrentRun(run);
+  const updateResult = (scenarioId: string, patch: Partial<ScenarioResult>) => {
+    setScenarioResults((prev) =>
+      prev.map((r) => (r.scenario_id === scenarioId ? { ...r, ...patch } : r))
+    );
+  };
 
-          // Update scenario results based on run data
-          if (run.results && Array.isArray(run.results)) {
-            const updatedResults: ScenarioResult[] = scenarioList.map((scenario) => {
-              const result = run.results?.find(
-                (r: Record<string, unknown>) => r.scenario_id === scenario.id
-              );
-              if (result) {
-                return {
-                  scenario_id: scenario.id,
-                  scenario_name: scenario.name,
-                  status: (result.passed ? "passed" : "failed") as ScenarioResult["status"],
-                  score: result.score as number | undefined,
-                  failure_reason: result.failure_reason as string | undefined,
-                  duration_ms: result.duration_ms as number | undefined,
-                };
-              }
-              // Check if this scenario is currently running
-              const completedCount = run.passed_scenarios + run.failed_scenarios;
-              const scenarioIndex = scenarioList.findIndex((s) => s.id === scenario.id);
-              if (scenarioIndex === completedCount && run.status === "running") {
-                return {
-                  scenario_id: scenario.id,
-                  scenario_name: scenario.name,
-                  status: "running" as const,
-                };
-              }
-              if (scenarioIndex < completedCount) {
-                // Already processed but not in results - mark as pending
-                return {
-                  scenario_id: scenario.id,
-                  scenario_name: scenario.name,
-                  status: "pending" as const,
-                };
-              }
-              return {
-                scenario_id: scenario.id,
-                scenario_name: scenario.name,
-                status: "pending" as const,
-              };
-            });
-            setScenarioResults(updatedResults);
-          }
+  /**
+   * The backend runs one scenario per request (`POST /api/v1/testing/run`) and
+   * answers when that scenario has finished, so the selected scenarios are run
+   * one after another and each result is read back from its own run record.
+   */
+  const runSelected = async (scenarioList: TestScenario[]) => {
+    runToken.current += 1;
+    const token = runToken.current;
+    const stillCurrent = () => runToken.current === token;
 
-          if (run.status === "completed" || run.status === "failed") {
-            onTestComplete?.(run);
-            return;
-          }
+    for (const scenario of scenarioList) {
+      if (!stillCurrent()) return;
+      updateResult(scenario.id, { status: "running" });
+      try {
+        const started = await runScenario({
+          scenario_id: scenario.id,
+          agent_id: selectedAgentId,
+          workspace_id: workspaceId,
+        });
+        const run = await getTestRun(started.test_run_id);
+        if (!stillCurrent()) return;
+        const status: ScenarioResult["status"] =
+          run.status === "error" ? "error" : run.passed === true ? "passed" : "failed";
+        updateResult(scenario.id, {
+          status,
+          score: run.overall_score ?? undefined,
+          failure_reason:
+            status === "passed" ? undefined : (run.error_message ?? run.issues_found?.[0]),
+          duration_ms: run.duration_ms ?? undefined,
+        });
+      } catch (error) {
+        if (!stillCurrent()) return;
+        // A refused request (testing switched off, no model key, agent gone)
+        // would be refused for every remaining scenario too, so stop here and
+        // say why instead of marking the rest as failed.
+        const message = error instanceof Error ? error.message : "The test could not be run";
+        updateResult(scenario.id, { status: "error", failure_reason: message });
+        setRunError(message);
+        break;
+      }
+    }
 
-          // Continue polling
-          setTimeout(() => void checkStatus(), 2000);
-        } catch {
-          // Polling error, stop
-        }
-      };
-
-      await checkStatus();
-    },
-    [onTestComplete]
-  );
-
-  // Start test run mutation
-  const startRunMutation = useMutation({
-    mutationFn: startTestRun,
-    onSuccess: (run) => {
-      setCurrentRun(run);
-      // Initialize scenario results
-      const selectedScenarioList = scenarios.filter((s) => selectedScenarios.includes(s.id));
-      const initialResults: ScenarioResult[] = selectedScenarioList.map((s, index) => ({
-        scenario_id: s.id,
-        scenario_name: s.name,
-        status: index === 0 ? "running" : "pending",
-      }));
-      setScenarioResults(initialResults);
-      // Poll for completion
-      void pollForCompletion(run.id, selectedScenarioList);
-    },
-  });
+    if (!stillCurrent()) return;
+    setPhase("done");
+    onTestComplete?.();
+  };
 
   const handleScenarioToggle = (scenarioId: string) => {
     setSelectedScenarios((prev) =>
@@ -217,14 +203,23 @@ export function TestRunner({
   const handleStartTest = () => {
     if (!selectedAgentId || selectedScenarios.length === 0) return;
 
-    startRunMutation.mutate({
-      agent_id: selectedAgentId,
-      scenario_ids: selectedScenarios,
-    });
+    const selectedScenarioList = scenarios.filter((s) => selectedScenarios.includes(s.id));
+    setRunError(null);
+    setScenarioResults(
+      selectedScenarioList.map((s) => ({
+        scenario_id: s.id,
+        scenario_name: s.name,
+        status: "pending",
+      }))
+    );
+    setPhase("running");
+    void runSelected(selectedScenarioList);
   };
 
   const handleReset = () => {
-    setCurrentRun(null);
+    runToken.current += 1;
+    setPhase("idle");
+    setRunError(null);
     setScenarioResults([]);
     setExpandedResults(new Set());
   };
@@ -241,8 +236,8 @@ export function TestRunner({
     });
   };
 
-  const isRunning = currentRun?.status === "running" || currentRun?.status === "pending";
-  const isComplete = currentRun?.status === "completed" || currentRun?.status === "failed";
+  const isRunning = phase === "running";
+  const isComplete = phase === "done";
 
   // Group scenarios by category
   const scenariosByCategory = scenarios.reduce<Record<string, TestScenario[]>>((acc, scenario) => {
@@ -254,7 +249,7 @@ export function TestRunner({
 
   // Calculate progress
   const completedCount = scenarioResults.filter(
-    (r) => r.status === "passed" || r.status === "failed"
+    (r) => r.status === "passed" || r.status === "failed" || r.status === "error"
   ).length;
   const totalCount = scenarioResults.length || selectedScenarios.length;
   const progressPercent = totalCount > 0 ? (completedCount / totalCount) * 100 : 0;
@@ -262,14 +257,12 @@ export function TestRunner({
   // Calculate summary stats
   const passedCount = scenarioResults.filter((r) => r.status === "passed").length;
   const failedCount = scenarioResults.filter((r) => r.status === "failed").length;
+  const errorCount = scenarioResults.filter((r) => r.status === "error").length;
   const runningCount = scenarioResults.filter((r) => r.status === "running").length;
+  // Null when nothing was scored, so an unscored run does not read as "Avg: 0".
+  const scored = scenarioResults.filter((r) => r.score !== undefined);
   const avgScore =
-    scenarioResults.filter((r) => r.score !== undefined).length > 0
-      ? scenarioResults
-          .filter((r) => r.score !== undefined)
-          .reduce((sum, r) => sum + (r.score ?? 0), 0) /
-        scenarioResults.filter((r) => r.score !== undefined).length
-      : 0;
+    scored.length > 0 ? scored.reduce((sum, r) => sum + (r.score ?? 0), 0) / scored.length : null;
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -279,7 +272,12 @@ export function TestRunner({
             <Play className="h-5 w-5" />
             Run Tests
           </SheetTitle>
-          <SheetDescription>Select an agent and scenarios to run quality tests</SheetDescription>
+          <SheetDescription>
+            Select an agent and the scenarios to run against it, one after another.
+          </SheetDescription>
+          <p className="mt-2 text-xs text-muted-foreground" data-testid="text-harness-notice">
+            {TEXT_HARNESS_NOTICE}
+          </p>
         </SheetHeader>
 
         <div className="flex flex-1 flex-col overflow-hidden">
@@ -287,7 +285,7 @@ export function TestRunner({
           <div className="border-b px-6 py-4">
             <div className="mb-2 flex items-center gap-2">
               <label className="text-sm font-medium">Select Agent</label>
-              <InfoTooltip content="Choose which voice agent to test. The selected scenarios will be run against this agent to evaluate its responses and behavior." />
+              <InfoTooltip content="Choose which agent to test. Each selected scenario is simulated in text against this agent's prompt and tools." />
             </div>
             <Select value={selectedAgentId} onValueChange={setSelectedAgentId} disabled={isRunning}>
               <SelectTrigger>
@@ -327,6 +325,15 @@ export function TestRunner({
           {/* Footer */}
           <div className="mt-auto border-t px-6 py-4">
             {/* Summary Stats */}
+            {runError && (
+              <div
+                role="alert"
+                className="mb-4 flex items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive"
+              >
+                <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                <span>The run stopped: {runError}</span>
+              </div>
+            )}
             {(isRunning || isComplete) && (
               <div className="mb-4 rounded-lg bg-muted/50 p-3">
                 <div className="flex items-center justify-between text-sm">
@@ -339,6 +346,12 @@ export function TestRunner({
                       <XCircle className="h-4 w-4" />
                       {failedCount} failed
                     </span>
+                    {errorCount > 0 && (
+                      <span className="flex items-center gap-1 text-muted-foreground">
+                        <AlertCircle className="h-4 w-4" />
+                        {errorCount} not run
+                      </span>
+                    )}
                     {runningCount > 0 && (
                       <span className="flex items-center gap-1 text-blue-600">
                         <Loader2 className="h-4 w-4 animate-spin" />
@@ -539,6 +552,8 @@ function ScenarioResultItem({ result, isExpanded, onToggleExpanded }: ScenarioRe
         return <CheckCircle className="h-4 w-4 text-green-600" />;
       case "failed":
         return <XCircle className="h-4 w-4 text-red-600" />;
+      case "error":
+        return <AlertCircle className="h-4 w-4 text-muted-foreground" />;
       case "running":
         return <Loader2 className="h-4 w-4 animate-spin text-blue-600" />;
       default:
@@ -552,6 +567,8 @@ function ScenarioResultItem({ result, isExpanded, onToggleExpanded }: ScenarioRe
         return "PASS";
       case "failed":
         return "FAIL";
+      case "error":
+        return "NOT RUN";
       case "running":
         return "Running...";
       default:
@@ -623,7 +640,9 @@ function ScenarioResultItem({ result, isExpanded, onToggleExpanded }: ScenarioRe
               <div className="flex items-start gap-2">
                 <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-500" />
                 <div>
-                  <span className="font-medium text-red-700">Failure Reason:</span>
+                  <span className="font-medium text-red-700">
+                    {result.status === "error" ? "Why it did not run:" : "Failure Reason:"}
+                  </span>
                   <p className="mt-1 text-muted-foreground">{result.failure_reason}</p>
                 </div>
               </div>

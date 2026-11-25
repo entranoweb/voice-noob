@@ -84,10 +84,15 @@ class ToolRegistry:
 
         creds = self.integrations.get("shopify")
         if creds and creds.get("access_token") and creds.get("shop_domain"):
-            self._shopify_tools = ShopifyTools(
-                access_token=creds["access_token"],
-                shop_domain=creds["shop_domain"],
-            )
+            try:
+                self._shopify_tools = ShopifyTools(
+                    access_token=creds["access_token"],
+                    shop_domain=creds["shop_domain"],
+                )
+            except ValueError:
+                # A stored shop domain that is not a Shopify address: the
+                # integration is treated as not configured rather than called.
+                return None
             return self._shopify_tools
 
         return None
@@ -203,6 +208,23 @@ class ToolRegistry:
             tools.extend(filter_tools("telnyx-sms", telnyx_tools))
 
         return tools
+
+    def enabled_tool_names(
+        self,
+        enabled_tools: list[str],
+        enabled_tool_ids: dict[str, list[str]] | None = None,
+    ) -> set[str]:
+        """The names of the tools this agent may run, by the owner's selection.
+
+        A model emits a tool name; nothing guarantees it is one it was offered.
+        Every path that executes a tool checks the name against this set first.
+        """
+        names: set[str] = set()
+        for tool in self.get_all_tool_definitions(enabled_tools, enabled_tool_ids):
+            name = tool.get("name") or tool.get("function", {}).get("name")
+            if name:
+                names.add(name)
+        return names
 
     async def execute_tool(  # noqa: PLR0911
         self, tool_name: str, arguments: dict[str, Any]

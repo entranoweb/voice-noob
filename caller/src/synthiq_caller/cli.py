@@ -2,7 +2,11 @@
 
     synthiq-caller run scenario.json --leg elevenlabs-socket --agent <id> \\
         --clips <dir> --repeats 3 --out runs/
-    synthiq-caller report runs/
+    synthiq-caller report runs/ --fail-under 95
+    synthiq-caller preflight --leg phone --public-url https://... --from +44... --to +44... \\
+        --allowed-numbers allowed.txt                (places no call)
+    synthiq-caller batch scenarios/sophie --leg phone --public-url https://... \\
+        --from +44... --to +44... --allowed-numbers allowed.txt --clips <dir> --out runs/
     synthiq-caller batch scenarios/sophie --leg elevenlabs-socket --agent <id> \
         --clips <dir> --repeats 3 --out runs/        (runs lookup-only scenarios)
     synthiq-caller validate scenarios/sophie --clips <dir> [--check-requires-command "..."]
@@ -30,6 +34,7 @@ from typing import Any
 
 from synthiq_caller.batch import (
     ALLOWED,
+    BatchResult,
     Hooks,
     NameBudget,
     NoHooks,
@@ -54,7 +59,7 @@ from synthiq_caller.jsonio import utf8_console
 from synthiq_caller.leg import Leg
 from synthiq_caller.prereq import CommandChecker, HttpChecker, PrereqChecker
 from synthiq_caller.readback import CommandReadBack, HttpReadBack, NoReadBack, ReadBack
-from synthiq_caller.report import render, scenario_level, summarise
+from synthiq_caller.report import fail_under_exit, render, scenario_level, summarise
 from synthiq_caller.reset import CommandReset, HttpReset, NoReset, Reset
 from synthiq_caller.scenario import load_scenario
 from synthiq_caller.stats import describe, gate
@@ -96,7 +101,7 @@ def _trace_reader(args: argparse.Namespace) -> TraceReader:
     return ElevenLabsTraceReader(_secret("ELEVENLABS_API_KEY", args.env_file))
 
 
-LEGS = ["elevenlabs-socket", "fake"]
+LEGS = ["elevenlabs-socket", "phone", "fake"]
 
 
 def _build_fake(args: argparse.Namespace, scenario_file: str) -> tuple[Leg, TraceReader | None]:
@@ -148,7 +153,7 @@ def _print_grade(index: int, payload: dict[str, Any]) -> None:
         print(f"  read-back failed, tool calls used for 'stored': {payload['read_back_error']}")
 
 
-def report(directory: str, *, details: bool = True) -> int:
+def report(directory: str, *, details: bool = True, fail_under: float | None = None) -> int:
     files = sorted(Path(directory).glob("run-*.json"))
     if not files and not (Path(directory) / "batch.json").exists():
         print("no runs found")
@@ -157,8 +162,12 @@ def report(directory: str, *, details: bool = True) -> int:
         for index, path in enumerate(files, start=1):
             _print_grade(index, json.loads(path.read_text(encoding="utf-8")))
         print()
-    print(render(summarise(directory)))
-    return 0
+    summary = summarise(directory)
+    print(render(summary))
+    code, line = fail_under_exit(summary, fail_under)
+    if line:
+        print(f"\n{line}")
+    return code
 
 
 def validate(args: argparse.Namespace) -> int:
@@ -440,32 +449,106 @@ def _batch(args: argparse.Namespace) -> int:
             "REHEARSAL: these calls go to a scripted stand-in, not an agent. Every run is "
             "marked as a rehearsal and no gate can be met by one.\n"
         )
-    result = asyncio.run(
-        run_batch(
-            scenarios,
-            lambda: _build(args),
-            _bank(args),
-            out,
-            repeats=args.repeats,
-            max_parallel=args.max_parallel,
-            allow_mutating=args.allow_mutating,
-            budget=budget,
-            hooks=hooks,
-            read_trace=not args.no_trace,
-            settle_s=args.settle,
-            chains=chains,
-            reset=_reset(args),
-            read_back=_read_back(args),
-            allow_unverified_clips=args.allow_unverified_clips,
-            space_names=args.space_names,
-            prereq=_checker(args),
-            make_leg_for=(lambda file: _build_fake(args, file)) if rehearsal else None,
-            rehearsal=rehearsal,
-        )
-    )
+    phone = None
+    if args.leg == "phone":
+        from synthiq_caller.phone_batch import environment, open_phone_batch
+
+        phone = open_phone_batch(args, environment(args.env_file), out)
+
+    async def go() -> BatchResult:
+        try:
+            return await run_batch(
+                scenarios,
+                phone.make_leg if phone is not None else (lambda: _build(args)),
+                _bank(args),
+                out,
+                repeats=args.repeats,
+                max_parallel=args.max_parallel,
+                allow_mutating=args.allow_mutating,
+                budget=budget,
+                hooks=hooks,
+                read_trace=not args.no_trace,
+                turn_settings=phone.turn_settings if phone is not None else None,
+                settle_s=args.settle,
+                chains=chains,
+                reset=_reset(args),
+                read_back=_read_back(args),
+                allow_unverified_clips=args.allow_unverified_clips,
+                space_names=args.space_names,
+                prereq=_checker(args),
+                leg_name=args.leg,
+                make_leg_for=(lambda file: _build_fake(args, file)) if rehearsal else None,
+                rehearsal=rehearsal,
+            )
+        finally:
+            if phone is not None:
+                await phone.aclose()
+
+    result = asyncio.run(go())
     print(f"ran {result.ran}, not run {len(result.blocked)}, chains {result.chains}")
     print()
-    return report(str(out), details=False)
+    return report(str(out), details=False, fail_under=args.fail_under)
+
+
+def _phone_arguments(parser: argparse.ArgumentParser) -> None:
+    """What the phone leg needs to know, for ``batch`` and ``preflight`` alike."""
+    parser.add_argument("--public-url", default="", help="https address the carrier can reach")
+    parser.add_argument("--from", dest="from_number", default="", help="number to dial from")
+    parser.add_argument("--to", default="", help="number to dial")
+    parser.add_argument(
+        "--allowed-numbers",
+        default="",
+        help="the only numbers that may be dialled: a file, one per line, or a comma-separated "
+        "list. Nothing is dialled without it",
+    )
+    parser.add_argument("--host", default="0.0.0.0")  # noqa: S104 - the carrier connects in
+    parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument(
+        "--transcriber", choices=["none", "scripted", "deepgram"], default="deepgram"
+    )
+    parser.add_argument("--agent-lines", default=None, help="one agent line per row (scripted)")
+    parser.add_argument("--language", default="en-GB")
+
+
+def _preflight(args: argparse.Namespace) -> int:
+    from synthiq_caller.phone_batch import environment, phone_preflight, render_preflight
+    from synthiq_caller.phone_server import check_public_url
+
+    checks = asyncio.run(
+        phone_preflight(
+            env=environment(args.env_file),
+            to_number=args.to,
+            from_number=args.from_number,
+            public_url=check_public_url(args.public_url),
+            allowed_argument=args.allowed_numbers,
+            host=args.host,
+            port=args.port,
+            transcriber=args.transcriber,
+            trace=not args.no_trace,
+        )
+    )
+    text, code = render_preflight(checks)
+    print(text)
+    return code
+
+
+def _reread_reader(args: argparse.Namespace) -> TraceReader | None:
+    """The reader ``regrade --reread`` fetches traces with, for the leg the runs used."""
+    if args.leg != "phone":
+        return _build(args)[1]
+    from synthiq_caller.traces.elevenlabs import ElevenLabsTraceReader
+    from synthiq_caller.traces.lookup import (
+        ElevenLabsNumberTimeFinder,
+        LookupTraceReader,
+        calls_in,
+    )
+
+    key = _secret("ELEVENLABS_API_KEY", args.env_file)
+    agent = "" if args.agent == "-" else args.agent
+    finder = ElevenLabsNumberTimeFinder(key, agent_id=agent, window_s=args.trace_window)
+    return LookupTraceReader(
+        finder, ElevenLabsTraceReader(key), calls_in(Path(args.directory)), find_wait_s=0.0
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -496,6 +579,12 @@ def main(argv: list[str] | None = None) -> int:
     rep = sub.add_parser("report", help="summarise a directory of runs")
     rep.add_argument("directory")
     rep.add_argument("--summary-only", action="store_true", help="skip the per-call detail")
+    rep.add_argument(
+        "--fail-under",
+        type=float,
+        default=None,
+        help="exit 1 when fewer than this percentage of the calls placed passed",
+    )
 
     bat = sub.add_parser("batch", help="run a directory of scenarios with the safety guards on")
     bat.add_argument("scenarios")
@@ -506,6 +595,27 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="print what would be held back and every reset, hook and read-back command "
         "that would be used, then stop: nothing is run, called, placed or written",
+    )
+    _phone_arguments(bat)
+    bat.add_argument("--no-record", action="store_true", help="phone: no carrier recording")
+    bat.add_argument("--no-audio", action="store_true", help="phone: keep no per-side WAV files")
+    bat.add_argument(
+        "--trace-window",
+        type=float,
+        default=120.0,
+        help="phone: seconds either side of the call in which to look for its trace",
+    )
+    bat.add_argument(
+        "--trace-ignore-caller-number",
+        action="store_true",
+        help="phone: match the trace on the dialled number and time only "
+        "(for a line that withholds the caller's number)",
+    )
+    bat.add_argument(
+        "--fail-under",
+        type=float,
+        default=None,
+        help="exit 1 when fewer than this percentage of the calls placed passed",
     )
     bat.add_argument("--agent", default="")
     bat.add_argument(
@@ -608,7 +718,8 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="fetch every trace again, for runs stored by an older version of the reader",
     )
-    reg.add_argument("--leg", choices=["elevenlabs-socket"], default="elevenlabs-socket")
+    reg.add_argument("--leg", choices=["elevenlabs-socket", "phone"], default="elevenlabs-socket")
+    reg.add_argument("--trace-window", type=float, default=120.0, help="phone: seconds")
     reg.add_argument("--agent", default="-")
     reg.add_argument("--trace", choices=TRACES, default="elevenlabs", help="where the trace is")
     reg.add_argument("--env-file", default=None)
@@ -638,6 +749,12 @@ def main(argv: list[str] | None = None) -> int:
         help="the share of attempted calls that may go unjudged (void, ungraded, "
         "ungradeable, not run) before the gate is refused whatever the numbers say",
     )
+
+    pre = sub.add_parser("preflight", help="check a leg is ready, without placing a call")
+    pre.add_argument("--leg", required=True, choices=["phone"])
+    _phone_arguments(pre)
+    pre.add_argument("--env-file", default=None)
+    pre.add_argument("--no-trace", action="store_true", help="the calls will not be graded")
 
     val = sub.add_parser("validate", help="check a directory of scenarios, and its clips")
     val.add_argument("scenarios")
@@ -678,15 +795,23 @@ def main(argv: list[str] | None = None) -> int:
     bank_scn.add_argument("--clips", required=True)
     bank_scn.add_argument("--call", required=True)
 
+    from synthiq_caller.upload import register as register_upload
+
+    register_upload(sub)
+
     args = parser.parse_args(argv)
     utf8_console()
+    if args.command == "upload":
+        return int(args.handler(args))
     if args.command == "report":
-        return report(args.directory, details=not args.summary_only)
+        return report(args.directory, details=not args.summary_only, fail_under=args.fail_under)
+    if args.command == "preflight":
+        return _preflight(args)
     if args.command == "batch":
         return _batch(args)
     if args.command == "regrade":
         if args.reread or args.reread_all:
-            _, reader = _build(args)
+            reader = _reread_reader(args)
             if reader is not None:
                 fetched = asyncio.run(
                     reread_missing_traces(Path(args.directory), reader, every=args.reread_all)

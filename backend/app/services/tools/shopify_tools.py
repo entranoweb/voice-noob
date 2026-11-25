@@ -1,5 +1,6 @@
 """Shopify integration tools for voice agents."""
 
+import re
 from collections.abc import Awaitable, Callable
 from http import HTTPStatus
 from typing import Any
@@ -10,6 +11,24 @@ import structlog
 logger = structlog.get_logger()
 
 ToolHandler = Callable[..., Awaitable[dict[str, Any]]]
+
+
+# A shop's admin address is always <name>.myshopify.com. The value is supplied
+# by the customer and becomes the host this server sends the access token to,
+# so anything else (another host, a path, a port, an IP address) is refused.
+_SHOP_DOMAIN = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}[.]myshopify[.]com$")
+
+
+def normalise_shop_domain(shop_domain: str) -> str:
+    """The bare `<name>.myshopify.com` host, or ValueError for anything else."""
+    host = shop_domain.strip().lower()
+    for prefix in ("https://", "http://"):
+        host = host.removeprefix(prefix)
+    host = host.rstrip("/")
+    if not _SHOP_DOMAIN.match(host):
+        message = "Shop domain must look like your-store.myshopify.com"
+        raise ValueError(message)
+    return host
 
 
 class ShopifyTools:
@@ -32,7 +51,7 @@ class ShopifyTools:
             shop_domain: Shop domain (e.g., your-store.myshopify.com)
         """
         self.access_token = access_token
-        self.shop_domain = shop_domain.replace("https://", "").replace("http://", "")
+        self.shop_domain = normalise_shop_domain(shop_domain)
         self._client: httpx.AsyncClient | None = None
 
     @property

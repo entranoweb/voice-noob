@@ -17,6 +17,7 @@ import {
 import {
   Bot,
   Phone,
+  PhoneCall,
   PhoneOutgoing,
   History,
   Settings,
@@ -95,6 +96,12 @@ const navigation = [
     href: "/dashboard/qa",
     icon: Shield,
     color: "text-teal-400",
+  },
+  {
+    name: "Caller Runs",
+    href: "/dashboard/caller-runs",
+    icon: PhoneCall,
+    color: "text-sky-400",
   },
   {
     name: "Test Agent",

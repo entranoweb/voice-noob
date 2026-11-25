@@ -79,6 +79,10 @@ class Summary:
     # Chains graded as one unit: name -> [passed, graded, proved nothing].
     chains: dict[str, list[int]] = field(default_factory=dict)
     chain_failures: list[str] = field(default_factory=list)
+    # How many calls went over each kind of line (socket, phone), when the run says.
+    legs: dict[str, int] = field(default_factory=dict)
+    # Why calls could not be graded, when the run says (a trace that was not found).
+    ungraded_reasons: dict[str, int] = field(default_factory=dict)
 
 
 def failing_step(payload: dict[str, Any]) -> str:
@@ -94,6 +98,45 @@ def failing_step(payload: dict[str, Any]) -> str:
     if path:
         return f"step {path[-1]}: {last_line!r}"
     return f"last agent line: {last_line!r}" if last_line else payload["record"].get("ended", "")
+
+
+def ungraded_reason(payload: dict[str, Any]) -> str:
+    """Why a call has no verdict, in a few words."""
+    error = str(payload.get("trace_error") or "")
+    if "trace not found" in error:
+        return "trace not found"
+    if payload.get("trace") is None:
+        return "no trace" + (" (could not be read)" if error else "")
+    return "nothing to check, or the system was not read back"
+
+
+def fail_under_exit(summary: Summary, fail_under: float | None) -> tuple[int, str]:
+    """An exit code for a pipeline: 1 when the pass rate is under ``fail_under`` percent.
+
+    A plain threshold, not a demonstration of a rate (that is the ``gate``
+    command). The rate is passed calls over every call counted: every call
+    placed, less those the rig itself spoiled (void, to be re-run). A call that
+    could not be graded counts against it: a batch must not clear the threshold
+    by losing its traces. With nothing counted there is nothing to clear it with.
+    """
+    if fail_under is None:
+        return 0, ""
+    if summary.rehearsals:
+        return 1, (
+            f"threshold: NOT met: {summary.rehearsals} call(s) are rehearsals against a "
+            "scripted stand-in, not an agent"
+        )
+    counted = summary.runs - summary.void
+    if counted <= 0:
+        return 1, f"threshold: no calls to count, so {fail_under:g}% cannot be shown"
+    rate = 100.0 * summary.passed / counted
+    verdict = "met" if rate >= fail_under else "NOT met"
+    spoiled = f" ({summary.void} void left out)" if summary.void else ""
+    return (
+        0 if rate >= fail_under else 1,
+        f"threshold: {summary.passed} of {counted} calls passed ({rate:.1f}%){spoiled}; "
+        f"{fail_under:g}% required: {verdict}",
+    )
 
 
 def summarise(directory: str | Path) -> Summary:
@@ -113,6 +156,8 @@ def summarise(directory: str | Path) -> Summary:
             placed[0] += 1
         if payload.get("rehearsal"):
             summary.rehearsals += 1
+        if payload.get("leg"):
+            summary.legs[payload["leg"]] = summary.legs.get(payload["leg"], 0) + 1
         if outcome in ("passed", "failed"):
             tally[1] += 1
             if outcome == "passed":
@@ -139,13 +184,19 @@ def summarise(directory: str | Path) -> Summary:
                 summary.ungradeable += 1
             else:
                 summary.ungraded += 1
+                why = ungraded_reason(payload)
+                summary.ungraded_reasons[why] = summary.ungraded_reasons.get(why, 0) + 1
+            reason = graded.get("reason", "") or "no trace, or nothing asked of the call"
+            if outcome == "ungraded" and "trace not found" in str(payload.get("trace_error")):
+                # A phone call whose trace could not be matched: say so, in its own words.
+                reason = str(payload["trace_error"])
             summary.excluded.append(
                 Excluded(
                     run=path.name,
                     scenario=name,
                     outcome=outcome,
                     fault=graded.get("fault", ""),
-                    reason=graded.get("reason", "") or "no trace, or nothing asked of the call",
+                    reason=reason,
                 )
             )
         for row in graded["fields"]:
@@ -245,6 +296,10 @@ def render(summary: Summary) -> str:
         for left in summary.excluded:
             charged = f", fault {left.fault}" if left.fault else ""
             lines.append(f"  {left.run}  {left.scenario}: {left.outcome}{charged}: {left.reason}")
+    if summary.legs:
+        lines.append(
+            "by line: " + ", ".join(f"{name} {n}" for name, n in sorted(summary.legs.items()))
+        )
 
     lines.append("\nper scenario")
     for name, (passed, total) in sorted(summary.by_scenario.items()):

@@ -145,24 +145,43 @@ export interface TestScenario {
   created_at: string;
 }
 
-export interface TestRun {
+/**
+ * One scenario run against one agent, as the backend stores it
+ * (`TestRunDetailResponse` in backend/app/api/testing.py). The backend has no
+ * record that groups several scenarios into one run.
+ */
+export interface ScenarioRun {
   id: string;
+  scenario_id: string;
+  scenario_name: string | null;
   agent_id: string;
-  status: "pending" | "running" | "completed" | "failed";
-  total_scenarios: number;
-  passed_scenarios: number;
-  failed_scenarios: number;
-  pass_rate: number | null;
-  results: Record<string, unknown>[] | null;
+  agent_name: string | null;
+  status: "pending" | "running" | "passed" | "failed" | "error";
   started_at: string | null;
   completed_at: string | null;
+  duration_ms: number | null;
+  overall_score: number | null;
+  passed: boolean | null;
+  issues_found: string[] | null;
+  recommendations: string[] | null;
   created_at: string;
+  // Present on the detail route only.
+  actual_transcript?: Record<string, unknown>[] | null;
+  behavior_matches?: Record<string, boolean> | null;
+  criteria_results?: Record<string, unknown> | null;
+  error_message?: string | null;
 }
 
-export interface StartTestRunParams {
+export interface RunScenarioParams {
+  scenario_id: string;
   agent_id: string;
-  scenario_ids?: string[];
-  category?: string;
+  workspace_id?: string;
+}
+
+export interface RunScenarioResponse {
+  message: string;
+  test_run_id: string;
+  status: string;
 }
 
 // =============================================================================
@@ -668,10 +687,11 @@ export async function seedScenarios(): Promise<SeedScenariosResponse> {
 // =============================================================================
 
 /**
- * Start a new test run
+ * Run one scenario against one agent. The request returns when the run has
+ * finished; fetch the result with `getTestRun(test_run_id)`.
  */
-export async function startTestRun(params: StartTestRunParams): Promise<TestRun> {
-  const response = await fetch(`${API_BASE}/api/v1/testing/runs`, {
+export async function runScenario(params: RunScenarioParams): Promise<RunScenarioResponse> {
+  const response = await fetch(`${API_BASE}/api/v1/testing/run`, {
     method: "POST",
     headers: {
       ...getAuthHeaders(),
@@ -682,7 +702,7 @@ export async function startTestRun(params: StartTestRunParams): Promise<TestRun>
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ detail: response.statusText }));
-    throw new Error(error.detail ?? "Failed to start test run");
+    throw new Error(error.detail ?? "Failed to run the scenario");
   }
 
   return response.json();
@@ -694,7 +714,7 @@ export async function startTestRun(params: StartTestRunParams): Promise<TestRun>
 export async function listTestRuns(params: {
   agent_id?: string;
   status?: string;
-}): Promise<TestRun[]> {
+}): Promise<ScenarioRun[]> {
   const searchParams = new URLSearchParams();
   if (params.agent_id) searchParams.set("agent_id", params.agent_id);
   if (params.status) searchParams.set("status", params.status);
@@ -716,7 +736,7 @@ export async function listTestRuns(params: {
 /**
  * Get a specific test run
  */
-export async function getTestRun(runId: string): Promise<TestRun> {
+export async function getTestRun(runId: string): Promise<ScenarioRun> {
   const response = await fetch(`${API_BASE}/api/v1/testing/runs/${runId}`, {
     headers: getAuthHeaders(),
   });

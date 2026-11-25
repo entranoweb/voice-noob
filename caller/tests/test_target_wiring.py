@@ -294,6 +294,58 @@ async def test_an_adopt_step_marked_only_when_mutating_is_skipped_for_a_call_tha
         parse_target({"name": "t", "reset": {"command": ["x"], "only_when_mutating": True}})
 
 
+class PhoneLikeLeg(FakeLeg):
+    """A leg whose own reference is the carrier's, as the phone leg's is."""
+
+    def details(self) -> dict[str, Any]:
+        return {"leg": "phone", "carrier_call_ref": "CA-carrier-1"}
+
+
+class EngineTraces:
+    async def read(self, call_ref: str) -> Trace:
+        return Trace(call_ref="conv_engine_7", tool_calls=[REGISTERED], step_path=["S1"])
+
+
+async def test_over_a_phone_line_read_back_and_adopt_get_the_engines_reference_not_the_carriers(
+    bank: ClipBank, tmp_path: Path
+) -> None:
+    log = tmp_path / "log.txt"
+    seen = (
+        "import os, json; open(os.environ['P1_LOG'], 'a').write("
+        "'read ' + os.environ['SYNTHIQ_CALL_REF'] + '\\n'); "
+        "print(json.dumps({'date_of_birth': '2002-02-20'}))"
+    )
+
+    def make() -> tuple[Leg, TraceReader | None]:
+        lines = [
+            AgentLine("Hi, how can I help you today?", speech_s=0.3),
+            AgentLine("Could I take your date of birth?", speech_s=0.3, hears="20th February 2002"),
+            AgentLine("And the best mobile number?", speech_s=0.3),
+        ]
+        return PhoneLikeLeg(lines), EngineTraces()
+
+    import os
+
+    os.environ["P1_LOG"] = str(log)
+    try:
+        await run_batch(
+            [("a.json", parse_scenario(scenario_data(clean_state=False)))],
+            make,
+            bank,
+            tmp_path / "out",
+            allow_mutating="registers",
+            read_back=CommandReadBack([PY, "-c", seen]),
+            hooks=ShellHooks(after=log_command(log, "adopt", "{call_ref}")),
+            turn_settings=FAST,
+        )
+    finally:
+        del os.environ["P1_LOG"]
+    assert log.read_text(encoding="utf-8").splitlines() == [
+        "read conv_engine_7",
+        "adopt conv_engine_7 phase=after",
+    ]
+
+
 # --- chains read the profile ---------------------------------------------------------
 
 

@@ -531,6 +531,7 @@ async def twilio_media_stream(  # noqa: PLR0915
         agent_config = {
             "system_prompt": agent.system_prompt,
             "enabled_tools": agent.enabled_tools,
+            "enabled_tool_ids": agent.enabled_tool_ids,
             "language": agent.language,
             "voice": agent.voice or "shimmer",
             "enable_transcript": agent.enable_transcript,
@@ -953,6 +954,7 @@ async def telnyx_media_stream(  # noqa: PLR0912, PLR0915
         agent_config = {
             "system_prompt": agent.system_prompt,
             "enabled_tools": agent.enabled_tools,
+            "enabled_tool_ids": agent.enabled_tool_ids,
             "language": agent.language,
             "voice": agent.voice or "shimmer",
             "enable_transcript": agent.enable_transcript,

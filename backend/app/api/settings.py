@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import AuditAction, record_audit
 from app.core.auth import CurrentUser, user_id_to_uuid
+from app.core.safe_http import UnsafeDestinationError, assert_public_url
 from app.db.session import get_db
 from app.models.user_settings import UserSettings
 from app.models.workspace import Workspace
@@ -149,6 +150,18 @@ async def update_settings(  # noqa: PLR0912
     Returns:
         Success message
     """
+    # The Azure endpoint is an address this server will connect to with the
+    # workspace's key. Refuse one that leads into a private network here, where
+    # the person saving it can see why.
+    if request.azure_openai_endpoint:
+        try:
+            await assert_public_url(request.azure_openai_endpoint)
+        except UnsafeDestinationError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Azure OpenAI endpoint: {exc}",
+            ) from exc
+
     user_uuid = user_id_to_uuid(current_user.id)
 
     # Build query conditions

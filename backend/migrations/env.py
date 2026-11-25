@@ -8,12 +8,19 @@ from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
+import importlib
+import pkgutil
+
+import app.models
 from app.core.config import settings
 from app.db.base import Base
-from app.models.appointment import Appointment  # noqa: F401
-from app.models.call_interaction import CallInteraction  # noqa: F401
-from app.models.contact import Contact  # noqa: F401
-from app.models.user import User  # noqa: F401
+
+# Import every module under app.models, so Base.metadata holds every table.
+# Autogenerate and `alembic check` compare the database with this metadata: a
+# model that is not imported here looks like a table to drop. Walking the
+# package means a new model file is picked up without editing this list.
+for _module in pkgutil.iter_modules(app.models.__path__):
+    importlib.import_module(f"{app.models.__name__}.{_module.name}")
 
 # Alembic Config object
 config = context.config
