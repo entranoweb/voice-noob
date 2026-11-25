@@ -1,0 +1,16 @@
+{
+  "conversation_id": "conv_fixture_0001",
+  "agent_id": "agent_fixture",
+  "status": "done",
+  "has_audio": true,
+  "metadata": {"call_duration_secs": 30, "termination_reason": "end_call tool was called"},
+  "transcript": [
+    {"role": "agent", "time_in_call_secs": 0, "message": "Hello, this is the test line. How can I help?"},
+    {"role": "user", "time_in_call_secs": 4, "message": "I would like some information please."},
+    {"role": "agent", "time_in_call_secs": 8, "message": "Of course. What is your full name?"},
+    {"role": "user", "time_in_call_secs": 12, "message": "Sam Example."},
+    {"role": "agent", "time_in_call_secs": 15, "message": "Thank you. Which part of the body is it?", "tool_calls": [{"tool_name": "lookup_record", "params_as_json": "{\"q\": \"placeholder\"}"}], "tool_results": [{"tool_name": "lookup_record", "result_value": "{\"success\": true}"}]},
+    {"role": "user", "time_in_call_secs": 20, "message": "The left knee."},
+    {"role": "agent", "time_in_call_secs": 24, "message": "Thanks, goodbye."}
+  ]
+}

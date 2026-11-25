@@ -421,6 +421,7 @@ async def run_batch(
     reset: Reset | None = None,
     read_back: ReadBack | None = None,
     allow_unverified_clips: bool = False,
+    allow_ungradeable: bool = False,
     space_names: bool = False,
     prereq: PrereqChecker | None = None,
     make_leg_for: LegFactoryFor | None = None,
@@ -580,6 +581,12 @@ async def run_batch(
         def block(reason: str) -> None:
             result.blocked.append(Blocked(file, scenario.name, repeat, reason))
 
+        if not allow_ungradeable and not scenario.states_expectations():
+            block(
+                "UNGRADEABLE: the scenario states no expectations, so no call could pass it "
+                "(state them, or allow ungradeable scenarios for this batch)"
+            )
+            return
         if scenario.mutates not in allowed:
             block(f"mutation guard: scenario {scenario.mutates}, batch allows {allow_mutating}")
             return
