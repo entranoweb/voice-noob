@@ -25,6 +25,7 @@ from synthiq_caller import cli, consent, removals
 from synthiq_caller.batch import run_batch
 from synthiq_caller.clips import ClipBank, ClipExcluded
 from synthiq_caller.consent import Consent, reference_problem
+from synthiq_caller.legs.fake import RATE
 from synthiq_caller.phone_server import main as phone_main
 from synthiq_caller.validation import validate_directory
 
@@ -90,7 +91,9 @@ def test_a_phone_dry_run_reads_a_second_bank(tmp_path: Path) -> None:
     assert phone_main(phone_args(main_bank, "--clips-extra", str(extra)), env={}) == 0
 
 
-def test_the_bank_itself_refuses_playback_whoever_asks(tmp_path: Path) -> None:
+def test_the_bank_itself_refuses_playback_whoever_asks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     bank_dir = write_bank(
         tmp_path / "bank",
         {
@@ -100,17 +103,24 @@ def test_the_bank_itself_refuses_playback_whoever_asks(tmp_path: Path) -> None:
             "fine": FULL,
         },
     )
+
+    # The clips are written at RATE, so playing one needs no decoder; a refused clip must
+    # never reach one either (CI has no ffmpeg).
+    def no_decoder(*_: object) -> bytes:
+        raise AssertionError("ffmpeg must not be reached")
+
+    monkeypatch.setattr("synthiq_caller.clips.resample_with_ffmpeg", no_decoder)
     bank = ClipBank(bank_dir)
     for name in ("late", "typo"):
         with pytest.raises(ClipExcluded):
-            bank.pcm(f"{name}.wav", 8000)
+            bank.pcm(f"{name}.wav", RATE)
     with pytest.raises(ClipExcluded):
-        bank.joined(["fine.wav", "blank.wav"], 8000)
-    assert bank.pcm("fine.wav", 8000)
+        bank.joined(["fine.wav", "blank.wav"], RATE)
+    assert bank.pcm("fine.wav", RATE)
     bank.allow_unknown_provenance = True
-    assert bank.pcm("blank.wav", 8000)
+    assert bank.pcm("blank.wav", RATE)
     with pytest.raises(ClipExcluded):  # no flag lifts retention
-        bank.pcm("late.wav", 8000)
+        bank.pcm("late.wav", RATE)
 
 
 # --- 3. a date nobody can read fails closed; one clock; phone numbers ---------------
