@@ -1,0 +1,179 @@
+name: Caller scheduled run
+
+# Runs a named scenario set through the caller on a schedule or on demand, sets
+# it beside the stored baseline, and fails on a regression.
+#
+# What this does NOT do, by design:
+#   * It uses the fake leg only: a scripted stand-in for the agent. No voice
+#     platform is called, no recording of any person is used, and the default
+#     path needs no secret. Every run it writes is marked as a rehearsal, and
+#     it says so in the log, the summary, the scorecard and any upload. It
+#     shows that the rig and the baseline still hold; it shows nothing about
+#     any agent.
+#   * It places no call that could change anything. The scenario set is
+#     refused if any scenario is not read-only, and the batch runs with
+#     --allow-mutating none as well.
+#   * It does not run against a target that is not on the allow-list held in
+#     repository settings (variable CALLER_ALLOWED_TARGETS).
+#
+# Set up once (Settings > Secrets and variables > Actions > Variables):
+#   CALLER_ALLOWED_TARGETS    comma-separated target names this workflow may use
+#   CALLER_SCHEDULED_TARGET   the target a scheduled run names (must be on the list)
+# Optional, to upload the result to the dashboard (secrets):
+#   SYNTHIQ_UPLOAD_URL, SYNTHIQ_API_TOKEN, and the variable-or-secret
+#   SYNTHIQ_UPLOAD_WORKSPACE. If any is missing the upload is skipped, and the
+#   log says so.
+# See caller/docs/CI-GATE.md. A schedule trigger runs from the default branch only.
+
+on:
+  schedule:
+    # Daily, at an odd minute: the top of the hour is where scheduled runs are
+    # most often delayed or dropped.
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+    inputs:
+      scenario_set:
+        description: "Name of the scenario set (a folder under caller/ci/scenarios)"
+        required: false
+        default: "smoke"
+        type: string
+      target:
+        description: "Target name. Must be on the allow-list (CALLER_ALLOWED_TARGETS)"
+        required: false
+        default: ""
+        type: string
+
+concurrency:
+  group: caller-scheduled
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  caller-gate:
+    name: Caller gate (rehearsal)
+    runs-on: ${{ vars.USE_SELF_HOSTED == 'true' && fromJSON('["self-hosted", "linux", "x64"]') || 'ubuntu-latest' }}
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: caller
+    env:
+      # Inputs and variables reach the shell as environment variables, never
+      # spliced into a command line.
+      SCENARIO_SET: ${{ inputs.scenario_set || 'smoke' }}
+      TARGET: ${{ inputs.target || vars.CALLER_SCHEDULED_TARGET || '' }}
+      ALLOWED_TARGETS: ${{ vars.CALLER_ALLOWED_TARGETS }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: caller/uv.lock
+
+      - name: Install dependencies
+        run: uv sync --all-extras --frozen
+
+      # First, before anything is built or run: refuse a target that is not on
+      # the allow-list, an empty allow-list, a set name that is not a plain
+      # folder name, and a set holding any scenario that is not read-only.
+      - name: Check the allow-list and the scenario set
+        run: >
+          uv run python -m synthiq_caller.ci_gate check
+          --target "$TARGET" --allowed "$ALLOWED_TARGETS"
+          --root ci/scenarios --set "$SCENARIO_SET"
+
+      - name: Build the generated clip bank
+        run: >
+          uv run python -m synthiq_caller.ci_gate bank
+          --root ci/scenarios --set "$SCENARIO_SET" --out "$RUNNER_TEMP/clips"
+
+      - name: Run the set on the fake leg
+        id: batch
+        run: >
+          uv run synthiq-caller batch "ci/scenarios/$SCENARIO_SET"
+          --leg fake --fake-agent "ci/agents/$SCENARIO_SET"
+          --clips "$RUNNER_TEMP/clips" --allow-mutating none
+          --target-label "$TARGET" --out "$RUNNER_TEMP/runs"
+
+      # The fake leg is deterministic, so any drop is a real change in the rig
+      # or the scripts and not noise: fail on any regression.
+      - name: Compare with the stored baseline
+        id: compare
+        run: |
+          baseline="baselines/$SCENARIO_SET.json"
+          if [ ! -f "$baseline" ]; then
+            echo "::error::no baseline at caller/$baseline; make one (caller/docs/CI-GATE.md) and commit it"
+            exit 1
+          fi
+          set -o pipefail
+          uv run synthiq-caller compare "$RUNNER_TEMP/runs" --baseline "$baseline" --fail-on any \
+            | tee "$RUNNER_TEMP/compare.txt"
+
+      - name: Build the scorecard
+        if: ${{ !cancelled() && steps.batch.outcome == 'success' }}
+        run: >
+          uv run synthiq-caller scorecard "$RUNNER_TEMP/runs"
+          --out "$RUNNER_TEMP/scorecard.html"
+          --title "REHEARSAL (scripted agent): $SCENARIO_SET"
+
+      - name: Job summary
+        if: ${{ !cancelled() && steps.batch.outcome == 'success' }}
+        run: |
+          {
+            echo "## Caller scheduled run: REHEARSAL (scripted agent)"
+            echo
+            echo "Set \`$SCENARIO_SET\`, target \`$TARGET\`. These calls went to a scripted stand-in,"
+            echo "not an agent. They show that the rig and baseline hold, and nothing about any agent."
+            echo
+            echo '### Compare with the stored baseline'
+            echo '```'
+            cat "$RUNNER_TEMP/compare.txt" 2>/dev/null || echo "(compare did not run)"
+            echo '```'
+            echo
+            echo '### Run report'
+            echo '```'
+            uv run synthiq-caller report "$RUNNER_TEMP/runs" || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload artifact (scorecard and runs)
+        if: ${{ !cancelled() && steps.batch.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: caller-rehearsal-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/scorecard.html
+            ${{ runner.temp }}/scorecard.json
+            ${{ runner.temp }}/compare.txt
+            ${{ runner.temp }}/runs
+          if-no-files-found: warn
+          retention-days: 30
+
+      # The dashboard upload happens only when it is configured. A step that is
+      # skipped says so in words; it never prints success for an upload that
+      # did not happen. The bundle is labelled REHEARSAL by the uploader itself.
+      - name: Upload to the dashboard
+        if: ${{ !cancelled() && steps.batch.outcome == 'success' }}
+        env:
+          SYNTHIQ_UPLOAD_URL: ${{ secrets.SYNTHIQ_UPLOAD_URL }}
+          SYNTHIQ_API_TOKEN: ${{ secrets.SYNTHIQ_API_TOKEN }}
+          SYNTHIQ_UPLOAD_WORKSPACE: ${{ secrets.SYNTHIQ_UPLOAD_WORKSPACE || vars.SYNTHIQ_UPLOAD_WORKSPACE }}
+        run: |
+          missing=""
+          [ -n "$SYNTHIQ_UPLOAD_URL" ] || missing="$missing SYNTHIQ_UPLOAD_URL"
+          [ -n "$SYNTHIQ_API_TOKEN" ] || missing="$missing SYNTHIQ_API_TOKEN"
+          [ -n "$SYNTHIQ_UPLOAD_WORKSPACE" ] || missing="$missing SYNTHIQ_UPLOAD_WORKSPACE"
+          if [ -n "$missing" ]; then
+            echo "upload skipped: not configured (missing:$missing)"
+            echo "upload skipped: not configured. Nothing was sent to the dashboard." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          uv run synthiq-caller upload "$RUNNER_TEMP/runs" \
+            --api "$SYNTHIQ_UPLOAD_URL" --workspace "$SYNTHIQ_UPLOAD_WORKSPACE" \
+            --scenarios "ci/scenarios/$SCENARIO_SET" \
+            --target-label "REHEARSAL (scripted agent): $TARGET"
+          echo "uploaded as a rehearsal (the dashboard shows it as one)" >> "$GITHUB_STEP_SUMMARY"
