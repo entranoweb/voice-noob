@@ -22,6 +22,8 @@ from typing import Any
 
 from synthiq_caller.clipbank.segments import PAD_S, ClipPlan, plan_clips
 from synthiq_caller.clipbank.values import clip_value
+from synthiq_caller.consent import FIELDS as CONSENT_FIELDS
+from synthiq_caller.consent import Consent
 from synthiq_caller.turns import rms
 
 MANIFEST_COLUMNS = (
@@ -37,6 +39,8 @@ MANIFEST_COLUMNS = (
     "question",
     "review",
     "checked_by_human",
+    # Where each clip came from and what may be done with it (``consent.py``).
+    *CONSENT_FIELDS,
 )
 LOW_ENERGY_RMS = 150.0
 RATE = 16000
@@ -95,10 +99,41 @@ def manifest_row(call: str, index: int, plan: ClipPlan, pad_s: float) -> dict[st
     }
 
 
+def consent_for(
+    call: str, defaults: dict[str, str], per_call: dict[str, dict[str, str]]
+) -> dict[str, str]:
+    """The provenance columns for one call's clips, checked.
+
+    These are given by the person running the build, never inferred: the audio
+    says nothing about who spoke or on what basis they were recorded. A call is a
+    ``real`` recording from a ``call`` unless told otherwise.
+    """
+    fields = {"source_kind": "call", "source_ref": call, "provenance": "real"}
+    fields.update(defaults)
+    fields.update(per_call.get(call, {}))
+    unknown = sorted(set(fields) - set(CONSENT_FIELDS))
+    if unknown:
+        raise ValueError(f"{call}: not a provenance column: {unknown}")
+    problems = Consent.from_row(dict(fields)).problems()
+    if problems:
+        raise ValueError(f"{call}: " + "; ".join(problems))
+    return {name: fields.get(name, "") for name in CONSENT_FIELDS}
+
+
 def build(
-    recordings: Path, out: Path, *, pad_s: float = PAD_S, write_audio: bool = True
+    recordings: Path,
+    out: Path,
+    *,
+    pad_s: float = PAD_S,
+    write_audio: bool = True,
+    consent: dict[str, str] | None = None,
+    consent_by_call: dict[str, dict[str, str]] | None = None,
 ) -> dict[str, Any]:
-    """Cut every recording under ``recordings``. Returns counts for a summary line."""
+    """Cut every recording under ``recordings``. Returns counts for a summary line.
+
+    ``consent`` gives the provenance columns every clip gets; ``consent_by_call``
+    gives them per call id, over the first.
+    """
     out.mkdir(parents=True, exist_ok=True)
     rows: list[dict[str, str]] = []
     calls = 0
@@ -113,9 +148,10 @@ def build(
         plans = plan_clips(read_words(transcript), pad_s=pad_s)
         if not plans:
             continue
+        fields = consent_for(call, consent or {}, consent_by_call or {})
         calls += 1
         for index, plan in enumerate(plans, start=1):
-            row = manifest_row(call, index, plan, pad_s)
+            row = {**manifest_row(call, index, plan, pad_s), **fields}
             if write_audio:
                 target = out / f"{row['clip']}.wav"
                 cut(source, float(row["start"]), float(row["end"]), target)

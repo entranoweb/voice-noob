@@ -260,6 +260,14 @@ class FieldRow:
 class Check:
     what: str
     passed: bool
+    # Which check this was, from its kind and the field or tool it is about, with no value
+    # anyone said or the scenario expects. It is what stays of ``what`` when ``forget``
+    # redacts a result; "(not checked)" is added when the check could not be made.
+    label: str = ""
+
+    def __post_init__(self) -> None:
+        if self.label and NOT_CHECKED in self.what:
+            self.label += " (not checked)"
 
 
 @dataclass
@@ -568,12 +576,12 @@ def booking_checks(
     """
     checks: list[Check] = []
 
-    def missing(what: str, source: str = "", why: str = "") -> None:
+    def missing(what: str, label: str, source: str = "", why: str = "") -> None:
         if source == READ_BACK:
-            checks.append(Check(f"{what} ({why})", False))
+            checks.append(Check(f"{what} ({why})", False, label))
             return
         reason = why or "the booked value is not available"
-        checks.append(Check(f"{what} ({NOT_CHECKED}: {reason})", False))
+        checks.append(Check(f"{what} ({NOT_CHECKED}: {reason})", False, label))
 
     wants_start = (
         booking.weekdays
@@ -595,27 +603,29 @@ def booking_checks(
         if booking.weekdays:
             what = f"the appointment is on {' or '.join(booking.weekdays)}"
             if weekday is None:
-                missing(what, source, why)
+                missing(what, "appointment weekday", source, why)
             else:
-                checks.append(Check(what + shown, weekday in booking.weekdays))
+                checks.append(
+                    Check(what + shown, weekday in booking.weekdays, "appointment weekday")
+                )
         if booking.date_from or booking.date_to:
             what = (
                 f"the appointment date is within {booking.date_from or 'any'} to "
                 f"{booking.date_to or 'any'}"
             )
             if on_date is None:
-                missing(what, source, why)
+                missing(what, "appointment date window", source, why)
             else:
                 after = not booking.date_from or on_date >= date.fromisoformat(booking.date_from)
                 before = not booking.date_to or on_date <= date.fromisoformat(booking.date_to)
-                checks.append(Check(what + shown, after and before))
+                checks.append(Check(what + shown, after and before, "appointment date window"))
         if booking.time_from or booking.time_to:
             what = (
                 f"the appointment starts within {booking.time_from or '00:00'} to "
                 f"{booking.time_to or '23:59'}"
             )
             if minutes is None:
-                missing(what, source, why)
+                missing(what, "appointment time window", source, why)
             else:
                 low = _minutes(booking.time_from) if booking.time_from else 0
                 high = _minutes(booking.time_to) if booking.time_to else 24 * 60
@@ -624,33 +634,36 @@ def booking_checks(
                     inside = low <= minutes <= high
                 else:
                     inside = minutes >= low or minutes <= high
-                checks.append(Check(what + shown, inside))
+                checks.append(Check(what + shown, inside, "appointment time window"))
 
-    for wanted, keys, what in (
+    for wanted, keys, what, label in (
         (
             booking.appointment_type,
             booking.type_keys or DEFAULT_TYPE_KEYS,
             f"the appointment type is {booking.appointment_type}",
+            "appointment type",
         ),
         (
             booking.clinician,
             booking.clinician_keys or DEFAULT_CLINICIAN_KEYS,
             f"the appointment is with {booking.clinician}",
+            "appointment clinician",
         ),
         (
             booking.status,
             booking.status_keys or DEFAULT_STATUS_KEYS,
             f"the appointment status is {booking.status}",
+            "appointment status",
         ),
     ):
         if not wanted:
             continue
         got, source, why = _held(keys, trace, read_back, rules, booking.tool)
         if got is None:
-            missing(what, source, why)
+            missing(what, label, source, why)
         else:
             held = wanted.strip().casefold() in got.strip().casefold()
-            checks.append(Check(f"{what} (booked: {got}, from {source})", held))
+            checks.append(Check(f"{what} (booked: {got}, from {source})", held, label))
     return checks
 
 
@@ -736,6 +749,7 @@ def _tool_check(
     matching: list[ToolCall],
     label: str,
     rules: dict[str, ToolOutcome],
+    plain: str,
 ) -> Check:
     """Whether the tool did what was expected: yes, no, or not known.
 
@@ -748,22 +762,24 @@ def _tool_check(
     outcomes = [tool_outcome(call, rules) for call in matching]
     if expected.ok:
         what = f"{label} is called and succeeds"
+        plain = f"{plain} called and succeeds"
         if any(outcome == DID for outcome, _ in outcomes):
-            return Check(what, True)
+            return Check(what, True, plain)
         not_known = [why for outcome, why in outcomes if outcome == UNKNOWN]
         if not_known:
-            return Check(f"{what} ({NOT_CHECKED}: {not_known[-1]})", False)
-        return Check(what, False)
+            return Check(f"{what} ({NOT_CHECKED}: {not_known[-1]})", False, plain)
+        return Check(what, False, plain)
     what = f"{label} is called and is refused" + (
         " at least once" if expected.at_least_once else ""
     )
+    plain = f"{plain} called and is refused" + (" at least once" if expected.at_least_once else "")
     considered = outcomes if expected.at_least_once else outcomes[-1:]
     if any(outcome == REFUSED for outcome, _ in considered):
-        return Check(what, True)
+        return Check(what, True, plain)
     not_known = [why for outcome, why in considered if outcome in (UNKNOWN, ERRORED)]
     if not_known:
-        return Check(f"{what} ({NOT_CHECKED}: {not_known[-1]})", False)
-    return Check(what, False)
+        return Check(f"{what} ({NOT_CHECKED}: {not_known[-1]})", False, plain)
+    return Check(what, False, plain)
 
 
 def grade(
@@ -823,57 +839,76 @@ def grade(
             )
             and _carries(c.arguments, expected.arguments)
         ]
+        tool = f"tool {expected.name or expected.name_contains}"
         label = f"tool '{expected.name or expected.name_contains}'"
         if expected.arguments:
             label += " with " + ", ".join(f"{k}={v}" for k, v in expected.arguments.items())
         if not expected.called:
-            result.checks.append(Check(f"{label} is not called", not matching))
+            result.checks.append(
+                Check(f"{label} is not called", not matching, f"{tool} not called")
+            )
             continue
-        result.checks.append(_tool_check(expected, matching, label, scenario.tool_outcomes))
+        result.checks.append(_tool_check(expected, matching, label, scenario.tool_outcomes, tool))
         for key, value in expected.outputs.items():
             what = f"{label} reports {key}={value}"
+            plain = f"{tool} reports {key}"
             if any(_carries(c.outputs, {key: value}) for c in matching):
-                result.checks.append(Check(what, True))
+                result.checks.append(Check(what, True, plain))
             elif matching and not any(key in c.outputs for c in matching):
                 # The tool ran, and the trace does not say what it reported.
                 result.checks.append(
-                    Check(f"{what} ({NOT_CHECKED}: the trace does not carry '{key}')", False)
+                    Check(f"{what} ({NOT_CHECKED}: the trace does not carry '{key}')", False, plain)
                 )
             else:
-                result.checks.append(Check(what, False))
+                result.checks.append(Check(what, False, plain))
 
     by_field = {row.field: row for row in rows}
     for name in scenario.expect.fields:
         row = by_field.get(name)
         result.checks.append(
             Check(
-                f"'{name}' reaches a tool as the caller said it", bool(row and row.stored_matches)
+                f"'{name}' reaches a tool as the caller said it",
+                bool(row and row.stored_matches),
+                f"field {name} reaches a tool as said",
             )
         )
 
     agent_lines = [str(e.get("text", "")) for e in record.timeline if e.get("kind") == "agent"]
-    for pattern in scenario.expect.agent_says:
+    for number, pattern in enumerate(scenario.expect.agent_says, start=1):
         result.checks.append(
             Check(
                 f"the agent says /{pattern.pattern}/",
                 any(pattern.search(line) for line in agent_lines),
+                f"agent says expected phrase {number}",
             )
         )
     said_forbidden = False
-    for pattern in scenario.expect.agent_never_says:
+    for number, pattern in enumerate(scenario.expect.agent_never_says, start=1):
         clean = not any(pattern.search(line) for line in agent_lines)
         said_forbidden = said_forbidden or not clean
-        result.checks.append(Check(f"the agent never says /{pattern.pattern}/", clean))
+        result.checks.append(
+            Check(
+                f"the agent never says /{pattern.pattern}/",
+                clean,
+                f"agent never says phrase {number}",
+            )
+        )
 
     for key, wanted in scenario.expect.read_back.items():
         if read_back is None:
             result.checks.append(
-                Check(f"the system holds {key}={wanted} ({NOT_CHECKED}: no read-back)", False)
+                Check(
+                    f"the system holds {key}={wanted} ({NOT_CHECKED}: no read-back)",
+                    False,
+                    f"system holds {key}",
+                )
             )
             continue
         got = read_back.get(key)
         held = got is not None and got.strip().casefold() == wanted.strip().casefold()
-        result.checks.append(Check(f"the system holds {key}={wanted} (read back)", held))
+        result.checks.append(
+            Check(f"the system holds {key}={wanted} (read back)", held, f"system holds {key}")
+        )
 
     result.checks.extend(
         booking_checks(scenario.expect.booking, trace, read_back, scenario.tool_outcomes)
@@ -885,7 +920,11 @@ def grade(
 
     if at_limit:
         result.checks.append(
-            Check("the call reaches its end (it ran to the time limit instead)", False)
+            Check(
+                "the call reaches its end (it ran to the time limit instead)",
+                False,
+                "call reaches its end",
+            )
         )
     elif not acceptable:
         # The checks can all hold on a call that died half-way: the tools ran,
@@ -894,6 +933,7 @@ def grade(
             Check(
                 f"the call reaches its end (it ended early: {ended or 'no ending was recorded'})",
                 False,
+                "call reaches its end",
             )
         )
 
