@@ -48,6 +48,13 @@ CALLS_FAILED = Counter(
     registry=REGISTRY,
 )
 
+PROVIDER_ERRORS_IGNORED = Counter(
+    "synthiq_realtime_provider_errors_ignored_total",
+    "Realtime provider error events that did not end the call",
+    ["error_code"],
+    registry=REGISTRY,
+)
+
 # Histograms
 CALLS_DURATION = Histogram(
     "synthiq_call_duration_seconds",
@@ -97,6 +104,14 @@ def record_call_completed(agent_id: str, duration_seconds: float) -> None:
         agent_id=agent_id,
         duration=duration_seconds,
     )
+
+
+def record_benign_provider_error(error_code: str) -> None:
+    """Count a provider error event the call carried on through."""
+    if not settings.ENABLE_PROMETHEUS_METRICS:
+        return
+
+    PROVIDER_ERRORS_IGNORED.labels(error_code=error_code).inc()
 
 
 def record_call_failed(agent_id: str, error_type: str) -> None:

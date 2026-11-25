@@ -2,8 +2,12 @@
 
 Provides function calling tools that allow the AI agent to control the call:
 - End/hangup the call
-- Transfer to another number or agent
-- Send DTMF tones (for IVR navigation)
+
+Transfer and DTMF tools were removed: they reported success and did nothing,
+because nothing in the bridge acts on them. They come back only when they act
+through the carrier and can report what the carrier did. A model that names
+them is refused as an unknown tool, and an agent that saved them in its tool
+selection simply never offers them.
 """
 
 from typing import Any
@@ -47,65 +51,11 @@ class CallControlTools:
                             "type": "string",
                             "description": (
                                 "Brief reason for ending the call (e.g., 'conversation_complete', "
-                                "'caller_requested', 'no_response', 'transferred')"
+                                "'caller_requested', 'no_response')"
                             ),
                         },
                     },
                     "required": ["reason"],
-                },
-            },
-            {
-                "type": "function",
-                "name": "transfer_call",
-                "description": (
-                    "Transfer the call to another phone number or department. Use this when "
-                    "the caller needs to speak with a human agent, a specialist, or another "
-                    "department. Inform the caller before transferring."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "destination": {
-                            "type": "string",
-                            "description": (
-                                "Phone number to transfer to (E.164 format like +1234567890) "
-                                "or a department identifier"
-                            ),
-                        },
-                        "announce": {
-                            "type": "string",
-                            "description": (
-                                "Optional message to announce to the destination before connecting "
-                                "(e.g., 'Incoming transfer from customer support')"
-                            ),
-                        },
-                    },
-                    "required": ["destination"],
-                },
-            },
-            {
-                "type": "function",
-                "name": "send_dtmf",
-                "description": (
-                    "Send DTMF touch-tones during the call. Use this for navigating automated "
-                    "phone systems (IVR), entering PINs, extension numbers, or confirmation codes."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "digits": {
-                            "type": "string",
-                            "description": (
-                                "The DTMF digits to send. Valid characters: 0-9, *, #, A-D. "
-                                "Use 'w' for a 0.5s pause between digits."
-                            ),
-                        },
-                        "duration_ms": {
-                            "type": "integer",
-                            "description": "Duration of each tone in milliseconds (default: 250)",
-                        },
-                    },
-                    "required": ["digits"],
                 },
             },
         ]
@@ -120,50 +70,6 @@ class CallControlTools:
             "action": "end_call",
             "reason": reason,
             "message": "Call will be ended after this response.",
-        }
-
-    @staticmethod
-    def _execute_transfer_call(arguments: dict[str, Any]) -> dict[str, Any]:
-        """Execute transfer_call tool."""
-        destination = arguments.get("destination", "")
-        announce = arguments.get("announce")
-
-        if not destination:
-            return {"success": False, "error": "Destination is required for transfer"}
-
-        logger.info("transfer_call_requested", destination=destination, announce=announce)
-        return {
-            "success": True,
-            "action": "transfer_call",
-            "destination": destination,
-            "announce": announce,
-            "message": f"Transferring call to {destination}.",
-        }
-
-    @staticmethod
-    def _execute_send_dtmf(arguments: dict[str, Any]) -> dict[str, Any]:
-        """Execute send_dtmf tool."""
-        digits = arguments.get("digits", "")
-        duration_ms = arguments.get("duration_ms", 250)
-
-        if not digits:
-            return {"success": False, "error": "Digits are required for DTMF"}
-
-        # Validate DTMF digits
-        valid_chars = set("0123456789*#ABCDabcdwW")
-        if not all(c in valid_chars for c in digits):
-            return {
-                "success": False,
-                "error": "Invalid DTMF digits. Use 0-9, *, #, A-D, or 'w' for pause.",
-            }
-
-        logger.info("send_dtmf_requested", digits=digits, duration_ms=duration_ms)
-        return {
-            "success": True,
-            "action": "send_dtmf",
-            "digits": digits.upper().replace("W", "w"),  # Normalize
-            "duration_ms": duration_ms,
-            "message": f"Sending DTMF tones: {digits}",
         }
 
     @staticmethod
@@ -182,8 +88,6 @@ class CallControlTools:
         """
         handlers = {
             "end_call": CallControlTools._execute_end_call,
-            "transfer_call": CallControlTools._execute_transfer_call,
-            "send_dtmf": CallControlTools._execute_send_dtmf,
         }
 
         handler = handlers.get(tool_name)

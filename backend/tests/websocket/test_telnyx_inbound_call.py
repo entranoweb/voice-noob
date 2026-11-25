@@ -78,7 +78,9 @@ class _FakeRealtimeConnection:
 
     async def __anext__(self) -> Any:
         if not self._events:
-            raise StopAsyncIteration
+            # A live model socket goes quiet, it does not end. Ending here would
+            # read as the model closing, which the bridge answers by hanging up.
+            await asyncio.Event().wait()
         event = self._events.pop(0)
         if isinstance(event, _Pause):
             await asyncio.sleep(event.seconds)
