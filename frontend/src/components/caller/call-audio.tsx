@@ -151,9 +151,12 @@ export const CallAudio = forwardRef<CallAudioHandle, Props>(function CallAudio(
                     src={status.url}
                     aria-labelledby={`audio-${item.track}`}
                     className="w-full"
-                    onLoadedMetadata={(event) =>
-                      setLength((current) => Math.max(current, event.currentTarget.duration || 0))
-                    }
+                    onLoadedMetadata={(event) => {
+                      // Read now: React clears currentTarget once the handler returns,
+                      // and a state updater runs later.
+                      const seconds = event.currentTarget.duration || 0;
+                      setLength((current) => Math.max(current, seconds));
+                    }}
                   />
                 ) : status.state === "failed" ? (
                   <p className="text-sm text-red-700 dark:text-red-400" role="alert">
