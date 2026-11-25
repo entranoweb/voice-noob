@@ -92,8 +92,16 @@ class AuditAction:
     RETENTION_SWEEP = "compliance.retention_sweep"
     CONSENT_UPDATE = "compliance.consent_update"
 
+    # Results uploaded from the caller rig
+    CALLER_RUN_UPLOAD = "caller_run.upload"
+    CALLER_RUN_DELETE = "caller_run.delete"
+
     # Administration
     ADMIN_BOOTSTRAP = "admin.bootstrap"
+    ADMIN_PASSWORD_REPLACED = "admin.password_replaced"
+    ACCOUNT_CREATE = "admin.account.create"
+    ACCOUNT_DISABLE = "admin.account.disable"
+    ACCOUNT_ENABLE = "admin.account.enable"
 
 
 def sanitize_details(details: dict[str, Any], _depth: int = 0) -> dict[str, Any]:

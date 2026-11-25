@@ -92,16 +92,20 @@ ADMIN_NAME=Admin
 # section 7.2.
 PUBLIC_URL=https://api.synthiqvoice.com
 
-# Telnyx webhook signature verification. REQUIRED.
-# Unset, every webhook is refused 403 and no call ever reaches an agent,
-# whatever DEBUG says. The only way to accept an unsigned webhook is
+# Telnyx webhook signature verification. Optional here.
+# A webhook is checked first against the public key of the workspace that owns
+# the number or call (entered in the dashboard), then against this one. Set it
+# only when every number runs on one platform-wide Telnyx account. With neither
+# key the webhook is refused 403 and no call reaches an agent, whatever DEBUG
+# says. The only way to accept an unsigned webhook is
 # ALLOW_UNSIGNED_WEBHOOKS=true, which must never be set here.
-TELNYX_PUBLIC_KEY=your_telnyx_public_key
+TELNYX_PUBLIC_KEY=
 
 # Only needed for outbound calls and buying numbers. Inbound does not use it.
 TELNYX_API_KEY=your_telnyx_api_key
 
-# REQUIRED in production. See TELNYX_PUBLIC_KEY above.
+# REQUIRED in production. It skips the startup checks on SECRET_KEY and
+# CREDENTIAL_ENCRYPTION_KEYS.
 DEBUG=false
 
 # These three are read by docker-compose.prod.yml, not by the app directly.
@@ -117,10 +121,11 @@ BACKEND_WS_URL=wss://api.synthiqvoice.com
 
 Every one of these is passed into the backend container by
 `docker-compose.prod.yml`. A variable set in Coolify that the compose file does
-not list never reaches the app — which is why `PUBLIC_URL` and
-`TELNYX_PUBLIC_KEY` are declared required there: the deploy fails with a message
-naming the missing variable rather than starting a server that cannot take a
-call.
+not list never reaches the app — which is why `SECRET_KEY`,
+`CREDENTIAL_ENCRYPTION_KEYS` and `PUBLIC_URL` are declared required there: the
+deploy fails with a message naming the missing variable rather than starting a
+server that cannot take a call. `TELNYX_PUBLIC_KEY` is passed but not required,
+since each workspace can hold its own.
 
 #### Settings that changed behaviour in November 2026
 
@@ -139,6 +144,8 @@ Names and defaults are from `backend/app/core/config.py`.
 | `EMBED_SESSION_MAX_SECONDS` | `900` | Longest an embedded session can run, and the lifetime of its signed token. The session is closed when it is reached |
 | `EMBED_TOOLS_DEFAULT_ENABLED` | `false` | Whether embedded sessions may call tools when the agent does not say. The per-agent switch is `embed_settings.allow_tools`, set through the agent's embed settings API; the dashboard has no control for it yet |
 | `TWILIO_AUTH_TOKEN` | unset | Fallback for Twilio signature checks. See below |
+| `TELNYX_PUBLIC_KEY` | unset | Fallback for Telnyx signature checks, after the owning workspace's own key. See below |
+| `RATE_LIMIT_STORAGE_URI` | unset | Where rate-limit counts are kept. Unset: Redis at `REDIS_URL`, so every worker shares one count. `memory://` counts per process, which is only right for a single process. While Redis is unreachable the same limits are counted per process until it returns |
 
 Three things follow that are not settings.
 
@@ -151,7 +158,8 @@ Three things follow that are not settings.
   against the Twilio auth token of the workspace that owns the number, agent or
   call the webhook is about (Settings > Workspace API Keys), then against the
   global `TWILIO_AUTH_TOKEN` if one is set. With neither, the webhook is
-  refused 403. Telnyx still uses the one global `TELNYX_PUBLIC_KEY`.
+  refused 403. Telnyx works the same way: the owning workspace's public key
+  first, then the global `TELNYX_PUBLIC_KEY` if one is set.
 - **Deploy the frontend with the backend.** The widget page must send the
   signed session the backend now requires; an older page gets no tools and no
   transcript.
@@ -178,12 +186,10 @@ retention sweep (`compliance_runs`) are created by the same migration. Audit
 events are also written to the log as JSON lines with `"logger": "audit"`,
 whatever the application's log level.
 
-`docker-compose.prod.yml` passes the backend `SECRET_KEY`, `PUBLIC_URL`,
-`FRONTEND_URL`, `TELNYX_PUBLIC_KEY`, `TELNYX_API_KEY` and `DEBUG` from this
-table's neighbourhood. It does **not** pass `ALLOW_UNSIGNED_WEBHOOKS`, the three
-`EMBED_*` settings or the `TWILIO_*` pair, so on that deployment they keep their
-defaults whatever is set in Coolify, until they are added to the backend's
-`environment:` block.
+`docker-compose.prod.yml` passes the backend every setting in the table above,
+including `ALLOW_UNSIGNED_WEBHOOKS`, the three `EMBED_*` settings, the `TWILIO_*`
+pair and `RATE_LIMIT_STORAGE_URI`. A setting that is not in the backend's
+`environment:` block there keeps its default whatever is set in Coolify.
 
 Migrations run themselves. `docker-entrypoint.sh` waits for Postgres and Redis,
 runs `alembic upgrade head`, then starts gunicorn — there is no manual migration
@@ -483,3 +489,83 @@ If deployment fails:
 2. Verify all environment variables are set
 3. Ensure domains are properly configured with SSL
 4. Test webhook URLs are accessible from internet
+
+---
+
+## Behaviour changes: tenant isolation and start-up checks (November 2026)
+
+Read this before upgrading an existing deployment. Each item changes what a running instance does.
+
+### The deployment will not start until these are set
+
+`docker-compose.prod.yml` no longer has a default for any credential. Compose stops with a message naming the variable if one is missing:
+
+- `POSTGRES_PASSWORD`
+- `REDIS_PASSWORD`
+- `ADMIN_EMAIL`
+- `ADMIN_PASSWORD`
+
+If your deployment was running on the old defaults, the database and Redis already hold those passwords. Change the password inside Postgres (`ALTER USER ... PASSWORD ...`) and set the same value in `POSTGRES_PASSWORD`; changing the variable alone does not change an existing database.
+
+### The backend refuses passwords this repository has shipped
+
+Outside `DEBUG=true` the backend stops at start-up when:
+
+- the database or Redis password is one of the old defaults or example values;
+- there are no users yet and `ADMIN_PASSWORD` is a shipped value;
+- an administrator account still has a shipped password stored.
+
+For the last case, set `ADMIN_EMAIL` to that account's address and `ADMIN_PASSWORD` to a new value, then start again. The stored password is replaced at start-up.
+
+### Sign-up is closed
+
+`POST /api/v1/auth/register` answers 403 unless `ALLOW_PUBLIC_SIGNUP=true`. The administrator creates accounts:
+
+```bash
+curl -X POST https://api.YOUR-DOMAIN/api/v1/auth/users \
+  -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" \
+  -d '{"email": "clinic@example.com", "username": "Clinic", "password": "..."}'
+```
+
+To switch an account off or back on (it loses access on its next request, not when its token expires):
+
+```bash
+curl -X POST https://api.YOUR-DOMAIN/api/v1/auth/users/42/disable -H "Authorization: Bearer $ADMIN_TOKEN"
+curl -X POST https://api.YOUR-DOMAIN/api/v1/auth/users/42/enable  -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+### One owner per phone number
+
+- The migration `d2f5a8c31b47` adds a unique index on live phone numbers. If two live records already hold the same number, the upgrade stops, changes nothing, and prints the record and owner ids that collide. Release or delete the wrong record and run it again.
+- A second account that registers a number another account holds gets 409.
+- An agent's phone field only accepts a number registered to the same account. A carrier id from the agent page's number list is still accepted.
+- An inbound call reaches only an agent in the account that holds the number.
+
+### Requests that now answer 404 or 403
+
+- Another account's agent id on the tool, realtime token, realtime session, transcript and phone-number assignment routes: 404.
+- Another account's workspace or agent when creating a campaign: 404.
+- A tool the agent's owner did not enable, on `POST /api/v1/tools/execute` and on phone calls: refused.
+
+### Operational endpoints
+
+- `/docs`, `/redoc` and `/openapi.json` answer 404 unless `ENABLE_API_DOCS=true`.
+- `/metrics` answers 404 unless `METRICS_TOKEN` is set and the scraper sends it as `Authorization: Bearer <token>`.
+- Ports 8000 and 3000 are no longer published on the host. The reverse proxy reaches both services over the compose network. Anything that called `http://SERVER-IP:8000` directly must use the public address.
+- The backend container runs as user `app` (uid 10001), not root.
+
+### Outbound requests and webhooks
+
+- The QA alert webhook, the Slack alert webhook and the Azure OpenAI endpoint must be `https://` and must resolve to public addresses. A private destination your own operator needs (an Azure private endpoint, for example) goes in `OUTBOUND_ALLOW_PRIVATE_HOSTS` as a JSON list of host names.
+- A Shopify shop domain must be `<name>.myshopify.com`.
+- A Telnyx webhook whose timestamp is more than five minutes from the server's clock is refused (`TELNYX_WEBHOOK_MAX_AGE_SECONDS`). Keep the server's clock synchronised.
+
+### New settings
+
+| Setting | Default | Meaning |
+|---------|---------|---------|
+| `ALLOW_PUBLIC_SIGNUP` | follows `DEBUG` | Whether anyone may create an account |
+| `ENABLE_API_DOCS` | follows `DEBUG` | Serve the interactive API documentation |
+| `METRICS_TOKEN` | unset | Bearer token required to read `/metrics` |
+| `TELNYX_WEBHOOK_MAX_AGE_SECONDS` | `300` | Oldest signed Telnyx webhook accepted |
+| `OUTBOUND_ALLOW_PRIVATE_HOSTS` | `[]` | Host names the server may call although they are private |

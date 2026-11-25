@@ -25,11 +25,13 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from synthiq_caller.batch import ALLOWED
 from synthiq_caller.clips import ClipBank
 from synthiq_caller.director import Director, RunRecord
-from synthiq_caller.jsonio import write_json
+from synthiq_caller.jsonio import next_index, write_new_json
 from synthiq_caller.legs.fake_twilio import FakeTwilio
 from synthiq_caller.legs.twilio_media import CallNotConnected, PhoneConfig, TwilioMediaLeg
+from synthiq_caller.numbers import ALLOWED_ENV, allowed_numbers, is_allowed
 from synthiq_caller.scenario import Scenario, load_scenario
 from synthiq_caller.transcribe import (
     DeepgramTranscriber,
@@ -92,9 +94,10 @@ def build_transcriber(args: argparse.Namespace, env: Mapping[str, str]) -> Trans
 
 def _write(out: Path, payload: dict[str, Any]) -> Path:
     out.mkdir(parents=True, exist_ok=True)
-    index = len(list(out.glob("phone-run-*.json"))) + 1
+    # One more than the highest number in use: a stored run is never written over.
+    index = next_index(out, "phone-run") + 1
     path = out / f"phone-run-{index:03d}.json"
-    write_json(path, payload)
+    write_new_json(path, payload)
     return path
 
 
@@ -113,6 +116,19 @@ def _summary(record: RunRecord, leg: TwilioMediaLeg) -> list[str]:
 
 async def run_real(args: argparse.Namespace, scenario: Scenario, env: Mapping[str, str]) -> int:
     credentials = Credentials.from_env(env)
+    allowed = allowed_numbers(args.allowed_numbers, env)
+    if not is_allowed(args.to, allowed):
+        raise UsageError(
+            f"{args.to} is not on the list of numbers this caller may dial. List them with "
+            f"--allowed-numbers (a file, or a comma-separated list) or {ALLOWED_ENV}"
+        )
+    # The same guard a batch applies: a call that can change the system under
+    # test is placed only when the operator has said this level of change is allowed.
+    if scenario.mutates not in ALLOWED[args.allow_mutating]:
+        raise UsageError(
+            f"mutation guard: this scenario's 'mutates' is {scenario.mutates!r} and "
+            f"--allow-mutating is {args.allow_mutating!r}; the call was not placed"
+        )
     public_url = check_public_url(args.public_url or "")
     transcriber = build_transcriber(args, env)
     rest = TwilioRest(credentials)
@@ -124,6 +140,7 @@ async def run_real(args: argparse.Namespace, scenario: Scenario, env: Mapping[st
             listen_host=args.host,
             listen_port=args.port,
             record=not args.no_record,
+            allowed_to=allowed,
         ),
         rest,
         auth_token=credentials.auth_token,
@@ -200,6 +217,19 @@ def main(argv: list[str] | None = None, env: Mapping[str, str] | None = None) ->
     parser.add_argument("--public-url", default="")
     parser.add_argument("--from", dest="from_number", default="")
     parser.add_argument("--to", default="")
+    parser.add_argument(
+        "--allowed-numbers",
+        default="",
+        help="the only numbers that may be dialled: a file, one per line, or a comma-separated "
+        "list. A real call is not placed without it",
+    )
+    parser.add_argument(
+        "--allow-mutating",
+        choices=sorted(ALLOWED),
+        default="none",
+        help="how much a real call may change on the system under test; a scenario that "
+        "changes more, or does not say, is not placed",
+    )
     parser.add_argument("--host", default="0.0.0.0")  # noqa: S104 - the carrier connects in
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument(

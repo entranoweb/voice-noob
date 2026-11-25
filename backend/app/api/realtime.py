@@ -20,6 +20,7 @@ from app.api.integrations import get_workspace_integrations
 from app.api.settings import get_user_api_keys
 from app.core.auth import CurrentUser, user_id_to_uuid
 from app.core.config import settings
+from app.core.ownership import get_owned_agent
 from app.db.session import get_db
 from app.models.agent import Agent
 from app.models.user import User
@@ -258,6 +259,7 @@ async def realtime_websocket(  # noqa: PLR0911, PLR0915
         agent_config = {
             "system_prompt": agent.system_prompt,
             "enabled_tools": agent.enabled_tools,
+            "enabled_tool_ids": agent.enabled_tool_ids,
             "language": agent.language,
             "voice": agent.voice or "shimmer",
         }
@@ -457,12 +459,9 @@ async def create_webrtc_session(
     if not sdp_offer:
         raise HTTPException(status_code=400, detail="SDP offer required in request body")
 
-    # Load agent configuration
-    result = await db.execute(select(Agent).where(Agent.id == uuid.UUID(agent_id)))
-    agent = result.scalar_one_or_none()
-
-    if not agent:
-        raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found")
+    # Load the agent, which must be the caller's own: this route runs the
+    # agent's prompt on its owner's key, and returns its configuration.
+    agent = await get_owned_agent(db, agent_id, current_user)
 
     if not agent.is_active:
         raise HTTPException(status_code=400, detail="Agent is not active")
@@ -609,12 +608,9 @@ async def get_ephemeral_token(
 
     token_logger.info("ephemeral_token_requested")
 
-    # Load agent configuration
-    result = await db.execute(select(Agent).where(Agent.id == uuid.UUID(agent_id)))
-    agent = result.scalar_one_or_none()
-
-    if not agent:
-        raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found")
+    # Load the agent, which must be the caller's own: this route runs the
+    # agent's prompt on its owner's key, and returns its configuration.
+    agent = await get_owned_agent(db, agent_id, current_user)
 
     if not agent.is_active:
         raise HTTPException(status_code=400, detail="Agent is not active")
@@ -773,17 +769,10 @@ async def save_transcript(
 
     transcript_logger.info("saving_transcript", length=len(request.transcript))
 
-    # Validate agent exists and user has access
-    result = await db.execute(select(Agent).where(Agent.id == uuid.UUID(agent_id)))
-    agent = result.scalar_one_or_none()
-
-    if not agent:
-        raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found")
-
-    # Verify user owns this agent
+    # The agent must be the caller's own. (This compared the owner's integer id
+    # with a UUID and so refused every request, including the owner's.)
+    agent = await get_owned_agent(db, agent_id, current_user)
     user_uuid = user_id_to_uuid(user_id)
-    if agent.user_id != user_uuid:
-        raise HTTPException(status_code=403, detail="Not authorized to access this agent")
 
     # Skip if transcript is empty
     if not request.transcript.strip():

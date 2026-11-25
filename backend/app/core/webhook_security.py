@@ -11,6 +11,7 @@ when it is on.
 
 import hashlib
 import hmac
+import time
 from functools import wraps
 from typing import Any
 
@@ -89,6 +90,16 @@ def validate_twilio_signature(
     return hmac.compare_digest(signature, expected_sig_b64)
 
 
+def telnyx_timestamp_is_fresh(timestamp: str, now: float | None = None) -> bool:
+    """Whether a Telnyx webhook timestamp (unix seconds) is within the allowed age."""
+    try:
+        sent_at = int(timestamp)
+    except (TypeError, ValueError):
+        return False
+    current = time.time() if now is None else now
+    return abs(current - sent_at) <= settings.TELNYX_WEBHOOK_MAX_AGE_SECONDS
+
+
 def validate_telnyx_signature(
     signature: str,
     timestamp: str,
@@ -136,6 +147,13 @@ def validate_telnyx_signature(
         # Decode and verify signature
         signature_bytes = base64.b64decode(signature)
         ed25519_key.verify(signature_bytes, signed_payload)
+
+        # A genuine signature on an old webhook is a replay. The timestamp is
+        # inside what was signed, so it can be trusted once the signature has
+        # verified, and only then.
+        if not telnyx_timestamp_is_fresh(timestamp):
+            logger.warning("telnyx_webhook_too_old_or_from_the_future")
+            return False
 
         return True
     except Exception as e:

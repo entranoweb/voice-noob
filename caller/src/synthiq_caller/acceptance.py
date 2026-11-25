@@ -174,13 +174,20 @@ def _not_shown(report: dict[str, Any]) -> list[str]:
         )
     elif not any("phone" in leg for leg in legs):
         limits.append(
-            "The calls were placed over a direct connection to the agent, not a phone line. "
-            "Line quality, the phone codec and anything the carrier does are not tested."
+            f"The calls were placed over a direct connection to the agent (leg: "
+            f"{', '.join(legs)}), not a phone line. Line quality, the phone codec and "
+            "anything the carrier does are not tested."
         )
     elif len(legs) > 1:
         limits.append(
-            f"The calls were placed in more than one way ({', '.join(legs)}); only those "
-            "on a phone leg test the phone line."
+            f"The calls were placed in more than one way (legs: {', '.join(legs)}); only "
+            "those on a phone leg test the phone line."
+        )
+    else:
+        limits.append(
+            "The calls were placed over a phone line (leg: phone), from one calling number "
+            "on one carrier. Other carriers, mobile networks, poor lines and callers' own "
+            "handsets are not tested."
         )
     if counts["graded"] > report["gate"]["scenarios"]:
         limits.append(

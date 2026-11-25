@@ -19,6 +19,12 @@ echo ""
 BACKEND_SUCCESS=true
 FRONTEND_SUCCESS=true
 
+# Backend tests run on Postgres, as CI does: the SQLite fallback fails tests
+# that are correct. `make test-db` starts it and creates this database.
+# The password is the one `make setup` generated into the root .env.
+PGPW="$(sed -n 's/^POSTGRES_PASSWORD=//p' .env 2>/dev/null)"
+export TEST_DATABASE_URL="${TEST_DATABASE_URL:-postgresql+asyncpg://postgres:${PGPW:-postgres}@localhost:5432/voicenoob_test}"
+
 # Backend Tests
 echo -e "${BOLD}=== Backend Tests ===${NC}"
 cd backend
@@ -98,7 +104,7 @@ else
 
     echo ""
     echo "Running tests..."
-    if npm run test:run; then
+    if npm test; then
         echo -e "${GREEN}✓ Frontend tests passed${NC}"
     else
         echo -e "${RED}✗ Frontend tests failed${NC}"
@@ -107,7 +113,7 @@ else
 
     echo ""
     echo "Generating coverage report..."
-    if npm run test:coverage -- --run; then
+    if npm run test:coverage; then
         echo -e "${GREEN}✓ Coverage report generated (see frontend/coverage/index.html)${NC}"
     else
         echo -e "${YELLOW}⚠ Coverage report failed (tests may have failed)${NC}"

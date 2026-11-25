@@ -113,7 +113,7 @@ def test_a_run_that_meets_the_gate_says_so_with_what_produced_it(tmp_path: Path)
     # Counts beside the percentage, pooled and by scenario.
     assert "59 of 59 (100.0%; 95% interval 93.9% to 100.0%)" in text
     # And what it is not: this was not a phone call.
-    assert "direct connection to the agent, not a phone line" in text
+    assert "direct connection to the agent (leg: elevenlabs-socket), not a phone line" in text
     assert "as stated by whoever ran the batch" in text
 
 
@@ -319,4 +319,5 @@ def test_a_phone_leg_drops_the_direct_connection_caveat(tmp_path: Path) -> None:
     found = acceptance.build([run_directory(tmp_path, ["passed"] * 59, leg="phone", version="")])
 
     assert not any("direct connection" in limit for limit in found["not_shown"])
+    assert any("over a phone line (leg: phone)" in limit for limit in found["not_shown"])
     assert any("was not recorded for every batch" in limit for limit in found["not_shown"])

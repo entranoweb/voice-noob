@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.integrations import get_workspace_integrations
 from app.api.settings import get_user_api_keys
 from app.core.auth import user_id_to_uuid
+from app.core.safe_http import assert_public_url
 from app.services.tools.registry import ToolRegistry
 
 logger = structlog.get_logger()
@@ -182,6 +183,9 @@ class GPTRealtimeSession:
         # Initial greeting (triggered after event loop starts to avoid race condition)
         self._pending_initial_greeting: str | None = None
         self._greeting_triggered: bool = False
+        # Tool names offered to the model for this call. None until the session
+        # is configured; a call for any other name is refused, not executed.
+        self._allowed_tool_names: set[str] | None = None
         self.logger = logger.bind(
             component="gpt_realtime",
             session_id=self.session_id,
@@ -218,6 +222,9 @@ class GPTRealtimeSession:
                 raise ValueError(
                     "Azure OpenAI credentials not configured for this workspace. Please add them in Settings > Workspace API Keys."
                 )
+            # The endpoint is whatever the workspace saved. Refuse one that
+            # leads into a private network before any audio or key is sent.
+            await assert_public_url(user_settings.azure_openai_endpoint)
             self.client = AsyncAzureOpenAI(
                 azure_endpoint=user_settings.azure_openai_endpoint,
                 api_key=user_settings.azure_openai_api_key,
@@ -303,8 +310,15 @@ class GPTRealtimeSession:
             return
 
         # Get tool definitions from registry
-        enabled_tools = self.agent_config.get("enabled_tools", [])
-        tools = self.tool_registry.get_all_tool_definitions(enabled_tools)
+        # Both halves of the owner's selection: the integrations switched on and,
+        # within each, the individual tools. Passing only the first offered a
+        # caller every tool in a group the owner had narrowed to one.
+        enabled_tools = self.agent_config.get("enabled_tools") or []
+        enabled_tool_ids = self.agent_config.get("enabled_tool_ids") or None
+        tools = self.tool_registry.get_all_tool_definitions(enabled_tools, enabled_tool_ids)
+        self._allowed_tool_names = self.tool_registry.enabled_tool_names(
+            enabled_tools, enabled_tool_ids
+        )
 
         # Get workspace timezone if available
         workspace_timezone = "UTC"
@@ -419,6 +433,18 @@ class GPTRealtimeSession:
             tool_name=tool_name,
             arguments=arguments,
         )
+
+        # The model is asked to pick from the tools it was offered, but what it
+        # emits is driven by what the caller said. A name outside the offered
+        # set is refused here rather than looked up in the whole registry.
+        if self._allowed_tool_names is None:
+            self._allowed_tool_names = self.tool_registry.enabled_tool_names(
+                self.agent_config.get("enabled_tools") or [],
+                self.agent_config.get("enabled_tool_ids") or None,
+            )
+        if tool_name not in self._allowed_tool_names:
+            self.logger.warning("tool_call_refused_not_enabled", tool_name=tool_name)
+            return {"success": False, "error": "That tool is not available on this call"}
 
         # Execute tool via internal tool registry
         result = await self.tool_registry.execute_tool(tool_name, arguments)

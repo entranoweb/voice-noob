@@ -2,7 +2,11 @@
 
     synthiq-caller run scenario.json --leg elevenlabs-socket --agent <id> \\
         --clips <dir> --repeats 3 --out runs/
-    synthiq-caller report runs/
+    synthiq-caller report runs/ --fail-under 95
+    synthiq-caller preflight --leg phone --public-url https://... --from +44... --to +44... \\
+        --allowed-numbers allowed.txt                (places no call)
+    synthiq-caller batch scenarios/sophie --leg phone --public-url https://... \\
+        --from +44... --to +44... --allowed-numbers allowed.txt --clips <dir> --out runs/
     synthiq-caller batch scenarios/sophie --leg elevenlabs-socket --agent <id> \
         --clips <dir> --repeats 3 --out runs/        (runs lookup-only scenarios)
     synthiq-caller validate scenarios/sophie --clips <dir> [--check-requires-command "..."]
@@ -43,7 +47,6 @@ from synthiq_caller.batch import (
     reread_missing_traces,
     run_batch,
 )
-from synthiq_caller.chain import Chain, variables_in
 from synthiq_caller.clips import ClipBank
 from synthiq_caller.compare import (
     compare,
@@ -57,9 +60,9 @@ from synthiq_caller.jsonio import utf8_console
 from synthiq_caller.leg import Leg
 from synthiq_caller.prereq import CommandChecker, HttpChecker, PrereqChecker
 from synthiq_caller.readback import CommandReadBack, HttpReadBack, NoReadBack, ReadBack
-from synthiq_caller.report import gate_reading, render, summarise
+from synthiq_caller.report import fail_under_exit, gate_reading, render, summarise
 from synthiq_caller.reset import CommandReset, HttpReset, NoReset, Reset
-from synthiq_caller.scenario import Scenario, load_scenario
+from synthiq_caller.scenario import load_scenario
 from synthiq_caller.stats import describe
 from synthiq_caller.traces.base import TraceReader
 from synthiq_caller.validation import validate_directory
@@ -99,7 +102,7 @@ def _trace_reader(args: argparse.Namespace) -> TraceReader:
     return ElevenLabsTraceReader(_secret("ELEVENLABS_API_KEY", args.env_file))
 
 
-LEGS = ["elevenlabs-socket", "fake"]
+LEGS = ["elevenlabs-socket", "phone", "fake"]
 
 
 def _build_fake(args: argparse.Namespace, scenario_file: str) -> tuple[Leg, TraceReader | None]:
@@ -151,7 +154,7 @@ def _print_grade(index: int, payload: dict[str, Any]) -> None:
         print(f"  read-back failed, tool calls used for 'stored': {payload['read_back_error']}")
 
 
-def report(directory: str, *, details: bool = True) -> int:
+def report(directory: str, *, details: bool = True, fail_under: float | None = None) -> int:
     files = sorted(Path(directory).glob("run-*.json"))
     if not files and not (Path(directory) / "batch.json").exists():
         print("no runs found")
@@ -160,8 +163,12 @@ def report(directory: str, *, details: bool = True) -> int:
         for index, path in enumerate(files, start=1):
             _print_grade(index, json.loads(path.read_text(encoding="utf-8")))
         print()
-    print(render(summarise(directory)))
-    return 0
+    summary = summarise(directory)
+    print(render(summary))
+    code, line = fail_under_exit(summary, fail_under)
+    if line:
+        print(f"\n{line}")
+    return code
 
 
 def validate(args: argparse.Namespace) -> int:
@@ -250,6 +257,16 @@ def _acceptance(args: argparse.Namespace) -> int:
     out = acceptance.write(found, args.out)
     print(f"{found['verdict']}: {found['verdict_reason']}.  ->  {out}")
     return 0 if found["verdict"] == acceptance.MET else 1
+
+
+TARGET_LABEL_HELP = (
+    "a name for the system under test, written into the run manifest and onto reports; "
+    "keep it neutral"
+)
+TARGET_VERSION_HELP = (
+    "the version or configuration of the system under test, as you state it; the rig does "
+    "not ask the platform, and reports say the version is as stated"
+)
 
 
 def _checker(args: argparse.Namespace) -> PrereqChecker | None:
@@ -342,102 +359,12 @@ TARGET_HELP = (
 )
 
 
-def _named_clips(
-    scenarios: list[tuple[str, Scenario]], chains: list[tuple[str, Chain]]
-) -> list[str]:
-    """Every clip the scenarios and chains name outright (one chosen by a captured value aside)."""
-    names = [clip for _, s in scenarios for step in s.steps for clip in step.clips]
-    names += [clip for _, s in scenarios if s.fallback is not None for clip in s.fallback.clips]
-    names += [
-        str(clip)
-        for _, chain in chains
-        for call in chain.calls
-        for raw in [*call.raw.get("steps", ()), call.raw.get("fallback") or {}]
-        for clip in raw.get("clips", ())
-        if not variables_in(clip)
-    ]
-    return names
-
-
-def _open_manifest(
-    args: argparse.Namespace,
-    out: Path,
-    directory: str | Path,
-    scenarios: list[tuple[str, Scenario]],
-    chains: list[tuple[str, Chain]],
-    bank: ClipBank,
-    *,
-    rehearsal: bool = False,
-) -> str:
-    """Write down what this batch is made of before it places a call (``manifest.py``)."""
-    return manifest.open_batch(
-        out,
-        argv=list(getattr(args, "argv_raw", [])),
-        scenarios=manifest.scenario_identity(
-            directory, [file for file, _ in scenarios] + [file for file, _ in chains]
-        ),
-        clips=manifest.clip_identity(bank, _named_clips(scenarios, chains)),
-        target=manifest.target_identity(
-            label=getattr(args, "target_label", ""),
-            version=getattr(args, "target_version", ""),
-            agent=getattr(args, "agent", ""),
-            leg=args.leg,
-            trace="" if args.no_trace else (getattr(args, "trace", "") or ""),
-            profile_path=getattr(args, "target", ""),
-        ),
-        rehearsal=rehearsal,
-        repeats=args.repeats,
-        allow_mutating=args.allow_mutating,
-    )
-
-
-TARGET_LABEL_HELP = (
-    "a name for the system under test, written into the run manifest and onto reports; "
-    "keep it neutral"
-)
-TARGET_VERSION_HELP = (
-    "the version or configuration of the system under test, as you state it; the rig does "
-    "not ask the platform, and reports say the version is as stated"
-)
-
-
 def _batch(args: argparse.Namespace) -> int:
     scenarios = load_scenarios(args.scenarios, _target(args))
     chains = load_chains(args.scenarios)
     if args.only:
         scenarios = [(f, s) for f, s in scenarios if any(o in f for o in args.only)]
         chains = [(f, c) for f, c in chains if any(o in f for o in args.only)]
-    out = Path(args.out)
-    rehearsal = args.leg == "fake"
-    if rehearsal:
-        if not args.fake_agent:
-            raise SystemExit("--fake-agent (a script file, or a directory of them) is required")
-        print(
-            "REHEARSAL: these calls go to a scripted stand-in, not an agent. Every run is "
-            "marked as a rehearsal and no gate can be met by one.\n"
-        )
-    bank = _bank(args)
-    batch_id = _open_manifest(
-        args, out, args.scenarios, scenarios, chains, bank, rehearsal=rehearsal
-    )
-    try:
-        result = asyncio.run(_run_batch(args, scenarios, chains, bank, out, rehearsal, batch_id))
-    finally:
-        manifest.close_batch(out, batch_id)
-    print(f"ran {result.ran}, not run {len(result.blocked)}, chains {result.chains}")
-    print()
-    return report(str(out), details=False)
-
-
-async def _run_batch(
-    args: argparse.Namespace,
-    scenarios: list[tuple[str, Scenario]],
-    chains: list[tuple[str, Chain]],
-    bank: ClipBank,
-    out: Path,
-    rehearsal: bool,
-    batch_id: str,
-) -> BatchResult:
     hooks = (
         ShellHooks(before=args.before_call, after=args.after_call)
         if (args.before_call or args.after_call)
@@ -448,27 +375,118 @@ async def _run_batch(
         window_s=args.name_window,
         path=Path(args.name_budget_file) if args.name_budget_file else None,
     )
-    return await run_batch(
-        scenarios,
-        lambda: _build(args),
-        bank,
-        out,
-        repeats=args.repeats,
-        max_parallel=args.max_parallel,
-        allow_mutating=args.allow_mutating,
-        budget=budget,
-        hooks=hooks,
-        read_trace=not args.no_trace,
-        settle_s=args.settle,
-        chains=chains,
-        reset=_reset(args),
-        read_back=_read_back(args),
-        allow_unverified_clips=args.allow_unverified_clips,
-        space_names=args.space_names,
-        prereq=_checker(args),
-        make_leg_for=(lambda file: _build_fake(args, file)) if rehearsal else None,
-        rehearsal=rehearsal,
-        batch_id=batch_id,
+    out = Path(args.out)
+    rehearsal = args.leg == "fake"
+    if rehearsal:
+        if not args.fake_agent:
+            raise SystemExit("--fake-agent (a script file, or a directory of them) is required")
+        print(
+            "REHEARSAL: these calls go to a scripted stand-in, not an agent. Every run is "
+            "marked as a rehearsal and no gate can be met by one.\n"
+        )
+    phone = None
+    if args.leg == "phone":
+        from synthiq_caller.phone_batch import environment, open_phone_batch
+
+        phone = open_phone_batch(args, environment(args.env_file), out)
+    bank = _bank(args)
+    batch_id = manifest.open_for(args, out, args.scenarios, scenarios, chains, bank)
+
+    async def go() -> BatchResult:
+        try:
+            return await run_batch(
+                scenarios,
+                phone.make_leg if phone is not None else (lambda: _build(args)),
+                bank,
+                out,
+                repeats=args.repeats,
+                max_parallel=args.max_parallel,
+                allow_mutating=args.allow_mutating,
+                budget=budget,
+                hooks=hooks,
+                read_trace=not args.no_trace,
+                turn_settings=phone.turn_settings if phone is not None else None,
+                settle_s=args.settle,
+                chains=chains,
+                reset=_reset(args),
+                read_back=_read_back(args),
+                allow_unverified_clips=args.allow_unverified_clips,
+                space_names=args.space_names,
+                prereq=_checker(args),
+                leg_name=args.leg,
+                make_leg_for=(lambda file: _build_fake(args, file)) if rehearsal else None,
+                rehearsal=rehearsal,
+                batch_id=batch_id,
+            )
+        finally:
+            manifest.close_batch(out, batch_id)
+            if phone is not None:
+                await phone.aclose()
+
+    result = asyncio.run(go())
+    print(f"ran {result.ran}, not run {len(result.blocked)}, chains {result.chains}")
+    print()
+    return report(str(out), details=False, fail_under=args.fail_under)
+
+
+def _phone_arguments(parser: argparse.ArgumentParser) -> None:
+    """What the phone leg needs to know, for ``batch`` and ``preflight`` alike."""
+    parser.add_argument("--public-url", default="", help="https address the carrier can reach")
+    parser.add_argument("--from", dest="from_number", default="", help="number to dial from")
+    parser.add_argument("--to", default="", help="number to dial")
+    parser.add_argument(
+        "--allowed-numbers",
+        default="",
+        help="the only numbers that may be dialled: a file, one per line, or a comma-separated "
+        "list. Nothing is dialled without it",
+    )
+    parser.add_argument("--host", default="0.0.0.0")  # noqa: S104 - the carrier connects in
+    parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument(
+        "--transcriber", choices=["none", "scripted", "deepgram"], default="deepgram"
+    )
+    parser.add_argument("--agent-lines", default=None, help="one agent line per row (scripted)")
+    parser.add_argument("--language", default="en-GB")
+
+
+def _preflight(args: argparse.Namespace) -> int:
+    from synthiq_caller.phone_batch import environment, phone_preflight, render_preflight
+    from synthiq_caller.phone_server import check_public_url
+
+    checks = asyncio.run(
+        phone_preflight(
+            env=environment(args.env_file),
+            to_number=args.to,
+            from_number=args.from_number,
+            public_url=check_public_url(args.public_url),
+            allowed_argument=args.allowed_numbers,
+            host=args.host,
+            port=args.port,
+            transcriber=args.transcriber,
+            trace=not args.no_trace,
+        )
+    )
+    text, code = render_preflight(checks)
+    print(text)
+    return code
+
+
+def _reread_reader(args: argparse.Namespace) -> TraceReader | None:
+    """The reader ``regrade --reread`` fetches traces with, for the leg the runs used."""
+    if args.leg != "phone":
+        return _build(args)[1]
+    from synthiq_caller.traces.elevenlabs import ElevenLabsTraceReader
+    from synthiq_caller.traces.lookup import (
+        ElevenLabsNumberTimeFinder,
+        LookupTraceReader,
+        calls_in,
+    )
+
+    key = _secret("ELEVENLABS_API_KEY", args.env_file)
+    agent = "" if args.agent == "-" else args.agent
+    finder = ElevenLabsNumberTimeFinder(key, agent_id=agent, window_s=args.trace_window)
+    return LookupTraceReader(
+        finder, ElevenLabsTraceReader(key), calls_in(Path(args.directory)), find_wait_s=0.0
     )
 
 
@@ -502,6 +520,12 @@ def main(argv: list[str] | None = None) -> int:
     rep = sub.add_parser("report", help="summarise a directory of runs")
     rep.add_argument("directory")
     rep.add_argument("--summary-only", action="store_true", help="skip the per-call detail")
+    rep.add_argument(
+        "--fail-under",
+        type=float,
+        default=None,
+        help="exit 1 when fewer than this percentage of the calls placed passed",
+    )
 
     bat = sub.add_parser("batch", help="run a directory of scenarios with the safety guards on")
     bat.add_argument("scenarios")
@@ -509,6 +533,27 @@ def main(argv: list[str] | None = None) -> int:
     bat.add_argument("--target", default="", help=TARGET_HELP)
     bat.add_argument("--target-label", default="", help=TARGET_LABEL_HELP)
     bat.add_argument("--target-version", default="", help=TARGET_VERSION_HELP)
+    _phone_arguments(bat)
+    bat.add_argument("--no-record", action="store_true", help="phone: no carrier recording")
+    bat.add_argument("--no-audio", action="store_true", help="phone: keep no per-side WAV files")
+    bat.add_argument(
+        "--trace-window",
+        type=float,
+        default=120.0,
+        help="phone: seconds either side of the call in which to look for its trace",
+    )
+    bat.add_argument(
+        "--trace-ignore-caller-number",
+        action="store_true",
+        help="phone: match the trace on the dialled number and time only "
+        "(for a line that withholds the caller's number)",
+    )
+    bat.add_argument(
+        "--fail-under",
+        type=float,
+        default=None,
+        help="exit 1 when fewer than this percentage of the calls placed passed",
+    )
     bat.add_argument("--agent", default="")
     bat.add_argument(
         "--fake-agent",
@@ -610,7 +655,8 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="fetch every trace again, for runs stored by an older version of the reader",
     )
-    reg.add_argument("--leg", choices=["elevenlabs-socket"], default="elevenlabs-socket")
+    reg.add_argument("--leg", choices=["elevenlabs-socket", "phone"], default="elevenlabs-socket")
+    reg.add_argument("--trace-window", type=float, default=120.0, help="phone: seconds")
     reg.add_argument("--agent", default="-")
     reg.add_argument("--trace", choices=TRACES, default="elevenlabs", help="where the trace is")
     reg.add_argument("--env-file", default=None)
@@ -646,6 +692,12 @@ def main(argv: list[str] | None = None) -> int:
         help="the share of attempted calls that may go unjudged (void, ungraded, "
         "ungradeable, not run) before the gate is refused whatever the numbers say",
     )
+
+    pre = sub.add_parser("preflight", help="check a leg is ready, without placing a call")
+    pre.add_argument("--leg", required=True, choices=["phone"])
+    _phone_arguments(pre)
+    pre.add_argument("--env-file", default=None)
+    pre.add_argument("--no-trace", action="store_true", help="the calls will not be graded")
 
     acc = sub.add_parser(
         "acceptance", help="one dated page: what was tested, what passed, what it does not show"
@@ -712,13 +764,21 @@ def main(argv: list[str] | None = None) -> int:
     bank_scn.add_argument("--clips", required=True)
     bank_scn.add_argument("--call", required=True)
 
+    from synthiq_caller.upload import register as register_upload
+
+    register_upload(sub)
+
     args = parser.parse_args(argv)
     # Kept for the run manifest. Secrets are never on the command line: they are
     # named by environment variable.
     args.argv_raw = list(argv) if argv is not None else sys.argv[1:]
     utf8_console()
+    if args.command == "upload":
+        return int(args.handler(args))
     if args.command == "report":
-        return report(args.directory, details=not args.summary_only)
+        return report(args.directory, details=not args.summary_only, fail_under=args.fail_under)
+    if args.command == "preflight":
+        return _preflight(args)
     if args.command == "batch":
         return _batch(args)
     if args.command == "regrade":
@@ -732,7 +792,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"regrade refused: {error}")
             return 2
         if args.reread or args.reread_all:
-            _, reader = _build(args)
+            reader = _reread_reader(args)
             if reader is not None:
                 fetched = asyncio.run(
                     reread_missing_traces(Path(args.directory), reader, every=args.reread_all)
@@ -781,25 +841,23 @@ def main(argv: list[str] | None = None) -> int:
     out = Path(args.out)
     one = [(Path(args.scenario).name, scenario)]
     clip_bank = _bank(args)
-    batch_id = _open_manifest(args, out, Path(args.scenario).parent, one, [], clip_bank)
-    try:
-        result = asyncio.run(
-            run_batch(
-                one,
-                lambda: _build(args),
-                clip_bank,
-                out,
-                repeats=args.repeats,
-                allow_mutating=args.allow_mutating,
-                budget=NameBudget(limit=args.name_budget),
-                read_trace=not args.no_trace,
-                settle_s=2.0,
-                allow_unverified_clips=args.allow_unverified_clips,
-                batch_id=batch_id,
-            )
+    batch_id = manifest.open_for(args, out, Path(args.scenario).parent, one, [], clip_bank)
+    result = asyncio.run(
+        run_batch(
+            one,
+            lambda: _build(args),
+            clip_bank,
+            out,
+            batch_id=batch_id,
+            repeats=args.repeats,
+            allow_mutating=args.allow_mutating,
+            budget=NameBudget(limit=args.name_budget),
+            read_trace=not args.no_trace,
+            settle_s=2.0,
+            allow_unverified_clips=args.allow_unverified_clips,
         )
-    finally:
-        manifest.close_batch(out, batch_id)
+    )
+    manifest.close_batch(out, batch_id)
     for held_back in result.blocked:
         print(f"not run: {held_back.reason}")
     return report(str(out))

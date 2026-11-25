@@ -46,8 +46,10 @@ from importlib import metadata
 from pathlib import Path
 from typing import Any
 
+from synthiq_caller.chain import Chain, variables_in
 from synthiq_caller.clips import OVERRIDES_FILE, ClipBank
 from synthiq_caller.jsonio import write_json
+from synthiq_caller.scenario import Scenario
 
 MANIFEST_FILE = "manifest.json"
 VERSION = 1
@@ -345,3 +347,52 @@ def refuse_mixed(
             "go on and have it recorded."
         )
     return found
+
+
+def named_clips(
+    scenarios: list[tuple[str, Scenario]], chains: list[tuple[str, Chain]]
+) -> list[str]:
+    """Every clip the scenarios and chains name outright (one chosen by a captured value aside)."""
+    names = [clip for _, s in scenarios for step in s.steps for clip in step.clips]
+    names += [clip for _, s in scenarios if s.fallback is not None for clip in s.fallback.clips]
+    names += [
+        str(clip)
+        for _, chain in chains
+        for call in chain.calls
+        for raw in [*call.raw.get("steps", ()), call.raw.get("fallback") or {}]
+        for clip in raw.get("clips", ())
+        if not variables_in(clip)
+    ]
+    return names
+
+
+def open_for(
+    args: Any,
+    out: Path,
+    directory: str | Path,
+    scenarios: list[tuple[str, Scenario]],
+    chains: list[tuple[str, Chain]],
+    bank: ClipBank,
+) -> str:
+    """Open a batch entry from a parsed command line. The leg is recorded as it was named:
+    a direct socket, a phone line, or ``fake`` (a rehearsal, and marked as one)."""
+    leg = str(getattr(args, "leg", "") or "")
+    return open_batch(
+        out,
+        argv=list(getattr(args, "argv_raw", [])),
+        scenarios=scenario_identity(
+            directory, [file for file, _ in scenarios] + [file for file, _ in chains]
+        ),
+        clips=clip_identity(bank, named_clips(scenarios, chains)),
+        target=target_identity(
+            label=getattr(args, "target_label", ""),
+            version=getattr(args, "target_version", ""),
+            agent=getattr(args, "agent", ""),
+            leg=leg,
+            trace="" if getattr(args, "no_trace", False) else (getattr(args, "trace", "") or ""),
+            profile_path=getattr(args, "target", ""),
+        ),
+        rehearsal=leg == "fake",
+        repeats=getattr(args, "repeats", 1),
+        allow_mutating=getattr(args, "allow_mutating", "none"),
+    )

@@ -5,7 +5,17 @@ from datetime import UTC, datetime
 from enum import Enum
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text, UniqueConstraint, Uuid
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Index,
+    String,
+    Text,
+    UniqueConstraint,
+    Uuid,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -13,6 +23,9 @@ from app.db.base import Base
 if TYPE_CHECKING:
     from app.models.agent import Agent
     from app.models.workspace import Workspace
+
+
+LIVE_NUMBER_INDEX = "uq_phone_numbers_live_number"
 
 
 class TelephonyProvider(str, Enum):
@@ -42,7 +55,21 @@ class PhoneNumber(Base):
     """
 
     __tablename__ = "phone_numbers"
-    __table_args__ = (UniqueConstraint("user_id", "phone_number", name="uq_user_phone_number"),)
+    __table_args__ = (
+        UniqueConstraint("user_id", "phone_number", name="uq_user_phone_number"),
+        # One live record per number across every account, whether or not it was
+        # written with the leading plus. Inbound routing resolves a dialled
+        # number without knowing the account, so two owners of one number would
+        # make the answer depend on row order. A released number is free to be
+        # registered again.
+        Index(
+            LIVE_NUMBER_INDEX,
+            text("ltrim(phone_number, '+')"),
+            unique=True,
+            postgresql_where=text("status <> 'released'"),
+            sqlite_where=text("status <> 'released'"),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(

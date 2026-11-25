@@ -202,3 +202,20 @@ def test_two_directories_of_the_same_scenarios_are_one_test_and_of_different_one
 def _fresh(root: Path, name: str) -> Path:
     (root / name).mkdir()
     return root / name
+
+
+@pytest.mark.parametrize(
+    ("leg", "rehearsal"), [("elevenlabs-socket", False), ("phone", False), ("fake", True)]
+)
+def test_the_manifest_records_how_the_calls_reached_the_agent(
+    tmp_path: Path, leg: str, rehearsal: bool
+) -> None:
+    import argparse
+
+    bank = ClipBank(write_clips(tmp_path / "bank"))
+    (tmp_path / "set").mkdir()
+    args = argparse.Namespace(leg=leg, repeats=1, allow_mutating="none", no_trace=False)
+    manifest.open_for(args, tmp_path / "runs", tmp_path / "set", [], [], bank)
+
+    (entry,) = stored(tmp_path / "runs", "manifest.json")["entries"]
+    assert entry["target"]["leg"] == leg and entry["rehearsal"] is rehearsal
