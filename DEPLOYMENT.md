@@ -149,6 +149,7 @@ Names and defaults are from `backend/app/core/config.py`.
 | `TWILIO_AUTH_TOKEN` | unset | Fallback for Twilio signature checks. See below |
 | `TELNYX_PUBLIC_KEY` | unset | Fallback for Telnyx signature checks, after the owning workspace's own key. See below |
 | `RATE_LIMIT_STORAGE_URI` | unset | Where rate-limit counts are kept. Unset: Redis at `REDIS_URL`, so every worker shares one count. `memory://` counts per process, which is only right for a single process. While Redis is unreachable the same limits are counted per process until it returns |
+| `TRUSTED_PROXY_IPS` | loopback only (`127.0.0.1,::1`) | Comma-separated addresses and CIDR networks of the reverse proxy in front of the backend, as the backend sees them. Only a request from one of these is believed about who the real client is (`X-Forwarded-For`); the rate limiter and the audit trail use that address. Unset, every client behind the proxy looks like the proxy and shares one rate-limit bucket. `*` trusts every sender and lets a client choose its own address: not a default, do not set it here. A malformed entry stops the backend starting. See "Client address behind the proxy" |
 | `CALL_MAX_DURATION_S` | `1800` | Longest a phone call may run, in seconds. Past it the bridge ends the call and records `max_duration`. Replaces a fixed 300 s cap. The model provider's own limit is 60 minutes |
 | `CALL_IDLE_TIMEOUT_S` | `120` | Seconds of no conversation (nobody speaking, no agent audio, no tool running) before the bridge ends the call and records `silence_timeout`. `0` turns it off |
 | `CALL_TOOL_GRACE_S` | `10` | When a call ends while a tool is running, how long the tool may finish before it is cancelled |
@@ -363,6 +364,106 @@ For **TeXML Applications** (if using):
 4. Click Call
 
 ---
+
+## Client address behind the proxy
+
+The backend runs under `gunicorn` with `uvicorn.workers.UvicornWorker`
+(`backend/gunicorn.conf.py`). The worker hands gunicorn's `forwarded_allow_ips`
+to uvicorn's `ProxyHeadersMiddleware`, which replaces the client address with the
+right-most `X-Forwarded-For` entry that is not itself a trusted proxy, but only
+when the connecting peer is trusted. The rate limiter, the audit trail
+(`audit_events.ip_address`) and the request log all read that one resolved
+address, so they agree.
+
+Out of the box only loopback is trusted. Behind Coolify's Traefik the peer is
+the proxy's address on a Docker network, so nothing it says is believed and
+**every client shares one rate-limit bucket** (and every audit row carries the
+proxy's address). To fix that, set `TRUSTED_PROXY_IPS` in Coolify to the
+proxy's address or network as the backend sees it:
+
+```bash
+# On the server: the network the proxy and the backend share, and its range.
+docker network inspect coolify --format '{{range .IPAM.Config}}{{.Subnet}}{{end}}'
+# e.g. TRUSTED_PROXY_IPS=10.0.1.0/24   (the narrowest range that holds the proxy)
+```
+
+Redeploy, then check: open the dashboard from a known address and look at the
+newest `audit_events.ip_address` (a login writes one), or the `client_ip` of
+the request log line. It should be your address, not the proxy's. Sending your
+own `X-Forwarded-For: 203.0.113.9` must not change it.
+
+Rules of thumb: trust the narrowest range that holds your proxy, never `*`
+(any client could then pick its own address, and so its own rate-limit bucket,
+and write any address into the audit trail), and if another proxy is added in
+front of Traefik (for instance Cloudflare in front of `api`) its addresses must
+also be listed, or the address that is recorded is that proxy's. gunicorn's own
+`FORWARDED_ALLOW_IPS` variable is not read; use this setting.
+
+## Database backup and restore
+
+Postgres holds everything customers entered, the audit trail and the encrypted
+credentials. One local Docker volume (`postgres_data`) is all there is by
+default, and nothing schedules a backup: **you** decide when, and copy the
+result off the server.
+
+`backend/scripts/db_backup.py` does two things. It reads the connection from
+the environment only (`DATABASE_URL`, which the backend container already has,
+or the libpq variables `PGHOST`, `PGUSER`, `PGPASSWORD`, `PGDATABASE`); the
+password never appears on a command line or in output.
+
+```bash
+# Back up. From the server, inside the backend container:
+docker compose -f docker-compose.prod.yml exec backend python scripts/db_backup.py backup --keep 14
+# -> /app/data/backups/synthiq-<database>-<UTC timestamp>.dump  (mode 0600)
+```
+
+It writes a `pg_dump` custom-format file, checks it (non-empty, readable by
+`pg_restore --list`, contains tables including `alembic_version`), and only then
+renames it into place and deletes all but the newest `--keep` dumps of that
+database. Any failure, including an empty dump, exits non-zero and leaves no
+half-written file; a failed backup deletes nothing. The directory is the
+`db_backups` volume. **Copy the dump off the server** (and keep it apart from
+`CREDENTIAL_ENCRYPTION_KEYS`: stored credentials are unreadable without that
+key, and the key without the dump is worthless):
+
+```bash
+docker cp "$(docker compose -f docker-compose.prod.yml ps -q backend)":/app/data/backups/. ./backups/
+```
+
+**Check a backup restores.** A backup that has never been restored is a hope.
+Straight after taking one:
+
+```bash
+docker compose -f docker-compose.prod.yml exec backend \
+  python scripts/db_backup.py restore-check /app/data/backups/<file>.dump
+```
+
+This restores the dump into a throwaway database on the same server (the
+database user needs `CREATEDB`; the throwaway is dropped afterwards, whatever
+happened), then compares it with the live database: the alembic revision and the
+row count of every table. It exits 0 only when both match, 1 on a difference,
+2 on any other failure. Rows written after the dump make counts differ; run it
+straight after the backup, or add `--allow-drift` to accept row-count differences
+(the revision must still match).
+
+**To restore for real** (after loss), onto an empty database of the same major
+Postgres version, with the application stopped:
+
+```bash
+pg_restore --no-owner --no-privileges --exit-on-error --dbname=<empty database> <file>.dump
+```
+
+then start the application; `alembic upgrade head` at start-up applies any
+newer migration. The Postgres client tools must be the same major version as the
+server or newer (the backend image installs the Debian package, which is 17 on
+the current base image): an older `pg_dump` refuses a newer server.
+
+Not in the dump: the Redis volume (rate-limit counts and single-use stream
+tokens; nothing to restore) and the `caller_audio` volume (call audio files).
+Back up the audio volume alongside the database.
+
+To run it on a schedule, use the host's cron or a Coolify scheduled task that
+runs the first command; nothing is scheduled for you.
 
 ## Troubleshooting
 
