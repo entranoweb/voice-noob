@@ -2,6 +2,7 @@
 
 import { useState, useMemo, useRef } from "react";
 import { useDebounce } from "use-debounce";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -201,7 +202,9 @@ export default function CallHistoryPage() {
         </div>
         <div className="flex items-center gap-2">
           <Input
-            placeholder="Search calls..."
+            placeholder="Filter this page..."
+            aria-label="Filter the calls on this page"
+            title="Filters the calls loaded on this page only, not the whole history"
             className="w-[200px]"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
@@ -306,7 +309,14 @@ export default function CallHistoryPage() {
                       onClick={() => handleRowClick(call.id)}
                     >
                       <TableCell className="text-sm">
-                        {new Date(call.started_at).toLocaleString()}
+                        {/* A real link, so the row can be reached and opened by keyboard. */}
+                        <Link
+                          href={`/dashboard/calls/${call.id}`}
+                          className="underline-offset-2 hover:underline focus-visible:underline"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          {new Date(call.started_at).toLocaleString()}
+                        </Link>
                       </TableCell>
                       <TableCell className="font-medium">
                         {call.agent_name ?? "Unknown Agent"}

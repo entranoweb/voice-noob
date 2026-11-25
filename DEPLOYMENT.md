@@ -92,16 +92,20 @@ ADMIN_NAME=Admin
 # section 7.2.
 PUBLIC_URL=https://api.synthiqvoice.com
 
-# Telnyx webhook signature verification. REQUIRED.
-# Unset, every webhook is refused 403 and no call ever reaches an agent,
-# whatever DEBUG says. The only way to accept an unsigned webhook is
+# Telnyx webhook signature verification. Optional here.
+# A webhook is checked first against the public key of the workspace that owns
+# the number or call (entered in the dashboard), then against this one. Set it
+# only when every number runs on one platform-wide Telnyx account. With neither
+# key the webhook is refused 403 and no call reaches an agent, whatever DEBUG
+# says. The only way to accept an unsigned webhook is
 # ALLOW_UNSIGNED_WEBHOOKS=true, which must never be set here.
-TELNYX_PUBLIC_KEY=your_telnyx_public_key
+TELNYX_PUBLIC_KEY=
 
 # Only needed for outbound calls and buying numbers. Inbound does not use it.
 TELNYX_API_KEY=your_telnyx_api_key
 
-# REQUIRED in production. See TELNYX_PUBLIC_KEY above.
+# REQUIRED in production. It skips the startup checks on SECRET_KEY and
+# CREDENTIAL_ENCRYPTION_KEYS.
 DEBUG=false
 
 # These three are read by docker-compose.prod.yml, not by the app directly.
@@ -117,10 +121,11 @@ BACKEND_WS_URL=wss://api.synthiqvoice.com
 
 Every one of these is passed into the backend container by
 `docker-compose.prod.yml`. A variable set in Coolify that the compose file does
-not list never reaches the app — which is why `PUBLIC_URL` and
-`TELNYX_PUBLIC_KEY` are declared required there: the deploy fails with a message
-naming the missing variable rather than starting a server that cannot take a
-call.
+not list never reaches the app — which is why `SECRET_KEY`,
+`CREDENTIAL_ENCRYPTION_KEYS` and `PUBLIC_URL` are declared required there: the
+deploy fails with a message naming the missing variable rather than starting a
+server that cannot take a call. `TELNYX_PUBLIC_KEY` is passed but not required,
+since each workspace can hold its own.
 
 #### Settings that changed behaviour in November 2026
 
@@ -139,6 +144,8 @@ Names and defaults are from `backend/app/core/config.py`.
 | `EMBED_SESSION_MAX_SECONDS` | `900` | Longest an embedded session can run, and the lifetime of its signed token. The session is closed when it is reached |
 | `EMBED_TOOLS_DEFAULT_ENABLED` | `false` | Whether embedded sessions may call tools when the agent does not say. The per-agent switch is `embed_settings.allow_tools`, set through the agent's embed settings API; the dashboard has no control for it yet |
 | `TWILIO_AUTH_TOKEN` | unset | Fallback for Twilio signature checks. See below |
+| `TELNYX_PUBLIC_KEY` | unset | Fallback for Telnyx signature checks, after the owning workspace's own key. See below |
+| `RATE_LIMIT_STORAGE_URI` | unset | Where rate-limit counts are kept. Unset: Redis at `REDIS_URL`, so every worker shares one count. `memory://` counts per process, which is only right for a single process. While Redis is unreachable the same limits are counted per process until it returns |
 
 Three things follow that are not settings.
 
@@ -151,7 +158,8 @@ Three things follow that are not settings.
   against the Twilio auth token of the workspace that owns the number, agent or
   call the webhook is about (Settings > Workspace API Keys), then against the
   global `TWILIO_AUTH_TOKEN` if one is set. With neither, the webhook is
-  refused 403. Telnyx still uses the one global `TELNYX_PUBLIC_KEY`.
+  refused 403. Telnyx works the same way: the owning workspace's public key
+  first, then the global `TELNYX_PUBLIC_KEY` if one is set.
 - **Deploy the frontend with the backend.** The widget page must send the
   signed session the backend now requires; an older page gets no tools and no
   transcript.
@@ -178,12 +186,10 @@ retention sweep (`compliance_runs`) are created by the same migration. Audit
 events are also written to the log as JSON lines with `"logger": "audit"`,
 whatever the application's log level.
 
-`docker-compose.prod.yml` passes the backend `SECRET_KEY`, `PUBLIC_URL`,
-`FRONTEND_URL`, `TELNYX_PUBLIC_KEY`, `TELNYX_API_KEY` and `DEBUG` from this
-table's neighbourhood. It does **not** pass `ALLOW_UNSIGNED_WEBHOOKS`, the three
-`EMBED_*` settings or the `TWILIO_*` pair, so on that deployment they keep their
-defaults whatever is set in Coolify, until they are added to the backend's
-`environment:` block.
+`docker-compose.prod.yml` passes the backend every setting in the table above,
+including `ALLOW_UNSIGNED_WEBHOOKS`, the three `EMBED_*` settings, the `TWILIO_*`
+pair and `RATE_LIMIT_STORAGE_URI`. A setting that is not in the backend's
+`environment:` block there keeps its default whatever is set in Coolify.
 
 Migrations run themselves. `docker-entrypoint.sh` waits for Postgres and Redis,
 runs `alembic upgrade head`, then starts gunicorn — there is no manual migration

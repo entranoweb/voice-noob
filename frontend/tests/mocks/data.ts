@@ -245,30 +245,53 @@ export const mockTestScenarios = [
   },
 ];
 
-// Test Run Mock Data
-export const mockTestRun = {
-  id: "run-1",
+// One stored run per scenario, in the shape of the backend's
+// TestRunDetailResponse (backend/app/api/testing.py), keyed by scenario id.
+const baseScenarioRun = {
   agent_id: "agent-1",
-  workspace_id: "workspace-1",
-  status: "completed",
-  total_scenarios: 2,
-  passed_scenarios: 1,
-  failed_scenarios: 1,
-  results: [
-    {
-      scenario_id: "scenario-1",
-      passed: true,
-      score: 92,
-      duration_ms: 1500,
-    },
-    {
-      scenario_id: "scenario-2",
-      passed: false,
-      score: 55,
-      failure_reason: "Booking not confirmed",
-      duration_ms: 2000,
-    },
-  ],
+  agent_name: "Test Agent 1",
+  started_at: "2024-01-15T10:00:00Z",
+  completed_at: "2024-01-15T10:00:02Z",
+  recommendations: null,
   created_at: "2024-01-15T10:00:00Z",
-  completed_at: "2024-01-15T10:05:00Z",
+  actual_transcript: [],
+  behavior_matches: {},
+  criteria_results: {},
+  error_message: null,
+};
+
+export const mockScenarioRuns: Record<string, Record<string, unknown> & { status: string }> = {
+  "scenario-1": {
+    ...baseScenarioRun,
+    id: "run-scenario-1",
+    scenario_id: "scenario-1",
+    scenario_name: "Basic Greeting Test",
+    status: "passed",
+    duration_ms: 1500,
+    overall_score: 92,
+    passed: true,
+    issues_found: [],
+  },
+  "scenario-2": {
+    ...baseScenarioRun,
+    id: "run-scenario-2",
+    scenario_id: "scenario-2",
+    scenario_name: "Appointment Booking",
+    status: "failed",
+    duration_ms: 2000,
+    overall_score: 55,
+    passed: false,
+    issues_found: ["Booking not confirmed"],
+  },
+  "scenario-3": {
+    ...baseScenarioRun,
+    id: "run-scenario-3",
+    scenario_id: "scenario-3",
+    scenario_name: "Custom VIP Scenario",
+    status: "passed",
+    duration_ms: 1800,
+    overall_score: 88,
+    passed: true,
+    issues_found: [],
+  },
 };
