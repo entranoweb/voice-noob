@@ -33,7 +33,8 @@ import {
   Key,
   Shield,
 } from "lucide-react";
-import { useSidebarStore } from "@/lib/sidebar-store";
+import { resolveSidebarOpen, useSidebarStore } from "@/lib/sidebar-store";
+import { useIsMobile } from "@/hooks/use-mobile";
 import { useAuth } from "@/hooks/use-auth";
 
 const navigation = [
@@ -113,7 +114,11 @@ const navigation = [
 
 export function AppSidebar() {
   const pathname = usePathname();
-  const { sidebarOpen, setSidebarOpen } = useSidebarStore();
+  const store = useSidebarStore();
+  const { setSidebarOpen } = store;
+  // useIsMobile is false until after mount, so the server and first client render agree.
+  const isMobile = useIsMobile();
+  const sidebarOpen = resolveSidebarOpen(store, isMobile);
   const { user, logout } = useAuth();
 
   const displayName = user?.username ?? "User";
@@ -159,7 +164,7 @@ export function AppSidebar() {
           {navigation.map((item) => {
             const active = isActive(item.href);
             return (
-              <Link key={item.name} href={item.href} prefetch={true}>
+              <Link key={item.name} href={item.href} prefetch={true} aria-label={item.name}>
                 <Button
                   variant="ghost"
                   className={cn(
@@ -207,6 +212,8 @@ export function AppSidebar() {
             !sidebarOpen && "justify-center gap-0 px-0",
             "text-sidebar-foreground/60 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
           )}
+          aria-label={sidebarOpen ? "Hide sidebar" : "Show sidebar"}
+          aria-expanded={sidebarOpen}
           onClick={() => setSidebarOpen(!sidebarOpen)}
         >
           {sidebarOpen ? (
