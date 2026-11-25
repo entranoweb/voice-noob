@@ -51,7 +51,7 @@ from pathlib import Path
 from typing import Any
 
 from synthiq_caller import removals
-from synthiq_caller.capture import CAPTURE_FILE, CONVERSATION_FILE, TRANSCRIPT_FILE
+from synthiq_caller.capture import CAPTURE_FILE, _written_names
 from synthiq_caller.clipid import AUDIO_SUFFIXES, clip_id
 from synthiq_caller.clips import OVERRIDES_FILE
 from synthiq_caller.consent import (
@@ -362,8 +362,9 @@ def _result_kind(path: Path, data: Any = None) -> str:
     """``run``, ``chain``, ``batch`` or empty, for a stored result.
 
     A file is a result by name (``run-NNN``, ``phone-run-NNN``, ``chain-NNN``, ``batch``) or,
-    whatever it is called, by what it holds: a stored call has a ``record`` or a ``trace``.
-    A new kind of file that holds a call's text is therefore redacted, not skipped.
+    whatever it is called, by the shape of a stored call: a ``record`` that is a RunRecord
+    (it has ``scenario`` and ``said``). A file with only a ``grade`` or ``trace`` key (a notes
+    file, say) is not a result; ``forget`` lists it if it mentions a clip and leaves it.
     """
     name = path.name
     if not name.endswith(".json"):
@@ -377,7 +378,8 @@ def _result_kind(path: Path, data: Any = None) -> str:
     if isinstance(data, dict) and "steps" not in data and "chain" not in data:
         if isinstance(data.get("calls"), list) and "variables" in data:
             return "chain"
-        if any(key in data for key in ("record", "trace", "grade")):
+        record = data.get("record")
+        if isinstance(record, dict) and "scenario" in record and "said" in record:
             return "run"
     return ""
 
@@ -650,7 +652,7 @@ def _outside(path: Path, banks: list[Path]) -> bool:
     return not any(here.is_relative_to(bank.resolve()) for bank in banks)
 
 
-def _delete_clip(path: Path, banks: list[Path]) -> None:
+def _delete_clip(path: Path, banks: list[Path], stems: list[str]) -> None:
     """Delete a clip's audio. A symlink's target goes too, if it is inside a bank.
 
     Unlinking a link frees nothing: the audio is still on disk under its real name. A target
@@ -660,7 +662,14 @@ def _delete_clip(path: Path, banks: list[Path]) -> None:
         target = path.resolve()
         if target.exists() and _outside(path, banks):
             raise NotDeleted(f"not deleted: {target} is outside the bank (linked from {path})")
-        target.unlink(missing_ok=True)
+        if target.exists() and clip_id(target.name) not in stems:
+            # Somebody else's clip: only the link goes.
+            print(
+                f"forget: target {target} belongs to clip {clip_id(target.name)}, not removed "
+                f"(only the link {path} was)"
+            )
+        else:
+            target.unlink(missing_ok=True)
     path.unlink(missing_ok=True)
 
 
@@ -712,7 +721,7 @@ def _plan_cases(plan: Plan, banks: list[Path], *, keep_text: bool) -> None:
     for bank in banks:
         case = bank.parent
         if bank.name != CLIPS_DIR or not all(
-            (case / name).is_file() for name in (CAPTURE_FILE, CONVERSATION_FILE)
+            (case / name).is_file() for name in (CAPTURE_FILE, "conversation.json")
         ):
             continue
         came_from_here = (
@@ -725,7 +734,9 @@ def _plan_cases(plan: Plan, banks: list[Path], *, keep_text: bool) -> None:
         for path in sorted(case.glob("audio.*")):
             if path.is_file() or path.is_symlink():
                 plan.case_files.append(path)
-        for name in (TRANSCRIPT_FILE, CONVERSATION_FILE):
+        # Every file a capture writes except capture.json (ids, times and hashes, no words),
+        # so a file added to capture later is not missed.
+        for name in sorted(_written_names() - {CAPTURE_FILE}):
             path = case / name
             if path.exists():
                 (plan.case_kept if keep_text else plan.case_files).append(path)
@@ -814,8 +825,10 @@ def describe(
     if plan.scenarios:
         lines.append(
             "  persona facts the removed clips answered (a step's field) are blanked; "
-            "NOT removed: any other persona fact, which may still hold what the caller said"
+            "NOT removed: any other persona fact, which may still hold what the caller said. "
+            "Remove or edit persona facts by hand in:"
         )
+        lines += [f"    {p}" for p in plan.scenarios]
     lines += [f"  CANNOT rewrite {p} ({why}); it names a clip" for p, why in plan.unreadable]
     for path, clips in plan.results.items():
         lines.append(f"  {verb} mark result with {MARK}: {path} ({', '.join(clips)})")
@@ -832,7 +845,7 @@ def describe(
             "  --keep-text: nothing in stored results is redacted; each result keeps what was "
             "said and heard, and its mark says redacted: false"
         )
-    lines += [f"  left alone, mentions a clip: {p}" for p in plan.mentioned]
+    lines += [f"  mentions {', '.join(plan.stems)}, not changed: {p}" for p in plan.mentioned]
     if plan.recordings:
         lines.append(
             "  call recordings of calls that played these clips (NOT deleted: the agent "
@@ -959,7 +972,7 @@ def execute(
             done[counter] += n
 
     for audio in plan.audio:
-        attempt("delete", audio, partial(_delete_clip, audio, banks), "audio_files")
+        attempt("delete", audio, partial(_delete_clip, audio, banks, plan.stems), "audio_files")
     for audio in plan.call_audio:
         attempt("delete", audio, partial(audio.unlink, missing_ok=True), "audio_files")
     for audio in plan.case_files:

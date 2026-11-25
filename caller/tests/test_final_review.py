@@ -245,4 +245,47 @@ def test_a_rewritten_scenario_loses_the_fact_the_removed_clip_answered(
     text = scenario_file.read_text(encoding="utf-8")
     assert "Zebediah" not in text
     assert json.loads(text)["persona"]["facts"]["city"] == "Leeds"
-    assert "NOT removed: any other persona fact" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "NOT removed: any other persona fact" in out
+    assert "Remove or edit persona facts by hand" in out and str(scenario_file) in out
+
+
+def test_a_link_to_another_speakers_clip_never_deletes_that_clip(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    world = bare_world(tmp_path, {"a1": FULL, "b1": FULL})
+    (world["bank"] / "a1.wav").unlink()
+    os.symlink(world["bank"] / "b1.wav", world["bank"] / "a1.wav")
+    assert cli.main(forget_args(world, "a1")) == 0
+    assert (world["bank"] / "b1.wav").exists()
+    assert not (world["bank"] / "a1.wav").exists()
+    assert "belongs to clip b1, not removed" in capsys.readouterr().out
+
+
+def test_the_ingested_case_loses_its_trace_too_or_lists_it_under_keep_text(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    case, world, first = ingested(tmp_path)
+    assert (case / "trace.json").exists()
+    kept = tmp_path / "again"
+    kept.mkdir()
+    case2, world2, first2 = ingested(kept)
+    args = forget_args(world2, first2, "--reason", "retention_expired", "--keep-text")
+    assert cli.main(args) == 0
+    assert (case2 / "trace.json").exists()
+    assert str(case2 / "trace.json") in capsys.readouterr().out
+    assert cli.main(forget_args(world, first)) == 0
+    assert not (case / "trace.json").exists()
+    assert (case / "capture.json").exists()
+
+
+def test_a_notes_file_with_a_grade_key_is_listed_not_redacted(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    world = bare_world(tmp_path)
+    notes = world["results"] / "notes.json"
+    text = json.dumps({"grade": "good", "note": "opener.wav was odd"})
+    notes.write_text(text, encoding="utf-8")
+    assert cli.main(forget_args(world, "opener")) == 0
+    assert notes.read_text(encoding="utf-8") == text
+    assert f"{notes}" in capsys.readouterr().out
