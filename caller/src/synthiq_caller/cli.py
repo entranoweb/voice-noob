@@ -11,6 +11,7 @@
     synthiq-caller baseline runs/ --out baseline.json
     synthiq-caller compare runs-new/ --baseline baseline.json --fail-on beyond-noise
     synthiq-caller gate runs/ --rate 0.95 --confidence 0.95
+    synthiq-caller acceptance runs/a runs/b --claim 0.95 --out report.html
     synthiq-caller clipbank build --recordings <dir> --out <dir outside any repo>
     synthiq-caller clipbank scenario --clips <dir> --call <call id>
 
@@ -227,6 +228,28 @@ def _gate(directory: str, rate: float, confidence: float, max_unjudged: float = 
         print("NOT met: " + "; ".join(read.refused) + ".")
         return 1
     return 0 if read.met else 1
+
+
+def _acceptance(args: argparse.Namespace) -> int:
+    """Write the acceptance report. 0: the claim is met. 1: it is not. 2: no report was made."""
+    from synthiq_caller import acceptance
+
+    try:
+        found = acceptance.build(
+            [Path(d) for d in args.directories],
+            claim=args.claim,
+            confidence=args.confidence,
+            max_unjudged=args.max_unjudged,
+            allow_mixed=args.allow_mixed_scenarios,
+            allow_no_manifest=args.allow_no_manifest,
+            title=args.title,
+        )
+    except acceptance.Refused as error:
+        print(f"acceptance report refused: {error}")
+        return 2
+    out = acceptance.write(found, args.out)
+    print(f"{found['verdict']}: {found['verdict_reason']}.  ->  {out}")
+    return 0 if found["verdict"] == acceptance.MET else 1
 
 
 def _checker(args: argparse.Namespace) -> PrereqChecker | None:
@@ -624,6 +647,32 @@ def main(argv: list[str] | None = None) -> int:
         "ungradeable, not run) before the gate is refused whatever the numbers say",
     )
 
+    acc = sub.add_parser(
+        "acceptance", help="one dated page: what was tested, what passed, what it does not show"
+    )
+    acc.add_argument("directories", nargs="+")
+    acc.add_argument("--claim", type=float, default=0.95, help="the pass rate being claimed")
+    acc.add_argument("--confidence", type=float, default=0.95)
+    acc.add_argument("--out", required=True, help="the page to write; its data goes beside it")
+    acc.add_argument("--title", default="")
+    acc.add_argument(
+        "--max-unjudged",
+        type=float,
+        default=0.1,
+        help="as for gate: the share of attempted calls that may go unjudged",
+    )
+    acc.add_argument(
+        "--allow-mixed-scenarios",
+        action="store_true",
+        help="report on runs made against different versions of a scenario file; the page "
+        "lists the versions and says they are not one test",
+    )
+    acc.add_argument(
+        "--allow-no-manifest",
+        action="store_true",
+        help="report on runs that have no manifest; the page says what could not be recorded",
+    )
+
     val = sub.add_parser("validate", help="check a directory of scenarios, and its clips")
     val.add_argument("scenarios")
     val.add_argument("--clips", default=None)
@@ -722,6 +771,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "clipbank":
         return _clipbank(args)
+    if args.command == "acceptance":
+        return _acceptance(args)
     if args.command == "gate":
         return _gate(args.directory, args.rate, args.confidence, args.max_unjudged)
 

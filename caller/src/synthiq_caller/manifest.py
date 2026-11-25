@@ -335,9 +335,10 @@ def refuse_mixed(
     """
     found = mixed(directories)
     if found and not allow:
-        detail = "; ".join(
-            f"{file}: {', '.join(h[:12] for h in hashes)}" for file, hashes in found.items()
-        )
+        shown = list(found.items())[:5]
+        detail = "; ".join(f"{file}: {', '.join(h[:12] for h in hashes)}" for file, hashes in shown)
+        if len(found) > len(shown):
+            detail += f"; and {len(found) - len(shown)} more file(s)"
         raise MixedScenarios(
             "these runs were made against different versions of the same scenario file, so "
             f"they are not one test ({detail}). {remedy}; or pass --allow-mixed-scenarios to "
