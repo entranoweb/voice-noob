@@ -337,11 +337,28 @@ def _plan_scenarios(plan: Plan, directories: list[Path]) -> None:
                 plan.scenarios[path] = sorted(dict.fromkeys(hit))
 
 
-def _is_result(path: Path) -> bool:
+def _result_kind(path: Path, data: Any = None) -> str:
+    """``run``, ``chain``, ``batch`` or empty, for a stored result.
+
+    A file is a result by name (``run-NNN``, ``phone-run-NNN``, ``chain-NNN``, ``batch``) or,
+    whatever it is called, by what it holds: a stored call has a ``record`` or a ``trace``.
+    A new kind of file that holds a call's text is therefore redacted, not skipped.
+    """
     name = path.name
-    return name == "batch.json" or (
-        name.endswith(".json") and name.startswith(("run-", "chain-")) and name[:-5].count("-") == 1
-    )
+    if not name.endswith(".json"):
+        return ""
+    if name == "batch.json":
+        return "batch"
+    if name.startswith(("run-", "phone-run-")) and name[:-5].count("-") in (1, 2):
+        return "run"
+    if name.startswith("chain-") and name[:-5].count("-") == 1:
+        return "chain"
+    if isinstance(data, dict) and "steps" not in data and "chain" not in data:
+        if isinstance(data.get("calls"), list) and "variables" in data:
+            return "chain"
+        if any(key in data for key in ("record", "trace", "grade")):
+            return "run"
+    return ""
 
 
 def _is_redacted(text: object) -> bool:
@@ -527,8 +544,10 @@ def _plan_results(plan: Plan, directories: list[Path], *, keep_text: bool) -> No
     for directory in directories:
         marked_runs: dict[str, list[str]] = {}
         files = sorted(p for p in directory.rglob("*.json") if p.is_file())
-        for path in sorted(f for f in files if _is_result(f) and f.name.startswith("run-")):
-            data = _read_json(path)
+        loaded = {f: _read_json(f) for f in files}
+        kinds = {f: _result_kind(f, loaded[f]) for f in files}
+        for path in sorted(f for f in files if kinds[f] == "run"):
+            data = loaded[path]
             if not isinstance(data, dict):
                 continue
             used = _mentioned(_strings(data), stems)
@@ -544,13 +563,13 @@ def _plan_results(plan: Plan, directories: list[Path], *, keep_text: bool) -> No
             if fields:
                 plan.redact[path] = fields
         for path in files:
-            if not _is_result(path) or path.name.startswith("run-"):
+            if kinds[path] in ("", "run"):
                 continue
-            data = _read_json(path)
+            data = loaded[path]
             if not isinstance(data, dict):
                 continue
             used = _mentioned(_strings(data), stems)
-            if path.name.startswith("chain-"):
+            if kinds[path] == "chain":
                 for row in data.get("calls") or []:
                     run = row.get("run") if isinstance(row, dict) else None
                     used += marked_runs.get(str(run), [])
@@ -559,7 +578,7 @@ def _plan_results(plan: Plan, directories: list[Path], *, keep_text: bool) -> No
             todo = [s for s in used if s not in done]
             chain_fields = (
                 _text_fields(data)
-                if used and not keep_text and path.name.startswith("chain-")
+                if used and not keep_text and kinds[path] == "chain"
                 else []
             )
             if todo or chain_fields:
@@ -567,7 +586,7 @@ def _plan_results(plan: Plan, directories: list[Path], *, keep_text: bool) -> No
             if chain_fields:
                 plan.redact[path] = chain_fields
         for path in files:
-            if not _is_result(path) and _mentioned(_strings(_read_json(path)), stems):
+            if not kinds[path] and _mentioned(_strings(loaded[path]), stems):
                 plan.mentioned.append(path)
         for html in sorted(directory.rglob("*.html")):
             try:
