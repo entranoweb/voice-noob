@@ -39,6 +39,7 @@ results directory (listed, never deleted).
 from __future__ import annotations
 
 import argparse
+import copy
 import csv
 import json
 import os
@@ -187,6 +188,8 @@ class Plan:
     case_kept: list[Path] = field(default_factory=list)
     # The skeleton scenarios ``ingest`` wrote beside the clips; they hold the call's words.
     case_scenarios: list[Path] = field(default_factory=list)
+    # scenario file -> JSON paths that still hold a forgotten answer after the rewrite.
+    leftovers: dict[Path, list[str]] = field(default_factory=dict)
     # Scenario directories beside a clip bank (or its case) that were not scanned.
     unscanned: list[Path] = field(default_factory=list)
     uploaded: list[Path] = field(default_factory=list)
@@ -203,6 +206,7 @@ class Plan:
             + sum(map(len, self.rows.values()))
             + sum(map(len, self.overrides.values()))
             + len(self.scenarios)
+            + len(self.leftovers)
             + len(self.unreadable)
             + len(self.results)
         )
@@ -309,7 +313,87 @@ def _blanked(stem: str) -> str:
     return f"[removed: {stem}]"
 
 
-def _rewrite_scenario(node: Any, stems: list[str], removal: str) -> list[str]:
+def _rewrite_scenario(
+    node: Any,
+    stems: list[str],
+    removal: str,
+    *,
+    everywhere: bool = False,
+    left: list[str] | None = None,
+) -> list[str]:
+    """Rewrite a scenario for removed clips; ``left`` receives the JSON paths that still hold
+    a forgotten answer afterwards (case-insensitive, whole words; never the words themselves).
+
+    A short answer ("Ann") is only blanked beside the step's own field, so the same word
+    elsewhere is found by the final search and reported rather than called done. When the
+    search finds something and ``everywhere`` is not set, the step's own ``intended`` and
+    persona fact are kept, so a rerun (``--blank-short-everywhere``, or after editing by
+    hand) still knows what to look for. ``everywhere`` blanks every whole-word match.
+    """
+    if not isinstance(node, dict):
+        return []
+    probe = copy.deepcopy(node)
+    found: dict[str, tuple[str, str]] = {}
+    _rewrite_node(probe, stems, removal, everywhere=everywhere, withhold=False, found=found)
+    withhold = bool(_search(probe, found)) and not everywhere
+    found = {}
+    changed = _rewrite_node(
+        node, stems, removal, everywhere=everywhere, withhold=withhold, found=found
+    )
+    if left is not None:
+        left += _search(node, found)
+    return changed
+
+
+def _terms(spoken: dict[str, tuple[str, str]]) -> dict[str, tuple[str, str]]:
+    """The answers, and each word of a short multi-word one (a first and a last name)."""
+    terms = dict(spoken)
+    for words, owner in spoken.items():
+        parts = words.split()
+        if 1 < len(parts) <= MAX_NAME_WORDS:
+            for part in parts:
+                if len(part) >= MIN_WORD_LETTERS:
+                    terms.setdefault(part, owner)
+    return terms
+
+
+MAX_NAME_WORDS = 3
+MIN_WORD_LETTERS = 3
+_MARKER = re.compile(r"\[removed: [^\]]*\]")
+
+
+def _search(node: dict[str, Any], spoken: dict[str, tuple[str, str]]) -> list[str]:
+    """JSON paths of every string that still holds a forgotten answer as a whole word."""
+    patterns = [_span(words) for words in _terms(spoken)]
+    paths: list[str] = []
+
+    def walk(item: Any, path: str) -> None:
+        if isinstance(item, dict):
+            for key, value in item.items():
+                if key not in ("clips", "missing_clips", "field", "tool_arg"):
+                    walk(value, f"{path}.{key}" if path else str(key))
+        elif isinstance(item, list):
+            for index, value in enumerate(item):
+                walk(value, f"{path}[{index}]")
+        elif isinstance(item, str):
+            held = _MARKER.sub(" ", item)
+            if any(pattern.search(held) for pattern in patterns):
+                paths.append(path)
+
+    if patterns:
+        walk(node, "")
+    return paths
+
+
+def _rewrite_node(
+    node: Any,
+    stems: list[str],
+    removal: str,
+    *,
+    everywhere: bool,
+    withhold: bool,
+    found: dict[str, tuple[str, str]],
+) -> list[str]:
     """Point every step that plays a removed clip at ``missing/<clip>``. Returns the clips changed.
 
     A scenario has ``steps`` and perhaps a ``fallback``; a chain has ``chain``, a
@@ -326,6 +410,7 @@ def _rewrite_scenario(node: Any, stems: list[str], removal: str) -> list[str]:
         return []
     changed: list[str] = []
     spoken: dict[str, tuple[str, str]] = {}  # normalised words -> (clip, step field)
+    protect: dict[int, set[str]] = {}  # dict id -> keys kept as they are (the sources)
     answers = [*(node.get("steps") or []), node.get("fallback")]
     for answer in answers:
         clips = answer.get("clips") if isinstance(answer, dict) else None
@@ -344,16 +429,26 @@ def _rewrite_scenario(node: Any, stems: list[str], removal: str) -> list[str]:
                 if not any(str(d).startswith(f"{stem}: removed") for d in declared):
                     declared.append(_missing_text(stem, removal))
         if gone:
-            changed += _blank_words(node, answer, gone[0], spoken)
+            changed += _blank_words(
+                node, answer, gone[0], spoken, protect=protect if withhold else None
+            )
+    found.update(spoken)
     if spoken:
-        changed += _blank_elsewhere(node, spoken)
+        changed += _blank_elsewhere(node, spoken, everywhere=everywhere, protect=protect)
     for call in [*(node.get("chain") or []), *(node.get("calls") or [])]:
-        changed += _rewrite_scenario(call, stems, removal)
+        changed += _rewrite_node(
+            call, stems, removal, everywhere=everywhere, withhold=withhold, found=found
+        )
     return changed
 
 
 def _blank_words(
-    node: dict[str, Any], answer: dict[str, Any], stem: str, spoken: dict[str, tuple[str, str]]
+    node: dict[str, Any],
+    answer: dict[str, Any],
+    stem: str,
+    spoken: dict[str, tuple[str, str]],
+    *,
+    protect: dict[int, set[str]] | None = None,
 ) -> list[str]:
     """Blank the step's ``intended`` and the persona fact it answers (its ``field``).
 
@@ -367,8 +462,11 @@ def _blank_words(
     if isinstance(intended, str) and intended and intended != _blanked(stem):
         if _same_words(intended):
             spoken[_same_words(intended)] = (stem, tie)
-        answer["intended"] = _blanked(stem)
-        changed.append(stem)
+        if protect is not None:
+            protect.setdefault(id(answer), set()).add("intended")
+        else:
+            answer["intended"] = _blanked(stem)
+            changed.append(stem)
     persona = node.get("persona")
     facts = persona.get("facts") if isinstance(persona, dict) else None
     if isinstance(facts, dict) and tie and tie in facts:
@@ -376,8 +474,11 @@ def _blank_words(
         if isinstance(held, str) and held and held != _blanked(stem):
             if _same_words(held):
                 spoken[_same_words(held)] = (stem, tie)
-            facts[tie] = _blanked(stem)
-            changed.append(stem)
+            if protect is not None:
+                protect.setdefault(id(facts), set()).add(tie)
+            else:
+                facts[tie] = _blanked(stem)
+                changed.append(stem)
     return changed
 
 
@@ -396,7 +497,13 @@ def _span(words: str) -> re.Pattern[str]:
     return re.compile(r"(?<!\w)" + r"[\W_]+".join(parts) + r"(?!\w)", re.IGNORECASE)
 
 
-def _blank_elsewhere(node: dict[str, Any], spoken: dict[str, tuple[str, str]]) -> list[str]:
+def _blank_elsewhere(
+    node: dict[str, Any],
+    spoken: dict[str, tuple[str, str]],
+    *,
+    everywhere: bool = False,
+    protect: dict[int, set[str]] | None = None,
+) -> list[str]:
     """Blank what a removed clip said wherever else the scenario holds it.
 
     Every string in the scenario is searched (persona, expect, description, intended, and any
@@ -406,15 +513,16 @@ def _blank_elsewhere(node: dict[str, Any], spoken: dict[str, tuple[str, str]]) -
     unrelated check expects. Field names, check names and ``clips`` lists are not touched.
     """
     changed: list[str] = []
+    targets = _terms(spoken) if everywhere else spoken
 
     def text(value: str, tied: str) -> str:
-        for words, (stem, tie) in spoken.items():
-            if not (_specific(words) or (tied and tied == tie)):
+        for words, (stem, tie) in targets.items():
+            if not (everywhere or _specific(words) or (tied and tied == tie)):
                 continue
             if _same_words(value) == words:
                 changed.append(stem)
                 return _blanked(stem)
-            if _specific(words):
+            if everywhere or _specific(words):
                 value, count = _span(words).subn(_blanked(stem), value)
                 changed.extend([stem] * count)
         return value
@@ -422,12 +530,14 @@ def _blank_elsewhere(node: dict[str, Any], spoken: dict[str, tuple[str, str]]) -
     def walk(item: Any, tied: str) -> Any:
         if isinstance(item, dict):
             here = item["field"] if isinstance(item.get("field"), str) else tied
-            return {
-                key: value
-                if key in ("clips", "missing_clips", "field", "tool_arg")
-                else walk(value, here)
-                for key, value in item.items()
-            }
+            kept = (
+                "clips",
+                "missing_clips",
+                "field",
+                "tool_arg",
+                *(protect or {}).get(id(item), ()),
+            )
+            return {key: value if key in kept else walk(value, here) for key, value in item.items()}
         if isinstance(item, list):
             return [walk(value, tied) for value in item]
         return text(item, tied) if isinstance(item, str) else item
@@ -446,7 +556,7 @@ def _scenario_files(directory: Path) -> list[Path]:
     )
 
 
-def _plan_scenarios(plan: Plan, directories: list[Path]) -> None:
+def _plan_scenarios(plan: Plan, directories: list[Path], *, everywhere: bool = False) -> None:
     for directory in directories:
         for path in _scenario_files(directory):
             try:
@@ -458,9 +568,12 @@ def _plan_scenarios(plan: Plan, directories: list[Path]) -> None:
                 continue
             if not isinstance(data, dict) or not ("steps" in data or "chain" in data):
                 continue
-            hit = _rewrite_scenario(data, plan.stems, "dry-run")
+            left: list[str] = []
+            hit = _rewrite_scenario(data, plan.stems, "dry-run", everywhere=everywhere, left=left)
             if hit:
                 plan.scenarios[path] = sorted(dict.fromkeys(hit))
+            if left:
+                plan.leftovers[path] = left
 
 
 def _result_kind(path: Path, data: Any = None) -> str:
@@ -872,6 +985,7 @@ def make_plan(
     *,
     keep_text: bool = False,
     recordings: list[Path] | None = None,
+    everywhere: bool = False,
 ) -> Plan:
     stems, speakers = resolve(banks, target)
     plan = Plan(target=target, stems=stems, speakers=speakers)
@@ -894,7 +1008,9 @@ def make_plan(
     _plan_sources(plan, banks, recordings or [])
     given = {d.resolve() for d in scenarios}
     _plan_scenarios(
-        plan, [*scenarios, *(d for d in plan.case_scenarios if d.resolve() not in given)]
+        plan,
+        [*scenarios, *(d for d in plan.case_scenarios if d.resolve() not in given)],
+        everywhere=everywhere,
     )
     scanned = [d.resolve() for d in [*scenarios, *plan.case_scenarios]]
     plan.unscanned = _unscanned(banks, scanned)
@@ -968,6 +1084,11 @@ def describe(
         )
         lines += [f"    {p}" for p in plan.scenarios]
     lines += [f"  CANNOT rewrite {p} ({why}); it names a clip" for p, why in plan.unreadable]
+    for path, where in plan.leftovers.items():
+        lines.append(
+            f"  STILL HOLDS a forgotten answer after the rewrite: {path} at {', '.join(where)} "
+            "(blank them with --blank-short-everywhere, or edit by hand); not complete until gone"
+        )
     if plan.unscanned:
         lines.append(
             "  WARNING: scenario directories found here were NOT scanned (a scenario in one may "
@@ -1027,9 +1148,9 @@ def _remove_rows(path: Path, stems: list[str]) -> None:
     os.replace(temporary, path)
 
 
-def _rewrite_file(path: Path, stems: list[str], removal: str) -> None:
+def _rewrite_file(path: Path, stems: list[str], removal: str, everywhere: bool = False) -> None:
     data, text = _load_scenario(path)
-    _rewrite_scenario(data, stems, removal)
+    _rewrite_scenario(data, stems, removal, everywhere=everywhere)
     _write_atomic(path, _dump_scenario(path, data, text))
 
 
@@ -1074,6 +1195,7 @@ def execute(
     request_ref: str,
     keep_text: bool = False,
     verify: Callable[[], list[str]] | None = None,
+    everywhere: bool = False,
 ) -> tuple[str, list[str]]:
     """Carry the plan out; return the id of the record and what failed (empty when nothing).
 
@@ -1118,7 +1240,7 @@ def execute(
         attempt(
             "rewrite",
             path,
-            partial(_rewrite_file, path, plan.stems, removal),
+            partial(_rewrite_file, path, plan.stems, removal, everywhere),
             "scenarios",
         )
     for audio in plan.audio:
@@ -1186,7 +1308,12 @@ def _left_to_do(plan: Plan) -> list[str]:
         "manifest row(s) still present": sum(map(len, plan.rows.values())),
         "override(s) still present": sum(map(len, plan.overrides.values())),
     }
-    return [f"{count} {what}" for what, count in kinds.items() if count]
+    lines = [f"{count} {what}" for what, count in kinds.items() if count]
+    lines += [
+        f"a forgotten answer still in {path} at {', '.join(where)}"
+        for path, where in plan.leftovers.items()
+    ]
+    return lines
 
 
 def run(args: argparse.Namespace) -> int:
@@ -1225,6 +1352,7 @@ def run(args: argparse.Namespace) -> int:
             [Path(p) for p in args.results],
             keep_text=args.keep_text,
             recordings=[Path(p) for p in args.recordings],
+            everywhere=bool(getattr(args, "blank_short_everywhere", False)),
         )
     except (ForgetError, ManifestError) as error:
         suffix = "; nothing was changed" if isinstance(error, ManifestError) else ""
@@ -1247,6 +1375,8 @@ def run(args: argparse.Namespace) -> int:
     if not (plan.changes or pending):
         return _still_open(banks)
 
+    everywhere = bool(getattr(args, "blank_short_everywhere", False))
+
     def recheck() -> list[str]:
         again = make_plan(
             args.target,
@@ -1255,6 +1385,7 @@ def run(args: argparse.Namespace) -> int:
             [Path(p) for p in args.results],
             keep_text=args.keep_text,
             recordings=[Path(p) for p in args.recordings],
+            everywhere=everywhere,
         )
         return [f"left to do after the run: {line}" for line in _left_to_do(again)]
 
@@ -1267,6 +1398,7 @@ def run(args: argparse.Namespace) -> int:
             request_ref=args.request_ref,
             keep_text=args.keep_text,
             verify=recheck,
+            everywhere=everywhere,
         )
     except OSError as error:
         print(f"forget: INCOMPLETE: the removal log could not be written ({error!r})")
@@ -1325,6 +1457,13 @@ def register(sub: Any) -> None:
         action="store_true",
         help="keep what was said and heard in stored results (only for retention_expired); "
         "otherwise it is redacted",
+    )
+    parser.add_argument(
+        "--blank-short-everywhere",
+        action="store_true",
+        help="also blank every whole-word match of a forgotten answer (and each word of a short "
+        "name) anywhere in a scenario; without it a short answer is only blanked beside its "
+        "own step, and a match left elsewhere is reported and the run is not complete",
     )
     parser.add_argument(
         "--dry-run", action="store_true", help="list everything it would touch; change nothing"

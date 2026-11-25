@@ -155,23 +155,23 @@ def test_forget_rewrites_a_merged_manifest_with_one_copy_of_each_column(
 WORDS = "Quillfeather Zanzibar"
 
 
-def case_with_words(tmp_path: Path) -> tuple[Path, str]:
+def case_with_words(tmp_path: Path, words: str = WORDS) -> tuple[Path, str]:
     """An ingested case whose second caller turn is ``WORDS``, with the words also placed in
     the persona, an expectation and a stored result."""
     conversation = copy.deepcopy(CONVERSATION)
     for turn in conversation["transcript"]:
         if turn["message"] == "Sam Example.":
-            turn["message"] = WORDS
+            turn["message"] = words
     case = captured(tmp_path, Platform(conversation=conversation))
     ingest(case)
     path = case / "scenarios" / "scenario.json"
     scenario = json.loads(path.read_text(encoding="utf-8"))
-    step = next(s for s in scenario["steps"] if s["intended"] == WORDS)
+    step = next(s for s in scenario["steps"] if s["intended"] == words)
     step["field"] = "name"
-    scenario["persona"] = {"facts": {"name": WORDS, "unrelated": "kept"}}
+    scenario["persona"] = {"facts": {"name": words, "unrelated": "kept"}}
     scenario["expect"] = {
-        "tools": [{"name_contains": "lookup", "arguments": {"q": WORDS}}],
-        "fields": [{"field": "name", "tool_arg": "q", "equals": WORDS}],
+        "tools": [{"name_contains": "lookup", "arguments": {"q": words}}],
+        "fields": [{"field": "name", "tool_arg": "q", "equals": words}],
     }
     path.write_text(json.dumps(scenario, indent=2), encoding="utf-8")
     clip = step["clips"][0]
@@ -632,13 +632,25 @@ def test_a_short_answer_is_not_blanked_in_an_unrelated_check() -> None:
             "tools": [{"name_contains": "lookup", "arguments": {"q": "yes"}}],
         },
     }
-    forget._rewrite_scenario(node, ["c1"], "rm_x")
+    left: list[str] = []
+    forget._rewrite_scenario(node, ["c1"], "rm_x", left=left)
     blank = "[removed: c1]"
-    assert node["steps"][0]["intended"] == blank
-    assert node["persona"]["facts"] == {"confirm": blank, "other": "yes"}
     assert node["expect"]["fields"][0]["equals"] == blank  # tied to the step's field
     assert node["expect"]["fields"][1]["contains"] == "yes"  # another check: unchanged
     assert node["expect"]["tools"][0]["arguments"] == {"q": "yes"}
+    assert node["persona"]["facts"]["other"] == "yes"
+    # what is left is reported, and the step keeps its words so a rerun can find them
+    assert {"persona.facts.other", "expect.fields[1].contains"} <= set(left)
+    assert node["steps"][0]["intended"] == "Yes"
+    # with nothing left over, the step is blanked too
+    clean: dict[str, Any] = {
+        "steps": [{"clips": ["c1.wav"], "intended": "Yes", "field": "confirm"}],
+        "persona": {"facts": {"confirm": "Yes"}},
+    }
+    none: list[str] = []
+    forget._rewrite_scenario(clean, ["c1"], "rm_x", left=none)
+    assert none == [] and clean["persona"]["facts"] == {"confirm": blank}
+    assert clean["steps"][0]["intended"] == blank
 
 
 def test_forget_warns_about_a_scenario_directory_it_was_not_given(
@@ -696,3 +708,88 @@ def test_bare_doctor_says_the_fake_leg_was_not_checked(
     cli.main(["doctor"])
     out = capsys.readouterr().out
     assert "fake leg: not checked" in out and "fake leg: ready" not in out
+
+
+# --- review round 2: a short answer, or words split over strings, never end "complete" ----
+
+
+def put_scenario(case: Path, edit: Any) -> Path:
+    path = case / "scenarios" / "scenario.json"
+    scenario = json.loads(path.read_text(encoding="utf-8"))
+    edit(scenario)
+    path.write_text(json.dumps(scenario, indent=2), encoding="utf-8")
+    return path
+
+
+def whole_word(text: str, word: str) -> bool:
+    return re.search(rf"(?<!\w){re.escape(word)}(?!\w)", text, re.IGNORECASE) is not None
+
+
+def test_a_short_answer_with_no_field_is_reported_not_called_complete(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    case, clip = case_with_words(tmp_path, "Ann")
+
+    def edit(scenario: dict[str, Any]) -> None:
+        for step in scenario["steps"]:
+            step.pop("field", None)
+        scenario["persona"] = {"facts": {"name": "Ann"}}
+        scenario["description"] = "Annual review; call me Ann"
+        scenario["expect"] = {"fields": [{"field": "name", "equals": "Ann"}]}
+
+    put_scenario(case, edit)
+    assert forget_case(case, clip) == 1
+    out = capsys.readouterr().out
+    assert "INCOMPLETE" in out and " complete;" not in out
+    for where in ("persona.facts.name", "description", "expect.fields[0].equals"):
+        assert where in out
+    assert "Annual" in everything(case)  # a longer word is not the answer
+
+
+def test_a_short_answer_with_a_field_survives_elsewhere_and_is_reported(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    case, clip = case_with_words(tmp_path, "Ann")
+
+    def edit(scenario: dict[str, Any]) -> None:
+        scenario["description"] = "call me ann, ok"
+        scenario["expect"] = {"fields": [{"field": "other", "equals": "ann"}]}
+
+    put_scenario(case, edit)
+    assert forget_case(case, clip) == 1
+    out = capsys.readouterr().out
+    assert "INCOMPLETE" in out and "description" in out and "expect.fields[0].equals" in out
+
+
+def test_blank_short_everywhere_clears_them_and_a_rerun_after_an_incomplete_run_can_use_it(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    case, clip = case_with_words(tmp_path, "Ann")
+
+    def edit(scenario: dict[str, Any]) -> None:
+        scenario["description"] = "Annual review; call me Ann, ok"
+        scenario["expect"] = {"fields": [{"field": "other", "equals": "ann"}]}
+
+    put_scenario(case, edit)
+    assert forget_case(case, clip) == 1
+    capsys.readouterr()
+    assert forget_case(case, clip, "--blank-short-everywhere") == 0
+    assert " complete;" in capsys.readouterr().out
+    assert not whole_word(everything(case), "ann")
+    assert "Annual review" in everything(case)
+
+
+def test_words_split_over_two_strings_are_reported(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    case, clip = case_with_words(tmp_path)
+
+    def edit(scenario: dict[str, Any]) -> None:
+        scenario["persona"] = {"facts": {"first": "Quillfeather", "last": "Zanzibar"}}
+
+    put_scenario(case, edit)
+    assert forget_case(case, clip) == 1
+    out = capsys.readouterr().out
+    assert "INCOMPLETE" in out and "persona.facts.first" in out and "persona.facts.last" in out
+    assert forget_case(case, clip, "--blank-short-everywhere") == 0
+    assert "Quillfeather" not in everything(case) and "Zanzibar" not in everything(case)
