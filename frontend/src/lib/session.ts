@@ -91,6 +91,28 @@ async function withCrossTabLock<T>(task: () => Promise<T>): Promise<T> {
   return await locks.request(LOCK_NAME, task);
 }
 
+/** How long to wait, in turn, for another tab's newer pair to show up in storage. */
+export const ROTATED_POLL_MS = [100, 250, 500, 1000];
+
+/**
+ * The server said the token we hold was rotated a moment ago (409): another tab
+ * got there first and this one read storage before its write was visible.
+ * Nothing was issued and nothing was revoked. Look in storage again, a few
+ * times, for the newer pair. Never ask the server again with the old token: if
+ * nothing newer ever appears, the old token was rotated by somebody who is not
+ * one of our tabs, and the next use of it, after the window, is what ends that
+ * sign-in on the server. So a 409 costs one request, never a loop.
+ */
+async function adoptRotatedSession(old: string): Promise<string | null> {
+  for (const wait of ROTATED_POLL_MS) {
+    await new Promise((resolve) => setTimeout(resolve, wait));
+    const latest = getRefreshToken();
+    if (!latest) return null;
+    if (latest !== old) return getAccessToken();
+  }
+  return null;
+}
+
 /**
  * Trade the refresh token for a new access token. Returns it, or null when the
  * session is over (no refresh token, or the server refused it).
@@ -104,6 +126,11 @@ async function withCrossTabLock<T>(task: () => Promise<T>): Promise<T> {
  *   ours the stored refresh token is read again. If it is no longer the one this
  *   call set out with, another tab already rotated it, so its stored pair is
  *   used and /refresh is not called.
+ * - the read after taking the lock can still be stale: a browser may show this
+ *   tab the old value for a few milliseconds after another process wrote the new
+ *   one (measured: up to 16% of lock hand-offs between six tabs). The server
+ *   answers a token rotated within the last few seconds with 409 and no tokens;
+ *   see ``adoptRotatedSession``.
  */
 export function refreshSession(): Promise<string | null> {
   if (inFlight) return inFlight;
@@ -120,6 +147,7 @@ export function refreshSession(): Promise<string | null> {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ refresh_token: current }),
       });
+      if (response.status === 409) return await adoptRotatedSession(current);
       if (!response.ok) {
         if (response.status === 401) clearSession();
         return null;

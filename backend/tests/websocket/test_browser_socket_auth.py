@@ -91,9 +91,13 @@ class _FakeRealtimeSession:
         return None
 
 
-def _access_token(user_id: int, *, expires_in: int = 600) -> str:
+def _access_token(user_id: int, *, expires_in: int = 600, ver: int = 0) -> str:
     return jwt.encode(
-        {"sub": str(user_id), "exp": datetime.now(UTC) + timedelta(seconds=expires_in)},
+        {
+            "sub": str(user_id),
+            "ver": ver,
+            "exp": datetime.now(UTC) + timedelta(seconds=expires_in),
+        },
         settings.SECRET_KEY,
         algorithm=settings.ALGORITHM,
     )
@@ -209,6 +213,30 @@ class TestDashboardSocket:
             algorithm=settings.ALGORITHM,
         )
         await self._refused(env, forged, realtime.REALTIME_SOCKET_UNAUTHENTICATED)
+
+    @pytest.mark.asyncio
+    async def test_a_disabled_user_is_refused_with_a_token_still_in_date(
+        self, env: dict[str, Any]
+    ) -> None:
+        token = _access_token(env["owner"].id)
+        async with env["sessions"]() as session:
+            owner = await session.get(User, env["owner"].id)
+            assert owner is not None
+            owner.is_active = False
+            await session.commit()
+        await self._refused(env, token, realtime.REALTIME_SOCKET_UNAUTHENTICATED)
+
+    @pytest.mark.asyncio
+    async def test_a_token_from_before_sessions_were_ended_is_refused(
+        self, env: dict[str, Any]
+    ) -> None:
+        token = _access_token(env["owner"].id, ver=0)
+        async with env["sessions"]() as session:
+            owner = await session.get(User, env["owner"].id)
+            assert owner is not None
+            owner.token_version = 1
+            await session.commit()
+        await self._refused(env, token, realtime.REALTIME_SOCKET_UNAUTHENTICATED)
 
     @pytest.mark.asyncio
     async def test_another_signed_in_user_cannot_reach_this_agent(

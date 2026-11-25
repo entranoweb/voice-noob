@@ -129,6 +129,11 @@ class Settings(BaseSettings):
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
     # ... but no chain of rotations lasts longer than this from the sign-in.
     REFRESH_TOKEN_MAX_AGE_DAYS: int = 30
+    # A refresh token that was rotated this recently and is presented again is
+    # taken for two tabs of one browser racing (a browser can hand a second tab
+    # the old value for a few milliseconds), not for theft: it gets a 409 with no
+    # tokens and the sign-in is left alone. After the window it is a replay.
+    REFRESH_ROTATION_GRACE_SECONDS: int = 5
     # How long an emailed password-reset link works.
     PASSWORD_RESET_EXPIRE_MINUTES: int = 30
     # Reset mails one account can be sent per hour. More requests get the same

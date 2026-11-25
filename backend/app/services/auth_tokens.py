@@ -19,7 +19,7 @@ import hmac
 import secrets
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, NoReturn, cast
 
 import structlog
 from sqlalchemy import select, update
@@ -41,6 +41,13 @@ TOKEN_BYTES = 32
 
 class RefreshRejected(Exception):  # noqa: N818 - reads better than ...Error at the call site
     """The refresh token cannot be used. The caller answers 401 and says no more."""
+
+
+class RefreshRecentlyRotated(RefreshRejected):
+    """The token was rotated moments ago. Nothing is issued and nothing is revoked.
+
+    A subclass so that anything catching :class:`RefreshRejected` still refuses.
+    """
 
 
 def new_secret() -> str:
@@ -158,6 +165,40 @@ async def _reuse_detected(
     )
 
 
+async def _retired_token_presented(
+    db: AsyncSession, row: RefreshToken, now: datetime, request: Request | None
+) -> NoReturn:
+    """A token that was already used came back. Always raises.
+
+    Within ``REFRESH_ROTATION_GRACE_SECONDS`` of the rotation, and while the
+    token, the sign-in and the account are all still good, this is two tabs of
+    one browser racing: raise :class:`RefreshRecentlyRotated` (no tokens, no
+    revocation; the window is measured from the rotation and so never slides, however
+    often the old token is shown). Anything else is a replay: revoke the family.
+    A thief who rotated first is caught when the owner shows the old token
+    after the window, and one who replays later is caught at once.
+    """
+    family_id, user_id, used_at = row.family_id, row.user_id, row.used_at
+    if used_at is None:
+        raise RefreshRejected
+    age = now - as_utc(used_at)
+    in_window = (
+        timedelta(0) <= age <= timedelta(seconds=settings.REFRESH_ROTATION_GRACE_SECONDS)
+        and as_utc(row.expires_at) > now
+        and as_utc(row.family_expires_at) > now
+    )
+    if in_window:
+        user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+        if user is None or not user.is_active:
+            await revoke_family(db, family_id)
+            await db.commit()
+            raise RefreshRejected
+        logger.info("refresh_token_rotation_race", user_id=user_id, family_id=str(family_id))
+        raise RefreshRecentlyRotated
+    await _reuse_detected(db, family_id, user_id, request, "token already used")
+    raise RefreshRejected
+
+
 async def rotate_refresh_token(
     db: AsyncSession, presented: str, *, request: Request | None = None
 ) -> tuple[User, str]:
@@ -165,8 +206,9 @@ async def rotate_refresh_token(
 
     Returns the user and the new refresh token (committed). Raises
     :class:`RefreshRejected` for anything that is not a live token of an active
-    user. A token that was already used is a theft signal: the whole family is
-    revoked before the refusal.
+    user. A token that was already used is a theft signal and the whole family is
+    revoked before the refusal, unless it was rotated a moment ago
+    (:class:`RefreshRecentlyRotated`, see ``_retired_token_presented``).
     """
     presented_hash = hash_token(presented)
     row = (
@@ -177,11 +219,10 @@ async def rotate_refresh_token(
 
     if row.revoked_at is not None:
         raise RefreshRejected
-    if row.used_at is not None:
-        await _reuse_detected(db, row.family_id, row.user_id, request, "token already used")
-        raise RefreshRejected
-
     now = _now()
+    if row.used_at is not None:
+        await _retired_token_presented(db, row, now, request)
+
     if as_utc(row.expires_at) <= now or as_utc(row.family_expires_at) <= now:
         raise RefreshRejected
 
@@ -206,11 +247,14 @@ async def rotate_refresh_token(
         ),
     )
     if claimed.rowcount != 1:
-        # Read before the rollback expires the row.
-        family_id, user_id = row.family_id, row.user_id
+        # Someone else claimed it between our read and our update. Look again
+        # (after the rollback, which expires the row) at what they left.
+        row_id = row.id
         await db.rollback()
-        await _reuse_detected(db, family_id, user_id, request, "token used twice at once")
-        raise RefreshRejected
+        row = (await db.execute(select(RefreshToken).where(RefreshToken.id == row_id))).scalar_one()
+        if row.revoked_at is not None or row.used_at is None:
+            raise RefreshRejected
+        await _retired_token_presented(db, row, _now(), request)
 
     successor = await issue_refresh_token(
         db,

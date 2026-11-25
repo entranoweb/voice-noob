@@ -19,6 +19,7 @@ from app.db.session import get_db
 from app.models.refresh_token import RefreshToken
 from app.models.user import User
 from app.services.auth_tokens import (
+    RefreshRecentlyRotated,
     RefreshRejected,
     hash_token,
     issue_refresh_token,
@@ -313,11 +314,18 @@ async def refresh(
     """Trade a refresh token for a new access token and a new refresh token.
 
     The old refresh token stops working. Presenting one that already has is
-    treated as theft: its whole family is revoked (see ``rotate_refresh_token``).
-    Every refusal is the same 401.
+    treated as theft: its whole family is revoked (see ``rotate_refresh_token``),
+    unless it was rotated within the last few seconds, which is a 409 with no
+    tokens and no revocation. Every other refusal is the same 401.
     """
     try:
         user, successor = await rotate_refresh_token(db, payload.refresh_token, request=request)
+    except RefreshRecentlyRotated:
+        # Another tab rotated this token a moment ago. No tokens are issued; the
+        # caller looks for the newer pair in its storage and does not sign out.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="Refresh token was just rotated"
+        ) from None
     except RefreshRejected:
         raise _invalid_refresh() from None
     return TokenResponse(

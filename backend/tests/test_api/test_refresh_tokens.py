@@ -18,6 +18,7 @@ import pytest
 import sqlalchemy as sa
 
 from app.core.audit import AuditAction
+from app.core.config import settings
 from app.models.audit_event import AuditEvent
 from app.models.refresh_token import RefreshToken
 from app.models.user import User
@@ -43,6 +44,32 @@ async def _me(lc: Lifecycle, access_token: str) -> int:
         "/api/v1/auth/me", headers={"Authorization": f"Bearer {access_token}"}
     )
     return response.status_code
+
+
+async def _age_used_tokens(lc: Lifecycle, seconds: float) -> None:
+    """Make every retired token look like it was rotated ``seconds`` ago."""
+    async with lc.sessions() as session:
+        await session.execute(
+            sa.update(RefreshToken)
+            .where(RefreshToken.used_at.is_not(None))
+            .values(used_at=datetime.now(UTC) - timedelta(seconds=seconds))
+        )
+        await session.commit()
+
+
+async def _reuse_events(lc: Lifecycle) -> list[AuditEvent]:
+    async with lc.sessions() as session:
+        return list(
+            (
+                await session.execute(
+                    sa.select(AuditEvent).where(
+                        AuditEvent.action == AuditAction.REFRESH_REUSE_DETECTED
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
 
 
 @pytest.mark.asyncio
@@ -74,6 +101,7 @@ async def test_a_replayed_token_is_refused_and_takes_its_whole_family_with_it(
     other_device = await lc.login(email)
     # The real user refreshes; the thief presents the old copy afterwards.
     current = (await _refresh(lc, stolen)).json()
+    await _age_used_tokens(lc, settings.REFRESH_ROTATION_GRACE_SECONDS + 1)
 
     replay = await _refresh(lc, stolen)
     after_replay = await _refresh(lc, current["refresh_token"])
@@ -232,8 +260,6 @@ async def test_garbage_is_refused_without_an_error(lifecycle: Lifecycle) -> None
 async def test_a_new_access_token_has_the_normal_lifetime(lifecycle: Lifecycle) -> None:
     import jwt
 
-    from app.core.config import settings
-
     lc = lifecycle
     tokens = await lc.login(lc.alice.user.email)
 
@@ -259,12 +285,113 @@ async def test_two_requests_with_one_token_at_once_let_only_one_through(
         _refresh(lc, tokens["refresh_token"]), _refresh(lc, tokens["refresh_token"])
     )
 
-    assert sorted([first.status_code, second.status_code]) == [200, 401]
+    assert sorted([first.status_code, second.status_code]) == [200, 409]
+    loser = first if first.status_code == 409 else second
+    winner = first if first.status_code == 200 else second
+    assert set(loser.json()) == {"detail"}, "no tokens in the refusal"
+    assert len(await _rows(lc)) == 2, "one successor, not two"
+    assert (await _refresh(lc, winner.json()["refresh_token"])).status_code == 200
+    assert not await _reuse_events(lc), "a race between a person's own tabs is not theft"
+
+
+@pytest.mark.asyncio
+async def test_a_token_replayed_within_the_window_gets_nothing_and_revokes_nothing(
+    lifecycle: Lifecycle,
+) -> None:
+    lc = lifecycle
+    first = await lc.login(lc.alice.user.email)
+    second = (await _refresh(lc, first["refresh_token"])).json()
+
+    # A second tab whose storage read was stale presents the token again.
+    replay = await _refresh(lc, first["refresh_token"])
+
+    assert replay.status_code == 409
+    assert set(replay.json()) == {"detail"}, "no access token and no refresh token"
+    assert len(await _rows(lc)) == 2, "nothing was issued"
+    assert not await _reuse_events(lc)
+    assert (await _refresh(lc, second["refresh_token"])).status_code == 200, "family still live"
+
+
+@pytest.mark.asyncio
+async def test_presenting_the_old_token_again_and_again_in_the_window_changes_nothing(
+    lifecycle: Lifecycle,
+) -> None:
+    lc = lifecycle
+    first = await lc.login(lc.alice.user.email)
+    await _refresh(lc, first["refresh_token"])
+    used_before = sorted(
+        row.used_at.isoformat() for row in await _rows(lc) if row.used_at is not None
+    )
+
+    answers = [(await _refresh(lc, first["refresh_token"])).status_code for _ in range(5)]
+
+    assert answers == [409] * 5
+    assert len(await _rows(lc)) == 2
+    assert used_before == sorted(
+        row.used_at.isoformat() for row in await _rows(lc) if row.used_at is not None
+    ), "the window does not slide: it ends the same moment however often it is tried"
+    await _age_used_tokens(lc, settings.REFRESH_ROTATION_GRACE_SECONDS + 1)
+    assert (await _refresh(lc, first["refresh_token"])).status_code == 401
+    assert len(await _reuse_events(lc)) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_thief_who_rotated_first_is_caught_when_the_real_owner_comes_back(
+    lifecycle: Lifecycle,
+) -> None:
+    lc = lifecycle
+    original = (await lc.login(lc.alice.user.email))["refresh_token"]
+    thief_pair = (await _refresh(lc, original)).json()  # the thief rotates first
+
+    inside = await _refresh(lc, original)  # the owner, seconds later: told to look again
+    await _age_used_tokens(lc, settings.REFRESH_ROTATION_GRACE_SECONDS + 1)
+    outside = await _refresh(lc, original)  # the owner, still holding the old one
+
+    assert inside.status_code == 409
+    assert outside.status_code == 401
+    assert (await _refresh(lc, thief_pair["refresh_token"])).status_code == 401, (
+        "the thief's copy dies with the family"
+    )
+    assert len(await _reuse_events(lc)) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_disabled_user_gets_no_window(lifecycle: Lifecycle) -> None:
+    lc = lifecycle
+    tokens = await lc.login(lc.bob.user.email)
+    await _refresh(lc, tokens["refresh_token"])
     async with lc.sessions() as session:
         user = (
-            await session.execute(sa.select(User).where(User.id == lc.alice.user.id))
+            await session.execute(sa.select(User).where(User.id == lc.bob.user.id))
         ).scalar_one()
-    assert user.is_active
-    assert all(row.revoked_at is not None for row in await _rows(lc)), (
-        "the loser of the race is a replay: the family is revoked"
-    )
+        user.is_active = False
+        await session.commit()
+
+    assert (await _refresh(lc, tokens["refresh_token"])).status_code == 401
+    assert all(row.revoked_at is not None for row in await _rows(lc))
+
+
+@pytest.mark.asyncio
+async def test_a_revoked_family_gets_no_window(lifecycle: Lifecycle) -> None:
+    lc = lifecycle
+    tokens = await lc.login(lc.alice.user.email)
+    await _refresh(lc, tokens["refresh_token"])
+    await lc.client.post(LOGOUT, json={"refresh_token": tokens["refresh_token"]})
+
+    assert (await _refresh(lc, tokens["refresh_token"])).status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_the_window_does_not_outlive_the_sign_in(lifecycle: Lifecycle) -> None:
+    lc = lifecycle
+    tokens = await lc.login(lc.alice.user.email)
+    await _refresh(lc, tokens["refresh_token"])
+    async with lc.sessions() as session:
+        await session.execute(
+            sa.update(RefreshToken).values(
+                family_expires_at=datetime.now(UTC) - timedelta(seconds=1)
+            )
+        )
+        await session.commit()
+
+    assert (await _refresh(lc, tokens["refresh_token"])).status_code == 401
