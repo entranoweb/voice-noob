@@ -22,7 +22,10 @@ from synthiq_caller.jsonio import write_json
 from synthiq_caller.report import Summary
 from synthiq_caller.stats import wilson_interval
 
-VERSION = 1
+# 2: what counts as graded changed (unanswered, early-ended and time-limit
+# calls are now failures; void and ungradeable calls are left out). A baseline
+# made under the old rule is not comparable and must be made again.
+VERSION = 2
 
 
 @dataclass
@@ -54,7 +57,10 @@ def save_baseline(baseline: Baseline, path: str | Path) -> None:
 def load_baseline(path: str | Path) -> Baseline:
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     if data.get("version") != VERSION:
-        raise ValueError(f"baseline version {data.get('version')!r} is not {VERSION}")
+        raise ValueError(
+            f"baseline version {data.get('version')!r} is not {VERSION}: it was made under an "
+            "older grading rule and cannot be compared; make the baseline again"
+        )
     return Baseline(
         created=str(data.get("created", "")),
         source=str(data.get("source", "")),
@@ -69,8 +75,9 @@ class Change:
     name: str
     before: tuple[int, int] | None
     after: tuple[int, int] | None
-    # "regressed", "regressed (within noise)", "improved", "improved (within noise)",
-    # "same", "new", "missing" or "no graded calls"
+    # "regressed", "regressed (within noise)", "regressed (no graded calls now)",
+    # "improved", "improved (within noise)", "same", "new", "missing" or
+    # "no graded calls"
     verdict: str
 
     @property
@@ -87,6 +94,12 @@ def _judge(before: tuple[int, int] | None, after: tuple[int, int] | None) -> str
         return "new"
     if after is None:
         return "missing"
+    if before[1] > 0 and after[1] == 0:
+        # It was being graded and now nothing of it can be. Whatever the cause
+        # (the scenario became ungradeable, every call went void), the batch
+        # shows less than the baseline did. That is a regression to look at,
+        # not a blank row.
+        return "regressed (no graded calls now)"
     if before[1] == 0 or after[1] == 0:
         return "no graded calls"
     old, new = before[0] / before[1], after[0] / after[1]
@@ -144,7 +157,13 @@ def render_comparison(baseline: Baseline, changes: list[Change]) -> str:
         lines.append(f"  {change.kind:<9} {change.name}")
         lines.append(
             f"    before {_rate(change.before)}   now {_rate(change.after)}   "
-            f"{'BEYOND NOISE' if change.beyond_noise else 'within noise: repeat to be sure'}"
+            + (
+                "BEYOND NOISE"
+                if change.beyond_noise
+                else "NOTHING GRADED NOW: find out why before trusting the rest"
+                if change.after is not None and change.after[1] == 0
+                else "within noise: repeat to be sure"
+            )
         )
     lines.append("\nall")
     lines.append(f"  {'before':<24} {'now':<24} {'verdict':<26} name")

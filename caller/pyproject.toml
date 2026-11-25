@@ -7,6 +7,9 @@ requires-python = ">=3.12"
 dependencies = [
     "websockets>=14.1",
     "httpx>=0.28.0",
+    # Windows has no time zone database of its own; booking times are graded
+    # in a named zone (see src/synthiq_caller/zones.py).
+    "tzdata>=2024.1; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]

@@ -1,0 +1,116 @@
+{
+ "source": "live re-run of 25 November 2026, run 2, scrubbed and cut down",
+ "scenario_file": "01-consultation-self-pay-shoulder.json",
+ "record": {
+  "scenario": "New patient books a consultation: shoulder, self-pay, as soon as possible",
+  "call_ref": "conv_fixture_2",
+  "ended": "caller hung up: scenario end",
+  "duration_s": 62.97,
+  "timeline": [
+   {
+    "t": 0.3,
+    "kind": "agent",
+    "text": "Hi, this is Sophie from ClinWell. How can I help you today?"
+   },
+   {
+    "t": 8.86,
+    "kind": "agent",
+    "text": "Just so I know, is the appointment for yourself, or for someone else?"
+   },
+   {
+    "t": 14.0,
+    "kind": "unanswered",
+    "agent": "Just so I know, is the appointment for yourself, or for someone else?"
+   },
+   {
+    "t": 21.47,
+    "kind": "agent",
+    "text": "I’m here. Just so I know, is the appointment for yourself, or for someone else?"
+   },
+   {
+    "t": 27.55,
+    "kind": "unanswered",
+    "agent": "I’m here. Just so I know, is the appointment for yourself, or for someone else?"
+   },
+   {
+    "t": 36.28,
+    "kind": "agent",
+    "text": "I’m here, sorry. Is the appointment for you or someone else?"
+   },
+   {
+    "t": 41.7,
+    "kind": "unanswered",
+    "agent": "I’m here, sorry. Is the appointment for you or someone else?"
+   },
+   {
+    "t": 49.22,
+    "kind": "agent",
+    "text": "I'm so sorry, I'm not quite catching that, so let me pass you to our reception team, who'll be happy to help. If that doesn't connect, you can reach them on 01234 567 890."
+   },
+   {
+    "t": 62.7,
+    "kind": "agent",
+    "text": "Sorry, I couldn't connect you just now. You can reach the team directly on 01234 567 890 and they'll pick this up. Thanks for getting in touch with the the clinic, take care. Goodbye."
+   }
+  ],
+  "said": [
+   {
+    "t": 4.98,
+    "step_index": 5,
+    "field": "",
+    "intended": "Can you book an appointment for me, Sophie?",
+    "clips": [
+     "clip"
+    ],
+    "dtmf": "",
+    "seconds": 2.12,
+    "talk_over": false,
+    "answering": "Hi, this is Sophie from ClinWell. How can I help you today?",
+    "heard": [
+     "Can you book an appointment for me, Sophie?"
+    ],
+    "labels_unverified": true,
+    "fallback": false,
+    "synthetic_clips": []
+   }
+  ],
+  "unanswered": [
+   "Just so I know, is the appointment for yourself, or for someone else?",
+   "I’m here. Just so I know, is the appointment for yourself, or for someone else?",
+   "I’m here, sorry. Is the appointment for you or someone else?"
+  ]
+ },
+ "trace": {
+  "call_ref": "conv_fixture_2",
+  "tool_calls": [
+   {
+    "name": "transfer_to_number",
+    "arguments": {},
+    "result": {
+     "result_type": "transfer_to_number_error",
+     "status": "error",
+     "error": "Transfer to number tool is only available for phone calls powered by Twilio, Exotel, SIP trunking, Amazon Connect, or Voximplant",
+     "details": null
+    },
+    "ok": false,
+    "step_id": "TRANSFER_RECEPTION",
+    "t": 62,
+    "error": "",
+    "outputs": {}
+   }
+  ],
+  "step_path": [
+   "I0",
+   "I0_REASK",
+   "I0_AGAIN",
+   "SAY_NO_ANSWER_TRANSFER",
+   "TRANSFER_RECEPTION",
+   "SAY_TRANSFER_FAILED"
+  ],
+  "termination": "Client disconnected: 1000"
+ },
+ "graded_then": {
+  "outcome": "failed",
+  "fault": "agent"
+ }
+}

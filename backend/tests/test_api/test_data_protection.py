@@ -293,13 +293,27 @@ async def test_erasure_removes_the_accounts_data_and_nobody_elses(
     assert _check(status_body, "gdpr", "data_deletion")["status"] == "complete"
 
 
+async def _age_last_sweep(engine: Any, days: int) -> None:
+    """Move the recorded sweeps into the past, as if an interval had gone by."""
+    async with _sessions(engine)() as session:
+        await session.execute(
+            sa.update(ComplianceRun)
+            .where(ComplianceRun.kind == KIND_RETENTION)
+            .values(started_at=datetime.now(UTC) - timedelta(days=days))
+        )
+        await session.commit()
+
+
 @pytest.mark.asyncio
-async def test_scheduled_sweep_deletes_only_expired_call_data_and_runs_once_per_interval(
-    authenticated_test_client: tuple[AsyncClient, User], test_engine: Any
+async def test_the_first_sweep_only_counts_and_the_next_one_deletes_only_expired_call_data(
+    authenticated_test_client: tuple[AsyncClient, User],
+    test_engine: Any,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client, user = authenticated_test_client
     ids = await _seed_account(test_engine, user.id)
     redis = fakeredis.FakeAsyncRedis(decode_responses=True)
+    monkeypatch.setattr("app.api.compliance.app_settings.RETENTION_SWEEP_ENABLED", True)
 
     before = (await client.get("/api/v1/compliance/status")).json()
     retention = _check(before, "gdpr", "data_retention")
@@ -311,6 +325,7 @@ async def test_scheduled_sweep_deletes_only_expired_call_data_and_runs_once_per_
     async with _sessions(test_engine)() as session:
         second = await sweep_if_due(session, redis)
 
+    # The first sweep a database ever has is a rehearsal: counted, recorded, nothing deleted.
     assert first is not None
     assert first.status == STATUS_SUCCEEDED
     assert first.trigger == TRIGGER_SCHEDULE
@@ -319,11 +334,31 @@ async def test_scheduled_sweep_deletes_only_expired_call_data_and_runs_once_per_
         "call_evaluations": 1,
         "call_records": 1,
         "accounts": 1,
+        "dry_run": 1,
     }
+    async with _sessions(test_engine)() as session:
+        calls = set((await session.execute(sa.select(CallRecord.id))).scalars().all())
+    assert calls == {ids["recent_call"], ids["old_call"]}
     # Not due again inside the interval, and the lock was released.
     assert second is None
     assert await redis.get(data_protection.RETENTION_LOCK_KEY) is None
+    rehearsed = _check(
+        (await client.get("/api/v1/compliance/status")).json(), "gdpr", "data_retention"
+    )
+    assert rehearsed["status"] == "warning"
+    assert "rehearsal" in rehearsed["description"]
 
+    # One interval later the sweep is real.
+    await _age_last_sweep(test_engine, days=2)
+    async with _sessions(test_engine)() as session:
+        third = await sweep_if_due(session, redis)
+    assert third is not None
+    assert third.counts == {
+        "call_interactions": 1,
+        "call_evaluations": 1,
+        "call_records": 1,
+        "accounts": 1,
+    }
     async with _sessions(test_engine)() as session:
         calls = (await session.execute(sa.select(CallRecord.id))).scalars().all()
         assert calls == [ids["recent_call"]]
@@ -332,7 +367,104 @@ async def test_scheduled_sweep_deletes_only_expired_call_data_and_runs_once_per_
 
     after = (await client.get("/api/v1/compliance/status")).json()
     assert _check(after, "gdpr", "data_retention")["status"] == "complete"
-    assert len(await _runs(test_engine, KIND_RETENTION)) == 1
+    assert len(await _runs(test_engine, KIND_RETENTION)) == 2
+
+
+def test_the_sweep_is_off_unless_an_operator_turns_it_on() -> None:
+    from app.core.config import Settings
+
+    assert Settings.model_fields["RETENTION_SWEEP_ENABLED"].default is False
+
+
+@pytest.mark.asyncio
+async def test_an_account_that_never_set_a_period_and_one_with_a_period_too_short_are_not_swept(
+    authenticated_test_client: tuple[AsyncClient, User], test_engine: Any
+) -> None:
+    _client, user = authenticated_test_client
+    other = await _other_user(test_engine)
+    mine = await _seed_account(test_engine, user.id)
+    theirs = await _seed_account(test_engine, other.id)
+    async with _sessions(test_engine)() as session:
+        # One account has no privacy settings at all; the other's period is one day.
+        await session.execute(sa.delete(PrivacySettings).where(PrivacySettings.user_id == user.id))
+        await session.execute(
+            sa.update(PrivacySettings)
+            .where(PrivacySettings.user_id == other.id)
+            .values(data_retention_days=1)
+        )
+        await session.commit()
+
+    async with _sessions(test_engine)() as session:
+        run = await data_protection.run_retention(session, trigger=TRIGGER_SCHEDULE)
+
+    assert run.counts is not None
+    assert run.counts["call_records"] == 0
+    assert run.counts["skipped_invalid_period"] == 1
+    async with _sessions(test_engine)() as session:
+        calls = set((await session.execute(sa.select(CallRecord.id))).scalars().all())
+    assert calls == {
+        mine["recent_call"],
+        mine["old_call"],
+        theirs["recent_call"],
+        theirs["old_call"],
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_retention_period_below_the_minimum_is_refused(
+    authenticated_test_client: tuple[AsyncClient, User],
+) -> None:
+    client, _user = authenticated_test_client
+    for days in (0, -5, 7):
+        response = await client.patch(
+            "/api/v1/compliance/privacy-settings", json={"data_retention_days": days}
+        )
+        assert response.status_code == 422, (days, response.text)
+    accepted = await client.patch(
+        "/api/v1/compliance/privacy-settings", json={"data_retention_days": 90}
+    )
+    assert accepted.status_code == 200
+    assert accepted.json()["data_retention_days"] == 90
+
+
+@pytest.mark.asyncio
+async def test_erasure_says_which_recordings_the_carrier_still_holds_and_is_not_called_complete(
+    authenticated_test_client: tuple[AsyncClient, User], test_engine: Any
+) -> None:
+    client, user = authenticated_test_client
+    await _seed_account(test_engine, user.id)
+    async with _sessions(test_engine)() as session:
+        recorded = _call(user.id, agent_id=None, created_at=datetime.now(UTC))
+        recorded.recording_url = "https://api.twilio.example/Recordings/RE123"
+        session.add(recorded)
+        await session.commit()
+        carrier_id = recorded.provider_call_id
+
+    response = await client.delete("/api/v1/compliance/data")
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["complete"] is False
+    assert body["not_erased_here"] == [{"provider": "twilio", "provider_call_id": carrier_id}]
+    assert body["deleted_counts"]["recordings_left_at_carrier"] == 1
+    assert body["deleted_counts"]["call_records"] == 3
+
+    runs = await _runs(test_engine, KIND_ERASURE)
+    assert runs[0].counts is not None
+    assert runs[0].counts["recordings_left_at_carrier"] == 1
+    async with _sessions(test_engine)() as session:
+        details = (
+            await session.execute(
+                sa.select(AuditEvent.details).where(AuditEvent.action == AuditAction.DATA_ERASURE)
+            )
+        ).scalar_one()
+    assert carrier_id in str(details)
+
+    status_body = (await client.get("/api/v1/compliance/status")).json()
+    for framework, check in (("gdpr", "data_deletion"), ("ccpa", "data_deletion_ccpa")):
+        item = _check(status_body, framework, check)
+        assert item["status"] == "warning"
+        assert "still held by the carrier" in item["description"]
 
 
 @pytest.mark.asyncio

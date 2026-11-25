@@ -9,15 +9,13 @@ read-back. Neither knows anything about any particular system.
 
 from __future__ import annotations
 
-import os
-import subprocess
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Protocol
 
 import httpx
 
-from synthiq_caller.external import check_address
+from synthiq_caller.external import ExternalFailed, check_address, run_blocking
 
 # "none": nothing is required. "unchecked": something is, and nobody looked.
 STATES = ("none", "unchecked", "met", "unmet", "error")
@@ -39,7 +37,7 @@ class CommandChecker:
 
     The command gets ``SYNTHIQ_SCENARIO_FILE``, ``SYNTHIQ_SCENARIO_NAME`` and
     ``SYNTHIQ_REQUIRES`` in its environment. Its last line of output is kept as
-    the detail. A string goes through the shell; a list is run as it stands.
+    the detail. The command is never run through a shell (``external.py``).
     """
 
     command: str | Sequence[str]
@@ -47,26 +45,14 @@ class CommandChecker:
 
     def check(self, file: str, name: str, requires: str) -> PrereqResult:
         env = {
-            **os.environ,
             "SYNTHIQ_SCENARIO_FILE": file,
             "SYNTHIQ_SCENARIO_NAME": name,
             "SYNTHIQ_REQUIRES": requires,
         }
         try:
-            done = subprocess.run(
-                self.command,
-                shell=isinstance(self.command, str),  # noqa: S603 - the operator's own configuration
-                env=env,
-                timeout=self.timeout_s,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-            )
-        except subprocess.TimeoutExpired:
-            return PrereqResult("error", f"checker ran past {self.timeout_s:.0f}s")
-        except OSError as error:
-            return PrereqResult("error", f"checker could not start: {error}")
+            done = run_blocking(self.command, env, self.timeout_s)
+        except ExternalFailed as error:
+            return PrereqResult("error", f"checker {error}")
         lines = (done.stdout or done.stderr or "").strip().splitlines()
         detail = lines[-1][:200] if lines else ""
         if done.returncode == 0:

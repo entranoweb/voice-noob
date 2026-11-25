@@ -134,7 +134,14 @@ def build_bundle(
         chains.append({**chain, "file": path.name} if isinstance(chain, dict) else {})
     started, ended = _times(runs)
     marker = _marker(root, run_id, started, ended)
+    # Calls placed against a scripted stand-in (``batch --leg fake``). Said at the
+    # top of the bundle and in the label every list shows, so that a rehearsal
+    # cannot be taken for a run against an agent wherever it is displayed.
+    rehearsal = any(payload.get("rehearsal") for _, payload in runs)
+    if rehearsal and not target_label.upper().startswith("REHEARSAL"):
+        target_label = f"REHEARSAL (scripted agent): {target_label}".rstrip(": ")
     return {
+        "rehearsal": rehearsal,
         "format": BUNDLE_FORMAT,
         "version": BUNDLE_VERSION,
         "run_id": marker["run_id"],

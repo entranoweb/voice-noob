@@ -13,11 +13,15 @@ Two outputs:
 Outcomes, and who is charged with each (``fault``):
 
 * ``passed``: every check held, the call ended normally, nothing was unknown.
+  How the call ended is part of the verdict whether or not a trace exists: a
+  call the agent hung up on half-way, or whose line dropped, never passes.
 * ``failed``: a check did not hold (fault ``agent``), or the call never
   connected, died before its end, or ran to the time limit (fault ``unknown``:
   the agent, the platform or the line; counted as a failure, not dropped).
-* ``void``: the test rig spoiled the call (fault ``rig``): it had no answer to
-  a question, or it broke. Not a mark against the agent; re-run and reported.
+* ``void``: the call shows nothing about the agent. The test rig spoiled it
+  (fault ``rig``): it had no answer to a question, or it broke. Or the system
+  under test was not in the state the scenario needs (fault ``fixture``): a tool
+  said so in its own reply. Not a mark against the agent; re-run and reported.
 * ``ungradeable``: the call cannot be judged as the scenario stands: it writes
   an appointment and says nothing of what the appointment should be, or a
   result it depends on was withheld by the platform.
@@ -32,7 +36,7 @@ from datetime import date, datetime
 from typing import Any
 
 from synthiq_caller.director import RunRecord
-from synthiq_caller.readback import READ_BACK, TOOL_CALL
+from synthiq_caller.readback import READ_BACK, TOOL_CALL, held_nothing
 from synthiq_caller.scenario import (
     APPOINTMENT_LEVELS,
     WEEKDAYS,
@@ -43,6 +47,7 @@ from synthiq_caller.scenario import (
 )
 from synthiq_caller.traces.base import ToolCall, Trace
 from synthiq_caller.traces.common import is_unavailable
+from synthiq_caller.zones import time_zone
 
 # Marks a check that could not be made. Such a check is never a pass.
 NOT_CHECKED = "NOT CHECKED"
@@ -52,6 +57,21 @@ ENDED_NORMALLY = "caller hung up: scenario end"
 ENDED_AT_LIMIT = "caller hung up: time limit"
 NOT_ANSWERED = "not answered"
 RIG_ERROR = "rig error"
+# The line went down under the call: the far end's doing, or the network's.
+LINE_DROPPED = "line dropped"
+# What the director wrote for any crash of its own before the two were told
+# apart. Read as the rig's, so that an old stored run is re-run, not charged.
+LEGACY_ERROR = "error:"
+
+# What one tool call came to. ``ERRORED`` is a request that failed on the way
+# (a timeout, a 500): the tool gave no answer of its own, so it neither did the
+# thing nor refused it.
+DID, REFUSED, ERRORED, UNKNOWN = "did", "refused", "errored", "unknown"
+_TRANSPORT = re.compile(
+    r"\b(?:http\s*)?5\d\d\b|\b4(?:08|29)\b|time[d ]*out|timeout|connection|unreachable|"
+    r"network|\bdns\b|socket|gateway",
+    re.IGNORECASE,
+)
 
 DEFAULT_START_KEYS = (
     "appointment_start", "appointmentStart", "startTime", "start_time", "startsAt",
@@ -293,15 +313,24 @@ def field_rows(
         heard_all = [text for said in answers for text in said.heard]
         heard = heard_all[-1] if heard_all else None
         keys = scenario.stored_keys.get(name) or DEFAULT_STORED_KEYS[name]
-        # The system's own record wins; what the tool was sent is the fallback.
-        stored = (read_back or {}).get(name) or None
-        source = READ_BACK if stored is not None else ""
-        if stored is None and trace is not None:
+        # The system's own record wins; what the tool was sent is the fallback,
+        # and only when the read-back did not speak of this field at all. A
+        # read-back that names the field and holds nothing is the answer.
+        emptied = held_nothing(read_back, name)
+        stored: str | None = None
+        source = ""
+        if read_back is not None and name in read_back:
+            stored = read_back[name].strip() or None
+            source = READ_BACK
+        elif trace is not None:
             stored = _stored_value(trace, keys)
             source = TOOL_CALL if stored is not None else ""
         heard_ok = same(name, fact, heard) if heard is not None else None
         stored_ok = same(name, fact, stored) if stored is not None else None
-        if stored_ok and source == TOOL_CALL:
+        if emptied:
+            stored_ok = False
+            verdict = "not stored: the system holds nothing (read back)"
+        elif stored_ok and source == TOOL_CALL:
             # The agent's tool was sent the right value. Whether the system kept
             # it is not known without a read-back.
             verdict = "sent correctly, not confirmed stored"
@@ -359,24 +388,66 @@ def _find(value: Any, keys: tuple[str, ...]) -> str | None:
     return None
 
 
-def _held(
-    keys: tuple[str, ...], trace: Trace, read_back: dict[str, str] | None
-) -> tuple[str | None, str]:
-    """A value of the written appointment and where it came from.
+def _named(call: ToolCall, tool: str) -> bool:
+    """Whether ``call`` is the tool ``tool`` names: its whole name, or a fragment of it."""
+    return tool.casefold() in call.name.casefold()
 
-    The system's own record wins. Failing that, the last successful tool call
-    that carried it, in its arguments or its reply.
+
+def _held(
+    keys: tuple[str, ...],
+    trace: Trace,
+    read_back: dict[str, str] | None,
+    rules: dict[str, ToolOutcome] | None = None,
+    tool: str = "",
+) -> tuple[str | None, str, str]:
+    """A value of the written appointment, where it came from, and why not if not.
+
+    The system's own record wins, and a record that names the value and holds
+    nothing is an answer ("nothing was written"), not a gap to fill from the
+    agent's account. Failing a read-back, the value comes from the call that
+    wrote the appointment: ``tool`` when the scenario names it. A later lookup
+    that happens to carry a start time is not the booking. A value the writing
+    tool does not carry at all (the appointment type, when an earlier tool was
+    given it) is taken from the other tools only when they agree on it; and
+    with no tool named, a value is taken only when every tool that did its job
+    agrees on it. Tools that disagree leave the value unknown, never guessed.
     """
-    found = _find(read_back, keys) if read_back else None
-    if found is not None:
-        return found, READ_BACK
+    if read_back:
+        wanted = {k.casefold() for k in keys}
+        named = [k for k in read_back if k.casefold() in wanted]
+        if named:
+            value = next((read_back[k].strip() for k in named if read_back[k].strip()), "")
+            if not value:
+                return None, READ_BACK, "the system holds nothing (read back)"
+            return value, READ_BACK, ""
+        nested = _find(read_back, keys)
+        if nested is not None:
+            return nested, READ_BACK, ""
+    written: list[str] = []  # carried by the tool that writes the appointment
+    carried: list[tuple[str, str]] = []  # carried by any other tool
     for call in trace.tool_calls:
-        if not call.ok:
+        if tool_outcome(call, rules or {})[0] != DID:
             continue
-        value = _find(call.arguments, keys) or _find(call.outputs, keys) or _find(call.result, keys)
-        if value is not None:
-            found = value
-    return found, (TOOL_CALL if found is not None else "")
+        got = _find(call.arguments, keys) or _find(call.outputs, keys) or _find(call.result, keys)
+        if got is None:
+            continue
+        if tool and _named(call, tool):
+            written.append(got)
+        else:
+            carried.append((call.name.casefold(), got))
+    if written:
+        return written[-1], TOOL_CALL, ""
+    if not carried:
+        return None, "", ""
+    tools = {name for name, _ in carried}
+    if len(tools) > 1 and len({text.casefold() for _, text in carried}) > 1:
+        return (
+            None,
+            "",
+            f"tools {sorted(tools)} carried different values; name the one that writes the "
+            "appointment (expect.booking.tool)",
+        )
+    return carried[-1][1], TOOL_CALL, ""
 
 
 _SPOKEN_TIME = re.compile(
@@ -384,11 +455,16 @@ _SPOKEN_TIME = re.compile(
 )
 
 
-def parse_when(text: str, timezone: str) -> tuple[date | None, str | None, int | None]:
+def parse_when(
+    text: str, timezone: str, naive_zone: str = ""
+) -> tuple[date | None, str | None, int | None]:
     """A start time as (date, day of the week, minutes past midnight), each when known.
 
-    An ISO date-time gives all three, converted to ``timezone`` when it carries
-    an offset. Anything else is read as words: a day name and a clock time.
+    An ISO date-time gives all three, in ``timezone``. One that carries no
+    offset is taken to be in ``naive_zone``, the zone the system under test
+    writes such times in (a database that stores UTC without saying so is
+    ``UTC``); left empty, that is ``timezone`` itself. Anything else is read as
+    words: a day name and a clock time.
     """
     cleaned = text.strip()
     moment: datetime | None
@@ -397,10 +473,9 @@ def parse_when(text: str, timezone: str) -> tuple[date | None, str | None, int |
     except ValueError:
         moment = None
     if moment is not None and ("T" in cleaned or " " in cleaned):
-        if moment.tzinfo is not None:
-            from zoneinfo import ZoneInfo
-
-            moment = moment.astimezone(ZoneInfo(timezone))
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=time_zone(naive_zone or timezone))
+        moment = moment.astimezone(time_zone(timezone))
         return moment.date(), WEEKDAYS[moment.weekday()], moment.hour * 60 + moment.minute
     if moment is not None:
         return moment.date(), WEEKDAYS[moment.weekday()], None
@@ -481,13 +556,24 @@ def _minutes(clock: str) -> int:
 
 
 def booking_checks(
-    booking: BookingExpectation, trace: Trace, read_back: dict[str, str] | None
+    booking: BookingExpectation,
+    trace: Trace,
+    read_back: dict[str, str] | None,
+    rules: dict[str, ToolOutcome] | None = None,
 ) -> list[Check]:
-    """One check per stated part of the appointment. A part not found is not checked."""
+    """One check per stated part of the appointment. A part not found is not checked.
+
+    A part the system was asked for and holds nothing under is found: it is
+    wrong, and the check fails.
+    """
     checks: list[Check] = []
 
-    def missing(what: str) -> None:
-        checks.append(Check(f"{what} ({NOT_CHECKED}: the booked value is not available)", False))
+    def missing(what: str, source: str = "", why: str = "") -> None:
+        if source == READ_BACK:
+            checks.append(Check(f"{what} ({why})", False))
+            return
+        reason = why or "the booked value is not available"
+        checks.append(Check(f"{what} ({NOT_CHECKED}: {reason})", False))
 
     wants_start = (
         booking.weekdays
@@ -497,15 +583,19 @@ def booking_checks(
         or booking.time_to
     )
     if wants_start:
-        start, source = _held(booking.start_keys or DEFAULT_START_KEYS, trace, read_back)
+        start, source, why = _held(
+            booking.start_keys or DEFAULT_START_KEYS, trace, read_back, rules, booking.tool
+        )
         on_date, weekday, minutes = (
-            parse_when(start, booking.timezone) if start else (None, None, None)
+            parse_when(start, booking.timezone, booking.naive_times)
+            if start
+            else (None, None, None)
         )
         shown = f" (booked: {start}, from {source})" if start else ""
         if booking.weekdays:
             what = f"the appointment is on {' or '.join(booking.weekdays)}"
             if weekday is None:
-                missing(what)
+                missing(what, source, why)
             else:
                 checks.append(Check(what + shown, weekday in booking.weekdays))
         if booking.date_from or booking.date_to:
@@ -514,7 +604,7 @@ def booking_checks(
                 f"{booking.date_to or 'any'}"
             )
             if on_date is None:
-                missing(what)
+                missing(what, source, why)
             else:
                 after = not booking.date_from or on_date >= date.fromisoformat(booking.date_from)
                 before = not booking.date_to or on_date <= date.fromisoformat(booking.date_to)
@@ -525,11 +615,16 @@ def booking_checks(
                 f"{booking.time_to or '23:59'}"
             )
             if minutes is None:
-                missing(what)
+                missing(what, source, why)
             else:
                 low = _minutes(booking.time_from) if booking.time_from else 0
                 high = _minutes(booking.time_to) if booking.time_to else 24 * 60
-                checks.append(Check(what + shown, low <= minutes <= high))
+                # 22:00 to 02:00 is a window across midnight, not an empty one.
+                if low <= high:
+                    inside = low <= minutes <= high
+                else:
+                    inside = minutes >= low or minutes <= high
+                checks.append(Check(what + shown, inside))
 
     for wanted, keys, what in (
         (
@@ -550,13 +645,33 @@ def booking_checks(
     ):
         if not wanted:
             continue
-        got, source = _held(keys, trace, read_back)
+        got, source, why = _held(keys, trace, read_back, rules, booking.tool)
         if got is None:
-            missing(what)
+            missing(what, source, why)
         else:
             held = wanted.strip().casefold() in got.strip().casefold()
             checks.append(Check(f"{what} (booked: {got}, from {source})", held))
     return checks
+
+
+def fixture_fault(trace: Trace, marks: dict[str, tuple[str, ...]]) -> str:
+    """The first tool reply that carries one of the scenario's fixture marks, or "".
+
+    ``marks`` maps a tool (its name or a fragment) to texts which, found in that
+    tool's reply or error, mean the system was not in the state the scenario
+    needs: ``{"register_patient": ["DUPLICATE_FOUND"]}``.
+    """
+    for call in trace.tool_calls:
+        for tool, texts in marks.items():
+            if tool.casefold() not in call.name.casefold():
+                continue
+            said = " ".join(
+                str(part) for part in (call.result, call.outputs, call.error) if part
+            ).casefold()
+            for text in texts:
+                if text.casefold() in said:
+                    return f"tool '{call.name}' reported {text}"
+    return ""
 
 
 def _at_path(value: Any, path: str) -> Any:
@@ -577,30 +692,43 @@ def outcome_rule(name: str, rules: dict[str, ToolOutcome]) -> ToolOutcome | None
     return rules[max(fragments, key=len)] if fragments else None
 
 
-def tool_state(call: ToolCall, rules: dict[str, ToolOutcome]) -> tuple[bool | None, str]:
-    """Whether a tool did what it was asked: True, False, or None for "not known".
+def tool_outcome(call: ToolCall, rules: dict[str, ToolOutcome]) -> tuple[str, str]:
+    """What one tool call came to: ``DID``, ``REFUSED``, ``ERRORED`` or ``UNKNOWN``, and why.
 
-    With a rule for the tool the answer is read from the tool's own reply. The
-    platform's success flag then only says the request went through.
+    With a rule for the tool the answer is read from the tool's own reply; the
+    platform's success flag then only says the request went through. A request
+    that failed on the way is ``ERRORED``: the tool did not do the thing, and it
+    did not refuse it either, because it never answered.
     """
     if is_unavailable(call):
-        return None, "the platform withheld the tool's result"
+        return UNKNOWN, "the platform withheld the tool's result"
     rule = outcome_rule(call.name, rules)
-    if rule is None:
-        return call.ok, ""
     if not call.ok:
-        return False, ""  # the request itself failed; nothing was done
+        if rule is not None or _TRANSPORT.search(call.error or ""):
+            detail = f" ({call.error})" if call.error else ""
+            return ERRORED, f"the request failed before the tool could answer{detail}"
+        return REFUSED, ""  # no rule: the platform's flag is all there is to go on
+    if rule is None:
+        return DID, ""
     # Some engines keep a tool's answer in ``outputs`` and only a bare
     # acknowledgement in ``result``; the answer is looked for in both.
     value = _at_path(call.outputs, rule.path)
     if value is None:
         value = _at_path(call.result, rule.path)
     if value is None:
-        return None, f"the tool's reply does not carry '{rule.path}'"
+        return UNKNOWN, f"the tool's reply does not carry '{rule.path}'"
     said = str(value).strip().casefold()
     if "*" in rule.success:
-        return bool(said), ""  # any value at all: the tool handed back a reference
-    return said in {v.strip().casefold() for v in rule.success}, ""
+        return (DID if said else REFUSED), ""  # any value at all: a reference was handed back
+    return (DID if said in {v.strip().casefold() for v in rule.success} else REFUSED), ""
+
+
+def tool_state(call: ToolCall, rules: dict[str, ToolOutcome]) -> tuple[bool | None, str]:
+    """Whether a tool did what it was asked: True, False, or None for "not known"."""
+    outcome, why = tool_outcome(call, rules)
+    if outcome == UNKNOWN:
+        return None, why
+    return outcome == DID, why
 
 
 def _tool_check(
@@ -611,15 +739,28 @@ def _tool_check(
 ) -> Check:
     """Whether the tool did what was expected: yes, no, or not known.
 
-    A call whose result the platform withheld has ``ok`` false. Read as a plain
-    yes or no it would satisfy "the tool is refused"; it satisfies nothing.
+    "Succeeds" is met by any call that did the thing. "Is refused" is about how
+    the matter ended: it is met when the last call was refused by the tool
+    itself. A refusal the agent then got past is not a refusal, unless the
+    scenario asks for one ``at_least_once``. A request that failed on the way,
+    or a result the platform withheld, satisfies neither.
     """
-    states = [tool_state(call, rules) for call in matching]
-    wanted = "succeeds" if expected.ok else "is refused"
-    what = f"{label} is called and {wanted}"
-    if any(state is expected.ok for state, _ in states):
+    outcomes = [tool_outcome(call, rules) for call in matching]
+    if expected.ok:
+        what = f"{label} is called and succeeds"
+        if any(outcome == DID for outcome, _ in outcomes):
+            return Check(what, True)
+        not_known = [why for outcome, why in outcomes if outcome == UNKNOWN]
+        if not_known:
+            return Check(f"{what} ({NOT_CHECKED}: {not_known[-1]})", False)
+        return Check(what, False)
+    what = f"{label} is called and is refused" + (
+        " at least once" if expected.at_least_once else ""
+    )
+    considered = outcomes if expected.at_least_once else outcomes[-1:]
+    if any(outcome == REFUSED for outcome, _ in considered):
         return Check(what, True)
-    not_known = [why for state, why in states if state is None]
+    not_known = [why for outcome, why in considered if outcome in (UNKNOWN, ERRORED)]
     if not_known:
         return Check(f"{what} ({NOT_CHECKED}: {not_known[-1]})", False)
     return Check(what, False)
@@ -641,7 +782,7 @@ def grade(
         scenario=scenario.name, call_ref=record.call_ref, outcome="ungraded", fields=rows
     )
     ended = record.ended or ""
-    if ended.startswith(RIG_ERROR):
+    if ended.startswith((RIG_ERROR, LEGACY_ERROR)):
         result.outcome, result.fault = "void", "rig"
         result.reason = f"the test rig broke: {ended}"
         return result
@@ -650,12 +791,19 @@ def grade(
         result.reason = f"the call was {ended}"
         return result
     unanswered = list(record.unanswered)
-    reached_end = ended.startswith(ENDED_NORMALLY) or scenario.hangup_after is None
+    # How the call ended is judged whether or not there is a trace.
+    normal = ended.startswith(ENDED_NORMALLY)
+    at_limit = ended.startswith(ENDED_AT_LIMIT)
+    # A scenario with no line to hang up on, or one that says the agent may end
+    # the call, ends properly when the agent ends it. A dropped line never does.
+    open_ended = scenario.hangup_after is None or scenario.agent_may_end
+    agent_ended = bool(ended) and not normal and not at_limit
+    acceptable = normal or (open_ended and agent_ended and not ended.startswith(LINE_DROPPED))
     if trace is None:
-        if unanswered and not reached_end:
+        if unanswered and not normal:
             result.outcome, result.fault = "void", "rig"
             result.reason = f"the caller had no answer to: {unanswered[-1]!r}"
-        elif not reached_end and not ended.startswith(ENDED_AT_LIMIT):
+        elif not acceptable and not at_limit:
             # The agent's side ended the call before the scenario's end and left
             # nothing behind. That is a broken call, not one to leave out.
             result.outcome, result.fault = "failed", "unknown"
@@ -727,31 +875,58 @@ def grade(
         held = got is not None and got.strip().casefold() == wanted.strip().casefold()
         result.checks.append(Check(f"the system holds {key}={wanted} (read back)", held))
 
-    result.checks.extend(booking_checks(scenario.expect.booking, trace, read_back))
+    result.checks.extend(
+        booking_checks(scenario.expect.booking, trace, read_back, scenario.tool_outcomes)
+    )
 
     if not result.checks:
         result.reason = "the scenario asks nothing of the call"
         return result  # nothing was asked of this call, so nothing can be claimed
 
-    if ended.startswith(ENDED_AT_LIMIT):
+    if at_limit:
         result.checks.append(
             Check("the call reaches its end (it ran to the time limit instead)", False)
+        )
+    elif not acceptable:
+        # The checks can all hold on a call that died half-way: the tools ran,
+        # then the agent hung up or the line went. That call did not succeed.
+        result.checks.append(
+            Check(
+                f"the call reaches its end (it ended early: {ended or 'no ending was recorded'})",
+                False,
+            )
         )
 
     unknown = [c for c in result.checks if NOT_CHECKED in c.what]
     wrong = [c for c in result.checks if not c.passed and NOT_CHECKED not in c.what]
-    agent_wrong = [c for c in wrong if "time limit" not in c.what]
+    how_it_ended = ("time limit", "ended early")
+    agent_wrong = [c for c in wrong if not any(mark in c.what for mark in how_it_ended)]
 
-    if unanswered and not reached_end and not said_forbidden:
-        # The caller went silent on a question. Whatever followed is the rig's doing.
+    spoiled = not acceptable or bool(wrong) or bool(unknown)
+    if unanswered and spoiled and not said_forbidden:
+        # The caller went silent on a question. Whatever followed is the rig's
+        # doing, however the call then ended: an agent that gives up on a silent
+        # caller says goodbye, and that goodbye is the scenario's own last line.
         result.outcome, result.fault = "void", "rig"
         result.reason = f"the caller had no answer to: {unanswered[-1]!r}"
+        return result
+    not_ready = fixture_fault(trace, scenario.fixture_faults)
+    if not_ready and spoiled and not said_forbidden:
+        # The system under test said, in its own words, that it was not in the
+        # state this scenario needs (the caller it should register is already
+        # there). The call shows nothing about the agent; fix the fixture, re-run.
+        result.outcome, result.fault = "void", "fixture"
+        result.reason = f"the system under test was not ready for this scenario: {not_ready}"
         return result
     if wrong:
         result.outcome = "failed"
         result.fault = "agent" if agent_wrong else "unknown"
         if not agent_wrong:
-            result.reason = "the call ran to the time limit without reaching its end"
+            result.reason = (
+                "the call ran to the time limit without reaching its end"
+                if at_limit
+                else f"the call ended before the scenario's end: {ended or 'no ending recorded'}"
+            )
         return result
     says_what = (
         scenario.expect.booking.stated()

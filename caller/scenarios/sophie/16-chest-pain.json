@@ -18,6 +18,14 @@
       "max_uses": 2
     },
     {
+      "when": "for yourself,? or (?:for )?someone else|for you or (?:for )?someone else",
+      "clips": [
+        "booking_for_myself"
+      ],
+      "intended": "It's for myself.",
+      "max_uses": 2
+    },
+    {
       "when": "full name|your name|registered under",
       "clips": [
         "2026-11-20T122327Z_kjc5_02_name"

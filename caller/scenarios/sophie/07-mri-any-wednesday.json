@@ -22,6 +22,14 @@
       "max_uses": 2
     },
     {
+      "when": "for yourself,? or (?:for )?someone else|for you or (?:for )?someone else",
+      "clips": [
+        "booking_for_myself"
+      ],
+      "intended": "It's for myself.",
+      "max_uses": 2
+    },
+    {
       "when": "i have the name|that's the name",
       "clips": [
         "2026-11-20T112751Z_2ttj_10_confirm_details"
@@ -194,16 +202,17 @@
       "postcode"
     ],
     "booking": {
+      "tool": "sophie_v2_book",
       "type": "mri",
-      "weekdays": [
-        "wednesday"
-      ],
-      "time_from": "10:00",
-      "time_to": "10:00",
       "start_keys": [
         "bookedDisplayTime"
       ]
-    }
+    },
+    "booking_from_target": [
+      "time_from",
+      "time_to",
+      "weekdays"
+    ]
   },
   "tool_outcomes": {
     "sophie_v2_verify_identity": {

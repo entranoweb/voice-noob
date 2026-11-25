@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from synthiq_caller.batch import load_chains, load_scenarios
 from synthiq_caller.chain import variables_in
@@ -29,6 +30,8 @@ class Row:
     needs_recordings: int = 0
     requires_state: str = "none"
     requires_detail: str = ""
+    # Parts of the appointment the target profile should give and does not.
+    missing_target: list[str] = field(default_factory=list)
 
     @property
     def problem(self) -> bool:
@@ -48,9 +51,14 @@ class Row:
         loud = self.requires_state not in ("none", "met")
         requires = f"requires {self.requires_state.upper() if loud else self.requires_state}"
         detail = f" ({self.requires_detail})" if self.requires_detail else ""
+        target = (
+            f"  TARGET PROFILE LACKS {self.missing_target}, will not run"
+            if self.missing_target
+            else ""
+        )
         return (
             f"{self.file:<44} mutates={self.mutates:<10} {self.shape}  "
-            f"{clips}{needs}  {requires}{detail}"
+            f"{clips}{needs}  {requires}{detail}{target}"
         )
 
 
@@ -61,13 +69,18 @@ def _clips_state(bank: ClipBank | None, missing: list[str]) -> str:
 
 
 def validate_directory(
-    directory: str | Path, bank: ClipBank | None, checker: PrereqChecker | None
+    directory: str | Path,
+    bank: ClipBank | None,
+    checker: PrereqChecker | None,
+    target: dict[str, Any] | None = None,
 ) -> list[Row]:
     rows: list[Row] = []
-    for file, scenario in load_scenarios(directory):
+    for file, scenario in load_scenarios(directory, target):
         missing: list[str] = []
         if bank is not None:
-            for step in scenario.steps:
+            # The fallback's clips are played too, when a question has no step.
+            answers = [*scenario.steps, *([scenario.fallback] if scenario.fallback else [])]
+            for step in answers:
                 for clip in step.clips:
                     if clip.startswith("missing/") and scenario.missing_clips:
                         continue  # declared as not yet recorded; a batch will not run it
@@ -88,13 +101,15 @@ def validate_directory(
                 needs_recordings=len(scenario.missing_clips),
                 requires_state=prereq.state,
                 requires_detail=prereq.detail,
+                missing_target=list(scenario.missing_target),
             )
         )
     for file, chain in load_chains(directory):
         missing = []
         if bank is not None:
             for call in chain.calls:
-                for raw_step in call.raw.get("steps", ()):
+                raw_answers = [*call.raw.get("steps", ()), call.raw.get("fallback") or {}]
+                for raw_step in raw_answers:
                     for clip in raw_step.get("clips", ()):
                         if variables_in(clip) or (
                             str(clip).startswith("missing/") and call.missing_clips

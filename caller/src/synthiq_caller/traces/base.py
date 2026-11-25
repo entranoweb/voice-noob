@@ -33,6 +33,9 @@ class Trace:
     # The steps of the agent's flow, in the order they were entered.
     step_path: list[str] = field(default_factory=list)
     termination: str = ""
+    # The engine reported the call as finished when this was read, so nothing
+    # more will be added to it. False for a reader that cannot tell.
+    final: bool = False
 
     def to_json(self) -> dict[str, Any]:
         return asdict(self)
@@ -44,6 +47,7 @@ class Trace:
             tool_calls=[ToolCall(**c) for c in data.get("tool_calls", [])],
             step_path=list(data.get("step_path", [])),
             termination=data.get("termination", ""),
+            final=bool(data.get("final", False)),
         )
 
 

@@ -67,8 +67,10 @@ services:
       # decrypt. No default: the app refuses to start without it. Keep a copy
       # off this server: losing it loses every stored credential.
       CREDENTIAL_ENCRYPTION_KEYS: ${CREDENTIAL_ENCRYPTION_KEYS:?set CREDENTIAL_ENCRYPTION_KEYS, see DEPLOYMENT.md}
-      # Daily deletion of call data past each account's retention period.
-      RETENTION_SWEEP_ENABLED: ${RETENTION_SWEEP_ENABLED:-true}
+      # Deletion of call data past each account's retention period. Off unless
+      # set to true: it deletes, so it is never on by default. The first sweep
+      # after it is turned on only counts what it would delete.
+      RETENTION_SWEEP_ENABLED: ${RETENTION_SWEEP_ENABLED:-false}
       RETENTION_SWEEP_INTERVAL_HOURS: ${RETENTION_SWEEP_INTERVAL_HOURS:-24}
       # CORS - Allow frontend domain
       CORS_ORIGINS: '["${FRONTEND_URL:-http://localhost:3000}"]'

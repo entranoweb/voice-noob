@@ -292,10 +292,12 @@ class Settings(BaseSettings):
     CALL_REGISTRY_TTL: int = 1800  # 30 minutes TTL for call entries
     MAX_CALL_QUEUE_SIZE: int = 1000  # Max queued calls (Sprint 2)
 
-    # Data retention sweep (app.services.retention). Deletes call data older
-    # than each account's retention period. One process at a time holds the
-    # lock, so several workers do not sweep at once.
-    RETENTION_SWEEP_ENABLED: bool = True
+    # Data retention sweep (app.services.data_protection). Deletes call data
+    # older than each account's retention period. Off unless an operator turns
+    # it on: it deletes, and an upgrade must never start deleting on its own.
+    # The first sweep after it is turned on only counts what it would delete.
+    # One process at a time holds the lock, so several workers do not sweep at once.
+    RETENTION_SWEEP_ENABLED: bool = False
     RETENTION_SWEEP_INTERVAL_HOURS: int = 24
 
     @property

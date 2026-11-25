@@ -34,7 +34,6 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-import subprocess
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field
@@ -48,11 +47,13 @@ from synthiq_caller.chain import (
     chain_outcome,
     is_chain_file,
     load_chain,
+    variables_in,
 )
 from synthiq_caller.clips import ClipBank
 from synthiq_caller.director import Director, RunRecord
+from synthiq_caller.external import ExternalFailed, run_blocking, safe_id
 from synthiq_caller.grading import Grade, grade
-from synthiq_caller.jsonio import write_json
+from synthiq_caller.jsonio import next_index, write_json, write_new_json
 from synthiq_caller.leg import Leg
 from synthiq_caller.prereq import PrereqChecker, requires_state
 from synthiq_caller.readback import ReadBack, ReadBackContext
@@ -125,7 +126,11 @@ class ShellHooks:
     ``{call_ref}``, ``{run_file}``, ``{run_id}``, ``{scenario_file}`` and
     ``{repeat}``, for a program that takes them as arguments. A value is only
     put on the command line if it is made of letters, digits and ``. _ - :``; a
-    command that names a value the call does not have is not run.
+    command that names a value the call does not have is not run. Nor is any
+    command run for a call whose reference is not such a plain id.
+
+    The command is split into a program and its arguments and run directly,
+    never through a shell (``external.py``).
     """
 
     before: str = ""
@@ -143,10 +148,7 @@ class ShellHooks:
     ) -> None:
         if not command:
             return
-        import os
-
         env = {
-            **os.environ,
             "SYNTHIQ_SCENARIO_FILE": file,
             "SYNTHIQ_SCENARIO_NAME": scenario.name,
             "SYNTHIQ_MUTATES": scenario.mutates,
@@ -155,6 +157,12 @@ class ShellHooks:
         }
         words = {"scenario_file": file, "repeat": str(n)}
         if call is not None:
+            if call.call_ref and not safe_id(call.call_ref):
+                # The reference is whatever the platform under test returned.
+                raise RuntimeError(
+                    f"{phase}_call hook not run: the call reference is not safe to give to "
+                    "a command (letters, digits and . _ - : only)"
+                )
             env.update(
                 {
                     "SYNTHIQ_CALL_REF": call.call_ref,
@@ -174,17 +182,10 @@ class ShellHooks:
                     else f"{phase}_call hook: {{{word}}} is not safe to put on a command line"
                 )
             command = command.replace(f"{{{word}}}", value)
-        done = await asyncio.to_thread(
-            subprocess.run,
-            command,
-            shell=True,  # noqa: S602 - the command is the operator's own configuration
-            env=env,
-            timeout=self.timeout_s,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
+        try:
+            done = await asyncio.to_thread(run_blocking, command, env, self.timeout_s)
+        except ExternalFailed as error:
+            raise RuntimeError(f"{phase}_call hook: {error}") from error
         if done.returncode != 0:
             raise RuntimeError(f"{phase}_call hook exited {done.returncode}: {done.stderr[-200:]}")
 
@@ -276,6 +277,8 @@ class BatchResult:
     ran: int = 0
     blocked: list[Blocked] = field(default_factory=list)
     chains: int = 0
+    # The calls went to a scripted stand-in, not an agent (``--leg fake``).
+    rehearsal: bool = False
 
     def to_json(self) -> dict[str, Any]:
         return asdict(self)
@@ -297,6 +300,9 @@ class Placed:
 
 
 LegFactory = Callable[[], tuple[Leg, TraceReader | None]]
+# The same, for a leg that depends on which scenario is being run (a scripted
+# stand-in has one script per scenario).
+LegFactoryFor = Callable[[str], tuple[Leg, TraceReader | None]]
 
 
 def connected(record: RunRecord) -> bool:
@@ -310,7 +316,16 @@ def looks_unfinished(trace: Trace, record: RunRecord) -> bool:
     Engines publish a call's record a moment after it ends. Read too soon, it
     comes back empty, and an empty trace graded as it stands would fail a call
     for something the test rig did, not the agent.
+
+    A reader that waited for the engine to mark the call finished says so
+    (``Trace.final``). Its trace is taken as it stands: an engine with no flow
+    steps (Vapi) would otherwise never be gradeable on a call in which no tool
+    ran, and "the tool must not be called" could never pass there.
     """
+    if trace.final:
+        # The engine itself said the call's record is complete. Empty then means
+        # no tool ran, which is a fact about the call and can be graded.
+        return False
     agent_spoke = any(e.get("kind") == "agent" for e in record.timeline)
     return agent_spoke and not trace.tool_calls and not trace.step_path
 
@@ -349,9 +364,20 @@ def _scenario_files(directory: str | Path) -> list[Path]:
     return sorted(p for p in root.iterdir() if p.suffix.lower() in (".json", ".yaml", ".yml"))
 
 
-def load_scenarios(directory: str | Path) -> list[tuple[str, Scenario]]:
-    """Every single-call scenario file in ``directory``, in name order."""
-    return [(p.name, load_scenario(p)) for p in _scenario_files(directory) if not is_chain_file(p)]
+def load_scenarios(
+    directory: str | Path, target: dict[str, Any] | None = None
+) -> list[tuple[str, Scenario]]:
+    """Every single-call scenario file in ``directory``, in name order.
+
+    ``target`` is the profile of the system under test (``target.py``); a
+    scenario that leaves parts of its appointment to the profile is held back by
+    the batch when they are not given.
+    """
+    return [
+        (p.name, load_scenario(p, target))
+        for p in _scenario_files(directory)
+        if not is_chain_file(p)
+    ]
 
 
 def load_chains(directory: str | Path) -> list[tuple[str, Chain]]:
@@ -380,6 +406,8 @@ async def run_batch(
     allow_unverified_clips: bool = False,
     space_names: bool = False,
     prereq: PrereqChecker | None = None,
+    make_leg_for: LegFactoryFor | None = None,
+    rehearsal: bool = False,
     leg_name: str = "",
 ) -> BatchResult:
     if allow_mutating not in ALLOWED:
@@ -395,10 +423,12 @@ async def run_batch(
     budget = budget if budget is not None else NameBudget()
     hooks = hooks if hooks is not None else NoHooks()
     out.mkdir(parents=True, exist_ok=True)
-    result = BatchResult(out=str(out))
+    result = BatchResult(out=str(out), rehearsal=rehearsal)
     gate = asyncio.Semaphore(max(1, max_parallel))
-    counter = len(list(out.glob("run-*.json")))
-    chain_counter = len(list(out.glob("chain-*.json")))
+    # The highest number in use, not a count: after a gap a count would name a
+    # file that exists, and a stored run must never be written over.
+    counter = next_index(out, "run")
+    chain_counter = next_index(out, "chain")
     lock = asyncio.Lock()
 
     async def clean(context: ResetContext) -> None:
@@ -417,6 +447,11 @@ async def run_batch(
         played = [clip for step in scenario.steps for clip in step.clips]
         if scenario.fallback is not None:
             played += list(scenario.fallback.clips)
+        ruled_out = clips.excluded_in(played)
+        if ruled_out:
+            # Found here, before the call: at play time it would break the call
+            # half-way and leave a failure that is nobody's but the rig's.
+            raise NotRun(f"excluded clips: {ruled_out}")
         doubts = clips.label_doubts(played)
         if doubts and not allow_unverified_clips:
             raise NotRun(
@@ -442,7 +477,7 @@ async def run_batch(
         reader: TraceReader | None = None
         leg: Leg | None = None
         try:
-            leg, reader = make_leg()
+            leg, reader = make_leg_for(file) if make_leg_for is not None else make_leg()
             director = Director(scenario, leg, clips, turn_settings=turn_settings)
             record = await director.run()
         except Exception as error:  # noqa: BLE001 - the rig breaking is a result to record
@@ -495,12 +530,16 @@ async def run_batch(
             "grade": graded.to_json(),
             **extra,
         }
+        if rehearsal:
+            # Written into the run itself, not only the batch: a run file copied
+            # or uploaded on its own must still say what it is.
+            payload["rehearsal"] = True
         async with lock:
             counter += 1
             index = counter
             result.ran += 1
         name = f"run-{index:03d}.json"
-        write_json(out / name, payload)
+        write_new_json(out / name, payload)
         # The run is stored first, so the hook can be told which call this was
         # (and read the file); a hook that fails is then written into it.
         try:
@@ -525,6 +564,14 @@ async def run_batch(
         if scenario.missing_clips:
             block(f"missing clips: {list(scenario.missing_clips)}")
             return
+        if scenario.missing_target:
+            # Run without them, the booking would be judged on less than the
+            # scenario means, or on another system's times.
+            block(
+                f"the target profile does not give {list(scenario.missing_target)} for this "
+                "scenario's appointment (--target)"
+            )
+            return
         if prereq is not None and scenario.requires.strip():
             # What the scenario needs on the system under test is not there: a
             # call placed now would fail for the fixture's reason, not the agent's.
@@ -534,7 +581,10 @@ async def run_batch(
             if found.state == "unmet":
                 block(f"prerequisite unmet: {found.detail or scenario.requires}")
                 return
-        excluded = clips.excluded_in([clip for step in scenario.steps for clip in step.clips])
+        every_clip = [clip for step in scenario.steps for clip in step.clips]
+        if scenario.fallback is not None:
+            every_clip += list(scenario.fallback.clips)
+        excluded = clips.excluded_in(every_clip)
         if excluded:
             block(f"excluded clips: {excluded}")
             return
@@ -606,6 +656,17 @@ async def run_batch(
 
         refused = [c.id for c in chain.calls if c.mutates not in allowed]
         unrecorded = [c.id for c in chain.calls if c.missing_clips]
+        # Clips named outright in any call, fallback included. One chosen by a
+        # captured value is only known once that call is reached, and is checked then.
+        ruled_out = clips.excluded_in(
+            [
+                str(clip)
+                for c in chain.calls
+                for raw in [*c.raw.get("steps", ()), c.raw.get("fallback") or {}]
+                for clip in raw.get("clips", ())
+                if not variables_in(clip)
+            ]
+        )
         async with gate:
             unmet = ""
             if prereq is not None and chain.requires.strip():
@@ -625,6 +686,9 @@ async def run_batch(
             elif unrecorded:
                 why = f"missing clips in calls {unrecorded}"
                 stop(0, why, why)
+            elif ruled_out:
+                why = f"excluded clips: {ruled_out}"
+                stop(0, why, why)
             else:
                 try:
                     if chain.clean_state:
@@ -640,7 +704,7 @@ async def run_batch(
                 outcome = "ungraded"  # the call passed but did not show what the next one needs
             chain_counter += 1
             result.chains += 1
-            write_json(
+            write_new_json(
                 out / f"chain-{chain_counter:03d}.json",
                 {
                     "chain_file": file,

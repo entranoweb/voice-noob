@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import re
 import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, replace
@@ -23,6 +24,59 @@ from synthiq_caller.clips import ClipBank
 from synthiq_caller.leg import AgentAudio, AgentText, Closed, Heard, Interrupted, Leg
 from synthiq_caller.scenario import Scenario, Step
 from synthiq_caller.turns import AgentTurnTracker, TurnSettings
+
+# A line that asks for something without a question mark. The agent's re-asks
+# are often imperatives: "Please could you tell me your date of birth."
+_REQUEST = re.compile(
+    r"\b(?:tell me|give me|let me (?:have|take)|"
+    r"(?:could|can|may) i (?:please )?(?:take|have|get|ask)|"
+    r"i(?:'ll| will)? need (?:your|the|a)\b|"
+    r"(?:could|can|would) you (?:please )?(?:tell|give|confirm|say|spell|provide|repeat)|"
+    r"please (?:could|can) you|"
+    r"please (?:tell|give|confirm|say|spell|provide|repeat|state|enter)|"
+    r"what(?:'s| is| was) your|confirm your|spell (?:that|it|your))\b",
+    re.IGNORECASE,
+)
+# Words that, just before a fact's name, mean the agent already has it:
+# "I have your date of birth", "thanks for your postcode".
+_ACKNOWLEDGED = re.compile(
+    r"(?:(?<!can )(?<!could )(?<!may )(?<!do )(?<!will )(?<!would )(?<!should )\bi have|"
+    r"\bi've(?: got)?|\bi have got|\bgot|\bthanks for|\bthank you for|\byou said|"
+    r"\byou gave(?: me)?|\bi can see|\bnoted)"
+    r"\s+(?:your |the |that |a )?(?:[a-z']+ ){0,2}$",
+    re.IGNORECASE,
+)
+_SENTENCE = re.compile(r"[^.?!]+[.?!]*")
+
+
+def asks_something(text: str) -> bool:
+    """Whether a line from the agent wants an answer, question mark or not."""
+    return "?" in text or bool(_REQUEST.search(text))
+
+
+def asked_at(text: str, at: int) -> bool:
+    """Whether the words at position ``at`` are being asked for, not merely mentioned.
+
+    "I have your date of birth. Could I take your postcode?" mentions the date
+    of birth and asks for the postcode. The sentence around ``at`` must ask
+    (end in a question mark, or read as a request), and the words leading up to
+    ``at`` must not say the agent already has it.
+    """
+    for sentence in _SENTENCE.finditer(text):
+        if sentence.start() <= at < sentence.end():
+            if _ACKNOWLEDGED.search(text[sentence.start() : at]):
+                return False
+            return asks_something(sentence.group())
+    return False
+
+
+def _line_went_down(error: BaseException) -> bool:
+    """Whether an error is the connection failing, not the rig's own code."""
+    if isinstance(error, FileNotFoundError):
+        return False  # a clip that is not there
+    return isinstance(error, ConnectionError | EOFError | OSError) or (
+        "ConnectionClosed" in type(error).__name__
+    )
 
 
 @dataclass
@@ -126,10 +180,11 @@ class Director:
             self.record.call_ref = self.leg.call_ref
             return self.record
         self._t0 = self._clock()
+        directing = asyncio.create_task(self._direct())
         tasks = [
             asyncio.create_task(self._read()),
             asyncio.create_task(self._pump()),
-            asyncio.create_task(self._direct()),
+            directing,
         ]
         done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         self._done = True
@@ -137,7 +192,14 @@ class Director:
             error = task.exception()
             if error is not None:
                 self._note("error", text=repr(error))
-                self.record.ended = self.record.ended or f"error: {error!r}"
+                # Two different things, and only one is the rig's. A connection
+                # that fails under the reader or the pump is the line going
+                # down: a call that died. Anything else here, and anything at
+                # all in the director's own loop (a clip that is not there), is
+                # the rig breaking, and the call is void.
+                dropped = task is not directing and _line_went_down(error)
+                kind = "line dropped" if dropped else "rig error"
+                self.record.ended = self.record.ended or f"{kind}: {error!r}"
         for task in tasks:
             task.cancel()
         with contextlib.suppress(Exception):
@@ -188,12 +250,24 @@ class Director:
             await asyncio.sleep(max(0.0, next_at - self._clock()))
 
     def _match(self, text: str) -> tuple[int, Step] | None:
+        """The step that answers this turn: one whose words are asked for, if any.
+
+        Steps are tried in file order. A step whose pattern only matches words
+        the agent mentioned in passing ("I have your date of birth. What is
+        your postcode?") gives way to a later step that matches what was asked.
+        When nothing reads as asked, the first match stands, as it always did.
+        """
+        first: tuple[int, Step] | None = None
         for index, step in enumerate(self.scenario.steps):
             if step.max_uses and self._uses.get(index, 0) >= step.max_uses:
                 continue
-            if step.when.search(text):
+            hit = step.when.search(text)
+            if not hit:
+                continue
+            if asked_at(text, hit.start()):
                 return index, step
-        return None
+            first = first or (index, step)
+        return first
 
     def _asked_together(self, text: str, first: tuple[int, Step]) -> list[tuple[int, Step]]:
         """Every answer one agent turn asks for, in the order it asked.
@@ -203,7 +277,9 @@ class Director:
         step that carries a different fact and also matches the turn is answered
         with it, in the order the turn names them. Steps that carry no fact (a
         "yes", an opener) are never added: a read-back that mentions the date of
-        birth is a request to confirm it, not to say it again.
+        birth is a request to confirm it, not to say it again. Nor is a fact the
+        turn only acknowledges: "I have your date of birth. Could I take your
+        postcode and a mobile number?" asks for two things, not three.
         """
         index, step = first
         if not step.field or step.talk_over:
@@ -218,7 +294,7 @@ class Director:
             if other.max_uses and self._uses.get(other_index, 0) >= other.max_uses:
                 continue
             hit = other.when.search(text)
-            if hit:
+            if hit and asked_at(text, hit.start()):
                 found.append((hit, other_index, other))
                 fields.add(other.field)
         found.sort(key=lambda item: item[0].start() if item[0] else 0)
@@ -251,7 +327,7 @@ class Director:
 
             self._pending.clear()
             if match is None:
-                if "?" not in text:
+                if not asks_something(text):
                     # A line that asks nothing ("I'm sorry to hear that."). Nothing to say.
                     self._note("no_answer_needed", agent=text[-100:])
                     continue

@@ -14,7 +14,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import structlog
-from sqlalchemy import ColumnElement, delete, false, or_, select
+from sqlalchemy import ColumnElement, delete, false, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import AuditAction, record_audit
@@ -46,7 +46,15 @@ from app.models.workspace import AgentWorkspace, Workspace
 
 logger = structlog.get_logger()
 
-DEFAULT_RETENTION_DAYS = 365
+# The shortest retention period an account may set. A period of 0 or less would
+# delete every call the account has; anything under a month is a slip, not a policy.
+MIN_RETENTION_DAYS = 30
+MAX_RETENTION_DAYS = 3650
+# In a run's counts: this sweep counted what it would delete and deleted nothing.
+DRY_RUN = "dry_run"
+# In an erasure's counts: recordings the carrier still holds, which erasure
+# here cannot reach.
+RECORDINGS_LEFT = "recordings_left_at_carrier"
 RETENTION_LOCK_KEY = "compliance:retention:lock"
 RETENTION_LOCK_SECONDS = 3600
 # How often the worker wakes to see whether a sweep is due.
@@ -159,16 +167,47 @@ async def latest_run(
 # =============================================================================
 
 
-async def erase_account_data(db: AsyncSession, user_id: int) -> dict[str, int]:
+async def carrier_recordings(db: AsyncSession, user_id: int) -> list[dict[str, str]]:
+    """The account's calls whose recording is held by a carrier, by the carrier's own id.
+
+    Erasure here deletes the row and with it the link to the recording. The
+    recording itself is in the carrier's account and stays there until it is
+    deleted there. These are the references to do that with.
+    """
+    workspace_ids = await owned_workspace_ids(db, user_id)
+    agent_ids = await owned_agent_ids(db, user_id)
+    result = await db.execute(
+        select(CallRecord.provider, CallRecord.provider_call_id)
+        .where(call_record_owner_filter(user_id, agent_ids, workspace_ids))
+        .where(CallRecord.recording_url.is_not(None))
+        .where(CallRecord.recording_url != "")
+    )
+    return [
+        {"provider": str(provider), "provider_call_id": str(call_id)}
+        for provider, call_id in result.all()
+    ]
+
+
+async def erase_account_data(
+    db: AsyncSession, user_id: int, not_erased: list[dict[str, str]] | None = None
+) -> dict[str, int]:
     """Delete everything the account holds. Does not commit; does not delete the login.
 
     Children are deleted before parents and by explicit statement, so the result
     does not depend on which ON DELETE rules a given database carries.
+
+    What cannot be deleted from here is counted, not passed over: recordings a
+    carrier holds are listed into ``not_erased`` (when given) and counted under
+    ``recordings_left_at_carrier``, so that the run never reads as complete
+    while they exist.
     """
     user_uuid = user_id_to_uuid(user_id)
     workspace_ids = await owned_workspace_ids(db, user_id)
     agent_ids = await owned_agent_ids(db, user_id)
     counts: dict[str, int] = {}
+    left = await carrier_recordings(db, user_id)
+    if not_erased is not None:
+        not_erased.extend(left)
 
     call_filter = call_record_owner_filter(user_id, agent_ids, workspace_ids)
     owned_calls = select(CallRecord.id).where(call_filter)
@@ -281,6 +320,7 @@ async def erase_account_data(db: AsyncSession, user_id: int) -> dict[str, int]:
     counts["privacy_settings"] = _rows(
         await db.execute(delete(PrivacySettings).where(PrivacySettings.user_id == user_id))
     )
+    counts[RECORDINGS_LEFT] = len(left)
     return counts
 
 
@@ -289,16 +329,33 @@ async def erase_account_data(db: AsyncSession, user_id: int) -> dict[str, int]:
 # =============================================================================
 
 
-async def cleanup_expired_data(db: AsyncSession, *, user_id: int | None = None) -> dict[str, int]:
+async def cleanup_expired_data(
+    db: AsyncSession, *, user_id: int | None = None, dry_run: bool = False
+) -> dict[str, int]:
     """Delete call data older than each account's retention period.
 
-    Covers every account, or one when ``user_id`` is given. An account that has
-    never saved privacy settings gets the default period. Consent records are
-    kept: they are the evidence that consent was given or withdrawn. Does not
-    commit.
+    Covers every account, or one when ``user_id`` is given. An account with no
+    privacy settings has no retention period, and nothing of its is deleted:
+    there is no default period to delete by. An account whose period is below
+    ``MIN_RETENTION_DAYS`` is skipped and logged, never swept. Consent records
+    are kept: they are the evidence that consent was given or withdrawn.
+
+    With ``dry_run`` nothing is deleted; the counts are of what would be. Does
+    not commit.
     """
     now = datetime.now(UTC)
     counts = {"call_interactions": 0, "call_evaluations": 0, "call_records": 0, "accounts": 0}
+
+    async def remove(model: Any, *conditions: ColumnElement[bool]) -> int:
+        if dry_run:
+            query = select(func.count()).select_from(model)
+            for condition in conditions:
+                query = query.where(condition)
+            return int((await db.execute(query)).scalar_one())
+        statement = delete(model)
+        for condition in conditions:
+            statement = statement.where(condition)
+        return _rows(await db.execute(statement))
 
     users_query = select(User.id)
     if user_id is not None:
@@ -311,24 +368,31 @@ async def cleanup_expired_data(db: AsyncSession, *, user_id: int | None = None) 
     }
 
     for account_id in account_ids:
-        days = retention_by_user.get(account_id, DEFAULT_RETENTION_DAYS)
+        days = retention_by_user.get(account_id)
+        if days is None:
+            continue  # no period was ever set for this account
+        if days < MIN_RETENTION_DAYS:
+            counts["skipped_invalid_period"] = counts.get("skipped_invalid_period", 0) + 1
+            logger.error(
+                "retention_period_below_minimum_account_skipped",
+                user_id=account_id,
+                days=days,
+                minimum=MIN_RETENTION_DAYS,
+            )
+            continue
         cutoff = now - timedelta(days=days)
         workspace_ids = await owned_workspace_ids(db, account_id)
         agent_ids = await owned_agent_ids(db, account_id)
         counts["accounts"] += 1
 
         owned_contacts = select(Contact.id).where(contact_owner_filter(account_id, workspace_ids))
-        counts["call_interactions"] += _rows(
-            await db.execute(
-                delete(CallInteraction)
-                .where(
-                    _any_of(
-                        CallInteraction.contact_id.in_(owned_contacts),
-                        CallInteraction.workspace_id.in_(workspace_ids) if workspace_ids else None,
-                    )
-                )
-                .where(CallInteraction.call_started_at < cutoff)
-            )
+        counts["call_interactions"] += await remove(
+            CallInteraction,
+            _any_of(
+                CallInteraction.contact_id.in_(owned_contacts),
+                CallInteraction.workspace_id.in_(workspace_ids) if workspace_ids else None,
+            ),
+            CallInteraction.call_started_at < cutoff,
         )
 
         old_calls = (
@@ -336,27 +400,36 @@ async def cleanup_expired_data(db: AsyncSession, *, user_id: int | None = None) 
             .where(call_record_owner_filter(account_id, agent_ids, workspace_ids))
             .where(CallRecord.created_at < cutoff)
         )
-        counts["call_evaluations"] += _rows(
-            await db.execute(delete(CallEvaluation).where(CallEvaluation.call_id.in_(old_calls)))
+        counts["call_evaluations"] += await remove(
+            CallEvaluation, CallEvaluation.call_id.in_(old_calls)
         )
-        counts["call_records"] += _rows(
-            await db.execute(
-                delete(CallRecord)
-                .where(call_record_owner_filter(account_id, agent_ids, workspace_ids))
-                .where(CallRecord.created_at < cutoff)
-            )
+        counts["call_records"] += await remove(
+            CallRecord,
+            call_record_owner_filter(account_id, agent_ids, workspace_ids),
+            CallRecord.created_at < cutoff,
         )
 
     return counts
 
 
 async def run_retention(
-    db: AsyncSession, *, trigger: str, user_id: int | None = None
+    db: AsyncSession, *, trigger: str, user_id: int | None = None, dry_run: bool = False
 ) -> ComplianceRun:
-    """Run a retention sweep and record how it ended. Commits."""
+    """Run a retention sweep and record how it ended. Commits.
+
+    What would be deleted is counted and logged before anything is. With
+    ``dry_run`` the sweep stops there, and its run is recorded as a dry run.
+    """
     try:
         run = await start_run(db, KIND_RETENTION, trigger=trigger, user_id=user_id)
-        counts = await cleanup_expired_data(db, user_id=user_id)
+        would = await cleanup_expired_data(db, user_id=user_id, dry_run=True)
+        logger.warning(
+            "retention_sweep_would_delete", trigger=trigger, dry_run=dry_run, would_delete=would
+        )
+        if dry_run:
+            counts = {**would, DRY_RUN: 1}
+        else:
+            counts = await cleanup_expired_data(db, user_id=user_id)
         finish_run(run, counts)
         await record_audit(
             db,
@@ -364,7 +437,7 @@ async def run_retention(
             actor_user_id=user_id,
             target_type="account" if user_id is not None else "all_accounts",
             target_id=str(user_id) if user_id is not None else None,
-            details={"trigger": trigger, "deleted": counts},
+            details={"trigger": trigger, "dry_run": dry_run, "deleted": counts},
         )
         await db.commit()
     except Exception as exc:
@@ -382,9 +455,15 @@ async def sweep_if_due(db: AsyncSession, redis: Any) -> ComplianceRun | None:
     Returns the run, or None when nothing was done. A Redis lock keeps several
     workers from sweeping at once; the last recorded run decides whether a
     sweep is due, so a restart does not trigger an extra one.
+
+    The first sweep a database has ever had deletes nothing: it counts what it
+    would delete, logs and records that, and leaves the deleting to the sweep
+    one interval later. Turning the sweep on, or upgrading into it, therefore
+    never deletes within minutes of a start.
     """
     interval = timedelta(hours=max(1, settings.RETENTION_SWEEP_INTERVAL_HOURS))
     last = await latest_run(db, KIND_RETENTION, trigger=TRIGGER_SCHEDULE)
+    rehearsed = last is not None and last.status == STATUS_SUCCEEDED
     if last is not None and last.status == STATUS_SUCCEEDED:
         started = last.started_at
         if started.tzinfo is None:
@@ -397,7 +476,7 @@ async def sweep_if_due(db: AsyncSession, redis: Any) -> ComplianceRun | None:
     if not acquired:
         return None
     try:
-        return await run_retention(db, trigger=TRIGGER_SCHEDULE)
+        return await run_retention(db, trigger=TRIGGER_SCHEDULE, dry_run=not rehearsed)
     finally:
         with contextlib.suppress(Exception):
             if await redis.get(RETENTION_LOCK_KEY) == token:

@@ -73,7 +73,9 @@ def lookup_scenario(status: str) -> Any:
 
 def test_found_and_not_found_are_graded_from_what_the_tool_reported() -> None:
     trace = parse_conversation(stored_lookup())
-    record = RunRecord(scenario="unknown caller", call_ref="c1")
+    record = RunRecord(
+        scenario="unknown caller", call_ref="c1", ended="caller hung up: scenario end"
+    )
 
     right = grade(lookup_scenario("not_found"), record, trace)
     wrong = grade(lookup_scenario("unique"), record, trace)

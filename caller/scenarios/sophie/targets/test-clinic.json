@@ -1,0 +1,21 @@
+{
+  "name": "test-clinic",
+  "notes": "The synthetic test clinic. Its bookable days and times differ from the original clinic's and have not been written down yet: fill in 'bookings' for each scenario below before running it here. Until then those scenarios are held back, not run against the wrong times.",
+  "timezone": "Europe/London",
+  "identity_budget": 2,
+  "fixture_faults": {
+    "sophie_v2_register_patient": [
+      "DUPLICATE_FOUND"
+    ]
+  },
+  "bookings": {
+    "01-consultation-self-pay-shoulder": {},
+    "02-consultation-insured-wednesday": {},
+    "04-consultation-self-pay-knee": {},
+    "05-mri-insured-from-my-doctor": {},
+    "06-mri-how-to-submit-referral": {},
+    "07-mri-any-wednesday": {},
+    "08-rearrange-adam-armstrong": {},
+    "09-rearrange-ashley-arnold": {}
+  }
+}

@@ -1,4 +1,4 @@
-"""A scripted in-memory agent, for tests.
+"""A scripted in-memory agent, for tests and for rehearsing a batch.
 
 The fake agent speaks its lines in order. For each line it emits the text, then
 audio frames in real time (tone for speech, zeros for silence, and it keeps
@@ -7,18 +7,33 @@ the caller has spoken and then been quiet for a moment, or after ``patience_s``.
 
 It also keeps a log of when the caller's audio carried speech, so a test can
 check the caller did not speak while the agent was still talking.
+
+A rehearsal (``batch --leg fake``) reads the agent's lines, and the trace it
+would have left, from a script file:
+
+    {
+      "lines": [{"text": "How can I help?"}, {"text": "Your date of birth?", "hears": "20 Feb"}],
+      "trace": {"tool_calls": [{"name": "lookup", "arguments": {}, "result": {}, "ok": true}]}
+    }
+
+Nothing in a rehearsal says anything about any agent. Every run it writes is
+marked ``rehearsal`` and no gate can be met by one.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import math
 import struct
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
 
 from synthiq_caller.leg import AgentAudio, AgentText, Closed, Heard, LegEvent
+from synthiq_caller.traces.base import Trace
 from synthiq_caller.turns import rms
 
 RATE = 16000
@@ -111,3 +126,70 @@ class FakeLeg:
             if line.hears and self._caller_spoke:
                 yield Heard(line.hears)
         yield Closed("script finished")
+
+
+class ScriptError(ValueError):
+    """An agent script that cannot be used for a rehearsal."""
+
+
+@dataclass
+class AgentScript:
+    """What a scripted agent says in one call, and the trace that call leaves behind."""
+
+    lines: list[AgentLine]
+    trace: dict[str, Any] = field(default_factory=dict)
+
+
+def parse_script(data: Any) -> AgentScript:
+    if not isinstance(data, dict) or not isinstance(data.get("lines"), list) or not data["lines"]:
+        raise ScriptError("an agent script needs a non-empty list of 'lines'")
+    lines: list[AgentLine] = []
+    for index, raw in enumerate(data["lines"]):
+        if isinstance(raw, str):
+            raw = {"text": raw}
+        if not isinstance(raw, dict) or not raw.get("text"):
+            raise ScriptError(f"line {index} needs 'text'")
+        lines.append(
+            AgentLine(
+                text=str(raw["text"]),
+                speech_s=float(raw.get("speech_s", 0.4)),
+                text_lead_s=float(raw.get("text_lead_s", 0.15)),
+                hears=str(raw.get("hears", "")),
+                patience_s=float(raw.get("patience_s", 2.0)),
+            )
+        )
+    trace = data.get("trace") or {}
+    if not isinstance(trace, dict):
+        raise ScriptError("'trace' must be an object")
+    return AgentScript(lines=lines, trace=trace)
+
+
+def load_script(path: str | Path) -> AgentScript:
+    return parse_script(json.loads(Path(path).read_text(encoding="utf-8")))
+
+
+def script_for(source: str | Path, scenario_file: str) -> AgentScript:
+    """The script for one scenario file.
+
+    ``source`` is one script used for every scenario, or a directory holding
+    one per scenario under the scenario file's own name, with ``default.json``
+    for the rest.
+    """
+    root = Path(source)
+    if root.is_file():
+        return load_script(root)
+    for name in (Path(scenario_file).name, Path(scenario_file).stem + ".json", "default.json"):
+        if (root / name).is_file():
+            return load_script(root / name)
+    raise ScriptError(f"no agent script for {scenario_file} in {root} (and no default.json)")
+
+
+@dataclass
+class ScriptedTraceReader:
+    """Hands back the trace the script says the call left. Reads nothing."""
+
+    trace: dict[str, Any]
+
+    async def read(self, call_ref: str) -> Trace:
+        # Final by construction: nothing will be added to a script.
+        return Trace.from_json({**self.trace, "call_ref": call_ref, "final": True})

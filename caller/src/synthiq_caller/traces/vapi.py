@@ -90,6 +90,8 @@ def parse_call(payload: dict[str, Any], call_ref: str = "") -> Trace:
     trace = Trace(
         call_ref=call_ref or _call_id(source),
         termination=str(source.get("endedReason") or ""),
+        # An ended call, or an end-of-call report, will have nothing added to it.
+        final=source.get("status") == "ended" or bool(source.get("endedReason")),
     )
     # tool call id -> where the call sits in trace.tool_calls, until its result arrives.
     waiting: dict[str, int] = {}

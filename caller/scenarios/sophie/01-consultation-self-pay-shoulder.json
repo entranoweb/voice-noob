@@ -21,6 +21,14 @@
       "max_uses": 2
     },
     {
+      "when": "for yourself,? or (?:for )?someone else|for you or (?:for )?someone else",
+      "clips": [
+        "booking_for_myself"
+      ],
+      "intended": "It's for myself.",
+      "max_uses": 2
+    },
+    {
       "when": "fee is|self-pay fee|pounds",
       "clips": [
         "2026-11-23T110737Z_szz9_09_confirm_fee"
@@ -161,13 +169,16 @@
       "postcode"
     ],
     "booking": {
+      "tool": "sophie_v2_book",
       "type": "consultation",
-      "time_from": "16:30",
-      "time_to": "16:30",
       "start_keys": [
         "bookedDisplayTime"
       ]
-    }
+    },
+    "booking_from_target": [
+      "time_from",
+      "time_to"
+    ]
   },
   "tool_outcomes": {
     "sophie_v2_verify_identity": {

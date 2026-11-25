@@ -470,7 +470,15 @@ class TestDevelopmentSetupEnvironment:
         spec.loader.exec_module(dev_env)
 
         example = (REPO / "backend" / ".env.example").read_text(encoding="utf-8")
-        rendered = dev_env.render_backend_env(example, "f" * 64, "a-generated-admin-password")
+        # The settings `make setup` generates, as it passes them (scripts/dev_env.py).
+        rendered = dev_env.render_backend_env(
+            example,
+            {
+                "SECRET_KEY": "f" * 64,
+                "ADMIN_PASSWORD": "a-generated-admin-password",
+                "DATABASE_URL": dev_env.DATABASE_URL_TEMPLATE.format(password="e" * 32),
+            },
+        )
         values = dict(
             line.split("=", 1)
             for line in rendered.splitlines()

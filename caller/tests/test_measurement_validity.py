@@ -161,9 +161,13 @@ def test_times_are_read_from_dates_and_from_words() -> None:
 
 
 def test_every_shipped_scenario_that_writes_an_appointment_says_what_it_should_be() -> None:
-    for file, loaded in load_scenarios(SOPHIE):
+    from synthiq_caller.target import load_target
+
+    # The times belong to the clinic, so they come from its profile.
+    original = load_target(SOPHIE / "targets" / "original-clinic.json")
+    for file, loaded in load_scenarios(SOPHIE, original):
         if loaded.mutates in ("books", "moves"):
-            assert loaded.expect.booking.stated(), file
+            assert loaded.expect.booking.stated() and not loaded.missing_target, file
         assert loaded.tool_outcomes, file
         if loaded.facts.get("name"):
             assert loaded.identity_budget == 2, file
@@ -415,7 +419,7 @@ def test_repeats_are_reported_by_scenario_as_well_as_pooled(tmp_path: Path) -> N
             (tmp_path / f"run-{index:03d}.json").write_text(json.dumps(payload), encoding="utf-8")
     text = render(summarise(tmp_path))
     assert "of graded:    8 of 9" in text
-    assert "2 of 3 scenarios passed every graded call" in text and "3 passed at least once" in text
+    assert "2 of 3 scenarios passed every call placed" in text and "3 passed at least once" in text
     assert "not independent" in text
     assert main(["gate", str(tmp_path)]) == 1
 

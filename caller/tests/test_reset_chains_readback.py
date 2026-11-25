@@ -246,7 +246,9 @@ def record_with_answer() -> RunRecord:
     from synthiq_caller.director import Said
 
     said = Said(1.0, 1, "date_of_birth", "", ["dob.wav"], "", 0.3, False, "dob?", ["20 Feb 2002"])
-    return RunRecord(scenario="x", call_ref="c1", said=[said], timeline=[])
+    return RunRecord(
+        scenario="x", call_ref="c1", ended="caller hung up: scenario end", said=[said], timeline=[]
+    )
 
 
 def test_stored_comes_from_the_read_back_when_there_is_one_and_says_so() -> None:
@@ -285,6 +287,8 @@ async def test_the_command_and_http_read_backs_return_the_stored_values() -> Non
     assert await CommandReadBack([PY, "-c", script]).read(context) == {
         "ref": "call-9",
         "who": "Alice Wonderland",
+        # Asked for and held nothing: kept as empty, not dropped (see readback.py).
+        "empty": "",
     }
     with pytest.raises(ReadBackFailed, match="JSON"):
         await CommandReadBack([PY, "-c", "print('not json')"]).read(context)

@@ -28,7 +28,7 @@ from urllib.parse import urlsplit
 from synthiq_caller.batch import ALLOWED
 from synthiq_caller.clips import ClipBank
 from synthiq_caller.director import Director, RunRecord
-from synthiq_caller.jsonio import write_json
+from synthiq_caller.jsonio import next_index, write_new_json
 from synthiq_caller.legs.fake_twilio import FakeTwilio
 from synthiq_caller.legs.twilio_media import CallNotConnected, PhoneConfig, TwilioMediaLeg
 from synthiq_caller.numbers import ALLOWED_ENV, allowed_numbers, is_allowed
@@ -94,9 +94,10 @@ def build_transcriber(args: argparse.Namespace, env: Mapping[str, str]) -> Trans
 
 def _write(out: Path, payload: dict[str, Any]) -> Path:
     out.mkdir(parents=True, exist_ok=True)
-    index = len(list(out.glob("phone-run-*.json"))) + 1
+    # One more than the highest number in use: a stored run is never written over.
+    index = next_index(out, "phone-run") + 1
     path = out / f"phone-run-{index:03d}.json"
-    write_json(path, payload)
+    write_new_json(path, payload)
     return path
 
 
