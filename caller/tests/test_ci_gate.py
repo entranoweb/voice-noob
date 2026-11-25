@@ -8,8 +8,10 @@ from typing import Any
 import pytest
 
 from synthiq_caller import ci_gate
+from synthiq_caller.batch import load_chains
 from synthiq_caller.ci_gate import GateRefused
 from synthiq_caller.cli import main
+from synthiq_caller.scenario import ScenarioError
 
 CALLER = Path(__file__).parent.parent
 SETS = CALLER / "ci" / "scenarios"
@@ -18,14 +20,18 @@ BASELINE = CALLER / "baselines" / "smoke.json"
 WORKFLOW = CALLER.parent / ".github" / "workflows" / "caller-scheduled.yml"
 
 
-def write_scenario(folder: Path, name: str, mutates: str | None) -> None:
+def write_scenario(folder: Path, name: str, mutates: str | None, expectations: bool = True) -> None:
     data: dict[str, Any] = {
         "name": name,
         "persona": {"facts": {"name": "Alice Wonderland"}},
         "steps": [{"when": "how can i help", "clips": ["ci-opener"]}],
         "hangup_after": "mobile number",
         "max_seconds": 20,
-        "expect": {"tools": [], "fields": [], "agent_says": ["how can i help"]},
+        "expect": {
+            "tools": [],
+            "fields": [],
+            "agent_says": ["how can i help"] if expectations else [],
+        },
     }
     if mutates is not None:
         data["mutates"] = mutates
@@ -250,3 +256,91 @@ def test_the_workflow_keeps_its_promises() -> None:
     assert re.search(r"^permissions:\n  contents: read$", text, re.MULTILINE)
     # The check runs before the batch does.
     assert text.index("ci_gate check") < text.index("synthiq-caller batch")
+
+
+# --- a set that cannot be graded is refused before any call (strict validate) -----
+
+
+def test_a_set_with_a_scenario_that_states_no_expectations_is_refused(tmp_path: Path) -> None:
+    write_scenario(tmp_path, "graded", "none")
+    write_scenario(tmp_path, "bare", "none", expectations=False)
+    with pytest.raises(GateRefused, match=r"bare\.json.*states no expectations"):
+        ci_gate.check_scenarios(tmp_path)
+
+
+def test_the_command_exits_one_for_an_ungradeable_set_and_names_it(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    write_scenario(tmp_path / "set", "bare", "none", expectations=False)
+    args = ["check", "--target", "t", "--allowed", "t", "--root", str(tmp_path), "--set", "set"]
+    assert ci_gate.main(args) == 1
+    assert "bare.json" in capsys.readouterr().err
+
+
+def test_the_committed_smoke_set_is_gradeable() -> None:
+    assert ci_gate.check_scenarios(SETS / "smoke") == 2
+
+
+def test_the_workflow_validates_strictly_before_the_batch() -> None:
+    text = WORKFLOW.read_text(encoding="utf-8")
+    strict = text.index("synthiq-caller validate")
+    assert "--strict" in text[strict : strict + 120]
+    assert text.index("ci_gate check") < strict < text.index("synthiq-caller batch")
+
+
+# --- a chain with a call that states no expectations ------------------------------
+
+
+def write_chain(folder: Path, second_expects: bool) -> None:
+    def call(call_id: str, expects: bool) -> dict[str, Any]:
+        return {
+            "id": call_id,
+            "mutates": "none",
+            "persona": {"facts": {"name": "Alice Wonderland"}},
+            "steps": [{"when": "how can i help", "clips": ["ci-opener"]}],
+            "hangup_after": "mobile number",
+            "max_seconds": 20,
+            "expect": {"tools": [{"name_contains": "lookup"}] if expects else [], "fields": []},
+        }
+
+    data = {"name": "look up twice", "chain": [call("first", True), call("second", second_expects)]}
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "chain.json").write_text(json.dumps(data), encoding="utf-8")
+
+
+def test_a_chain_call_that_states_nothing_never_loads(tmp_path: Path) -> None:
+    """A chain cannot be ungradeable: ``parse_chain`` refuses any call with no expectation.
+
+    (``chain.py``: "chain call ... expects nothing"). So there is no chain case in
+    ``validate --strict``; a chain that would be one is already an error, with or
+    without the flag, and it names the step.
+    """
+    write_chain(tmp_path, second_expects=False)
+    with pytest.raises(ScenarioError, match="chain call 'second' expects nothing"):
+        load_chains(tmp_path)
+
+
+@pytest.mark.parametrize("strict", [[], ["--strict"]])
+def test_validate_prints_a_clean_error_for_a_chain_call_that_expects_nothing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], strict: list[str]
+) -> None:
+    write_chain(tmp_path, second_expects=False)
+    assert main(["validate", str(tmp_path), *strict]) == 1
+    out = capsys.readouterr().out
+    assert out.startswith("ERROR: chain.json: chain call 'second' expects nothing")
+    assert "Traceback" not in out
+
+
+def test_validate_strict_passes_a_chain_whose_every_call_states_expectations(
+    tmp_path: Path,
+) -> None:
+    write_chain(tmp_path, second_expects=True)
+    assert main(["validate", str(tmp_path), "--strict"]) == 0
+
+
+def test_the_gate_refuses_a_chain_with_a_call_that_states_nothing(tmp_path: Path) -> None:
+    write_chain(tmp_path, second_expects=False)
+    with pytest.raises(GateRefused, match="cannot be loaded.*chain call 'second' expects nothing"):
+        ci_gate.check_scenarios(tmp_path)
+    write_chain(tmp_path, second_expects=True)
+    assert ci_gate.check_scenarios(tmp_path) == 1

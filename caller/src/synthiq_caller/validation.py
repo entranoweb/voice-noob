@@ -14,11 +14,12 @@ from pathlib import Path
 from typing import Any
 
 from synthiq_caller import removals
-from synthiq_caller.batch import load_chains, load_scenarios
-from synthiq_caller.chain import variables_in
+from synthiq_caller.batch import _scenario_files, load_chains, load_scenarios
+from synthiq_caller.chain import is_chain_file, load_chain, variables_in
 from synthiq_caller.clips import ClipBank, ClipExcluded
 from synthiq_caller.consent import today_utc
 from synthiq_caller.prereq import PrereqChecker, requires_state
+from synthiq_caller.scenario import UNGRADEABLE, ScenarioError, load_scenario
 
 
 @dataclass
@@ -105,6 +106,38 @@ class Row:
             f"{self.file:<44} mutates={self.mutates:<10} {self.shape}  "
             f"{clips}{expired}{unknown}{no_consent}{needs}  {requires}{detail}{target}{ungradeable}"
         )
+
+
+def ungradeable_why(file: str) -> str:
+    """The one sentence that names a scenario that cannot be graded, and why."""
+    return (
+        f"{file}: {UNGRADEABLE}: the scenario states no expectations (expect.tools, fields, "
+        "agent_says, agent_never_says, read_back or booking), so no call could pass it"
+    )
+
+
+def ungradeable_problems(rows: list[Row]) -> list[str]:
+    """One line per scenario that cannot be graded, for ``validate --strict`` and the CI gate.
+
+    Only gradeability is in here. An unverified label, an unchecked prerequisite
+    or a clip not yet in the bank are not: they are reported as they always were.
+    """
+    return [ungradeable_why(row.file) for row in rows if not row.states_expectations]
+
+
+def load_problems(directory: str | Path, target: dict[str, Any] | None = None) -> list[str]:
+    """One line per file that cannot be loaded (``<file>: <why>``), for a clean error.
+
+    ``load_scenarios`` and ``load_chains`` stop at the first bad file with an exception
+    that does not name it; this loads the files one at a time to say which.
+    """
+    problems: list[str] = []
+    for path in _scenario_files(directory):
+        try:
+            load_chain(path, target) if is_chain_file(path) else load_scenario(path, target)
+        except (ScenarioError, ValueError) as error:
+            problems.append(f"{path.name}: {error}")
+    return problems
 
 
 def _clips_state(bank: ClipBank | None, missing: list[str]) -> str:

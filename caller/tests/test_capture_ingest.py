@@ -406,6 +406,67 @@ def test_validate_reports_a_skeleton_as_ungradeable_not_ok_and_not_an_error(
     assert "1 scenario(s) UNGRADEABLE" in out
 
 
+def record_consent(case: Path) -> None:
+    """Fill in lawful_basis and consent_ref, so ``validate`` is left with gradeability only."""
+    import csv as _csv
+
+    path = case / "clips" / "manifest.csv"
+    with path.open(encoding="utf-8", newline="") as handle:
+        table = list(_csv.DictReader(handle))
+    for row in table:
+        row["lawful_basis"], row["consent_ref"] = "basis", "rec-0001"
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = _csv.DictWriter(handle, fieldnames=list(table[0]))
+        writer.writeheader()
+        writer.writerows(table)
+
+
+def test_validate_strict_turns_the_ungradeable_warning_into_an_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    case = captured(tmp_path)
+    ingest(case)
+    record_consent(case)
+    args = ["validate", str(case / "scenarios"), "--clips", str(case / "clips")]
+    assert main(args) == 0
+    capsys.readouterr()
+    assert main([*args, "--strict"]) == 1
+    out = capsys.readouterr().out
+    assert "ERROR" in out and "scenario.json" in out and "states no expectations" in out
+
+
+def test_validate_strict_passes_a_scenario_that_states_its_expectations(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    case = captured(tmp_path)
+    ingest(case)
+    record_consent(case)
+    path = case / "scenarios" / "scenario.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["expect"] = {"tools": [{"name": "lookup_record"}], "fields": []}
+    path.write_text(json.dumps(data), encoding="utf-8")
+    args = ["validate", str(case / "scenarios"), "--clips", str(case / "clips")]
+    assert main(args) == 0
+    assert main([*args, "--strict"]) == 0
+    assert "ERROR" not in capsys.readouterr().out
+
+
+def test_strict_is_only_about_gradeability_an_unverified_label_still_passes(
+    tmp_path: Path,
+) -> None:
+    """Captured clips are ``label_status=unverified``; --strict does not fail on that."""
+    case = captured(tmp_path)
+    ingest(case)
+    record_consent(case)
+    path = case / "scenarios" / "scenario.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["expect"] = {"tools": [{"name": "lookup_record"}], "fields": []}
+    path.write_text(json.dumps(data), encoding="utf-8")
+    manifest_text = (case / "clips" / "manifest.csv").read_text(encoding="utf-8")
+    assert "unverified" in manifest_text
+    assert main(["validate", str(path.parent), "--clips", str(case / "clips"), "--strict"]) == 0
+
+
 def test_stating_an_expectation_makes_it_gradeable(tmp_path: Path) -> None:
     case = captured(tmp_path)
     ingest(case)

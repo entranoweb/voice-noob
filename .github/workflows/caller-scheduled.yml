@@ -86,6 +86,13 @@ jobs:
           --target "$TARGET" --allowed "$ALLOWED_TARGETS"
           --root ci/scenarios --set "$SCENARIO_SET"
 
+      # The same check again, in the caller's own words and in its own step, so
+      # the log shows it was made: a scenario that states no expectations can
+      # never pass, so it stops the job here, before any call is placed. (The
+      # check above makes it too; this one is what an acceptance run relies on.)
+      - name: Validate the scenario set (strict)
+        run: uv run synthiq-caller validate "ci/scenarios/$SCENARIO_SET" --strict
+
       - name: Build the generated clip bank
         run: >
           uv run python -m synthiq_caller.ci_gate bank

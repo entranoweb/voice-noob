@@ -63,10 +63,15 @@ from synthiq_caller.prereq import CommandChecker, HttpChecker, PrereqChecker
 from synthiq_caller.readback import CommandReadBack, HttpReadBack, NoReadBack, ReadBack
 from synthiq_caller.report import fail_under_exit, gate_reading, render, summarise
 from synthiq_caller.reset import CommandReset, HttpReset, NoReset, Reset
-from synthiq_caller.scenario import load_scenario
+from synthiq_caller.scenario import ScenarioError, load_scenario
 from synthiq_caller.stats import describe
 from synthiq_caller.traces.base import TraceReader
-from synthiq_caller.validation import validate_bank, validate_directory
+from synthiq_caller.validation import (
+    load_problems,
+    ungradeable_problems,
+    validate_bank,
+    validate_directory,
+)
 
 
 def _secret(name: str, env_file: str | None) -> str:
@@ -197,9 +202,15 @@ def validate(args: argparse.Namespace) -> int:
             header=args.check_requires_header,
             timeout_s=args.check_requires_timeout,
         )
-    rows = validate_directory(
-        args.scenarios, _bank(args) if args.clips else None, checker, _target(args)
-    )
+    try:
+        rows = validate_directory(
+            args.scenarios, _bank(args) if args.clips else None, checker, _target(args)
+        )
+    except (ScenarioError, ValueError) as error:
+        # A file that does not load is an error with or without --strict.
+        for line in load_problems(args.scenarios, _target(args)) or [str(error)]:
+            print(f"ERROR: {line}")
+        return 1
     for row in rows:
         print(row.line())
     findings = validate_bank(_bank(args)) if args.clips else []
@@ -231,7 +242,16 @@ def validate(args: argparse.Namespace) -> int:
             "nothing of a call, so no call can pass them, and a batch holds them back "
             "(--allow-ungradeable)."
         )
-    return 1 if any(row.problem for row in rows) or any(f.problem for f in findings) else 0
+    strict = ungradeable_problems(rows) if args.strict else []
+    for line in strict:
+        print(f"ERROR: {line}")
+    if strict:
+        print(
+            f"\n{len(strict)} scenario(s) cannot be graded and --strict is on: state their "
+            "expectations (expect.*) before they go into a gate or an acceptance run."
+        )
+    broken = any(row.problem for row in rows) or any(f.problem for f in findings)
+    return 1 if strict or broken else 0
 
 
 def _scorecard(args: argparse.Namespace) -> int:
@@ -911,6 +931,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     val.add_argument("--target", default="", help=TARGET_HELP)
     val.add_argument("--env-file", default=None)
+    val.add_argument(
+        "--strict",
+        action="store_true",
+        help="exit 1 when any scenario cannot be graded (it states no expectations). Without it "
+        "that is only a warning, so a freshly captured scenario can still be validated. Only "
+        "gradeability is strict: an unverified clip label or an unchecked prerequisite does not "
+        "fail it. The CI gate and acceptance apply this check themselves",
+    )
     val.add_argument(
         "--check-requires-command",
         default="",
