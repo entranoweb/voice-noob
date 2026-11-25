@@ -19,7 +19,7 @@ permissions:
 jobs:
   backend:
     name: Backend
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.USE_SELF_HOSTED == 'true' && fromJSON('["self-hosted", "linux", "x64"]') || 'ubuntu-latest' }}
     defaults:
       run:
         working-directory: backend
@@ -148,26 +148,27 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v5
 
-      # Blocking. The lock (runtime and dev groups) had no known advisory on
-      # 25 Nov 2026, after the bumps and the python-jose removal; any new one
+      # Blocking. The export uses --all-extras, exactly what the Backend and
+      # Caller jobs install (`uv sync --all-extras --frozen`), dev extra
+      # included. That set had no known advisory on 25 Nov 2026; any new one
       # fails the build. There is no ignore list: a finding is fixed by a
       # version bump, or this step is changed in review with the reason written
       # here. Needs the advisory service, so an outage of it fails the job too.
       - name: Backend advisories (blocks)
         working-directory: backend
         run: |
-          uv export --frozen --no-hashes --no-emit-project -o "$RUNNER_TEMP/backend-requirements.txt"
+          uv export --frozen --all-extras --no-hashes --no-emit-project -o "$RUNNER_TEMP/backend-requirements.txt"
           uvx pip-audit@2.10.1 -r "$RUNNER_TEMP/backend-requirements.txt" --disable-pip --no-deps
 
       - name: Caller advisories (blocks)
         working-directory: caller
         run: |
-          uv export --frozen --no-hashes --no-emit-project -o "$RUNNER_TEMP/caller-requirements.txt"
+          uv export --frozen --all-extras --no-hashes --no-emit-project -o "$RUNNER_TEMP/caller-requirements.txt"
           uvx pip-audit@2.10.1 -r "$RUNNER_TEMP/caller-requirements.txt" --disable-pip --no-deps
 
   frontend:
     name: Frontend
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.USE_SELF_HOSTED == 'true' && fromJSON('["self-hosted", "linux", "x64"]') || 'ubuntu-latest' }}
     defaults:
       run:
         working-directory: frontend
