@@ -38,6 +38,10 @@ from synthiq_caller.target import TargetError, parse_target
 from synthiq_caller.traces.elevenlabs import API
 
 DEFAULT_KEY_ENV = "ELEVENLABS_API_KEY"
+# Checked on 2026-11-25 against the vendor's data-residency page
+# (elevenlabs.io/docs/overview/administration/data-residency) and the official Python
+# SDK's environments (elevenlabs-python, src/elevenlabs/environment.py: PRODUCTION,
+# PRODUCTION_US, PRODUCTION_EU, PRODUCTION_INDIA, PRODUCTION_SINGAPORE). No request was made.
 # The platform's API address for each region. ``global`` is the default one. A
 # residency account must use its own region's address.
 REGIONS = {

@@ -51,7 +51,8 @@ it: `capture` only reads.
 ## Step 2. Pick the region
 
 An account on a regional (residency) host must use that host, or every request
-is refused. The regions are `global` (the default), `us`, `eu`, `in` and `sg`.
+is refused. A residency environment is a separate account and needs its own API key:
+a key from the global account does not work there. The regions are `global` (the default), `us`, `eu`, `in` and `sg`.
 
 ```
 synthiq-caller doctor . --region <region>
