@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from synthiq_caller.batch import ALLOWED
 from synthiq_caller.clips import ClipBank
 from synthiq_caller.director import Director, RunRecord
 from synthiq_caller.jsonio import write_json
@@ -120,6 +121,13 @@ async def run_real(args: argparse.Namespace, scenario: Scenario, env: Mapping[st
             f"{args.to} is not on the list of numbers this caller may dial. List them with "
             f"--allowed-numbers (a file, or a comma-separated list) or {ALLOWED_ENV}"
         )
+    # The same guard a batch applies: a call that can change the system under
+    # test is placed only when the operator has said this level of change is allowed.
+    if scenario.mutates not in ALLOWED[args.allow_mutating]:
+        raise UsageError(
+            f"mutation guard: this scenario's 'mutates' is {scenario.mutates!r} and "
+            f"--allow-mutating is {args.allow_mutating!r}; the call was not placed"
+        )
     public_url = check_public_url(args.public_url or "")
     transcriber = build_transcriber(args, env)
     rest = TwilioRest(credentials)
@@ -213,6 +221,13 @@ def main(argv: list[str] | None = None, env: Mapping[str, str] | None = None) ->
         default="",
         help="the only numbers that may be dialled: a file, one per line, or a comma-separated "
         "list. A real call is not placed without it",
+    )
+    parser.add_argument(
+        "--allow-mutating",
+        choices=sorted(ALLOWED),
+        default="none",
+        help="how much a real call may change on the system under test; a scenario that "
+        "changes more, or does not say, is not placed",
     )
     parser.add_argument("--host", default="0.0.0.0")  # noqa: S104 - the carrier connects in
     parser.add_argument("--port", type=int, default=8765)

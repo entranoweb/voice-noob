@@ -9,6 +9,7 @@ from typing import Any
 import httpx
 import pytest
 import websockets
+from conftest import mark_checked
 
 from synthiq_caller import cli
 from synthiq_caller.batch import CallInfo, regrade, reread_missing_traces, run_batch
@@ -25,7 +26,7 @@ from synthiq_caller.numbers import ALLOWED_ENV, allowed_numbers, is_allowed, sam
 from synthiq_caller.phone_batch import phone_leg_factory, phone_preflight, render_preflight
 from synthiq_caller.phone_server import main as phone_main
 from synthiq_caller.recording import CallRecorder
-from synthiq_caller.report import Summary, gate, render, summarise
+from synthiq_caller.report import Summary, fail_under_exit, render, summarise
 from synthiq_caller.scenario import Scenario, parse_scenario
 from synthiq_caller.traces.base import ToolCall, Trace, TraceReader
 from synthiq_caller.traces.lookup import (
@@ -74,6 +75,7 @@ def bank(tmp_path: Path) -> ClipBank:
             wav.setsampwidth(2)
             wav.setframerate(RATE)
             wav.writeframes(tone_pcm(seconds, frequency=300.0))
+    mark_checked(directory)
     return ClipBank(directory)
 
 
@@ -204,8 +206,8 @@ async def test_a_phone_batch_is_graded_like_a_socket_batch_through_one_server(
     assert (summary.passed, summary.failed, summary.ungraded) == (2, 0, 0)
     assert summary.legs == {"phone": 2}
     assert "by line: phone 2" in render(summary)
-    code, line_text = gate(summary, 95)
-    assert code == 0 and "2 of 2 calls placed passed" in line_text
+    code, line_text = fail_under_exit(summary, 95)
+    assert code == 0 and "2 of 2 calls passed" in line_text
 
 
 async def test_each_side_of_a_phone_call_is_kept_as_its_own_recording(
@@ -268,7 +270,9 @@ async def test_a_call_whose_trace_is_not_found_is_ungraded_and_fails_the_gate(
     summary = summarise(line.out)
     assert (summary.passed, summary.ungraded) == (0, 1)
     assert summary.ungraded_reasons == {"trace not found": 1}
-    assert "ungraded: trace not found  x1" in render(summary)
+    assert [left.outcome for left in summary.excluded] == ["ungraded"]
+    assert "trace not found" in summary.excluded[0].reason
+    assert "ungraded: TraceNotFound('trace not found" in render(summary)
 
     # An ungraded call counts against the gate; it must not slip past it.
     assert cli.report(str(line.out), details=False, fail_under=50) == 1
@@ -324,13 +328,57 @@ async def test_the_after_call_hook_is_told_the_platforms_id_never_the_carriers(
     assert run["carrier_call_ref"] == run["record"]["call_ref"] != told.call_ref
 
 
-def test_the_gate_counts_every_call_placed() -> None:
-    assert gate(Summary(runs=20, passed=19, failed=1), 95)[0] == 0
-    assert gate(Summary(runs=20, passed=18, failed=2), 95)[0] == 1
+def test_the_threshold_counts_every_call_but_those_the_rig_spoiled() -> None:
+    assert fail_under_exit(Summary(runs=20, passed=19, failed=1), 95)[0] == 0
+    assert fail_under_exit(Summary(runs=20, passed=18, failed=2), 95)[0] == 1
     # 18 passed of 18 graded, but two calls have no verdict: not 95% of what was placed.
-    assert gate(Summary(runs=20, passed=18, ungraded=2), 95)[0] == 1
-    assert gate(Summary(), 95)[0] == 1, "nothing placed shows nothing"
-    assert gate(Summary(runs=3, failed=3), None) == (0, "")
+    assert fail_under_exit(Summary(runs=20, passed=18, ungraded=2), 95)[0] == 1
+    assert fail_under_exit(Summary(runs=20, passed=18, ungradeable=2), 95)[0] == 1
+    # A call the rig spoiled is re-run, not held against the agent, and not a pass either.
+    code, text = fail_under_exit(Summary(runs=20, passed=19, void=1), 95)
+    assert code == 0 and "19 of 19" in text and "1 void left out" in text
+    assert fail_under_exit(Summary(runs=2, void=2), 95)[0] == 1, "only void calls show nothing"
+    assert fail_under_exit(Summary(), 95)[0] == 1, "nothing placed shows nothing"
+    assert fail_under_exit(Summary(runs=3, failed=3), None) == (0, "")
+
+
+async def test_an_unanswered_phone_call_is_a_recorded_failure_and_the_batch_goes_on(
+    bank: ClipBank, tmp_path: Path
+) -> None:
+    line = Line(tmp_path, FinderByOrder(), StoredDate())
+    answers = iter([False, True])
+
+    def carrier() -> FakeTwilio:
+        fake = FakeTwilio(agent_lines=[0.5, 0.5, 0.4], patience_s=4.0, answer=next(answers))
+        line.fakes.append(fake)
+        return fake
+
+    line.carrier = carrier  # type: ignore[method-assign]
+    try:
+        result = await run_batch(
+            [("lookup.json", scenario())],
+            await line.factory(answer_timeout_s=1),
+            bank,
+            line.out,
+            repeats=2,
+            turn_settings=FAST,
+            wait=no_wait,
+        )
+    finally:
+        await line.exchange.close()
+
+    assert result.ran == 2, "the call nobody answered must not stop the one after it"
+    first, second = (
+        json.loads(p.read_text(encoding="utf-8")) for p in sorted(line.out.glob("run-*.json"))
+    )
+    assert first["record"]["ended"].startswith("not answered")
+    assert (first["grade"]["outcome"], first["grade"]["fault"]) == ("failed", "unknown")
+    assert first["leg"] == "phone" and first["phone"]["to_number"] == TO
+    assert first["trace"] is None, "no trace is looked for when nobody answered"
+    assert second["grade"]["outcome"] == "passed"
+    summary = summarise(line.out)
+    assert (summary.passed, summary.failed, summary.runs) == (1, 1, 2)
+    assert fail_under_exit(summary, 95)[0] == 1
 
 
 # ----- finding the trace --------------------------------------------------------
@@ -518,6 +566,16 @@ def test_the_single_call_command_also_needs_the_number_listed(
         phone_main(arguments, env={"TWILIO_ACCOUNT_SID": "AC1", "TWILIO_AUTH_TOKEN": "t"})
     assert stopped.value.code == 2
     assert "not on the list of numbers" in capsys.readouterr().err
+    assert not (tmp_path / "r").exists()
+
+    # Listed, but the scenario does not say what it changes: the batch's guard applies here too.
+    with pytest.raises(SystemExit) as guarded:
+        phone_main(
+            [*arguments, "--allowed-numbers", TO],
+            env={"TWILIO_ACCOUNT_SID": "AC1", "TWILIO_AUTH_TOKEN": "t"},
+        )
+    assert guarded.value.code == 2
+    assert "mutation guard" in capsys.readouterr().err
     assert not (tmp_path / "r").exists()
 
 

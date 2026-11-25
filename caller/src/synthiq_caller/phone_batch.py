@@ -137,6 +137,11 @@ def open_phone_batch(args: argparse.Namespace, env: Mapping[str, str], out: Path
 
     finder: ConversationFinder | None = None
     inner: TraceReader | None = None
+    if not args.no_trace and getattr(args, "trace", "elevenlabs") != "elevenlabs":
+        raise _stop(
+            f"a phone call's trace can only be looked up on ElevenLabs so far, not {args.trace}. "
+            "Pass --no-trace to place calls that will not be graded"
+        )
     if not args.no_trace:
         key = env.get("ELEVENLABS_API_KEY", "").strip()
         if not key:

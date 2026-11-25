@@ -97,6 +97,11 @@ synthiq-caller-phone \
   --out runs/ --port 8765
 ```
 
+A scenario that can change the system under test is placed only with
+`--allow-mutating` set to its level or above, the same guard `batch` applies;
+the default allows none, and a scenario that does not say what it changes is
+refused.
+
 Rehearse the same command with `--dry-run` first. It places no call, needs no
 credentials, and prints the TwiML and the audio that would be sent. This
 command writes `phone-run-NNN.json`, which is not graded; use `batch` for a
@@ -130,12 +135,21 @@ read them unchanged. What differs:
   platform's id for the same call.
 
 `--fail-under <percent>` on `batch` and `report` makes the exit code 1 when
-fewer than that share of the calls placed passed. A call that could not be
-graded counts against it, so a batch cannot clear the gate by losing its
-traces. With no calls placed the exit code is 1.
+fewer than that share of the calls counted passed. Every call placed is
+counted except those the rig itself spoiled (`void`, to be re-run). A call
+that could not be graded counts against it, so a batch cannot clear the
+threshold by losing its traces. With no calls counted the exit code is 1. This
+is a plain threshold; whether a batch *demonstrates* a rate is the `gate`
+command's question.
 
-A call that is not answered still stops the batch with an error, as it does on
-the socket leg.
+A call that nobody answers does not stop the batch. It is stored like any
+other run, ends `not answered`, and is graded `failed` with fault `unknown`,
+because from the caller's side an agent that does not pick up has failed and
+the cause is not known. No trace is looked for. The next call goes out.
+
+The outcomes and denominators are the same as on the socket leg: `passed`,
+`failed`, `void`, `ungradeable` and `ungraded`, reported "of graded" and "of
+attempted".
 
 ### Finding the call's trace
 
@@ -160,6 +174,8 @@ synthiq-caller regrade runs/phone --scenarios scenarios/sophie --reread --leg ph
 ```
 
 `--no-trace` places calls without looking; every one is then ungraded.
+`--trace retell` or `--trace vapi` is refused with the phone leg until a
+lookup for that platform exists.
 
 Other platforms are not built. The expected equivalents are below; they are
 written from memory of each platform's call-listing API, so check every field
