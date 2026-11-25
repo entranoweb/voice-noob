@@ -408,6 +408,7 @@ async def run_batch(
     prereq: PrereqChecker | None = None,
     make_leg_for: LegFactoryFor | None = None,
     rehearsal: bool = False,
+    batch_id: str = "",
 ) -> BatchResult:
     if allow_mutating not in ALLOWED:
         raise ValueError(f"allow_mutating must be one of {sorted(ALLOWED)}")
@@ -521,6 +522,10 @@ async def run_batch(
             # Written into the run itself, not only the batch: a run file copied
             # or uploaded on its own must still say what it is.
             payload["rehearsal"] = True
+        if batch_id:
+            # Which entry of the directory's manifest this call was made under
+            # (``manifest.py``): the rig, scenarios, clips and target behind it.
+            payload["batch"] = batch_id
         async with lock:
             counter += 1
             index = counter
@@ -703,6 +708,7 @@ async def run_batch(
                     "reason": reason,
                     "calls": rows,
                     "variables": variables,
+                    **({"batch": batch_id} if batch_id else {}),
                 },
             )
 
