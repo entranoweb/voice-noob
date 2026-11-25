@@ -108,14 +108,20 @@ async def revoke_family(db: AsyncSession, family_id: uuid.UUID) -> None:
     )
 
 
-async def revoke_user_sessions(db: AsyncSession, user: User) -> None:
+async def revoke_user_sessions(
+    db: AsyncSession, user: User, *, revoke_access_tokens: bool = True
+) -> None:
     """End every session of ``user``: refresh tokens now, access tokens by version.
 
     Access tokens are stateless, so they cannot be listed and struck out. They
     carry the user's ``token_version``; bumping it makes every one issued
-    before this moment fail the check in ``get_current_user``.
+    before this moment fail the check in ``get_current_user``. A caller that has
+    already made the user inactive may pass ``revoke_access_tokens=False``: those
+    tokens are refused while the account is off, and switching it back on is
+    meant to restore the access token the person still holds.
     """
-    user.token_version += 1
+    if revoke_access_tokens:
+        user.token_version += 1
     await db.execute(
         update(RefreshToken)
         .where(RefreshToken.user_id == user.id, RefreshToken.revoked_at.is_(None))

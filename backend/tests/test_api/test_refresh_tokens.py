@@ -154,8 +154,11 @@ async def test_a_disabled_user_cannot_refresh_even_after_being_enabled_again(
     assert disabled.status_code == 200
     assert refused.status_code == 401
     assert enabled.status_code == 200
-    assert still_refused.status_code == 401, "disabling ends the sessions it found"
-    assert await _me(lc, tokens["access_token"]) == 401
+    assert still_refused.status_code == 401, "disabling ends the sign-ins it found"
+    # The short-lived access token is not revoked by a disable: it is refused while
+    # the account is off, and works again for the rest of its life when switched back on
+    # (test_an_account_can_be_switched_back_on). A password reset revokes it.
+    assert await _me(lc, tokens["access_token"]) == 200
 
 
 async def _admin_headers(lc: Lifecycle) -> dict[str, str]:

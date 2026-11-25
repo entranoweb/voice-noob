@@ -400,9 +400,10 @@ async def _set_account_active(
     was_active = user.is_active
     user.is_active = active
     if not active:
-        # Disabling ends every session now. Without this, enabling the account
+        # Disabling ends every sign-in now. Without this, enabling the account
         # again would bring back refresh tokens the administrator meant to cut off.
-        await revoke_user_sessions(db, user)
+        # Access tokens need no version bump: they are refused while the account is off.
+        await revoke_user_sessions(db, user, revoke_access_tokens=False)
     # Who switched whose account off, and when: the one administrative action
     # that takes a customer's access away has to be answerable afterwards.
     await record_audit(
