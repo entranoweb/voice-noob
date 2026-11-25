@@ -8,9 +8,10 @@ import pytest
 from test_batch_and_report import FAST, agent, scenario
 from test_clip_consent import FULL, forget_args, forget_world, write_bank, write_wav
 from test_forget_review import SENTINEL, realistic_result
+from test_reset_chains_readback import BOOKED, CANCELLED, agents, chain_data
 
 from synthiq_caller import cli, removals
-from synthiq_caller.batch import regrade, run_batch
+from synthiq_caller.batch import load_chains, regrade, run_batch
 from synthiq_caller.clips import ClipBank
 
 
@@ -82,3 +83,36 @@ def test_an_incomplete_removal_stays_open_until_a_later_one_completes(
         locked.chmod(0o755)
     assert cli.main(forget_args(world, "a1")) == 0
     assert removals.unfinished([world["bank"]]) == []
+
+
+async def run_chain(tmp_path: Path) -> dict[str, Path]:
+    (tmp_path / "bank" / "days").mkdir(parents=True)
+    bank = write_bank(
+        tmp_path / "bank",
+        {"opener": FULL, "dob": FULL, "cancel": FULL, "days/wednesday-3rd": FULL},
+    )
+    out = tmp_path / "out"
+    directory = tmp_path / "chains"
+    directory.mkdir()
+    (directory / "chain.json").write_text(json.dumps(chain_data()), encoding="utf-8")
+    await run_batch(
+        [],
+        agents([[BOOKED], [CANCELLED]]),
+        ClipBank(bank),
+        out,
+        chains=load_chains(directory),
+        allow_mutating="all",
+        turn_settings=FAST,
+    )
+    return {"bank": bank, "scenarios": directory, "results": out}
+
+
+async def test_calls_after_a_forgotten_one_lose_the_values_it_captured(tmp_path: Path) -> None:
+    world = await run_chain(tmp_path)
+    second = world["results"] / "run-002.json"
+    assert "apt-77" in second.read_text(encoding="utf-8")  # carried from call 1
+    assert cli.main(forget_args(world, "opener")) == 0
+    for file in sorted(p for p in world["results"].rglob("*.json")):
+        assert "apt-77" not in file.read_text(encoding="utf-8"), file.name
+        assert "Wednesday 3rd" not in file.read_text(encoding="utf-8"), file.name
+    assert json.loads(second.read_text(encoding="utf-8"))["clips_removed"][0]["redacted"] is True

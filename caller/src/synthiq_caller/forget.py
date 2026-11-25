@@ -570,9 +570,13 @@ def _plan_results(plan: Plan, directories: list[Path], *, keep_text: bool) -> No
                 continue
             used = _mentioned(_strings(data), stems)
             if kinds[path] == "chain":
+                carried: list[str] = []
                 for row in data.get("calls") or []:
                     run = row.get("run") if isinstance(row, dict) else None
-                    used += marked_runs.get(str(run), [])
+                    if carried and run:
+                        _plan_downstream(plan, path.parent / str(run), carried, keep_text)
+                    carried += marked_runs.get(str(run), [])
+                used += carried
             used = list(dict.fromkeys(used))
             done = {str(m.get("clip")) for m in data.get(MARK, []) if isinstance(m, dict)}
             todo = [s for s in used if s not in done]
@@ -595,6 +599,25 @@ def _plan_results(plan: Plan, directories: list[Path], *, keep_text: bool) -> No
                 plan.mentioned.append(html)
         if (directory / "upload.json").exists():
             plan.uploaded.append(directory / "upload.json")
+
+
+def _plan_downstream(plan: Plan, run: Path, carried: list[str], keep_text: bool) -> None:
+    """A call after a forgotten one in the same chain was given what that call captured.
+
+    Its stored scenario, trace arguments and checks hold those values, so it is marked and
+    redacted like the forgotten call itself (the chain's later calls cannot be told apart
+    from its values by text alone).
+    """
+    data = _read_json(run)
+    if not isinstance(data, dict):
+        return
+    done = {str(m.get("clip")) for m in data.get(MARK, []) if isinstance(m, dict)}
+    todo = [c for c in dict.fromkeys(carried) if c not in done]
+    fields = [] if keep_text else _text_fields(data)
+    if todo or fields:
+        plan.results[run] = sorted({*plan.results.get(run, []), *todo})
+    if fields:
+        plan.redact[run] = fields
 
 
 def _tracks(data: Any) -> list[dict[str, Any]]:
