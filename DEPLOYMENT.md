@@ -399,6 +399,15 @@ front of Traefik (for instance Cloudflare in front of `api`) its addresses must
 also be listed, or the address that is recorded is that proxy's. gunicorn's own
 `FORWARDED_ALLOW_IPS` variable is not read; use this setting.
 
+Two limits. The setting is read by `backend/gunicorn.conf.py`, which is what the
+container runs. Starting the app another way (plain
+`uvicorn app.main:app`, or `python app/main.py`, `main.py` at the bottom) does
+not read it and uses uvicorn's own default, which trusts loopback only. And
+whatever the setting says, the address stored in `audit_events.ip_address` and
+in consent records is validated first: a value that is not an IP address (under
+`*` a client can send anything) is stored as the text `invalid`, never raised on
+and never written as client-chosen text.
+
 ## Database backup and restore
 
 Postgres holds everything customers entered, the audit trail and the encrypted
@@ -418,9 +427,13 @@ docker compose -f docker-compose.prod.yml exec backend python scripts/db_backup.
 ```
 
 It writes a `pg_dump` custom-format file, checks it (non-empty, readable by
-`pg_restore --list`, contains tables including `alembic_version`), and only then
-renames it into place and deletes all but the newest `--keep` dumps of that
-database. Any failure, including an empty dump, exits non-zero and leaves no
+`pg_restore --list`, taken from the database that was asked for, contains tables
+including `alembic_version`, and the database has rows besides the one in
+`alembic_version`), and only then renames it into place and deletes all but the newest `--keep` dumps of that
+database. A migrated but empty database is refused (the usual cause is pointing
+at the wrong database); `--allow-empty` keeps it anyway. Two backups started at
+once each write their own temporary file; the one that finds its final name
+taken fails and removes only its own. Any failure, including an empty dump, exits non-zero and leaves no
 half-written file; a failed backup deletes nothing. The directory is the
 `db_backups` volume. **Copy the dump off the server** (and keep it apart from
 `CREDENTIAL_ENCRYPTION_KEYS`: stored credentials are unreadable without that
@@ -444,7 +457,10 @@ happened), then compares it with the live database: the alembic revision and the
 row count of every table. It exits 0 only when both match, 1 on a difference,
 2 on any other failure. Rows written after the dump make counts differ; run it
 straight after the backup, or add `--allow-drift` to accept row-count differences
-(the revision must still match).
+(the revision must still match). It also refuses a dump taken from a database of
+another name than the live one, and a dump with no rows besides `alembic_version`
+(even with `--allow-drift`; `--allow-empty` overrides, for a database that was
+empty on purpose): an empty restore must never read as a pass.
 
 **To restore for real** (after loss), onto an empty database of the same major
 Postgres version, with the application stopped:
