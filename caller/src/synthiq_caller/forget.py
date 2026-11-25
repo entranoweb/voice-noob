@@ -669,8 +669,9 @@ def _call_audio(plan: Plan, run: Path, data: Any, *, keep_text: bool) -> None:
     for entry in _tracks(data):
         caller = (run.parent / str(entry["caller"])).resolve()
         agent = (run.parent / str(entry["agent"])).resolve()
-        if not str(caller).startswith(str(run.parent.resolve())):
-            continue  # a path that climbs out of the results folder is never touched
+        here = run.parent.resolve()
+        if not (caller.is_relative_to(here) and agent.is_relative_to(here)):
+            continue  # never touch a path that leaves the results folder (or enters "out2")
         if caller.is_file():
             target = plan.recordings if keep_text else plan.call_audio
             if caller not in target:

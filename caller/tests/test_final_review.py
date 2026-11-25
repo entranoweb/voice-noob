@@ -204,3 +204,18 @@ def test_keep_text_keeps_an_ingested_calls_text_and_lists_it(
     assert (case / "transcript.txt").exists() and (case / "conversation.json").exists()
     out = capsys.readouterr().out
     assert str(case / "transcript.txt") in out and "KEPT" in out
+
+
+def test_a_call_audio_path_into_a_folder_with_a_longer_name_is_not_touched(
+    tmp_path: Path,
+) -> None:
+    world = bare_world(tmp_path)
+    neighbour = tmp_path / "out2"
+    neighbour.mkdir()
+    stranger = neighbour / "x.caller.wav"
+    write_wav(stranger)
+    run = realistic_result("opener")
+    run["audio"] = {"caller": "../out2/x.caller.wav", "agent": "../out2/x.agent.wav"}
+    (world["results"] / "run-001.json").write_text(json.dumps(run), encoding="utf-8")
+    assert cli.main(forget_args(world, "opener")) == 0
+    assert stranger.exists()
