@@ -50,6 +50,13 @@ A new engine is one leg and one trace reader. Nothing else changes.
   into a scenario skeleton.
 - **Scenario set** (`scenarios/sophie/`): a 20-call script for one agent.
 
+## Set up a new target
+
+`docs/ONBOARDING.md` is the step-by-step guide: `synthiq-caller init <dir>`
+scaffolds a target folder that runs on the fake leg, `synthiq-caller doctor`
+checks the machine, and `docs/SCENARIO-REFERENCE.md` (made from the scenario
+schema by `synthiq-caller reference`) lists every key a scenario takes.
+
 ## Run it
 
 ```
