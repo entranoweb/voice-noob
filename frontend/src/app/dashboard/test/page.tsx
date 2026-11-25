@@ -7,7 +7,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { updateAgent } from "@/lib/api/agents";
 import { api } from "@/lib/api";
-import { getWhisperCode, getLanguagesForTier } from "@/lib/languages";
+import { getLanguagesForTier } from "@/lib/languages";
 import { Button } from "@/components/ui/button";
 import { Play, Square, Loader2, Save, FolderOpen } from "lucide-react";
 import {
@@ -634,7 +634,7 @@ export default function TestAgentPage() {
       }
 
       const tokenData = await tokenResponse.json();
-      const ephemeralKey = tokenData.client_secret?.value;
+      const ephemeralKey = tokenData.value;
 
       if (!ephemeralKey) {
         throw new Error("No ephemeral key received from server");
@@ -642,7 +642,7 @@ export default function TestAgentPage() {
 
       console.log("[WebRTC] Got ephemeral token:", ephemeralKey.substring(0, 10) + "...");
 
-      // Manual WebRTC connection since SDK doesn't include required OpenAI-Beta header
+      // Manual WebRTC connection: SDP offer to the GA /v1/realtime/calls endpoint
       const pc = new RTCPeerConnection();
       const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const audioTrack = micStream.getAudioTracks()[0];
@@ -674,14 +674,14 @@ export default function TestAgentPage() {
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
 
-      // Connect to OpenAI Realtime API with required header
+      // GA: ephemeral key as bearer, no beta header, no query string (the model
+      // was fixed when the backend minted the key).
       const response = await fetch("https://api.openai.com/v1/realtime/calls", {
         method: "POST",
         body: offer.sdp,
         headers: {
           "Content-Type": "application/sdp",
           Authorization: `Bearer ${ephemeralKey}`,
-          "OpenAI-Beta": "realtime=v1",
         },
       });
 
@@ -716,22 +716,28 @@ export default function TestAgentPage() {
         const instructions = editedSystemPrompt || "You are a helpful voice assistant.";
         const sessionUpdate = {
           type: "session.update",
+          // GA shape: `type` is required and the audio settings live under
+          // `audio.input` / `audio.output`. The transcription model was set when
+          // the key was minted and is left as it is.
           session: {
+            type: "realtime",
             instructions: instructions,
-            voice: voice,
-            input_audio_transcription: {
-              model: "whisper-1",
-              language: getWhisperCode(language) ?? undefined,
+            audio: {
+              input: {
+                turn_detection:
+                  turnDetection === "disabled"
+                    ? null
+                    : turnDetection === "semantic"
+                      ? { type: "semantic_vad" }
+                      : {
+                          type: "server_vad",
+                          threshold: threshold,
+                          prefix_padding_ms: prefixPadding,
+                          silence_duration_ms: silenceDuration,
+                        },
+              },
+              output: { voice: voice },
             },
-            turn_detection:
-              turnDetection === "disabled"
-                ? null
-                : {
-                    type: turnDetection === "semantic" ? "semantic_vad" : "server_vad",
-                    threshold: threshold,
-                    prefix_padding_ms: prefixPadding,
-                    silence_duration_ms: silenceDuration,
-                  },
             tools: tools,
             tool_choice: tools.length > 0 ? "auto" : "none",
           },
@@ -778,7 +784,7 @@ export default function TestAgentPage() {
                 content: data.transcript.trim(),
               });
             }
-          } else if (data.type === "response.audio_transcript.done") {
+          } else if (data.type === "response.output_audio_transcript.done") {
             addTranscriptImmediate("assistant", data.transcript);
             // Also capture for saving to backend
             if (data.transcript?.trim()) {

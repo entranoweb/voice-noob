@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import AuditAction, record_audit
 from app.core.auth import CurrentUser
+from app.core.config import settings
 from app.core.limiter import limiter
 from app.core.ownership import ensure_phone_reference_is_owned
 from app.core.public_id import generate_public_id
@@ -432,10 +433,10 @@ def _get_provider_config(tier: str) -> dict[str, Any]:
     Returns:
         Provider configuration
     """
-    # Latest models as of Nov 2025:
+    # Models as of Nov 2025 (OpenAI ones come from settings):
     # - Deepgram: nova-3 (GA Feb 2025, 54% better accuracy than nova-2)
     # - ElevenLabs: eleven_flash_v2_5 (~75ms latency, 32 languages)
-    # - OpenAI: gpt-realtime-2025-08-28 (GA Aug 2025)
+    # - OpenAI: the Realtime models named in settings (OPENAI_REALTIME_MODEL_*)
     # - Google: gemini-2.5-flash with native audio (30 HD voices)
     configs = {
         "budget": {
@@ -456,7 +457,7 @@ def _get_provider_config(tier: str) -> dict[str, Any]:
         },
         "premium-mini": {
             "llm_provider": "openai-realtime",
-            "llm_model": "gpt-4o-mini-realtime-preview-2024-12-17",
+            "llm_model": settings.OPENAI_REALTIME_MODEL_PREMIUM_MINI,
             "stt_provider": "openai",
             "stt_model": "built-in",
             "tts_provider": "openai",
@@ -464,7 +465,7 @@ def _get_provider_config(tier: str) -> dict[str, Any]:
         },
         "premium": {
             "llm_provider": "openai-realtime",
-            "llm_model": "gpt-realtime-2025-08-28",
+            "llm_model": settings.OPENAI_REALTIME_MODEL_PREMIUM,
             "stt_provider": "openai",
             "stt_model": "built-in",
             "tts_provider": "openai",

@@ -23,11 +23,18 @@ export interface PricingTier {
   };
 }
 
+// Mirrors the backend settings OPENAI_REALTIME_MODEL_PREMIUM / _PREMIUM_MINI
+// (backend/app/core/config.py), the source of truth for what a session runs.
+// These are display labels; agents choose a tier and the backend maps it to a
+// model, so a stored agent holding an older name here still runs correctly.
+export const REALTIME_MODEL_PREMIUM = "gpt-realtime-2.1";
+export const REALTIME_MODEL_PREMIUM_MINI = "gpt-realtime-2.1-mini";
+
 export const PRICING_TIERS: PricingTier[] = [
   {
     id: "premium",
     name: "Premium",
-    description: "Best quality with OpenAI's latest gpt-realtime model",
+    description: "Best quality with OpenAI's gpt-realtime-2.1 model",
     costPerHour: 1.92,
     costPerMinute: 0.032,
     recommended: true,
@@ -36,11 +43,11 @@ export const PRICING_TIERS: PricingTier[] = [
       "Most natural & expressive voice",
       "Best instruction following",
       "New voices: marin, cedar",
-      "Production-ready (Aug 2025)",
+      "Production-ready",
     ],
     config: {
       llmProvider: "openai-realtime",
-      llmModel: "gpt-realtime-2025-08-28",
+      llmModel: REALTIME_MODEL_PREMIUM,
       sttProvider: "openai",
       sttModel: "built-in",
       ttsProvider: "openai",
@@ -68,7 +75,7 @@ export const PRICING_TIERS: PricingTier[] = [
     ],
     config: {
       llmProvider: "openai-realtime",
-      llmModel: "gpt-4o-mini-realtime",
+      llmModel: REALTIME_MODEL_PREMIUM_MINI,
       sttProvider: "openai",
       sttModel: "built-in",
       ttsProvider: "openai",

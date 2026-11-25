@@ -196,6 +196,22 @@ class Settings(BaseSettings):
 
     # Voice & AI Services
     OPENAI_API_KEY: str | None = None
+
+    # The one place Realtime model names live. Nothing else in the backend (or
+    # the frontend tier cards, which mirror these) spells a model name out.
+    # Agents choose a tier, not a model: the tier maps to one of these two at
+    # session start, so an agent or workspace row that still stores a retired
+    # name in `llm_model` or an Azure deployment keeps working with no data
+    # migration. Override per deployment with the environment variables of the
+    # same name.
+    OPENAI_REALTIME_MODEL_PREMIUM: str = "gpt-realtime-2.1"
+    OPENAI_REALTIME_MODEL_PREMIUM_MINI: str = "gpt-realtime-2.1-mini"
+    # Transcription of the caller's speech inside a Realtime session. Empty
+    # means "send no transcription block": the call still works, there are just
+    # no caller transcripts. Whether this model is accepted inside a
+    # speech-to-speech session is not confirmed by OpenAI's model pages (see
+    # the PR); change it here without a code change if a live session says no.
+    OPENAI_REALTIME_INPUT_TRANSCRIPTION_MODEL: str = "gpt-live-transcribe"
     DEEPGRAM_API_KEY: str | None = None
     ELEVENLABS_API_KEY: str | None = None
 

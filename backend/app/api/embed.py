@@ -57,6 +57,13 @@ from app.db.session import get_db
 from app.models.agent import Agent
 from app.models.workspace import Workspace
 from app.services.gpt_realtime import GPTRealtimeSession
+from app.services.realtime_models import (
+    ClientSecretError,
+    input_transcription,
+    parse_client_secret,
+    post_client_secret,
+    realtime_model_for_tier,
+)
 
 router = APIRouter(prefix="/api/public/embed", tags=["public-embed"])
 ws_router = APIRouter(prefix="/ws/public/embed", tags=["public-embed-ws"])
@@ -127,18 +134,24 @@ def embed_model_session_config(
     receives the short-lived client secret for the session and nothing that
     describes how the agent was told to behave.
     """
-    config: dict[str, Any] = {
-        "model": model,
-        "modalities": ["audio", "text"],
-        "voice": voice,
-        "instructions": instructions,
-        "input_audio_transcription": {"model": "whisper-1"},
+    audio_input: dict[str, Any] = {
         "turn_detection": {
             "type": "server_vad",
             "threshold": 0.5,
             "prefix_padding_ms": 300,
             "silence_duration_ms": 200,
         },
+    }
+    if (transcription := input_transcription()) is not None:
+        audio_input["transcription"] = transcription
+    # The GA session shape, as `/v1/realtime/client_secrets` takes it: audio
+    # settings under `audio.input` / `audio.output`, and `type` required.
+    config: dict[str, Any] = {
+        "type": "realtime",
+        "model": model,
+        "output_modalities": ["audio"],
+        "instructions": instructions,
+        "audio": {"input": audio_input, "output": {"voice": voice}},
     }
     if tools:
         config["tools"] = tools
@@ -585,11 +598,7 @@ async def get_embed_ephemeral_token(  # noqa: PLR0915
     log.info("using_workspace_openai_key")
 
     # Determine model based on tier
-    realtime_model = (
-        "gpt-4o-mini-realtime-preview-2024-12-17"
-        if agent.pricing_tier == "premium-mini"
-        else "gpt-realtime-2025-08-28"
-    )
+    realtime_model = realtime_model_for_tier(agent.pricing_tier)
 
     # Everything the model session needs is decided here and sent to the model
     # provider by this server when the session is minted. The agent's
@@ -644,18 +653,9 @@ async def get_embed_ephemeral_token(  # noqa: PLR0915
 
     log.info("requesting_ephemeral_token", model=realtime_model)
 
-    # Request ephemeral token from OpenAI
+    # Request ephemeral key from OpenAI (GA endpoint: /v1/realtime/client_secrets)
     try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                "https://api.openai.com/v1/realtime/sessions",
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                },
-                json=session_config,
-                timeout=30.0,
-            )
+        response = await post_client_secret(api_key, session_config)
     except httpx.RequestError as e:
         log.exception("openai_token_request_error", error=str(e))
         raise HTTPException(status_code=500, detail=f"Failed to connect to OpenAI: {e!s}") from e
@@ -670,13 +670,20 @@ async def get_embed_ephemeral_token(  # noqa: PLR0915
         # request back, and the request now carries the agent's instructions.
         raise HTTPException(status_code=502, detail="The voice provider refused to start a session")
 
-    token_data = response.json()
+    try:
+        key = parse_client_secret(response)
+    except ClientSecretError as e:
+        log.exception("openai_token_unusable", error=str(e))
+        raise HTTPException(
+            status_code=502, detail="The voice provider returned no session key"
+        ) from e
     log.info("ephemeral_token_created")
 
     embed_session = mint_embed_session(agent_id=str(agent.id), site=site)
 
     return {
-        "client_secret": token_data.get("client_secret", {}),
+        "value": key["value"],
+        "expires_at": key["expires_at"],
         # What the page shows and says first. Not the instructions: those went
         # to the model provider with the session above.
         "agent": {

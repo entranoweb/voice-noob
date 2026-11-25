@@ -251,7 +251,7 @@ real deployment. Telnyx must be able to POST *into* it.
 | Postgres 17, Redis 7 | `docker-compose.yml` has both. Run `alembic upgrade head`; the head is `b83d1c4f7a90`. Redis is on the call path: a stream token is claimed there so it works once, and media streams are refused while Redis is down (DECISIONS §41) |
 | `SECRET_KEY` | **Required**, shared by every instance. The app does not start on a placeholder (DECISIONS §40) |
 | `TELNYX_PUBLIC_KEY` | **Required.** Signature verification reads the *global* setting, not per-user credentials. With it unset every webhook is rejected 403, whatever `DEBUG` says (DECISIONS §39; it used to be accepted unverified under `DEBUG=true`) |
-| `OPENAI_API_KEY` | The bridge opens a Realtime session with `gpt-realtime-2025-08-28` |
+| `OPENAI_API_KEY` | The bridge opens a Realtime session with `gpt-realtime-2.1` (`OPENAI_REALTIME_MODEL_PREMIUM`) |
 | `DEBUG=false` | See above |
 | `TELNYX_API_KEY` | Only needed for outbound calls and the number-purchase flow. The inbound path does not use it |
 

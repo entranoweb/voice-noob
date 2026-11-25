@@ -16,7 +16,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.integrations import get_workspace_integrations
 from app.api.settings import get_user_api_keys
 from app.core.auth import user_id_to_uuid
+from app.core.config import settings
 from app.core.safe_http import assert_public_url
+from app.services.realtime_models import input_transcription
 from app.services.tools.registry import ToolRegistry
 
 logger = structlog.get_logger()
@@ -231,7 +233,7 @@ class GPTRealtimeSession:
                 api_version="2024-10-01-preview",
             )
             self._azure_deployment_name: str | None = (
-                user_settings.azure_openai_deployment_name or "gpt-realtime"
+                user_settings.azure_openai_deployment_name or settings.OPENAI_REALTIME_MODEL_PREMIUM
             )
             self.logger.info("using_azure_openai", deployment=self._azure_deployment_name)
         else:
@@ -274,8 +276,8 @@ class GPTRealtimeSession:
             model = self._azure_deployment_name
             self.logger.info("connecting_to_azure_openai_realtime", deployment=model)
         else:
-            # Use the latest production gpt-realtime model (released Aug 2025)
-            model = "gpt-realtime-2025-08-28"
+            # The premium model from settings; see app.core.config.
+            model = settings.OPENAI_REALTIME_MODEL_PREMIUM
             self.logger.info("connecting_to_openai_realtime", model=model)
 
         try:
@@ -360,6 +362,7 @@ class GPTRealtimeSession:
         # `output_modalities` is audio alone: GA does not accept both, and the
         # transcript still arrives as response.output_audio_transcript.*, which
         # is the only text this code path consumes.
+        transcription = input_transcription()
         session_config: dict[str, Any] = {
             "type": "realtime",
             "instructions": instructions,
@@ -368,7 +371,7 @@ class GPTRealtimeSession:
                 "input": {
                     # mu-law at 8 kHz, matching the PCMU the carrier streams.
                     "format": {"type": "audio/pcmu"},
-                    "transcription": {"model": "whisper-1"},
+                    **({"transcription": transcription} if transcription else {}),
                     "turn_detection": {
                         "type": "server_vad",
                         "threshold": 0.5,

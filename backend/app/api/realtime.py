@@ -25,6 +25,13 @@ from app.db.session import get_db
 from app.models.agent import Agent
 from app.models.user import User
 from app.services.gpt_realtime import GPTRealtimeSession, build_instructions_with_language
+from app.services.realtime_models import (
+    ClientSecretError,
+    input_transcription,
+    parse_client_secret,
+    post_client_secret,
+    realtime_model_for_tier,
+)
 from app.services.tools.registry import ToolRegistry
 
 router = APIRouter(prefix="/ws", tags=["realtime"])
@@ -89,12 +96,26 @@ def get_realtime_model_for_tier(pricing_tier: str) -> str:
     Returns:
         OpenAI Realtime model name
     """
-    # Using latest production gpt-realtime models (released Aug 2025)
-    return (
-        "gpt-4o-mini-realtime-preview-2024-12-17"
-        if pricing_tier == "premium-mini"
-        else "gpt-realtime-2025-08-28"
-    )
+    return realtime_model_for_tier(pricing_tier)
+
+
+def dashboard_token_session_config(model: str, voice: str) -> dict[str, Any]:
+    """The GA session a dashboard test key is minted for.
+
+    Minimal on purpose: the page sets instructions, tools and turn detection
+    after it connects, because the test page lets the owner edit them live.
+    """
+    audio_input: dict[str, Any] = {}
+    if (transcription := input_transcription()) is not None:
+        audio_input["transcription"] = transcription
+    session: dict[str, Any] = {
+        "type": "realtime",
+        "model": model,
+        "audio": {"output": {"voice": voice}},
+    }
+    if audio_input:
+        session["audio"]["input"] = audio_input
+    return session
 
 
 # Close codes for a refused dashboard socket: who you are, then what you may reach.
@@ -507,6 +528,7 @@ async def create_webrtc_session(
     # The formats are left unset on purpose: this is a WebRTC call and the codec
     # is negotiated in the SDP, unlike the telephony bridge where the carrier
     # fixes it at mu-law (see `_assert_ga_session` in services/gpt_realtime.py).
+    transcription = input_transcription()
     session_config: dict[str, Any] = {
         "type": "realtime",
         "model": realtime_model,
@@ -514,7 +536,7 @@ async def create_webrtc_session(
         "output_modalities": ["audio"],
         "audio": {
             "input": {
-                "transcription": {"model": "whisper-1"},
+                **({"transcription": transcription} if transcription else {}),
                 "turn_detection": {
                     "type": "server_vad",
                     "threshold": agent.turn_detection_threshold or 0.5,
@@ -627,92 +649,80 @@ async def get_ephemeral_token(
     workspace_uuid = uuid.UUID(workspace_id) if workspace_id else None
     api_key = await get_openai_api_key_for_workspace(user_uuid, workspace_uuid, db, token_logger)
 
-    # Build minimal session configuration for ephemeral token request
-    # The SDK will configure instructions, voice, tools etc. after connection via data channel
+    # Minimal GA session for the key; the page configures the rest over the data channel.
     agent_voice = agent.voice or "shimmer"
-    session_config: dict[str, Any] = {
-        "model": realtime_model,
-        "modalities": ["audio", "text"],
-        "voice": agent_voice,
-    }
+    session_config = dashboard_token_session_config(realtime_model, agent_voice)
 
     token_logger.info(
         "requesting_ephemeral_token",
         model=session_config["model"],
     )
 
-    # Request ephemeral token from OpenAI Realtime sessions endpoint
-    # The session_config is sent directly as the request body (not wrapped)
+    # GA endpoint: POST /v1/realtime/client_secrets with the session wrapped in
+    # {"session": ...}; the key comes back as `value`.
     try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                "https://api.openai.com/v1/realtime/sessions",
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                },
-                json=session_config,
-                timeout=30.0,
+        response = await post_client_secret(api_key, session_config)
+        if not response.is_success:
+            token_logger.error(
+                "openai_token_error",
+                status_code=response.status_code,
+                response_text=response.text,
+            )
+            raise HTTPException(
+                status_code=response.status_code,
+                detail=f"OpenAI API error: {response.text}",
             )
 
-            if not response.is_success:
-                token_logger.error(
-                    "openai_token_error",
-                    status_code=response.status_code,
-                    response_text=response.text,
-                )
-                raise HTTPException(
-                    status_code=response.status_code,
-                    detail=f"OpenAI API error: {response.text}",
-                )
+        try:
+            key = parse_client_secret(response)
+        except ClientSecretError as e:
+            token_logger.exception("openai_token_unusable", error=str(e))
+            raise HTTPException(
+                status_code=502, detail="The voice provider returned no session key"
+            ) from e
+        token_logger.info("ephemeral_token_created")
 
-            token_data = response.json()
-            token_logger.info("ephemeral_token_created")
+        # Get integration credentials for the workspace
+        integrations: dict[str, dict[str, Any]] = {}
+        if workspace_uuid:
+            integrations = await get_workspace_integrations(user_uuid, workspace_uuid, db)
 
-            # Get integration credentials for the workspace
-            integrations: dict[str, dict[str, Any]] = {}
-            if workspace_uuid:
-                integrations = await get_workspace_integrations(user_uuid, workspace_uuid, db)
+        # Build tool definitions for the agent
+        tool_registry = ToolRegistry(
+            db, user_id, integrations=integrations, workspace_id=workspace_uuid
+        )
+        tools = tool_registry.get_all_tool_definitions(agent.enabled_tools, agent.enabled_tool_ids)
 
-            # Build tool definitions for the agent
-            tool_registry = ToolRegistry(
-                db, user_id, integrations=integrations, workspace_id=workspace_uuid
-            )
-            tools = tool_registry.get_all_tool_definitions(
-                agent.enabled_tools, agent.enabled_tool_ids
-            )
+        token_logger.info(
+            "tools_prepared",
+            tool_count=len(tools),
+            enabled_tools=agent.enabled_tools,
+            enabled_tool_ids=agent.enabled_tool_ids,
+            tool_names=[t.get("name") for t in tools],
+        )
 
-            token_logger.info(
-                "tools_prepared",
-                tool_count=len(tools),
-                enabled_tools=agent.enabled_tools,
-                enabled_tool_ids=agent.enabled_tool_ids,
-                tool_names=[t.get("name") for t in tools],
-            )
+        # Build instructions with language for the frontend to use
+        system_prompt = agent.system_prompt or "You are a helpful voice assistant."
+        instructions_with_language = build_instructions_with_language(system_prompt, agent.language)
 
-            # Build instructions with language for the frontend to use
-            system_prompt = agent.system_prompt or "You are a helpful voice assistant."
-            instructions_with_language = build_instructions_with_language(
-                system_prompt, agent.language
-            )
-
-            # Return token data with agent info and tools
-            return {
-                "client_secret": token_data.get("client_secret", {}),
-                "agent": {
-                    "id": str(agent.id),
-                    "name": agent.name,
-                    "tier": agent.pricing_tier,
-                    "system_prompt": agent.system_prompt,
-                    "language": agent.language,
-                    "voice": agent_voice,
-                    "instructions": instructions_with_language,
-                    "enabled_tools": agent.enabled_tools,
-                    "initial_greeting": agent.initial_greeting,
-                },
-                "session_config": session_config,
-                "tools": tools,
-            }
+        # Return token data with agent info and tools
+        return {
+            "value": key["value"],
+            "expires_at": key["expires_at"],
+            "agent": {
+                "id": str(agent.id),
+                "name": agent.name,
+                "tier": agent.pricing_tier,
+                "system_prompt": agent.system_prompt,
+                "language": agent.language,
+                "voice": agent_voice,
+                "instructions": instructions_with_language,
+                "enabled_tools": agent.enabled_tools,
+                "initial_greeting": agent.initial_greeting,
+            },
+            "session_config": session_config,
+            "tools": tools,
+        }
 
     except httpx.RequestError as e:
         token_logger.exception("openai_token_request_error", error=str(e))
