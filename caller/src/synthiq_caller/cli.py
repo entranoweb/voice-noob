@@ -636,8 +636,14 @@ def main(argv: list[str] | None = None) -> int:
     bank_scn.add_argument("--clips", required=True)
     bank_scn.add_argument("--call", required=True)
 
+    from synthiq_caller.upload import register as register_upload
+
+    register_upload(sub)
+
     args = parser.parse_args(argv)
     utf8_console()
+    if args.command == "upload":
+        return int(args.handler(args))
     if args.command == "report":
         return report(args.directory, details=not args.summary_only, fail_under=args.fail_under)
     if args.command == "preflight":

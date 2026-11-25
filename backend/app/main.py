@@ -15,6 +15,7 @@ from app.api import (
     agents,
     audit,
     auth,
+    caller_runs,
     calls,
     campaigns,
     compliance,
@@ -273,6 +274,7 @@ app.include_router(embed.router)  # Public embed API (unauthenticated)
 app.include_router(embed.ws_router)  # Public embed WebSocket
 app.include_router(qa.router)  # QA Testing Framework API
 app.include_router(testing.router)  # Pre-deployment Testing API
+app.include_router(caller_runs.router)  # Results uploaded from the caller rig
 
 # Include Prometheus metrics router (feature-flagged)
 if settings.ENABLE_PROMETHEUS_METRICS:
