@@ -58,7 +58,6 @@ export const AVAILABLE_INTEGRATIONS: Integration[] = [
     enabled: true,
     isBuiltIn: true,
     badge: "Synthiq Voice",
-    documentationUrl: "/docs/call-control-tools",
     tools: [
       {
         id: "end_call",
@@ -80,7 +79,6 @@ export const AVAILABLE_INTEGRATIONS: Integration[] = [
     enabled: true,
     isBuiltIn: true,
     badge: "Synthiq Voice",
-    documentationUrl: "/docs/crm-tools",
     tools: [
       {
         id: "search_customer",
@@ -109,7 +107,6 @@ export const AVAILABLE_INTEGRATIONS: Integration[] = [
     enabled: true,
     isBuiltIn: true,
     badge: "Synthiq Voice",
-    documentationUrl: "/docs/booking-tools",
     tools: [
       {
         id: "check_availability",
