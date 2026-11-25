@@ -13,7 +13,7 @@ build their schema from the models, so no test saw it. The migration-drift
 check added alongside this revision is what found it.
 
 Revision ID: c7d1e2f3a4b5
-Revises: b83d1c4f7a90
+Revises: c4a11e7d9b01
 """
 
 from collections.abc import Sequence
@@ -22,7 +22,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "c7d1e2f3a4b5"
-down_revision: str | None = "b83d1c4f7a90"
+down_revision: str | None = "c4a11e7d9b01"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
