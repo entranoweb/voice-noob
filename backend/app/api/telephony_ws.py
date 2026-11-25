@@ -157,16 +157,26 @@ class _CallRegistration:
 
     task: asyncio.Task[bool] | None = None
 
-    async def start(self, **call: Any) -> None:
+    async def start(self, **call: Any) -> bool:
+        """Register; whether the registry took the call (``register_call``'s answer)."""
         self.task = asyncio.create_task(register_call(**call), name="call_registration")
-        await asyncio.shield(self.task)
+        return await asyncio.shield(self.task)
 
     async def settle(self) -> bool:
-        """Wait for a write that was started; whether there was one."""
+        """Wait for the write to land; whether the call is in the registry.
+
+        A second cancellation while waiting is absorbed: this runs in teardown,
+        and giving up here would skip the unregister that follows and leave the
+        key for its whole TTL. The wait is bounded by the registry's own timeout.
+        """
         if self.task is None:
             return False
-        await asyncio.wait({self.task})
-        return True
+        while not self.task.done():
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.wait({self.task})
+        if self.task.cancelled() or self.task.exception() is not None:
+            return False
+        return self.task.result()
 
 
 # Error codes the Realtime API raises for a race the call survives: the model was
@@ -662,8 +672,10 @@ async def _persist_call_artifacts(
     # transcript, took that error and the rollback that followed only cleared it
     # for the writes after, so the transcript was the one thing lost. Whatever
     # that tool had pending is not committed with the call.
-    with contextlib.suppress(Exception):
+    try:
         await db.rollback()
+    except Exception:
+        log.warning("pre_persist_rollback_failed", exc_info=True)
 
     if store_transcript:
         transcript = realtime_session.get_transcript()
@@ -818,14 +830,17 @@ async def twilio_media_stream(  # noqa: PLR0912, PLR0915
             nonlocal call_sid, call_registered
             call_sid = sid
             try:
-                await registration.start(
+                registered = await registration.start(
                     call_id=sid,
                     agent_id=agent_id,
                     metadata={"provider": "twilio", "session_id": session_id},
                 )
-                record_call_initiated(agent_id)
-                call_registered = True
-                log.info("call_registered", call_sid=sid)
+                if registered:
+                    record_call_initiated(agent_id)
+                    call_registered = True
+                    log.info("call_registered", call_sid=sid)
+                else:
+                    log.warning("call_registration_refused", call_sid=sid)
             except Exception:
                 log.exception("call_registration_failed", call_sid=sid)
 
@@ -1264,14 +1279,17 @@ async def telnyx_media_stream(  # noqa: PLR0912, PLR0915
             nonlocal call_control_id, call_registered
             call_control_id = cid
             try:
-                await registration.start(
+                registered = await registration.start(
                     call_id=cid,
                     agent_id=agent_id,
                     metadata={"provider": "telnyx", "session_id": session_id},
                 )
-                record_call_initiated(agent_id)
-                call_registered = True
-                log.info("call_registered", call_control_id=cid)
+                if registered:
+                    record_call_initiated(agent_id)
+                    call_registered = True
+                    log.info("call_registered", call_control_id=cid)
+                else:
+                    log.warning("call_registration_refused", call_control_id=cid)
             except Exception:
                 log.exception("call_registration_failed", call_control_id=cid)
 

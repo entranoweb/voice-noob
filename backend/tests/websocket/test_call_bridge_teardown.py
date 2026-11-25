@@ -306,7 +306,7 @@ async def _carrier_closed(call: _Call, *, deadline_s: float = 1.0) -> int | None
 async def _no_bridge_tasks_left() -> None:
     await asyncio.sleep(0.05)
     names = {t.get_name() for t in asyncio.all_tasks() if not t.done()}
-    assert not names & {"carrier_to_model", "model_to_carrier"}, names
+    assert not names & {"carrier_to_model", "model_to_carrier", "call_registration"}, names
 
 
 @pytest.mark.parametrize("open_call", CARRIERS, indirect=True)
@@ -784,33 +784,113 @@ class TestPersistenceFailure:
 class TestCallEndBookkeeping:
     """What the end of a call leaves behind in the registry and on the record."""
 
-    @pytest.mark.asyncio
-    async def test_a_call_that_dies_while_it_is_registering_leaves_no_registry_key(
-        self, open_call: Any, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        # The registry write lands, and the task that issued it is cancelled
-        # before it returns (Redis: HSET answered, EXPIRE still to come). The
-        # model closing right after the start frame cancels the carrier task
-        # exactly there.
+    @staticmethod
+    def _slow_registry(monkeypatch: pytest.MonkeyPatch) -> tuple[set[str], list[str]]:
+        """A registry whose write takes 0.2 s to land, as a command in flight does.
+
+        Cancelling the caller after the command went out does not stop the
+        server applying it: the key appears 0.2 s later, after whatever the
+        caller did in between, including its own delete. Finishing the write
+        before unregistering is the only way the delete can win.
+        """
         keys: set[str] = set()
+        unregistered: list[str] = []
 
         async def _register(call_id: str, **_: Any) -> bool:
+            try:
+                await asyncio.sleep(0.2)
+            except asyncio.CancelledError:
+                asyncio.get_running_loop().call_later(0.2, keys.add, call_id)
+                raise
             keys.add(call_id)
-            await asyncio.sleep(0.3)
             return True
 
         async def _unregister(call_id: str) -> bool:
+            unregistered.append(call_id)
             keys.discard(call_id)
             return True
 
         monkeypatch.setattr(telephony_ws, "register_call", _register)
         monkeypatch.setattr(telephony_ws, "unregister_call", _unregister)
+        return keys, unregistered
+
+    @pytest.mark.asyncio
+    async def test_a_call_that_dies_while_it_is_registering_leaves_no_registry_key(
+        self, open_call: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        keys, _ = self._slow_registry(monkeypatch)
         async with open_call.call() as call:
+            # The model closing right after the start frame cancels the carrier
+            # task while its registration is in flight.
             _session().connection.close()
             assert await _carrier_closed(call, deadline_s=3.0) == 1000
 
+        await asyncio.sleep(0.6)  # past any late write
         assert keys == set(), "the call's registry key outlived the call"
         await _no_bridge_tasks_left()
+
+    @pytest.mark.asyncio
+    async def test_a_second_cancel_while_waiting_for_the_registration_still_unregisters(
+        self, open_call: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        keys, unregistered = self._slow_registry(monkeypatch)
+        async with open_call.call() as call:
+            _session().connection.close()
+            await asyncio.sleep(0.1)  # teardown is now waiting for the write
+            assert call.ws._task is not None
+            call.ws._task.cancel()
+            await asyncio.sleep(0.6)
+
+        assert unregistered == [open_call.provider_call_id]
+        assert keys == set()
+        await _no_bridge_tasks_left()
+
+    @pytest.mark.asyncio
+    async def test_a_registration_that_failed_is_not_reported_as_one(
+        self, open_call: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        initiated: list[str] = []
+        completed: list[str] = []
+
+        async def _register(call_id: str, **_: Any) -> bool:
+            return False
+
+        async def _unregister(call_id: str) -> bool:
+            return True
+
+        monkeypatch.setattr(telephony_ws, "register_call", _register)
+        monkeypatch.setattr(telephony_ws, "unregister_call", _unregister)
+        monkeypatch.setattr(telephony_ws, "record_call_initiated", initiated.append)
+        monkeypatch.setattr(
+            telephony_ws, "record_call_completed", lambda agent_id, **_: completed.append(agent_id)
+        )
+        async with open_call.call() as call:
+            await call.media()
+            await call.stop()
+            await _closed_within(_session(), HANG_UP_BUDGET_S)
+
+        assert initiated == []
+        assert completed == []
+        await _no_bridge_tasks_left()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_rollback_before_persisting_is_logged_and_the_call_still_saved(
+        self, open_call: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def _boom(self: AsyncSession) -> None:
+            message = "rollback failed"
+            raise RuntimeError(message)
+
+        monkeypatch.setattr(AsyncSession, "rollback", _boom)
+        with structlog.testing.capture_logs() as logs:
+            async with open_call.call() as call:
+                await call.media()
+                await call.stop()
+                await _closed_within(_session(), HANG_UP_BUDGET_S)
+
+        warned = [e for e in logs if e.get("event") == "pre_persist_rollback_failed"]
+        assert [e["log_level"] for e in warned] == ["warning"]
+        assert (await open_call.record()).transcript == "User: hello"
 
     @pytest.mark.asyncio
     async def test_a_tool_cancelled_after_the_grace_does_not_lose_the_transcript(
@@ -881,6 +961,10 @@ def test_the_shutdown_budgets_fit_inside_each_other() -> None:
     assert len(found) == 1, "the backend service must set stop_grace_period, in seconds"
     stop_grace_s = float(found[0])
 
+    # Margins, not bare inequalities: the bridges' database writes and the
+    # worker's exit take time that is in neither figure.
+    write_margin_s = 10.0
+    kill_margin_s = 5.0
     worker_work_s = settings.CALL_TOOL_GRACE_S + settings.SHUTDOWN_DRAIN_TIMEOUT
-    assert worker_work_s < conf.graceful_timeout
-    assert conf.graceful_timeout < stop_grace_s
+    assert worker_work_s + write_margin_s <= conf.graceful_timeout
+    assert conf.graceful_timeout + kill_margin_s <= stop_grace_s
