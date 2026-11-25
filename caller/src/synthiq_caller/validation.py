@@ -104,7 +104,7 @@ def validate_directory(
                 missing_target=list(scenario.missing_target),
             )
         )
-    for file, chain in load_chains(directory):
+    for file, chain in load_chains(directory, target):
         missing = []
         if bank is not None:
             for call in chain.calls:
@@ -133,6 +133,9 @@ def validate_directory(
                 needs_recordings=sum(len(call.missing_clips) for call in chain.calls),
                 requires_state=prereq.state,
                 requires_detail=prereq.detail,
+                missing_target=[
+                    f"{call.id}: {part}" for call in chain.calls for part in call.missing_target
+                ],
             )
         )
     return rows

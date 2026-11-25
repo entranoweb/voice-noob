@@ -1,0 +1,56 @@
+{
+  "name": "wired-target-example",
+  "notes": "An example of a profile that also says how the rig reaches the system around a call. Copy it, keep the copy outside the repository if it names anything real, and replace every <PLACEHOLDER>. Each command is a list (a program, then each argument) and is run without a shell from the directory the batch is started in, so give paths that hold from there or absolute ones. Connection details are never written here: the read-back script takes them from SYNTHIQ_READBACK_DSN and SYNTHIQ_READBACK_SCOPE_ID. Check the whole thing with: synthiq-caller batch <scenarios> --target <this file> --leg fake --clips <bank> --out <dir> --dry-run. The commands below follow the product's fixture tooling: 'restore' puts the test tenant back to its seeded state, 'adopt' records what the call just created as the rig's own so that a later purge may remove it. allow_mutating is the most a batch may change here; it does not switch mutation on, the batch's --allow-mutating does.",
+  "timezone": "Europe/London",
+  "naive_times": "UTC",
+  "identity_budget": 2,
+  "allow_mutating": "books",
+  "fixture_faults": {
+    "sophie_v2_register_patient": [
+      "DUPLICATE_FOUND"
+    ]
+  },
+  "reset": {
+    "command": [
+      "npm",
+      "--prefix",
+      "<PRODUCT_CHECKOUT>",
+      "run",
+      "voice:fixture",
+      "--",
+      "restore",
+      "--apply",
+      "--confirm-host",
+      "<TEST_DATABASE_HOST>"
+    ],
+    "timeout_s": 300
+  },
+  "after_call": {
+    "command": [
+      "npm",
+      "--prefix",
+      "<PRODUCT_CHECKOUT>",
+      "run",
+      "voice:fixture",
+      "--",
+      "adopt",
+      "--conversation",
+      "{call_ref}"
+    ],
+    "only_when_mutating": true,
+    "timeout_s": 180
+  },
+  "read_back": {
+    "command": [
+      "python",
+      "<CALLER_CHECKOUT>/scripts/read_back_sql.py",
+      "--queries",
+      "<QUERIES_FILE_OUTSIDE_THE_REPOSITORY>"
+    ],
+    "timeout_s": 30
+  },
+  "bookings": {
+    "01-consultation-self-pay-shoulder": {},
+    "book-then-cancel/book": {}
+  }
+}
