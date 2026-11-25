@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 
 import structlog
 from fastapi import APIRouter, Depends, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -34,6 +34,10 @@ from app.models.user_integration import UserIntegration
 from app.models.user_settings import UserSettings
 from app.models.workspace import Workspace
 from app.services.data_protection import (
+    DRY_RUN,
+    MAX_RETENTION_DAYS,
+    MIN_RETENTION_DAYS,
+    RECORDINGS_LEFT,
     call_record_owner_filter,
     contact_owner_filter,
     erase_account_data,
@@ -117,7 +121,11 @@ class UpdatePrivacySettingsRequest(BaseModel):
     """Request to update privacy settings."""
 
     privacy_policy_url: str | None = None
-    data_retention_days: int | None = None
+    # Bounded: 0 or a negative number would make every call the account has
+    # "older than the period".
+    data_retention_days: int | None = Field(
+        default=None, ge=MIN_RETENTION_DAYS, le=MAX_RETENTION_DAYS
+    )
     openai_dpa_signed: bool | None = None
     telnyx_dpa_signed: bool | None = None
     deepgram_dpa_signed: bool | None = None
@@ -156,6 +164,12 @@ class DataDeletionResponse(BaseModel):
 
     deleted_counts: dict[str, int]
     deleted_at: datetime
+    # False while something of the account's is still held where this erasure
+    # cannot reach it.
+    complete: bool = True
+    # Recordings a carrier still holds, by the carrier's own call id. Delete
+    # them in the carrier's account.
+    not_erased_here: list[dict[str, str]] = []
 
 
 # =============================================================================
@@ -207,6 +221,17 @@ def _run_check(
     if run is None:
         return ComplianceCheckItem(id=check_id, label=label, description=never, status="warning")
     when = run.started_at.date().isoformat()
+    left = int((run.counts or {}).get(RECORDINGS_LEFT, 0)) if run.status == STATUS_SUCCEEDED else 0
+    if left:
+        return ComplianceCheckItem(
+            id=check_id,
+            label=label,
+            description=(
+                f"{succeeded} {when}, but {left} call recording(s) are still held by the "
+                "carrier and were not erased here"
+            ),
+            status="warning",
+        )
     if run.status == STATUS_SUCCEEDED:
         return ComplianceCheckItem(
             id=check_id, label=label, description=f"{succeeded} {when}", status="complete"
@@ -241,6 +266,16 @@ def _retention_check(retention_days: int, last_sweep: ComplianceRun | None) -> C
             label=label,
             description=f"{period} The last retention sweep failed on {when}.",
             status="incomplete",
+        )
+    if (last_sweep.counts or {}).get(DRY_RUN):
+        return ComplianceCheckItem(
+            id="data_retention",
+            label=label,
+            description=(
+                f"{period} The first sweep ran on {when} as a rehearsal: it counted what it "
+                "would delete and deleted nothing. Deletion starts with the next sweep."
+            ),
+            status="warning",
         )
     started = last_sweep.started_at
     if started.tzinfo is None:
@@ -1020,7 +1055,8 @@ async def delete_user_data(
     now = datetime.now(UTC)
     try:
         run = await start_run(db, KIND_ERASURE, trigger=TRIGGER_USER, user_id=user_id)
-        deleted_counts = await erase_account_data(db, user_id)
+        not_erased: list[dict[str, str]] = []
+        deleted_counts = await erase_account_data(db, user_id, not_erased)
         finish_run(run, deleted_counts)
         await record_audit(
             db,
@@ -1028,7 +1064,7 @@ async def delete_user_data(
             actor_user_id=user_id,
             target_type="account",
             target_id=str(user_id),
-            details={"deleted": deleted_counts},
+            details={"deleted": deleted_counts, "not_erased_here": not_erased},
             request=http_request,
         )
         await db.commit()
@@ -1042,6 +1078,8 @@ async def delete_user_data(
     return DataDeletionResponse(
         deleted_counts=deleted_counts,
         deleted_at=now,
+        complete=not not_erased,
+        not_erased_here=not_erased,
     )
 
 

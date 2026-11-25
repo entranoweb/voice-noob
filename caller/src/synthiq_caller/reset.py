@@ -72,7 +72,7 @@ class NoReset:
 class CommandReset:
     """Run a command; exit code 0 within the time limit means the system is clean.
 
-    A string is run through the shell, a list is run as it stands. The scenario
+    The command is never run through a shell (``external.py``). The scenario
     is passed in the environment (``SYNTHIQ_SCENARIO_FILE`` and the rest).
     """
 
