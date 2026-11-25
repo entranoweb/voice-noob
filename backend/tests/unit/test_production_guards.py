@@ -24,6 +24,7 @@ from app.core import safe_http
 from app.core.config import (
     InsecureDefaultCredentialsError,
     Settings,
+    is_shipped_admin_password,
     refuse_default_credentials,
     settings,
 )
@@ -455,3 +456,44 @@ class TestOneOwnerMigration:
             duplicates = migration.find_duplicates(conn)
 
         assert duplicates == [[("r1", "owner-a"), ("r2", "owner-b")]]
+
+
+class TestDevelopmentSetupEnvironment:
+    """`make setup` must produce an environment the start-up checks accept."""
+
+    def test_the_generated_backend_env_is_not_refused(self) -> None:
+        path = REPO / "scripts" / "dev_env.py"
+        spec = importlib.util.spec_from_file_location("dev_env", path)
+        assert spec is not None
+        assert spec.loader is not None
+        dev_env = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(dev_env)
+
+        example = (REPO / "backend" / ".env.example").read_text(encoding="utf-8")
+        rendered = dev_env.render_backend_env(example, "f" * 64, "a-generated-admin-password")
+        values = dict(
+            line.split("=", 1)
+            for line in rendered.splitlines()
+            if "=" in line and not line.lstrip().startswith("#")
+        )
+
+        candidate = Settings(  # type: ignore[call-arg]
+            _env_file=None,
+            SECRET_KEY=values["SECRET_KEY"],
+            DEBUG=values.get("DEBUG", "false").strip().lower() == "true",
+            DATABASE_URL=values["DATABASE_URL"],
+            REDIS_URL=values["REDIS_URL"],
+        )
+        refuse_default_credentials(candidate)
+        assert not is_shipped_admin_password(values["ADMIN_PASSWORD"])
+
+    def test_the_example_file_alone_would_be_refused(self) -> None:
+        """Which is why setup rewrites it: the example's admin password is public."""
+        example = (REPO / "backend" / ".env.example").read_text(encoding="utf-8")
+        shipped = next(
+            line.split("=", 1)[1]
+            for line in example.splitlines()
+            if line.startswith("ADMIN_PASSWORD=")
+        )
+
+        assert is_shipped_admin_password(shipped)
