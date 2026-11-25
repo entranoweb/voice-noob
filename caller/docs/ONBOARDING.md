@@ -92,6 +92,15 @@ platform's whole-second turn times, so every clip is flagged and **a person must
 listen to each one** before the clip is trusted (see the README, "Capture a live
 call into a test"). The skeleton states no expectations; step 6 covers that.
 
+Every clip cut from a captured call is a **real** recording and is special-category
+data. Before a batch, run or `validate` will accept it, fill in two columns of
+`clips/manifest.csv` for each clip: `lawful_basis` (the Article 6 basis and the
+Article 9 condition you rely on) and `consent_ref` (an id pointing to where the
+consent record is held, never the record itself). `ingest` writes both empty on
+purpose, so a clip you have not decided on is refused, not played. The tones from
+`init` are marked `synthetic` and need neither. Which basis applies is your decision,
+not the tool's; see `docs/CLIP-CONSENT-AND-FORGET.md`.
+
 ## Step 4. Choose a trace adapter
 
 The trace adapter reads back what the agent did during a call: which tools it
@@ -133,7 +142,8 @@ Rules that matter for a first three:
   must say (`expect.agent_says`). With none, the scenario is **ungradeable**.
 - `when` is a pattern over what the agent says. Check each against the agent's
   real first lines, taken from a captured transcript.
-- A clip must exist in the bank and a person must have confirmed what it says.
+- A clip must exist in the bank, a person must have confirmed what it says, and a real
+  clip must carry `lawful_basis` and `consent_ref` (step 3).
   Clips from `ingest` are unconfirmed until someone listens and fills in
   `checked_by_human` in `clips/manifest.csv`, or records a correction in
   `overrides.json`.

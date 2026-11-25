@@ -385,3 +385,21 @@ def test_the_guide_uses_real_commands_and_promises_nothing_that_does_not_exist()
     assert "does not exist yet" in guide and "--strict" in guide
     assert not re.search(r"^\s*synthiq-caller .*--strict", guide, re.M)
     assert '"--strict"' not in _source().replace('"--strict" not in', "")
+
+
+def test_the_guide_names_the_consent_fields_for_real_clips() -> None:
+    guide = (Path(__file__).resolve().parents[1] / "docs" / "ONBOARDING.md").read_text("utf-8")
+    assert "lawful_basis" in guide
+    assert "consent_ref" in guide
+
+
+def test_the_tones_init_writes_are_synthetic_and_need_no_consent(tmp_path: Path) -> None:
+    import csv
+
+    target = tmp_path / "t"
+    assert cli.main(["init", str(target)]) == 0
+    with (target / "clips" / "manifest.csv").open(encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    assert rows
+    assert all(row["provenance"].startswith("synthetic") for row in rows)
+    assert all(not row.get("lawful_basis") and not row.get("consent_ref") for row in rows)
