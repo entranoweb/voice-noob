@@ -83,3 +83,6 @@ Thumbs.db
 # Rehearsal signing keys from .claude/skills/synthiq-voice-calls (see keygen).
 telnyx_rehearsal_key
 telnyx_rehearsal_key.pub
+
+# Local caller-audio storage written by tests and dev runs
+backend/data/

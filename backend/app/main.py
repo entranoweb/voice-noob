@@ -12,6 +12,7 @@ from slowapi.errors import RateLimitExceeded
 
 from app.api import (
     agents,
+    api_tokens,
     audit,
     auth,
     caller_runs,
@@ -22,6 +23,7 @@ from app.api import (
     embed,
     health,
     integrations,
+    password_reset,
     phone_numbers,
     qa,
     realtime,
@@ -258,6 +260,8 @@ app.include_router(calls.router)  # Call history API
 app.include_router(campaigns.router, prefix=settings.API_V1_PREFIX)  # Campaigns API
 app.include_router(phone_numbers.router)  # Phone numbers API
 app.include_router(auth.router)  # Authentication API
+app.include_router(password_reset.router)  # Forgot / reset password
+app.include_router(api_tokens.router)  # Personal API tokens
 app.include_router(compliance.router)  # Compliance API (GDPR/CCPA)
 app.include_router(audit.router)  # Audit trail (read only)
 app.include_router(integrations.router)  # Integrations API (external tools)

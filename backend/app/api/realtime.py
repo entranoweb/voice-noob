@@ -8,7 +8,6 @@ from http import HTTPStatus
 from typing import Any
 
 import httpx
-import jwt
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response
@@ -18,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.integrations import get_workspace_integrations
 from app.api.settings import get_user_api_keys
-from app.core.auth import CurrentUser, user_id_to_uuid
+from app.core.auth import CurrentUser, user_from_access_token, user_id_to_uuid
 from app.core.config import settings
 from app.core.ownership import get_owned_agent
 from app.db.session import get_db
@@ -111,18 +110,7 @@ async def _user_from_socket_token(token: str | None, db: AsyncSession) -> User |
     """
     if not token:
         return None
-    try:
-        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
-        user_id = int(payload.get("sub") or 0)
-    except (jwt.PyJWTError, TypeError, ValueError):
-        return None
-    if not user_id:
-        return None
-    result = await db.execute(select(User).where(User.id == user_id))
-    user = result.scalar_one_or_none()
-    if user is None or not user.is_active:
-        return None
-    return user
+    return await user_from_access_token(token, db)
 
 
 @router.websocket("/realtime/{agent_id}")

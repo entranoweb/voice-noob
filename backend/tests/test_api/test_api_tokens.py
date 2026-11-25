@@ -14,15 +14,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
 import sqlalchemy as sa
-from fastapi.routing import APIRoute
 
 from app.core.audit import AuditAction
-from app.core.auth import get_current_user
 from app.main import app
 from app.models.api_token import ApiToken
 from app.models.audit_event import AuditEvent
@@ -251,31 +250,25 @@ class TestWhatTheTokenCanDo:
         """
         lc = lifecycle
         created = await _create(lc, lc.alice)
-        allowed = {(RUNS, "POST"), (f"{RUNS}/{{run_pk}}/audio", "PUT")}
+        allowed = {(RUNS, "post"), (f"{RUNS}/{{run_pk}}/audio", "put")}
         checked = 0
-        for route in app.routes:
-            if not isinstance(route, APIRoute) or not _needs_user(route):
-                continue
-            for method in route.methods - {"HEAD", "OPTIONS"}:
-                if (route.path, method) in allowed:
+        # The OpenAPI document lists every route that sits behind the bearer scheme,
+        # however deep in its dependencies, and does not depend on how FastAPI
+        # stores included routers.
+        for path_template, operations in app.openapi()["paths"].items():
+            for method, operation in operations.items():
+                if "security" not in operation or (path_template, method) in allowed:
                     continue
-                path = route.path
-                for name in route.param_convertors:
-                    path = path.replace("{" + name + "}", "1")
+                path = re.sub(r"\{[^}]+\}", "1", path_template)
                 response = await lc.client.request(
-                    method, path, headers=_bearer(created["token"]), content=b""
+                    method.upper(), path, headers=_bearer(created["token"]), content=b""
                 )
-                assert response.status_code == 401, f"{method} {route.path}: {response.status_code}"
+                assert response.status_code == 401, (
+                    f"{method.upper()} {path_template}: {response.status_code}"
+                )
                 checked += 1
         assert checked > 50, "the sweep found suspiciously few routes"
-        assert any(r.path == RUNS for r in app.routes if isinstance(r, APIRoute))
-
-
-def _needs_user(route: APIRoute) -> bool:
-    def walk(dependant: Any) -> bool:
-        return dependant.call is get_current_user or any(walk(d) for d in dependant.dependencies)
-
-    return walk(route.dependant)
+        assert RUNS in app.openapi()["paths"]
 
 
 class TestWhenTheTokenStopsWorking:

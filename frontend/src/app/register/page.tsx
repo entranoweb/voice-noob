@@ -1,8 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useAuth } from "@/hooks/use-auth";
+import { useSignupOpen } from "@/hooks/use-signup-open";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -18,6 +20,13 @@ import { Loader2 } from "lucide-react";
 
 export default function RegisterPage() {
   const { register } = useAuth();
+  const router = useRouter();
+  const signupOpen = useSignupOpen();
+
+  // Sign-up is closed on this install: there is nothing to show here.
+  useEffect(() => {
+    if (signupOpen === false) router.replace("/login");
+  }, [signupOpen, router]);
   const [email, setEmail] = useState("");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -49,6 +58,8 @@ export default function RegisterPage() {
       setIsLoading(false);
     }
   };
+
+  if (signupOpen !== true) return null;
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-background p-4">

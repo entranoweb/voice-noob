@@ -10,6 +10,8 @@ import {
   type UpdateSettingsRequest,
 } from "@/lib/api/settings";
 import { api } from "@/lib/api";
+import { ApiTokensPanel } from "@/components/settings/api-tokens-panel";
+import { WorkspaceId } from "@/components/settings/workspace-id";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -319,6 +321,15 @@ export default function SettingsPage() {
         </div>
       </div>
 
+      {selectedWorkspaceId !== "all" && (
+        <WorkspaceId
+          workspaceId={selectedWorkspaceId}
+          workspaceName={
+            workspaces.find((ws) => ws.id === selectedWorkspaceId)?.name ?? "this workspace"
+          }
+        />
+      )}
+
       {selectedWorkspaceId === "all" && workspacesLoaded && (
         <div
           role="alert"
@@ -340,6 +351,7 @@ export default function SettingsPage() {
         <div className="flex items-center justify-between">
           <TabsList>
             <TabsTrigger value="api-keys">API Keys</TabsTrigger>
+            <TabsTrigger value="caller-tokens">Caller tokens</TabsTrigger>
             <TabsTrigger value="profile">Profile</TabsTrigger>
             <TabsTrigger value="billing">Billing</TabsTrigger>
           </TabsList>
@@ -419,6 +431,10 @@ export default function SettingsPage() {
               ))}
             </div>
           </div>
+        </TabsContent>
+
+        <TabsContent value="caller-tokens" className="mt-6">
+          <ApiTokensPanel />
         </TabsContent>
 
         <TabsContent value="profile" className="mt-6 space-y-4">
