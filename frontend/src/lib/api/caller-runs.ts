@@ -38,10 +38,12 @@ export interface CallerRunSummary {
   excluded_count: number;
   /**
    * Calls by outcome as the caller wrote it (passed, failed, void, ungradeable,
-   * ungraded, or one this page has not met), with `synthetic_calls` and
-   * `labels_unverified_calls` beside them.
+   * ungraded, or one this page has not met), with `synthetic_calls`,
+   * `labels_unverified_calls`, `unavailable_calls` and `rehearsal_calls` beside them.
    */
   outcome_counts: Record<string, number>;
+  /** Placed against a scripted stand-in (`batch --leg fake`), not an agent. */
+  rehearsal: boolean;
   of_graded: Rate;
   of_attempted: Rate;
 }
@@ -211,8 +213,13 @@ export async function getCallerCall(runId: string, callId: string): Promise<Call
   return response.data;
 }
 
-function percent(value: number): string {
-  return `${Math.round(value * 100)}%`;
+/**
+ * A fraction as a percentage, cut down to one decimal place and never rounded
+ * up: 199 of 200 is "99.5%", not "100%". A whole number shows without ".0".
+ */
+export function percent(value: number): string {
+  const tenths = Math.floor(value * 1000 + 1e-9) / 10;
+  return `${Number.isInteger(tenths) ? tenths : tenths.toFixed(1)}%`;
 }
 
 /** "3 of 4 (75%)", or "none graded" when there is nothing to rate. */

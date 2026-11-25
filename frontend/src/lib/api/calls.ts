@@ -99,6 +99,23 @@ export async function getCall(callId: string): Promise<CallRecord> {
 }
 
 /**
+ * Counts and average duration over every call the user has. Worked out by the
+ * server, so it does not depend on how many calls a page happens to hold.
+ */
+export async function getCallStats(): Promise<CallStats> {
+  const response = await fetch(`${API_BASE}/api/v1/calls/stats`, {
+    headers: getAuthHeaders(),
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: response.statusText }));
+    throw new Error(error.detail ?? "Failed to fetch call stats");
+  }
+
+  return response.json();
+}
+
+/**
  * Get call statistics for an agent
  */
 export async function getAgentCallStats(agentId: string): Promise<CallStats> {

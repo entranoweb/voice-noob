@@ -310,14 +310,45 @@ def rate(passes: int, total: int) -> dict[str, Any]:
     }
 
 
-def outcome_counts(calls: list[Any]) -> dict[str, int]:
-    """Calls by outcome, plus the two provenance counts a reader needs beside a rate."""
+UNAVAILABLE = "unavailable"
+UNAVAILABLE_KEY = "_unavailable"
+REHEARSAL_PREFIX = "REHEARSAL"
+
+
+def _has_unavailable(call: Any) -> bool:
+    """Some tool's result was held back by the platform (the caller's ``unavailable`` mark)."""
+    return any(
+        item.get("result") == UNAVAILABLE or UNAVAILABLE_KEY in _dict(item.get("arguments"))
+        for item in call.tool_calls
+    )
+
+
+def outcome_counts(calls: list[Any], *, rehearsal: bool = False) -> dict[str, int]:
+    """Calls by outcome, plus the provenance counts a reader needs beside a rate.
+
+    ``rehearsal_calls``: calls the caller marked as placed against a scripted
+    stand-in. ``rehearsal_run`` is 1 when the bundle as a whole says so. Both
+    live in this JSON column so no schema change is needed to show the mark.
+    """
     counts: dict[str, int] = {}
     for call in calls:
         counts[call.outcome] = counts.get(call.outcome, 0) + 1
     counts["synthetic_calls"] = sum(bool(call.synthetic) for call in calls)
     counts["labels_unverified_calls"] = sum(bool(call.labels_unverified) for call in calls)
+    counts["unavailable_calls"] = sum(_has_unavailable(call) for call in calls)
+    counts["rehearsal_calls"] = sum(call.raw.get("rehearsal") is True for call in calls)
+    counts["rehearsal_run"] = int(rehearsal)
     return counts
+
+
+def is_rehearsal(counts: dict[str, int] | None, target_label: str) -> bool:
+    """Whether a stored run was a rehearsal, from what is already stored (older rows too)."""
+    counts = counts or {}
+    return (
+        bool(counts.get("rehearsal_calls"))
+        or bool(counts.get("rehearsal_run"))
+        or target_label.strip().upper().startswith(REHEARSAL_PREFIX)
+    )
 
 
 def scenario_table(calls: list[Any]) -> list[dict[str, Any]]:
