@@ -161,3 +161,45 @@ def test_finishing_an_earlier_removal_is_not_called_nothing_to_change(
     out = capsys.readouterr().out
     assert "finishing earlier unfinished removal rm_20260101T000000Z_abc123" in out
     assert "nothing to change" not in out
+
+
+def _recorded_run(world: dict[str, Path]) -> tuple[Path, Path, Path, Path]:
+    results = world["results"]
+    audio = results / "audio"
+    audio.mkdir()
+    caller = audio / "CA123.caller.wav"
+    agent_track = audio / "CA123.agent.wav"
+    lookalike = world["bank"] / "a1.caller.wav"  # beside the clips, not a clip
+    for path in (caller, agent_track, lookalike):
+        path.write_bytes(b"RIFF....WAVE")
+    run = results / "run-001.json"
+    data = realistic_result("a1")
+    data["line"] = {"audio": {"caller": "audio/CA123.caller.wav", "agent": "audio/CA123.agent.wav"}}
+    run.write_text(json.dumps(data), encoding="utf-8")
+    return run, caller, agent_track, lookalike
+
+
+def test_forget_deletes_the_caller_track_of_a_recorded_call_and_says_what_it_keeps(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    world = forget_world(tmp_path)
+    _run, caller, agent_track, lookalike = _recorded_run(world)
+    assert cli.main(forget_args(world, "a1", "--dry-run")) == 0
+    assert caller.exists()
+    dry = capsys.readouterr().out
+    assert "would delete caller-side call audio" in dry and "CA123.caller.wav" in dry
+    assert cli.main(forget_args(world, "a1")) == 0
+    out = capsys.readouterr().out
+    assert not caller.exists()
+    assert agent_track.exists() and "NOT deleted" in out and "CA123.agent.wav" in out
+    assert lookalike.exists()  # exact-name matching never reaches a recording beside the clips
+
+
+def test_keep_text_keeps_the_call_audio_and_lists_it(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    world = forget_world(tmp_path)
+    _run, caller, _agent, _look = _recorded_run(world)
+    assert cli.main(forget_args(world, "a1", "--reason", "retention_expired", "--keep-text")) == 0
+    assert caller.exists()
+    assert "CA123.caller.wav" in capsys.readouterr().out

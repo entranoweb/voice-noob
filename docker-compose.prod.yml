@@ -49,6 +49,8 @@ services:
       dockerfile: Dockerfile
     container_name: synthiq-backend
     restart: unless-stopped
+    volumes:
+      - caller_audio:/app/data/caller-audio
     environment:
       # Database
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD to a long random value}@postgres:5432/${POSTGRES_DB:-voice_agent}
@@ -72,6 +74,13 @@ services:
       # after it is turned on only counts what it would delete.
       RETENTION_SWEEP_ENABLED: ${RETENTION_SWEEP_ENABLED:-false}
       RETENTION_SWEEP_INTERVAL_HOURS: ${RETENTION_SWEEP_INTERVAL_HOURS:-24}
+      # Where the audio of caller test calls is kept: one WAV file per side of a
+      # call, under a folder per workspace. It must be a persistent volume (the
+      # one below), or every redeploy deletes the recordings the database still
+      # lists. Each workspace sets how long audio is kept (30 days unless changed).
+      CALLER_AUDIO_DIR: ${CALLER_AUDIO_DIR:-/app/data/caller-audio}
+      CALLER_AUDIO_MAX_BYTES: ${CALLER_AUDIO_MAX_BYTES:-67108864}
+      CALLER_AUDIO_EXPIRY_INTERVAL_MINUTES: ${CALLER_AUDIO_EXPIRY_INTERVAL_MINUTES:-60}
       # CORS - Allow frontend domain
       CORS_ORIGINS: '["${FRONTEND_URL:-http://localhost:3000}"]'
       # The origin the embed snippet points customers' sites at: the widget
@@ -127,6 +136,11 @@ services:
       # Where rate-limit counts are kept. Empty: the Redis above, shared by
       # every worker. "memory://" counts per process.
       RATE_LIMIT_STORAGE_URI: ${RATE_LIMIT_STORAGE_URI:-}
+      # Call length: a hard cap, how long a call may go without anyone speaking
+      # (0 disables), and how long a running tool may finish after the call ends.
+      CALL_MAX_DURATION_S: ${CALL_MAX_DURATION_S:-1800}
+      CALL_IDLE_TIMEOUT_S: ${CALL_IDLE_TIMEOUT_S:-120}
+      CALL_TOOL_GRACE_S: ${CALL_TOOL_GRACE_S:-10}
       DEBUG: ${DEBUG:-false}
       # Optional. A trace carries transcripts, so cleartext to a non-loopback
       # host is refused.
@@ -177,6 +191,8 @@ services:
       - synthiq-network
 
 volumes:
+  caller_audio:
+    driver: local
   postgres_data:
     driver: local
   redis_data:

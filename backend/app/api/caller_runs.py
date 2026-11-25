@@ -9,12 +9,15 @@ Every route is scoped to the signed-in user's own workspaces. A run or a call in
 somebody else's workspace is answered exactly like one that does not exist: 404.
 """
 
+import asyncio
+import hashlib
 import uuid
 from datetime import datetime
 from typing import Any
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import delete, desc, func, select
 from sqlalchemy.exc import IntegrityError
@@ -23,10 +26,21 @@ from sqlalchemy.orm import undefer
 
 from app.core.audit import AuditAction, record_audit
 from app.core.auth import CurrentUser
+from app.core.config import settings
 from app.core.limiter import limiter
 from app.db.session import get_db
+from app.models.caller_audio import TRACKS, CallerAudio
 from app.models.caller_run import CallerCall, CallerRun
 from app.models.workspace import Workspace
+from app.services.audio_store import (
+    AudioRejected,
+    AudioStore,
+    RangeNotSatisfiable,
+    get_audio_store,
+    inspect_wav,
+    parse_range,
+)
+from app.services.caller_audio import delete_audio, expire_audio
 from app.services.caller_results import (
     GRADED_OUTCOMES,
     MAX_BUNDLE_BYTES,
@@ -34,6 +48,7 @@ from app.services.caller_results import (
     ParsedBundle,
     failures_by_fault_class,
     field_tallies,
+    is_rehearsal,
     outcome_counts,
     parse_bundle,
     rate,
@@ -84,6 +99,9 @@ class RunSummary(BaseModel):
     # Calls by outcome as written (passed, failed, void, ungradeable, ungraded, ...),
     # with `synthetic_calls` and `labels_unverified_calls` beside them.
     outcome_counts: dict[str, int]
+    # A run placed against a scripted stand-in (`batch --leg fake`), not an agent.
+    # Derived from stored counts and the label; no column of its own.
+    rehearsal: bool
     of_graded: Rate
     of_attempted: Rate
 
@@ -125,6 +143,22 @@ class RunDetail(RunSummary):
     reported_summary: dict[str, Any] | None
 
 
+class AudioRef(BaseModel):
+    """One recorded side of a call. ``url`` is relative to the host and needs the same auth."""
+
+    track: str
+    url: str
+    duration_s: float
+    size_bytes: int
+    sample_rate: int
+
+
+class AudioUploadResponse(BaseModel):
+    # "stored", or "replaced" when this side of this call already had a recording.
+    status: str
+    audio: AudioRef
+
+
 class CallDetail(BaseModel):
     id: str
     run: dict[str, Any]
@@ -154,6 +188,10 @@ class CallDetail(BaseModel):
     synthetic_clips: list[str]
     labels_unverified: list[str]
     notes: dict[str, str]
+    # The recorded sides of this call that are still stored; empty when there are none.
+    audio: list[AudioRef]
+    # True when the call had recordings and retention has deleted them.
+    audio_expired: bool = False
 
 
 # =============================================================================
@@ -182,6 +220,7 @@ def _summary(run: CallerRun, workspace_name: str | None) -> dict[str, Any]:
         "not_run": run.not_run,
         "excluded_count": len(run.excluded or []),
         "outcome_counts": run.outcome_counts or {},
+        "rehearsal": is_rehearsal(run.outcome_counts, run.target_label),
         "of_graded": rate(run.passed, run.graded),
         "of_attempted": rate(run.passed, run.attempted),
     }
@@ -218,23 +257,48 @@ async def _owned_run(
     return row[0], row[1]
 
 
-async def _read_capped(request: Request) -> bytes:
+async def _read_capped(request: Request, limit: int | None = None, what: str = "bundle") -> bytes:
     """The request body, refused as soon as it is known to be over the cap."""
+    limit = MAX_BUNDLE_BYTES if limit is None else limit
     too_large = HTTPException(
         status_code=413,
-        detail=f"The bundle is larger than {MAX_BUNDLE_BYTES // (1024 * 1024)} MB",
+        detail=f"The {what} is larger than {limit // (1024 * 1024)} MB",
     )
     declared = request.headers.get("content-length", "")
-    if declared.isdigit() and int(declared) > MAX_BUNDLE_BYTES:
+    if declared.isdigit() and int(declared) > limit:
         raise too_large
     chunks: list[bytes] = []
     size = 0
     async for chunk in request.stream():
         size += len(chunk)
-        if size > MAX_BUNDLE_BYTES:
+        if size > limit:
             raise too_large
         chunks.append(chunk)
     return b"".join(chunks)
+
+
+def _audio_ref(run_pk: uuid.UUID, call_id: uuid.UUID, row: CallerAudio) -> dict[str, Any]:
+    return {
+        "track": row.track,
+        "url": f"/api/v1/caller/runs/{run_pk}/calls/{call_id}/audio/{row.track}",
+        "duration_s": row.duration_s,
+        "size_bytes": row.size_bytes,
+        "sample_rate": row.sample_rate,
+    }
+
+
+async def _delete_run_audio(db: AsyncSession, store: AudioStore, run_pk: uuid.UUID) -> None:
+    """Delete a run's audio files and rows, or refuse: never leave files behind unsaid."""
+    _, failed = await delete_audio(db, store, CallerAudio.run_pk == run_pk)
+    if failed:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=(
+                f"{len(failed)} audio file(s) could not be deleted, so the run was kept. "
+                "Check the audio directory's permissions and try again."
+            ),
+        )
 
 
 def _rows(bundle: ParsedBundle, workspace_id: uuid.UUID, user_id: int) -> CallerRun:
@@ -315,7 +379,7 @@ def _rows(bundle: ParsedBundle, workspace_id: uuid.UUID, user_id: int) -> Caller
         passed=bundle.passed,
         failed=bundle.failed,
         not_run=len(bundle.not_run),
-        outcome_counts=outcome_counts(bundle.calls),
+        outcome_counts=outcome_counts(bundle.calls, rehearsal=bundle.raw.get("rehearsal") is True),
         excluded=excluded,
         chains=bundle.chains,
         raw=bundle.raw,
@@ -377,6 +441,8 @@ async def upload_run(
                     "content. Upload with replace=true to overwrite it."
                 ),
             )
+        # The calls are replaced, so their audio goes with them; the uploader sends it again.
+        await _delete_run_audio(db, get_audio_store(), existing.id)
         await db.execute(delete(CallerCall).where(CallerCall.run_pk == existing.id))
         await db.execute(delete(CallerRun).where(CallerRun.id == existing.id))
         outcome = "replaced"
@@ -529,6 +595,23 @@ async def get_call(
     excluded = next(
         (item for item in (run.excluded or []) if item.get("call_id") == str(call.id)), None
     )
+    # Expire this workspace's due audio first, so a recording past its period is
+    # never listed or served in the gap before the periodic pass runs.
+    await expire_audio(db, get_audio_store(), workspace_ids=[run.workspace_id])
+    await db.commit()
+    stored = (
+        (
+            await db.execute(
+                select(CallerAudio)
+                .where(CallerAudio.call_id == call.id)
+                .order_by(CallerAudio.track)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    recordings = [r for r in stored if r.expired_at is None]
+    audio_expired = bool(stored) and not recordings
     return {
         "id": str(call.id),
         "run": {"id": str(run.id), "run_id": run.run_id, "target_label": run.target_label},
@@ -559,7 +642,134 @@ async def get_call(
             for key in ("trace_error", "read_back_error", "hook_error")
             if isinstance(raw.get(key), str) and raw[key]
         },
+        "audio": [_audio_ref(run.id, call.id, row) for row in recordings],
+        "audio_expired": audio_expired,
     }
+
+
+@router.put("/runs/{run_pk}/audio", response_model=AudioUploadResponse)
+@limiter.limit("120/minute")
+async def upload_audio(
+    request: Request,  # named `request` for slowapi; the body is read as a stream for the cap
+    current_user: CurrentUser,
+    run_pk: uuid.UUID,
+    file: str = Query(max_length=200, description="The call's run file name, e.g. run-001.json"),
+    track: str = Query(description="'caller' (what the rig played) or 'agent'"),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Store one side of one call as a WAV file. A separate request per file.
+
+    The run and the call must already be stored (upload the run first). The file
+    is judged by its bytes, never by the Content-Type header, and is kept under a
+    name this server generates. Sending the same side again replaces it.
+    """
+    run, _ = await _owned_run(db, run_pk, current_user.id)
+    if track not in TRACKS:
+        raise HTTPException(status_code=422, detail=f"track must be one of {list(TRACKS)}")
+    call = (
+        await db.execute(
+            select(CallerCall).where(CallerCall.run_pk == run.id, CallerCall.file == file)
+        )
+    ).scalar_one_or_none()
+    if call is None:
+        raise HTTPException(status_code=404, detail="Caller call not found")
+    data = await _read_capped(request, settings.CALLER_AUDIO_MAX_BYTES, "audio file")
+    try:
+        info = inspect_wav(data)
+    except AudioRejected as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+    store = get_audio_store()
+    key = await asyncio.to_thread(store.put, run.workspace_id, data)
+    existing = (
+        await db.execute(
+            select(CallerAudio).where(CallerAudio.call_id == call.id, CallerAudio.track == track)
+        )
+    ).scalar_one_or_none()
+    old_key = existing.storage_key if existing is not None else None
+    row = existing or CallerAudio(
+        id=uuid.uuid4(),
+        workspace_id=run.workspace_id,
+        run_pk=run.id,
+        call_id=call.id,
+        track=track,
+    )
+    row.storage_key = key
+    row.size_bytes = len(data)
+    row.duration_s = round(info.duration_s, 3)
+    row.sample_rate = info.sample_rate
+    row.channels = info.channels
+    row.sha256 = hashlib.sha256(data).hexdigest()
+    row.expired_at = None
+    db.add(row)
+    try:
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        store.delete(key)  # nothing points at it
+        raise
+    if old_key is not None:
+        store.delete(old_key)
+    logger.info("caller_audio_stored", user_id=current_user.id, track=track, bytes=len(data))
+    return {
+        "status": "replaced" if existing is not None else "stored",
+        "audio": _audio_ref(run.id, call.id, row),
+    }
+
+
+@router.get("/runs/{run_pk}/calls/{call_id}/audio/{track}")
+async def get_audio(
+    request: Request,
+    run_pk: uuid.UUID,
+    call_id: uuid.UUID,
+    track: str,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    """One recorded side of a call, with HTTP Range support so a player can seek.
+
+    A run in another user's workspace is answered exactly like audio that does
+    not exist: 404.
+    """
+    run, _ = await _owned_run(db, run_pk, current_user.id)
+    await expire_audio(db, get_audio_store(), workspace_ids=[run.workspace_id])
+    await db.commit()
+    row = (
+        await db.execute(
+            select(CallerAudio).where(
+                CallerAudio.run_pk == run.id,
+                CallerAudio.call_id == call_id,
+                CallerAudio.track == track,
+                CallerAudio.expired_at.is_(None),
+            )
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Audio not found")
+    store = get_audio_store()
+    try:
+        size = store.size(row.storage_key)
+    except OSError as error:
+        raise HTTPException(status_code=404, detail="Audio is no longer stored") from error
+    headers = {
+        "Accept-Ranges": "bytes",
+        "Cache-Control": "private, no-store",
+        "X-Content-Type-Options": "nosniff",
+    }
+    try:
+        wanted = parse_range(request.headers.get("range"), size)
+    except RangeNotSatisfiable:
+        return Response(status_code=416, headers={**headers, "Content-Range": f"bytes */{size}"})
+    start, end = wanted if wanted is not None else (0, size - 1)
+    headers["Content-Length"] = str(end - start + 1)
+    if wanted is not None:
+        headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+    return StreamingResponse(
+        store.read(row.storage_key, start, end),
+        status_code=206 if wanted is not None else 200,
+        media_type="audio/wav",
+        headers=headers,
+    )
 
 
 @router.delete("/runs/{run_pk}", status_code=status.HTTP_204_NO_CONTENT)
@@ -570,8 +780,9 @@ async def delete_run(
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> Response:
-    """Delete a run and every call in it."""
+    """Delete a run, every call in it and the audio of those calls."""
     run, _ = await _owned_run(db, run_pk, current_user.id)
+    await _delete_run_audio(db, get_audio_store(), run.id)
     await db.execute(delete(CallerCall).where(CallerCall.run_pk == run.id))
     await db.execute(delete(CallerRun).where(CallerRun.id == run.id))
     await record_audit(

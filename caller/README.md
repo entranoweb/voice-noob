@@ -241,6 +241,51 @@ the first half of turning a failed call into a permanent test.
 **Recorded voices never go in this repository.** `.gitignore` excludes audio and
 transcripts under `caller/`; point `--out` somewhere else.
 
+## Capture a live call into a test
+
+```
+export ELEVENLABS_API_KEY=...            # environment only; never printed or written
+synthiq-caller capture --trace elevenlabs --conversation <id> --out ~/cases/<name>/
+synthiq-caller ingest ~/cases/<name>/
+synthiq-caller validate ~/cases/<name>/scenarios --clips ~/cases/<name>/clips
+```
+
+`capture` makes two read-only requests and writes `conversation.json` (as
+received), `audio.<ext>` (the type is taken from the bytes, not the headers),
+`transcript.txt`, `trace.json` and `capture.json` (what was fetched, when, with
+hashes). It refuses a directory that already holds files unless `--force`, and
+says so loudly when the recording could not be had; `ingest` then has nothing to
+cut. Use `--api` for an account on a regional host.
+
+`ingest` cuts each caller turn into `clips/`, writes `clips/manifest.csv` and
+`scenarios/scenario.json`. No speech-to-text service is called. By default the
+cuts come from the platform's turn times, which are whole seconds: each cut is
+padded (`--pad`, default 0.5 s a side) and flagged `coarse_cut mixed_audio`,
+because the recording is one mixed track and a clip can carry the agent's voice
+or lose the caller's first syllable. Listen to every clip. With `--stt <file>`
+(word times and speakers from a service you configured yourself, the file
+`clipbank build` reads) the cuts are word-level.
+
+What the result claims, and does not:
+
+* Every clip is `label_status=unverified`, `provenance=real-call`, and
+  `checked_by_human` is empty: what a clip says is a machine's reading. Consent,
+  lawful basis, speaker reference and retention are not filled in (package P8).
+* The scenario's steps are the agent's questions in order, as patterns taken from
+  the platform's transcript of that one call. Check each pattern against what the
+  agent says on a new call. Persona facts are empty, `mutates` is `unknown`, and
+  **no expectations are stated**.
+* So `validate` prints `UNGRADEABLE until expectations are stated` (exit code 0:
+  the file is unfinished, not broken), and `run`/`batch` hold the scenario back
+  (`--allow-ungradeable` places the call anyway; it can only ever be ungraded,
+  never passed). Add `expect` entries, set `mutates`, and mark clips checked
+  (or use `overrides.json`) before using it as a test.
+
+The case directory holds a recording of a person and their machine-transcribed
+words. `capture` refuses an `--out` inside a git work tree unless git ignores
+it (`git check-ignore`); `caller/cases/` is ignored, so `--out cases/<name>/`
+works and anything else in the repository does not.
+
 ## Tests
 
 ```

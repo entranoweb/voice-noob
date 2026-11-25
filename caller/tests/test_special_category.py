@@ -176,3 +176,38 @@ def test_the_check_labels_hold_no_value() -> None:
     assert (
         "tool check called and succeeds" in labels and "field name reaches a tool as said" in labels
     )
+
+
+def test_the_ci_gate_tone_bank_needs_no_consent_override(tmp_path: Path) -> None:
+    from synthiq_caller.ci_gate import make_bank
+
+    scenarios = tmp_path / "set"
+    scenarios.mkdir()
+    (scenarios / "a.json").write_text(
+        json.dumps(
+            {
+                "name": "a",
+                "steps": [{"when": "how can i help", "clips": ["opener"]}],
+                "expect": {"agent_says": ["x"]},
+            }
+        ),
+        encoding="utf-8",
+    )
+    bank_dir = tmp_path / "clips"
+    names = make_bank(scenarios, bank_dir)
+    bank = ClipBank(bank_dir)
+    assert names
+    assert not bank.consent_missing([f"{n}.wav" for n in names])
+    assert all("consent" not in (bank.refusal(f"{n}.wav") or "") for n in names)
+
+
+def test_ingested_clips_are_real_and_refused_until_both_fields_are_filled(tmp_path: Path) -> None:
+    from synthiq_caller.ingest import EXTRA_COLUMNS, MANIFEST_COLUMNS, _write_manifest
+
+    assert "lawful_basis" in EXTRA_COLUMNS and "consent_ref" in EXTRA_COLUMNS
+    row = {c: "" for c in MANIFEST_COLUMNS}
+    row["clip"] = "opener"
+    _write_manifest(tmp_path / "manifest.csv", [row])
+    (tmp_path / "opener.wav").write_bytes(b"RIFF")
+    bank = ClipBank(tmp_path)
+    assert "consent record missing" in (bank.refusal("opener.wav") or "")

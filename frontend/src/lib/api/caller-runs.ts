@@ -38,10 +38,12 @@ export interface CallerRunSummary {
   excluded_count: number;
   /**
    * Calls by outcome as the caller wrote it (passed, failed, void, ungradeable,
-   * ungraded, or one this page has not met), with `synthetic_calls` and
-   * `labels_unverified_calls` beside them.
+   * ungraded, or one this page has not met), with `synthetic_calls`,
+   * `labels_unverified_calls`, `unavailable_calls` and `rehearsal_calls` beside them.
    */
   outcome_counts: Record<string, number>;
+  /** Placed against a scripted stand-in (`batch --leg fake`), not an agent. */
+  rehearsal: boolean;
   of_graded: Rate;
   of_attempted: Rate;
 }
@@ -166,6 +168,15 @@ export interface SaidEntry {
   [key: string]: unknown;
 }
 
+/** One stored side of a call. `url` is relative to the API host and needs the sign-in token. */
+export interface CallAudioRef {
+  track: "caller" | "agent" | string;
+  url: string;
+  duration_s: number;
+  size_bytes: number;
+  sample_rate: number;
+}
+
 export interface CallerCallDetail {
   id: string;
   run: { id: string; run_id: string; target_label: string };
@@ -192,6 +203,10 @@ export interface CallerCallDetail {
   synthetic_clips: string[];
   labels_unverified: string[];
   notes: Record<string, string>;
+  /** The recorded sides still stored. Absent from older servers; empty when there are none. */
+  audio?: CallAudioRef[];
+  /** True when the call had recordings and retention has deleted them. */
+  audio_expired?: boolean;
 }
 
 export async function listCallerRuns(
@@ -211,8 +226,22 @@ export async function getCallerCall(runId: string, callId: string): Promise<Call
   return response.data;
 }
 
-function percent(value: number): string {
-  return `${Math.round(value * 100)}%`;
+/**
+ * One recording as a Blob. An audio element cannot send the token, so the file is
+ * fetched through the API client (which does) and played from an object URL.
+ */
+export async function fetchCallAudio(url: string): Promise<Blob> {
+  const response = await api.get<Blob>(url, { responseType: "blob" });
+  return response.data;
+}
+
+/**
+ * A fraction as a percentage, cut down to one decimal place and never rounded
+ * up: 199 of 200 is "99.5%", not "100%". A whole number shows without ".0".
+ */
+export function percent(value: number): string {
+  const tenths = Math.floor(value * 1000 + 1e-9) / 10;
+  return `${Number.isInteger(tenths) ? tenths : tenths.toFixed(1)}%`;
 }
 
 /** "3 of 4 (75%)", or "none graded" when there is nothing to rate. */

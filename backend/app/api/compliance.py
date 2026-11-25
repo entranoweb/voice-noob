@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 import structlog
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import false, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import AuditAction, record_audit
@@ -17,6 +17,7 @@ from app.models.agent import Agent
 from app.models.appointment import Appointment
 from app.models.call_interaction import CallInteraction
 from app.models.call_record import CallRecord
+from app.models.caller_audio import CallerAudio
 from app.models.campaign import Campaign
 from app.models.compliance_run import (
     KIND_ERASURE,
@@ -156,6 +157,8 @@ class DataExportResponse(BaseModel):
     phone_numbers: list[dict[str, object]] = []
     campaigns: list[dict[str, object]] = []
     integrations: list[dict[str, object]] = []
+    # Recordings of caller calls held in the audio store: what and until when, not the sound.
+    caller_audio: list[dict[str, object]] = []
     exported_at: datetime
 
 
@@ -722,6 +725,7 @@ async def export_user_data(
             "phone_numbers": len(response.phone_numbers),
             "campaigns": len(response.campaigns),
             "integrations": len(response.integrations),
+            "caller_audio": len(response.caller_audio),
         }
         finish_run(run, counts)
         await record_audit(
@@ -929,6 +933,30 @@ async def _build_export(current_user: CurrentUser, db: AsyncSession) -> DataExpo
     privacy_settings.last_data_export_at = now
     privacy_settings.last_data_export_requested_at = now
 
+    audio_result = await db.execute(
+        select(CallerAudio, Workspace.audio_retention_days)
+        .join(Workspace, Workspace.id == CallerAudio.workspace_id)
+        .where(CallerAudio.workspace_id.in_(workspace_ids) if workspace_ids else false())
+        .where(CallerAudio.expired_at.is_(None))
+        .order_by(CallerAudio.created_at)
+    )
+    caller_audio_data: list[dict[str, object]] = [
+        {
+            "id": str(a.id),
+            "workspace_id": str(a.workspace_id),
+            "run_id": str(a.run_pk),
+            "call_id": str(a.call_id),
+            "track": a.track,
+            "duration_s": a.duration_s,
+            "size_bytes": a.size_bytes,
+            "stored_at": a.created_at.isoformat() if a.created_at else None,
+            "deleted_after": (
+                (a.created_at + timedelta(days=days)).isoformat() if a.created_at else None
+            ),
+        }
+        for a, days in audio_result.all()
+    ]
+
     return DataExportResponse(
         user=user_data,
         settings=settings_data,
@@ -943,6 +971,7 @@ async def _build_export(current_user: CurrentUser, db: AsyncSession) -> DataExpo
         phone_numbers=phone_numbers_data,
         campaigns=campaigns_data,
         integrations=integrations_data,
+        caller_audio=caller_audio_data,
         exported_at=now,
     )
 

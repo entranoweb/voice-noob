@@ -5,7 +5,7 @@ import uuid
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,7 +16,12 @@ from app.core.limiter import limiter
 from app.db.session import get_db
 from app.models.agent import Agent
 from app.models.contact import Contact
-from app.models.workspace import AgentWorkspace, Workspace
+from app.models.workspace import (
+    MAX_AUDIO_RETENTION_DAYS,
+    MIN_AUDIO_RETENTION_DAYS,
+    AgentWorkspace,
+    Workspace,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +55,7 @@ class WorkspaceResponse(BaseModel):
     description: str | None
     settings: dict[str, Any]
     is_default: bool
+    audio_retention_days: int = 30
     agent_count: int = 0
     contact_count: int = 0
 
@@ -92,6 +98,11 @@ class WorkspaceUpdate(BaseModel):
     description: str | None = None
     settings: dict[str, Any] | None = None
     is_default: bool | None = None
+    # Days the audio of this workspace's caller calls is kept (the retention job
+    # deletes it after). Omit to leave it unchanged.
+    audio_retention_days: int | None = Field(
+        default=None, ge=MIN_AUDIO_RETENTION_DAYS, le=MAX_AUDIO_RETENTION_DAYS
+    )
 
     @field_validator("name")
     @classmethod
@@ -193,6 +204,7 @@ async def list_workspaces(
                 "description": ws.description,
                 "settings": ws.settings,
                 "is_default": ws.is_default,
+                "audio_retention_days": ws.audio_retention_days,
                 "agent_count": len(ws.agent_workspaces),
                 "contact_count": contact_counts.get(ws.id, 0),
             }
@@ -241,6 +253,7 @@ async def get_workspace(
         "description": workspace.description,
         "settings": workspace.settings,
         "is_default": workspace.is_default,
+        "audio_retention_days": workspace.audio_retention_days,
         "agent_count": len(workspace.agent_workspaces),
         "contact_count": 0,
     }
@@ -280,6 +293,7 @@ async def create_workspace(
             "description": workspace.description,
             "settings": workspace.settings,
             "is_default": workspace.is_default,
+            "audio_retention_days": workspace.audio_retention_days,
             "agent_count": 0,
             "contact_count": 0,
         }
@@ -335,6 +349,8 @@ async def update_workspace(
 
     # Update fields
     update_data = workspace_data.model_dump(exclude_unset=True)
+    if update_data.get("audio_retention_days") is None:
+        update_data.pop("audio_retention_days", None)  # not nullable: null means unchanged
 
     # Handle is_default specially - if setting to true, unset other defaults
     if update_data.get("is_default") is True and not workspace.is_default:
@@ -366,6 +382,7 @@ async def update_workspace(
             "description": workspace.description,
             "settings": workspace.settings,
             "is_default": workspace.is_default,
+            "audio_retention_days": workspace.audio_retention_days,
             "agent_count": len(workspace.agent_workspaces),
             "contact_count": 0,
         }

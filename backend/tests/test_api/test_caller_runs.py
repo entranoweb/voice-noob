@@ -669,6 +669,64 @@ class TestValidityFields:
         assert call["labels_unverified"] == ["dob.wav"]
         assert call["fields"][0]["synthetic"] is True
 
+    @pytest.mark.asyncio
+    async def test_a_rehearsal_is_marked_on_the_list_and_the_run_from_stored_data(
+        self,
+        authenticated_test_client: tuple[AsyncClient, User],
+        test_workspace: Workspace,
+    ) -> None:
+        client, _ = authenticated_test_client
+        bundle = _bundle(run_id="rehearsal-1", rehearsal=True)
+        bundle["target_label"] = "REHEARSAL (scripted agent): test agent"
+        for item in bundle["runs"]:
+            item["payload"]["rehearsal"] = True
+        real = _bundle(run_id="real-1")
+        await _post(client, test_workspace.id, bundle)
+        await _post(client, test_workspace.id, real)
+
+        listed = {r["run_id"]: r for r in (await client.get(RUNS)).json()["runs"]}
+        detail = (await client.get(f"{RUNS}/{listed['rehearsal-1']['id']}")).json()
+
+        assert listed["rehearsal-1"]["rehearsal"] is True
+        assert listed["rehearsal-1"]["outcome_counts"]["rehearsal_calls"] == 4
+        assert detail["rehearsal"] is True
+        assert listed["real-1"]["rehearsal"] is False
+        assert listed["real-1"]["outcome_counts"]["rehearsal_calls"] == 0
+
+    @pytest.mark.asyncio
+    async def test_a_rehearsal_flag_on_the_bundle_alone_still_marks_the_run(
+        self,
+        authenticated_test_client: tuple[AsyncClient, User],
+        test_workspace: Workspace,
+    ) -> None:
+        client, _ = authenticated_test_client
+        bundle = _bundle(run_id="flag-only", rehearsal=True)
+
+        run = (await _post(client, test_workspace.id, bundle)).json()["run"]
+
+        assert run["rehearsal"] is True
+
+    @pytest.mark.asyncio
+    async def test_unavailable_tool_results_are_counted_per_run(
+        self,
+        authenticated_test_client: tuple[AsyncClient, User],
+        test_workspace: Workspace,
+    ) -> None:
+        client, _ = authenticated_test_client
+        held_back = _call("held-back", "ungradeable")
+        held_back["trace"]["tool_calls"] = [
+            {"name": "book", "arguments": {"_unavailable": "no result"}, "result": "unavailable"}
+        ]
+        bundle = _bundle()
+        bundle["runs"] = [
+            {"file": "run-001.json", "payload": held_back},
+            {"file": "run-002.json", "payload": _call("plain", "passed")},
+        ]
+
+        run = (await _post(client, test_workspace.id, bundle)).json()["run"]
+
+        assert run["outcome_counts"]["unavailable_calls"] == 1
+
 
 class TestAuditAndErasure:
     @pytest.mark.asyncio

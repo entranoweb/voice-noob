@@ -14,11 +14,34 @@ the carrier sit in between. For that, use the carrier's own recording.
 from __future__ import annotations
 
 import wave
+from array import array
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 TRACKS = ("caller", "agent")
+
+
+def resample(pcm: bytes, source: int, target: int) -> bytes:
+    """16-bit mono PCM moved from ``source`` to ``target`` samples a second (linear).
+
+    Good enough to listen to and to line two tracks up; it is not a measurement
+    instrument, and nothing is graded on it.
+    """
+    if source == target or not pcm:
+        return pcm
+    samples = array("h")
+    samples.frombytes(pcm[: len(pcm) - len(pcm) % 2])
+    count = max(1, round(len(samples) * target / source))
+    out = array("h")
+    last = len(samples) - 1
+    for i in range(count):
+        position = i * source / target
+        low = min(int(position), last)
+        high = min(low + 1, last)
+        fraction = position - low
+        out.append(int(samples[low] * (1 - fraction) + samples[high] * fraction))
+    return out.tobytes()
 
 
 @dataclass
@@ -31,8 +54,13 @@ class CallRecorder:
         default_factory=lambda: {name: bytearray() for name in TRACKS}
     )
 
-    def put(self, track: str, at_s: float, pcm: bytes) -> None:
-        """Place 16-bit mono PCM on ``track`` at ``at_s`` seconds after the stream started."""
+    def put(self, track: str, at_s: float, pcm: bytes, *, source_rate: int | None = None) -> None:
+        """Place 16-bit mono PCM on ``track`` at ``at_s`` seconds after the stream started.
+
+        ``source_rate`` is the rate ``pcm`` is in, when it is not the recorder's own.
+        """
+        if source_rate is not None:
+            pcm = resample(pcm, source_rate, self.rate)
         if not pcm:
             return
         buffer = self._tracks[track]

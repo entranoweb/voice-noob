@@ -17,7 +17,7 @@ import {
   Settings,
 } from "lucide-react";
 import { fetchAgents } from "@/lib/api/agents";
-import { listCalls } from "@/lib/api/calls";
+import { getCallStats, listCalls } from "@/lib/api/calls";
 import { api } from "@/lib/api";
 
 interface Workspace {
@@ -34,6 +34,14 @@ interface Appointment {
   contact_name: string | null;
 }
 
+function formatDuration(seconds: number) {
+  if (seconds === 0) return "0s";
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  if (mins === 0) return `${secs}s`;
+  return `${mins}m ${secs}s`;
+}
+
 export default function DashboardPage() {
   // Fetch agents
   const { data: agents = [] } = useQuery({
@@ -45,6 +53,12 @@ export default function DashboardPage() {
   const { data: callsData } = useQuery({
     queryKey: ["calls", 1],
     queryFn: () => listCalls({ page: 1, page_size: 5 }),
+  });
+
+  // Figures over every call, from the server: the list above holds only five.
+  const { data: callStats } = useQuery({
+    queryKey: ["call-stats"],
+    queryFn: getCallStats,
   });
 
   // Fetch workspaces
@@ -67,28 +81,18 @@ export default function DashboardPage() {
 
   const activeAgents = agents.filter((a) => a.is_active).length;
   const totalCalls = callsData?.total ?? 0;
-  // The dashboard loads the five most recent calls only, so these two figures
-  // describe that sample and are labelled as such. Only `total` is a real total.
-  const recentCount = callsData?.calls?.length ?? 0;
-  const completedCalls = callsData?.calls?.filter((c) => c.status === "completed").length ?? 0;
-  const avgDuration =
-    callsData?.calls && callsData.calls.length > 0
-      ? Math.round(
-          callsData.calls.reduce((sum, c) => sum + c.duration_seconds, 0) / callsData.calls.length
-        )
-      : 0;
+  // Over every call, not the five loaded for the list. Until the server has
+  // answered (or if it cannot) there is no figure, not a made-up one.
+  const completedText = callStats
+    ? `${callStats.completed_calls} of ${callStats.total_calls}`
+    : "-";
+  const avgDurationText = callStats
+    ? formatDuration(Math.round(callStats.average_duration_seconds))
+    : "-";
   const totalContacts = workspaces.reduce((sum, w) => sum + w.contact_count, 0);
   const upcomingAppointments = appointments.filter(
     (a) => new Date(a.scheduled_at) > new Date()
   ).length;
-
-  const formatDuration = (seconds: number) => {
-    if (seconds === 0) return "0s";
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    if (mins === 0) return `${secs}s`;
-    return `${mins}m ${secs}s`;
-  };
 
   return (
     <div className="space-y-4">
@@ -144,10 +148,8 @@ export default function DashboardPage() {
           <CardContent className="p-4">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-xs text-muted-foreground">Completed (last {recentCount})</p>
-                <p className="text-lg font-semibold">
-                  {completedCalls} of {recentCount}
-                </p>
+                <p className="text-xs text-muted-foreground">Completed (all calls)</p>
+                <p className="text-lg font-semibold">{completedText}</p>
               </div>
               <CheckCircle className="h-4 w-4 text-muted-foreground" />
             </div>
@@ -158,8 +160,8 @@ export default function DashboardPage() {
           <CardContent className="p-4">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-xs text-muted-foreground">Avg Duration (last {recentCount})</p>
-                <p className="text-lg font-semibold">{formatDuration(avgDuration)}</p>
+                <p className="text-xs text-muted-foreground">Avg Duration (all calls)</p>
+                <p className="text-lg font-semibold">{avgDurationText}</p>
               </div>
               <Clock className="h-4 w-4 text-muted-foreground" />
             </div>

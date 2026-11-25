@@ -10,3 +10,5 @@ clips-*/
 *.wav
 *.mp3
 *.stt.json
+# Captured calls (a real person's voice and words) never go in the repository.
+cases/

@@ -124,8 +124,14 @@ def _build(args: argparse.Namespace) -> tuple[Leg, TraceReader | None]:
         if not args.agent:
             raise SystemExit("--agent is required for the elevenlabs-socket leg")
         key = _secret("ELEVENLABS_API_KEY", args.env_file)
+        out = getattr(args, "out", None)
         leg = ElevenLabsSocketLeg(
-            key, args.agent, keypad_as_message=getattr(args, "keypad_as_message", False)
+            key,
+            args.agent,
+            keypad_as_message=getattr(args, "keypad_as_message", False),
+            audio_dir=str(Path(out) / "audio")
+            if out and not getattr(args, "no_audio", False)
+            else "",
         )
         return leg, _trace_reader(args)
     raise SystemExit(f"unknown or unbuilt leg: {args.leg}")
@@ -217,6 +223,13 @@ def validate(args: argparse.Namespace) -> int:
         print(
             f"\n{unchecked} file(s) require something of the system under test that was not "
             "checked (--check-requires-command or --check-requires-url)."
+        )
+    ungradeable = sum(not row.states_expectations for row in rows)
+    if ungradeable:
+        print(
+            f"\n{ungradeable} scenario(s) UNGRADEABLE until expectations are stated: they ask "
+            "nothing of a call, so no call can pass them, and a batch holds them back "
+            "(--allow-ungradeable)."
         )
     return 1 if any(row.problem for row in rows) or any(f.problem for f in findings) else 0
 
@@ -478,6 +491,7 @@ def _batch(args: argparse.Namespace) -> int:
             chains,
             leg=args.leg,
             allow_mutating=args.allow_mutating,
+            allow_ungradeable=args.allow_ungradeable,
             repeats=args.repeats,
             reset=_reset(args, dry=True),
             read_back=_read_back(args, dry=True),
@@ -518,6 +532,7 @@ def _batch(args: argparse.Namespace) -> int:
                 repeats=args.repeats,
                 max_parallel=args.max_parallel,
                 allow_mutating=args.allow_mutating,
+                allow_ungradeable=args.allow_ungradeable,
                 budget=budget,
                 hooks=hooks,
                 read_trace=not args.no_trace,
@@ -621,6 +636,7 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--out", required=True)
     run.add_argument("--env-file", default=None)
     run.add_argument("--no-trace", action="store_true", help="do not read the agent's trace")
+    run.add_argument("--no-audio", action="store_true", help="keep no per-side WAV files")
     run.add_argument("--trace", choices=TRACES, default="elevenlabs", help="where the trace is")
     run.add_argument(
         "--allow-mutating",
@@ -641,6 +657,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="play real clips that have no lawful basis or consent record (special-category "
         "data); results say 'consent record missing'. Not implied by --allow-unknown-provenance",
+    )
+    run.add_argument(
+        "--allow-ungradeable",
+        action="store_true",
+        help="place a call for a scenario that states no expectations; it can only be ungraded",
     )
     run.add_argument("--clips-extra", action="append", default=[], help="a further clip bank")
     run.add_argument("--name-budget", type=int, default=2, help="identity checks per name")
@@ -671,7 +692,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     _phone_arguments(bat)
     bat.add_argument("--no-record", action="store_true", help="phone: no carrier recording")
-    bat.add_argument("--no-audio", action="store_true", help="phone: keep no per-side WAV files")
+    bat.add_argument(
+        "--no-audio", action="store_true", help="keep no per-side WAV files (either leg)"
+    )
     bat.add_argument(
         "--trace-window",
         type=float,
@@ -702,6 +725,11 @@ def main(argv: list[str] | None = None) -> int:
     bat.add_argument("--repeats", type=int, default=1)
     bat.add_argument("--max-parallel", type=int, default=1)
     bat.add_argument("--allow-mutating", choices=sorted(ALLOWED), default="none")
+    bat.add_argument(
+        "--allow-ungradeable",
+        action="store_true",
+        help="place calls for scenarios that state no expectations; they can only be ungraded",
+    )
     bat.add_argument("--out", required=True)
     bat.add_argument("--env-file", default=None)
     bat.add_argument("--no-trace", action="store_true")
@@ -944,13 +972,16 @@ def main(argv: list[str] | None = None) -> int:
     from synthiq_caller.forget import register as register_forget
 
     register_forget(sub)
+    from synthiq_caller.capture import register as register_capture
+
+    register_capture(sub)  # also adds `ingest`
 
     args = parser.parse_args(argv)
     # Kept for the run manifest. Secrets are never on the command line: they are
     # named by environment variable.
     args.argv_raw = list(argv) if argv is not None else sys.argv[1:]
     utf8_console()
-    if args.command in ("upload", "forget"):
+    if args.command in ("upload", "forget", "capture", "ingest"):
         return int(args.handler(args))
     if args.command == "report":
         return report(args.directory, details=not args.summary_only, fail_under=args.fail_under)
@@ -1030,6 +1061,7 @@ def main(argv: list[str] | None = None) -> int:
             batch_id=batch_id,
             repeats=args.repeats,
             allow_mutating=args.allow_mutating,
+            allow_ungradeable=args.allow_ungradeable,
             budget=NameBudget(limit=args.name_budget),
             read_trace=not args.no_trace,
             settle_s=2.0,

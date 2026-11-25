@@ -45,6 +45,8 @@ class Row:
     consent_allowed: bool = False
     # What the scenario says it still needs recorded (see ``missing_clips``).
     missing_recordings: list[str] = field(default_factory=list)
+    # False for a scenario that states no expectations: it can never pass.
+    states_expectations: bool = True
 
     @property
     def problem(self) -> bool:
@@ -96,9 +98,12 @@ class Row:
             if self.missing_target
             else ""
         )
+        ungradeable = (
+            "" if self.states_expectations else "  UNGRADEABLE until expectations are stated"
+        )
         return (
             f"{self.file:<44} mutates={self.mutates:<10} {self.shape}  "
-            f"{clips}{expired}{unknown}{no_consent}{needs}  {requires}{detail}{target}"
+            f"{clips}{expired}{unknown}{no_consent}{needs}  {requires}{detail}{target}{ungradeable}"
         )
 
 
@@ -220,6 +225,7 @@ def validate_directory(
                 requires_state=prereq.state,
                 requires_detail=prereq.detail,
                 missing_target=list(scenario.missing_target),
+                states_expectations=scenario.states_expectations(),
             )
         )
     for file, chain in load_chains(directory, target):

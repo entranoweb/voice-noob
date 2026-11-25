@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/table";
 import { OutcomeBadge } from "@/components/caller/outcome-badge";
 import { ErrorState, LoadingState } from "@/components/caller/page-state";
+import { RehearsalMark } from "@/components/caller/rehearsal-mark";
 import {
   errorMessage,
   formatInterval,
@@ -54,16 +55,21 @@ function Headline({ run }: { run: CallerRunDetail }) {
           <dd className="text-right tabular-nums">{run.graded}</dd>
           <dt className="text-muted-foreground">Failed</dt>
           <dd className="text-right tabular-nums">{run.failed}</dd>
-          <dt className="text-muted-foreground">Void (rig fault)</dt>
+          <dt className="text-muted-foreground">Void (rig could not answer)</dt>
           <dd className="text-right tabular-nums">{run.outcome_counts.void ?? 0}</dd>
           <dt className="text-muted-foreground">Ungradeable</dt>
           <dd className="text-right tabular-nums">{run.outcome_counts.ungradeable ?? 0}</dd>
+          <dt className="text-muted-foreground">Ungraded</dt>
+          <dd className="text-right tabular-nums">{run.outcome_counts.ungraded ?? 0}</dd>
           <dt className="text-muted-foreground">Other, not graded</dt>
           <dd className="text-right tabular-nums">
             {run.not_graded -
               (run.outcome_counts.void ?? 0) -
-              (run.outcome_counts.ungradeable ?? 0)}
+              (run.outcome_counts.ungradeable ?? 0) -
+              (run.outcome_counts.ungraded ?? 0)}
           </dd>
+          <dt className="text-muted-foreground">Unavailable (tool result withheld)</dt>
+          <dd className="text-right tabular-nums">{run.outcome_counts.unavailable_calls ?? 0}</dd>
           <dt className="text-muted-foreground">Not run</dt>
           <dd className="text-right tabular-nums">{run.not_run}</dd>
         </dl>
@@ -212,6 +218,21 @@ export default function CallerRunPage() {
               {run.rig_version ? `, caller ${run.rig_version}` : ""}
             </p>
           </div>
+
+          {run.rehearsal && (
+            <Card role="note" aria-label="Rehearsal">
+              <CardContent className="space-y-1 pt-6 text-sm">
+                <RehearsalMark />
+                <p>
+                  These calls were placed against a scripted stand-in, not an agent
+                  {(run.outcome_counts.rehearsal_calls ?? 0) > 0
+                    ? ` (${run.outcome_counts.rehearsal_calls} of ${run.attempted} calls)`
+                    : ""}
+                  . They show that the rig runs; they show nothing about any agent.
+                </p>
+              </CardContent>
+            </Card>
+          )}
 
           <Headline run={run} />
 

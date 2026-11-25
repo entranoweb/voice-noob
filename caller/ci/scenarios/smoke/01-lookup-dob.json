@@ -1,0 +1,12 @@
+{
+  "name": "Lookup: caller gives a date of birth",
+  "mutates": "none",
+  "persona": {"facts": {"name": "Alice Wonderland", "date_of_birth": "2002-02-20"}},
+  "steps": [
+    {"when": "how can i help", "clips": ["ci-opener"], "intended": "Can you check my details?"},
+    {"when": "date of birth", "clips": ["ci-dob"], "field": "date_of_birth", "intended": "20 February 2002"}
+  ],
+  "hangup_after": "mobile number",
+  "max_seconds": 20,
+  "expect": {"tools": [{"name_contains": "new_patient_check"}], "fields": ["date_of_birth"]}
+}

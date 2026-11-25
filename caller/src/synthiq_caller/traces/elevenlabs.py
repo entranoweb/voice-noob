@@ -195,6 +195,13 @@ class ElevenLabsTraceReader:
         then its transcript can be missing the last turns and every tool result,
         so one that never becomes final is an error, not a short trace.
         """
+        return parse_conversation(await self.fetch_raw(call_ref), call_ref)
+
+    async def fetch_raw(self, call_ref: str) -> dict[str, Any]:
+        """The conversation exactly as the platform returned it, once it is final.
+
+        ``read`` parses this; ``capture`` keeps it. Same wait, same refusals.
+        """
         deadline = asyncio.get_running_loop().time() + self._wait_s
         last: dict[str, Any] = {}
         final = False
@@ -221,4 +228,14 @@ class ElevenLabsTraceReader:
                 f"conversation {call_ref} was still {last.get('status')!r} "
                 f"after {self._wait_s:.0f}s"
             )
-        return parse_conversation(last, call_ref)
+        return last
+
+    async def fetch_audio(self, call_ref: str) -> bytes:
+        """The call's recording as the platform sends it (one mixed track, format unstated)."""
+        async with httpx.AsyncClient(timeout=120, transport=self._transport) as client:
+            response = await client.get(
+                f"{self._api}/convai/conversations/{call_ref}/audio",
+                headers={"xi-api-key": self._key},
+            )
+            response.raise_for_status()
+            return response.content

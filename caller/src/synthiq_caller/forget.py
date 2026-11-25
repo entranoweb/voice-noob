@@ -175,6 +175,9 @@ class Plan:
     mentioned: list[Path] = field(default_factory=list)
     # Sound files of calls that played a clip, in the results directories.
     recordings: list[Path] = field(default_factory=list)
+    # The caller-side track of a recorded call that played a clip: our own audio of the
+    # person's voice, written beside the run file. Deleted (not with --keep-text).
+    call_audio: list[Path] = field(default_factory=list)
     uploaded: list[Path] = field(default_factory=list)
     # The recordings the clips were cut from (ids from the manifests), and any found.
     sources: list[str] = field(default_factory=list)
@@ -184,6 +187,7 @@ class Plan:
     def changes(self) -> int:
         return (
             len(self.audio)
+            + len(self.call_audio)
             + sum(map(len, self.rows.values()))
             + sum(map(len, self.overrides.values()))
             + len(self.scenarios)
@@ -531,6 +535,7 @@ def _plan_results(plan: Plan, directories: list[Path], *, keep_text: bool) -> No
             if used:
                 marked_runs[path.name] = used
                 _sound_files(plan, path, data)
+                _call_audio(plan, path, data, keep_text=keep_text)
             done = {str(m.get("clip")) for m in data.get(MARK, []) if isinstance(m, dict)}
             todo = [s for s in used if s not in done]
             fields = _text_fields(data) if used and not keep_text else []
@@ -573,6 +578,35 @@ def _plan_results(plan: Plan, directories: list[Path], *, keep_text: bool) -> No
                 plan.mentioned.append(html)
         if (directory / "upload.json").exists():
             plan.uploaded.append(directory / "upload.json")
+
+
+def _tracks(data: Any) -> list[dict[str, Any]]:
+    """Every ``audio`` entry of a stored run: ``{"caller": "audio/x.caller.wav", "agent": ...}``."""
+    found: list[dict[str, Any]] = []
+    if isinstance(data, dict):
+        if isinstance(data.get("caller"), str) and isinstance(data.get("agent"), str):
+            found.append(data)
+        for value in data.values():
+            found += _tracks(value)
+    elif isinstance(data, list):
+        for value in data:
+            found += _tracks(value)
+    return found
+
+
+def _call_audio(plan: Plan, run: Path, data: Any, *, keep_text: bool) -> None:
+    """The recorded call's caller track goes with the clip; the agent track is only listed."""
+    for entry in _tracks(data):
+        caller = (run.parent / str(entry["caller"])).resolve()
+        agent = (run.parent / str(entry["agent"])).resolve()
+        if not str(caller).startswith(str(run.parent.resolve())):
+            continue  # a path that climbs out of the results folder is never touched
+        if caller.is_file():
+            target = plan.recordings if keep_text else plan.call_audio
+            if caller not in target:
+                target.append(caller)
+        if agent.is_file() and agent not in plan.recordings:
+            plan.recordings.append(agent)
 
 
 def _sound_files(plan: Plan, run: Path, data: Any) -> None:
@@ -640,6 +674,7 @@ def describe(
     ]
     lines += [f"  clip {s}" for s in plan.stems]
     lines += [f"  {verb} delete audio: {p}" for p in plan.audio]
+    lines += [f"  {verb} delete caller-side call audio: {p}" for p in plan.call_audio]
     lines += [f"  {verb} remove manifest row: {p} ({', '.join(c)})" for p, c in plan.rows.items()]
     lines += [f"  {verb} remove override: {p} ({', '.join(c)})" for p, c in plan.overrides.items()]
     lines += [
@@ -655,7 +690,7 @@ def describe(
         lines.append(f"  {KEPT_NOTE}")
         lines.append(
             "  NOT redacted: batch summaries (marked only), uploads, scorecards, "
-            "acceptance pages, call recordings"
+            "acceptance pages, the agent track of recorded calls, carrier and engine recordings"
         )
     if keep_text:
         lines.append(
@@ -665,8 +700,9 @@ def describe(
     lines += [f"  left alone, mentions a clip: {p}" for p in plan.mentioned]
     if plan.recordings:
         lines.append(
-            f"  call recordings of calls that played these clips (not deleted; they hold the "
-            f"voice, delete them if the request covers them): {len(plan.recordings)}"
+            "  call recordings of calls that played these clips (NOT deleted: the agent "
+            "track of a recorded call, or every recording with --keep-text; delete them if "
+            f"the request covers them): {len(plan.recordings)}"
         )
         lines += [f"    {p}" for p in plan.recordings]
     if plan.sources:
@@ -784,6 +820,8 @@ def execute(
             done[counter] += n
 
     for audio in plan.audio:
+        attempt("delete", audio, partial(audio.unlink, missing_ok=True), "audio_files")
+    for audio in plan.call_audio:
         attempt("delete", audio, partial(audio.unlink, missing_ok=True), "audio_files")
     for path in plan.scenarios:
         attempt(

@@ -58,7 +58,9 @@ const summary: CallerRunSummary = {
     ungradeable: 1,
     synthetic_calls: 1,
     labels_unverified_calls: 2,
+    unavailable_calls: 1,
   },
+  rehearsal: false,
   of_graded: rate(1, 2, 0.09, 0.91),
   of_attempted: rate(1, 4, 0.05, 0.7),
 };
@@ -226,6 +228,35 @@ describe("caller runs list", () => {
     expect(screen.getByText("1 run uploaded")).toBeInTheDocument();
   });
 
+  it("marks a rehearsal run in the list and shows both rates with counts", async () => {
+    const rehearsal = {
+      ...summary,
+      rehearsal: true,
+      target_label: "REHEARSAL (scripted agent): Receptionist",
+    };
+    server.use(
+      http.get(API, () =>
+        HttpResponse.json({
+          runs: [rehearsal, { ...summary, id: "z", run_id: "real" }],
+          total: 2,
+          page: 1,
+          page_size: 20,
+          total_pages: 1,
+        })
+      )
+    );
+
+    render(<CallerRunsPage />);
+
+    await screen.findByRole("link", { name: /REHEARSAL \(scripted agent\): Receptionist/ });
+    // One mark: on the rehearsal row, not the real one. (The label also says it in words.)
+    expect(screen.getAllByText("REHEARSAL (scripted agent)")).toHaveLength(1);
+    expect(screen.getAllByText("1 of 4 (25%)")).toHaveLength(2);
+    expect(screen.getAllByText("1 of 2 (50%)")).toHaveLength(2);
+    expect(screen.getAllByText("synthetic voice in 1 of 4 calls")).toHaveLength(2);
+    expect(screen.getAllByText("labels unverified in 2 of 4 calls")).toHaveLength(2);
+  });
+
   it("says a run with nothing graded has no pass rate, rather than showing 0%", async () => {
     const ungraded = { ...summary, graded: 0, passed: 0, of_graded: rate(0, 0, null, null) };
     server.use(
@@ -265,6 +296,64 @@ describe("caller runs list", () => {
 describe("caller run page", () => {
   beforeEach(() => {
     route.params = { runId: RUN_ID };
+  });
+
+  it("shows every outcome class on its own line, never merged", async () => {
+    const five = {
+      ...detail,
+      attempted: 5,
+      not_graded: 3,
+      outcome_counts: { ...detail.outcome_counts, ungraded: 1 },
+    };
+    server.use(http.get(`${API}/${RUN_ID}`, () => HttpResponse.json(five)));
+
+    render(<CallerRunPage />);
+
+    await screen.findByRole("heading", { name: "Receptionist, test copy" });
+    const line = (label: string) => screen.getByText(label).nextElementSibling;
+    expect(line("Void (rig could not answer)")).toHaveTextContent("1");
+    expect(line("Ungradeable")).toHaveTextContent("1");
+    expect(line("Ungraded")).toHaveTextContent("1");
+    expect(line("Other, not graded")).toHaveTextContent("0");
+    expect(line("Unavailable (tool result withheld)")).toHaveTextContent("1");
+    expect(line("Not run")).toHaveTextContent("1");
+  });
+
+  it("marks a rehearsal run, and does not mark a real one", async () => {
+    const rehearsal = {
+      ...detail,
+      rehearsal: true,
+      outcome_counts: { ...detail.outcome_counts, rehearsal_calls: 4 },
+    };
+    server.use(http.get(`${API}/${RUN_ID}`, () => HttpResponse.json(rehearsal)));
+
+    const { unmount } = render(<CallerRunPage />);
+
+    const note = await screen.findByRole("note", { name: "Rehearsal" });
+    expect(note).toHaveTextContent("REHEARSAL (scripted agent)");
+    expect(note).toHaveTextContent("4 of 4 calls");
+    unmount();
+
+    server.use(http.get(`${API}/${RUN_ID}`, () => HttpResponse.json(detail)));
+    render(<CallerRunPage />);
+    await screen.findByRole("heading", { name: "Receptionist, test copy" });
+    expect(screen.queryByText(/REHEARSAL/)).not.toBeInTheDocument();
+  });
+
+  it("never rounds a rate up: 199 of 200 is not 100%", async () => {
+    const near = {
+      ...detail,
+      scenarios: [],
+      graded: 200,
+      passed: 199,
+      of_graded: rate(199, 200, 0.972, 0.9998),
+    };
+    server.use(http.get(`${API}/${RUN_ID}`, () => HttpResponse.json(near)));
+
+    render(<CallerRunPage />);
+
+    expect(await screen.findByText("199 of 200 (99.5%)")).toBeInTheDocument();
+    expect(screen.queryByText(/100%/)).not.toBeInTheDocument();
   });
 
   it("shows both pass rates and every count", async () => {
@@ -330,7 +419,7 @@ describe("caller run page", () => {
 
     render(<CallerRunPage />);
 
-    const void_ = await screen.findByText("Void (rig fault)");
+    const void_ = await screen.findByText("Void (rig could not answer)");
     expect(void_.nextElementSibling).toHaveTextContent("1");
     expect(screen.getByText("Ungradeable").nextElementSibling).toHaveTextContent("1");
     // Two not graded in all, one void and one ungradeable, so none unexplained.
@@ -386,6 +475,28 @@ describe("caller run page", () => {
 describe("caller call page", () => {
   beforeEach(() => {
     route.params = { runId: RUN_ID, callId: CALL_ID };
+  });
+
+  it("says a tool call whose result was withheld is unavailable, not refused", async () => {
+    const withheld = {
+      ...call,
+      tool_calls: [
+        {
+          name: "book_slot",
+          arguments: { _unavailable: "the platform returned no result" },
+          result: "unavailable",
+          ok: false,
+          t: 6,
+          error: "unavailable: the platform returned no result",
+        },
+      ],
+    };
+    server.use(http.get(`${API}/${RUN_ID}/calls/${CALL_ID}`, () => HttpResponse.json(withheld)));
+
+    render(<CallerCallPage />);
+
+    expect(await screen.findByText("Tool call, result unavailable")).toBeInTheDocument();
+    expect(screen.queryByText("Tool call refused")).not.toBeInTheDocument();
   });
 
   it("shows said, heard and stored for each field, and where stored came from", async () => {

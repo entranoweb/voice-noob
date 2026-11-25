@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRef } from "react";
 import { useParams } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronLeft } from "lucide-react";
@@ -14,6 +15,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { OutcomeBadge } from "@/components/caller/outcome-badge";
+import { CallAudio, type AudioMarker, type CallAudioHandle } from "@/components/caller/call-audio";
 import { ErrorState, LoadingState } from "@/components/caller/page-state";
 import {
   errorMessage,
@@ -29,6 +31,8 @@ interface Line {
   who: string;
   text: string;
   detail?: string;
+  /** What this row is on the recording, when it is one of the marked kinds. */
+  marker?: AudioMarker["kind"];
 }
 
 function compact(value: unknown): string {
@@ -47,7 +51,7 @@ function eventLine(event: TimelineEvent, said: SaidEntry[]): Line | null {
   const t = typeof event.t === "number" ? event.t : null;
   switch (event.kind) {
     case "agent":
-      return { t, who: "Agent said", text: event.text ?? "" };
+      return { t, who: "Agent said", text: event.text ?? "", marker: "agent" };
     case "said": {
       const clips = Array.isArray(event.clips) ? event.clips.join(", ") : "";
       return {
@@ -55,6 +59,7 @@ function eventLine(event: TimelineEvent, said: SaidEntry[]): Line | null {
         who: "Caller said",
         text: intendedAt(event, said) || "(recorded clip)",
         detail: clips ? `clip: ${clips}` : undefined,
+        marker: "caller",
       };
     }
     case "heard":
@@ -87,12 +92,26 @@ function toolOutcome(call: ToolCall): string {
   return `result: ${compact(call.result) || "none"}`;
 }
 
+/** The platform withheld this tool's result: not checked, and not a refusal by the agent. */
+function isUnavailable(call: ToolCall): boolean {
+  const args = call.arguments;
+  return (
+    call.result === "unavailable" ||
+    (typeof args === "object" && args !== null && "_unavailable" in args)
+  );
+}
+
 function toolLine(call: ToolCall): Line {
   return {
     t: typeof call.t === "number" ? call.t : null,
-    who: call.ok === false ? "Tool call refused" : "Tool call",
+    who: isUnavailable(call)
+      ? "Tool call, result unavailable"
+      : call.ok === false
+        ? "Tool call refused"
+        : "Tool call",
     text: `${call.name ?? "?"}(${compact(call.arguments)})`,
     detail: toolOutcome(call),
+    marker: "tool",
   };
 }
 
@@ -130,6 +149,13 @@ export default function CallerCallPage() {
   });
 
   const lines = call ? buildTimeline(call) : [];
+  const player = useRef<CallAudioHandle>(null);
+  const audio = call?.audio ?? [];
+  const markers: AudioMarker[] = lines.flatMap((line) =>
+    line.marker && line.t !== null
+      ? [{ t: line.t, kind: line.marker, label: `${line.who}: ${line.text}` }]
+      : []
+  );
 
   return (
     <div className="space-y-4">
@@ -308,6 +334,13 @@ export default function CallerCallPage() {
             </Card>
           )}
 
+          <CallAudio
+            ref={player}
+            audio={audio}
+            markers={markers}
+            expired={call?.audio_expired ?? false}
+          />
+
           <Card>
             <CardHeader>
               <CardTitle className="text-base">Timeline</CardTitle>
@@ -323,7 +356,20 @@ export default function CallerCallPage() {
                       className="grid grid-cols-[4rem_9rem_1fr] gap-3 border-b pb-2 text-sm last:border-0"
                     >
                       <span className="tabular-nums text-muted-foreground">
-                        {line.t === null ? "" : `${line.t.toFixed(1)}s`}
+                        {line.t === null ? (
+                          ""
+                        ) : audio.length > 0 ? (
+                          <button
+                            type="button"
+                            className="underline-offset-4 hover:underline focus-visible:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                            aria-label={`Play from ${line.t.toFixed(1)} seconds: ${line.who}`}
+                            onClick={() => player.current?.seek(line.t as number)}
+                          >
+                            {`${line.t.toFixed(1)}s`}
+                          </button>
+                        ) : (
+                          `${line.t.toFixed(1)}s`
+                        )}
                       </span>
                       <span className="font-medium">{line.who}</span>
                       <span className="min-w-0 break-words">

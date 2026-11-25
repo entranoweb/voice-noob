@@ -292,6 +292,17 @@ class Settings(BaseSettings):
     CALL_REGISTRY_TTL: int = 1800  # 30 minutes TTL for call entries
     MAX_CALL_QUEUE_SIZE: int = 1000  # Max queued calls (Sprint 2)
 
+    # How long one phone call may run before the bridge ends it (MAX_DURATION).
+    # The model provider's own ceiling is 60 minutes; the default leaves room
+    # for a long booking call without letting a stuck one hold a model session.
+    CALL_MAX_DURATION_S: float = 1800.0
+    # Seconds with no conversation (nobody speaking, no agent audio, no tool
+    # running) before the bridge ends the call (SILENCE_TIMEOUT). 0 turns it off.
+    CALL_IDLE_TIMEOUT_S: float = 120.0
+    # When the call ends while a tool is running (a booking write, say), how long
+    # the tool may keep running before it is cancelled.
+    CALL_TOOL_GRACE_S: float = 10.0
+
     # Data retention sweep (app.services.data_protection). Deletes call data
     # older than each account's retention period. Off unless an operator turns
     # it on: it deletes, and an upgrade must never start deleting on its own.
@@ -299,6 +310,16 @@ class Settings(BaseSettings):
     # One process at a time holds the lock, so several workers do not sweep at once.
     RETENTION_SWEEP_ENABLED: bool = False
     RETENTION_SWEEP_INTERVAL_HOURS: int = 24
+
+    # Audio of caller calls (app.services.audio_store). A directory on local disk:
+    # in a container it must be a persistent volume, or every recording is lost
+    # on the next deploy. Stored per workspace under generated names.
+    CALLER_AUDIO_DIR: str = "./data/caller-audio"
+    # The most one uploaded file may be. 64 MiB is about 33 minutes of 16 kHz mono.
+    CALLER_AUDIO_MAX_BYTES: int = 64 * 1024 * 1024
+    # How often expired audio is deleted. Always on (it is not tied to
+    # RETENTION_SWEEP_ENABLED): a pass also runs at start-up. Minimum 1.
+    CALLER_AUDIO_EXPIRY_INTERVAL_MINUTES: int = 60
 
     @property
     def public_signup_allowed(self) -> bool:

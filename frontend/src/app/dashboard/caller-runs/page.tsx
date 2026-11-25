@@ -14,6 +14,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { RehearsalMark } from "@/components/caller/rehearsal-mark";
 import { EmptyState, ErrorState, LoadingState } from "@/components/caller/page-state";
 import { errorMessage, formatInterval, formatRate, listCallerRuns } from "@/lib/api/caller-runs";
 
@@ -70,6 +71,7 @@ export default function CallerRunsPage() {
                     <TableHead scope="col">Uploaded</TableHead>
                     <TableHead scope="col">Workspace</TableHead>
                     <TableHead scope="col">Passed, of graded</TableHead>
+                    <TableHead scope="col">Passed, of attempted</TableHead>
                     <TableHead scope="col" className="text-right">
                       Attempted
                     </TableHead>
@@ -93,6 +95,19 @@ export default function CallerRunsPage() {
                             {run.run_id}
                           </div>
                         )}
+                        {run.rehearsal && <RehearsalMark className="mt-1" />}
+                        {(run.outcome_counts.synthetic_calls ?? 0) > 0 && (
+                          <span className="mr-2 mt-1 block text-xs text-muted-foreground">
+                            synthetic voice in {run.outcome_counts.synthetic_calls} of{" "}
+                            {run.attempted} calls
+                          </span>
+                        )}
+                        {(run.outcome_counts.labels_unverified_calls ?? 0) > 0 && (
+                          <span className="block text-xs text-muted-foreground">
+                            labels unverified in {run.outcome_counts.labels_unverified_calls} of{" "}
+                            {run.attempted} calls
+                          </span>
+                        )}
                       </TableCell>
                       <TableCell className="text-sm">
                         {new Date(run.uploaded_at).toLocaleString()}
@@ -104,6 +119,7 @@ export default function CallerRunsPage() {
                           {formatInterval(run.of_graded)}
                         </div>
                       </TableCell>
+                      <TableCell>{formatRate(run.of_attempted, "no calls placed")}</TableCell>
                       <TableCell className="text-right tabular-nums">{run.attempted}</TableCell>
                       <TableCell className="text-right tabular-nums">
                         {run.excluded_count}
