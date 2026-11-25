@@ -51,6 +51,7 @@ from pathlib import Path
 from typing import Any
 
 from synthiq_caller import removals
+from synthiq_caller.capture import CAPTURE_FILE, CONVERSATION_FILE, TRANSCRIPT_FILE
 from synthiq_caller.clipid import AUDIO_SUFFIXES, clip_id
 from synthiq_caller.clips import OVERRIDES_FILE
 from synthiq_caller.consent import (
@@ -60,6 +61,7 @@ from synthiq_caller.consent import (
     opaque_id_problem,
     reference_problem,
 )
+from synthiq_caller.ingest import CLIPS_DIR
 from synthiq_caller.jsonio import write_json
 
 MARK = "clips_removed"
@@ -178,6 +180,10 @@ class Plan:
     # The caller-side track of a recorded call that played a clip: our own audio of the
     # person's voice, written beside the run file. Deleted (not with --keep-text).
     call_audio: list[Path] = field(default_factory=list)
+    # The whole call a clip was cut from, in an ingested case folder: its audio, and its
+    # transcript and conversation (the last two stay under --keep-text, and are listed).
+    case_files: list[Path] = field(default_factory=list)
+    case_kept: list[Path] = field(default_factory=list)
     uploaded: list[Path] = field(default_factory=list)
     # The recordings the clips were cut from (ids from the manifests), and any found.
     sources: list[str] = field(default_factory=list)
@@ -188,6 +194,7 @@ class Plan:
         return (
             len(self.audio)
             + len(self.call_audio)
+            + len(self.case_files)
             + sum(map(len, self.rows.values()))
             + sum(map(len, self.overrides.values()))
             + len(self.scenarios)
@@ -680,6 +687,35 @@ def _sound_files(plan: Plan, run: Path, data: Any) -> None:
                     plan.recordings.append(found)
 
 
+def _plan_cases(plan: Plan, banks: list[Path], *, keep_text: bool) -> None:
+    """An ingested case folder holds the whole call a clip was cut from.
+
+    ``ingest`` writes the clips to ``<case>/clips``, beside ``audio.*``, ``transcript.txt``
+    and ``conversation.json``. Forgetting a clip from that bank forgets the call: its audio
+    goes; its transcript and conversation go too, or are listed and kept under ``--keep-text``.
+    """
+    for bank in banks:
+        case = bank.parent
+        if bank.name != CLIPS_DIR or not all(
+            (case / name).is_file() for name in (CAPTURE_FILE, CONVERSATION_FILE)
+        ):
+            continue
+        came_from_here = (
+            any(p.is_relative_to(bank) for p in plan.audio)
+            or (bank / "manifest.csv") in plan.rows
+            or any(stem in plan.stems for stem in removals.read_removed([bank]))
+        )
+        if not came_from_here:
+            continue
+        for path in sorted(case.glob("audio.*")):
+            if path.is_file() or path.is_symlink():
+                plan.case_files.append(path)
+        for name in (TRANSCRIPT_FILE, CONVERSATION_FILE):
+            path = case / name
+            if path.exists():
+                (plan.case_kept if keep_text else plan.case_files).append(path)
+
+
 def _plan_sources(plan: Plan, banks: list[Path], recordings: list[Path]) -> None:
     """The recordings the clips were cut from: named by id, and found where the operator says."""
     for bank in banks:
@@ -721,6 +757,7 @@ def make_plan(
             held = [k for k in entries if clip_id(str(k)) in stems]
             if held:
                 plan.overrides[bank / OVERRIDES_FILE] = [clip_id(k) for k in held]
+    _plan_cases(plan, banks, keep_text=keep_text)
     _plan_sources(plan, banks, recordings or [])
     _plan_scenarios(plan, scenarios)
     _plan_results(plan, results, keep_text=keep_text)
@@ -746,6 +783,13 @@ def describe(
         else:
             lines.append(f"  {verb} delete audio: {p}")
     lines += [f"  {verb} delete caller-side call audio: {p}" for p in plan.call_audio]
+    lines += [
+        f"  {verb} delete the whole call these clips were cut from: {p}" for p in plan.case_files
+    ]
+    lines += [
+        f"  --keep-text: the call's text is KEPT, delete it if the request covers it: {p}"
+        for p in plan.case_kept
+    ]
     lines += [f"  {verb} remove manifest row: {p} ({', '.join(c)})" for p, c in plan.rows.items()]
     lines += [f"  {verb} remove override: {p} ({', '.join(c)})" for p, c in plan.overrides.items()]
     lines += [
@@ -897,6 +941,8 @@ def execute(
     for audio in plan.audio:
         attempt("delete", audio, partial(_delete_clip, audio, banks), "audio_files")
     for audio in plan.call_audio:
+        attempt("delete", audio, partial(audio.unlink, missing_ok=True), "audio_files")
+    for audio in plan.case_files:
         attempt("delete", audio, partial(audio.unlink, missing_ok=True), "audio_files")
     for path in plan.scenarios:
         attempt(

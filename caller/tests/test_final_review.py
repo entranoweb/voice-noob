@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 from test_batch_and_report import FAST, agent, scenario
+from test_capture_ingest import captured, no_ffmpeg  # noqa: F401 - the autouse fixture
 from test_clip_consent import FULL, forget_args, forget_world, write_bank, write_wav
 from test_forget_review import SENTINEL, realistic_result
 from test_reset_chains_readback import BOOKED, CANCELLED, agents, chain_data
@@ -15,6 +16,7 @@ from test_reset_chains_readback import BOOKED, CANCELLED, agents, chain_data
 from synthiq_caller import acceptance, cli, removals, scorecard
 from synthiq_caller.batch import load_chains, regrade, run_batch
 from synthiq_caller.clips import ClipBank
+from synthiq_caller.ingest import ingest
 from synthiq_caller.report import render, summarise
 
 
@@ -168,3 +170,37 @@ def test_a_symlink_to_outside_the_bank_is_reported_and_never_called_complete(
     assert "complete" not in out.replace("incomplete", "").replace("INCOMPLETE", "")
     assert (elsewhere / "opener.wav").exists()
     assert removals.read_log(world["bank"] / removals.LOG_FILE)[-1]["outcome"] == "incomplete"
+
+
+def ingested(tmp_path: Path) -> tuple[Path, dict[str, Path], str]:
+    case = captured(tmp_path)
+    ingest(case)
+    first = sorted((case / "clips").glob("*.wav"))[0].stem
+    world = {
+        "bank": case / "clips",
+        "scenarios": case / "scenarios",
+        "results": tmp_path / "out",
+    }
+    world["results"].mkdir()
+    return case, world, first
+
+
+def test_forgetting_an_ingested_clip_removes_the_whole_call_it_came_from(tmp_path: Path) -> None:
+    case, world, first = ingested(tmp_path)
+    assert list(case.glob("audio.*")) and (case / "transcript.txt").exists()
+    assert cli.main(forget_args(world, first)) == 0
+    assert not list(case.glob("audio.*"))
+    assert not (case / "transcript.txt").exists()
+    assert not (case / "conversation.json").exists()
+
+
+def test_keep_text_keeps_an_ingested_calls_text_and_lists_it(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    case, world, first = ingested(tmp_path)
+    args = forget_args(world, first, "--reason", "retention_expired", "--keep-text")
+    assert cli.main(args) == 0
+    assert not list(case.glob("audio.*"))
+    assert (case / "transcript.txt").exists() and (case / "conversation.json").exists()
+    out = capsys.readouterr().out
+    assert str(case / "transcript.txt") in out and "KEPT" in out
