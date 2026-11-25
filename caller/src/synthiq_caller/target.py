@@ -19,10 +19,30 @@ A profile is one JSON file:
       }
     }
 
-``bookings`` is keyed by scenario file name without its ending. A scenario lists
-the parts it leaves to the profile in ``expect.booking_from_target``; run with a
-profile that does not give them, or with none, it is held back and says which
-parts are missing. It is never run with a weaker check instead.
+``bookings`` is keyed by scenario file name without its ending; a call inside a
+chain goes under ``<chain file name>/<call id>``. A scenario lists the parts it
+leaves to the profile in ``expect.booking_from_target``; run with a profile that
+does not give them, or with none, it is held back and says which parts are
+missing. It is never run with a weaker check instead.
+
+A profile may also say how the rig reaches this system around a call:
+
+    {
+      "allow_mutating": "books",
+      "reset":       {"command": ["node", "tools/fixture.js", "restore"], "timeout_s": 180},
+      "before_call": {"command": ["node", "tools/fixture.js", "check"]},
+      "after_call":  {"command": ["node", "tools/fixture.js", "adopt", "{call_ref}"],
+                      "only_when_mutating": true},
+      "read_back":   {"command": ["python", "scripts/read_back_sql.py", "--queries", "q.json"]}
+    }
+
+Each command is a list: a program and its arguments. It is never a single
+string and never goes through a shell (``external.py``). ``allow_mutating`` is
+the most this system may be changed by a batch; it does not switch mutation on
+(the batch's own ``--allow-mutating`` does that), it refuses a batch that asks
+for more. ``only_when_mutating`` on ``after_call`` skips it for a call whose
+scenario states it changes nothing. What the batch is given on its command line
+wins over the profile.
 """
 
 from __future__ import annotations
@@ -33,12 +53,39 @@ from typing import Any
 
 KNOWN = {
     "name", "notes", "timezone", "naive_times", "identity_budget", "fixture_faults",
-    "tool_outcomes", "bookings",
+    "tool_outcomes", "bookings", "allow_mutating", "reset", "read_back", "before_call",
+    "after_call",
 }  # fmt: skip
+
+# How the rig reaches the system around a call, in the order they happen.
+COMMANDS = ("reset", "before_call", "read_back", "after_call")
+# From least to most; the same words as the batch's --allow-mutating.
+ALLOWANCES = ("none", "registers", "books", "all")
 
 
 class TargetError(ValueError):
     pass
+
+
+def _check_command(name: str, raw: Any) -> None:
+    allowed = {"command", "timeout_s"} | ({"only_when_mutating"} if name == "after_call" else set())
+    if not isinstance(raw, dict) or set(raw) - allowed:
+        raise TargetError(f"'{name}' is an object with a 'command' and, if wanted, a 'timeout_s'")
+    if not isinstance(raw.get("only_when_mutating", False), bool):
+        raise TargetError(f"'{name}.only_when_mutating' is true or false")
+    command = raw.get("command")
+    if (
+        not isinstance(command, list)
+        or not command
+        or not all(isinstance(part, str) and part for part in command)
+    ):
+        raise TargetError(
+            f"'{name}.command' is a list, the program and then each argument; a single "
+            "string would have to be split the way a shell does, and no shell is used"
+        )
+    timeout = raw.get("timeout_s", 1)
+    if isinstance(timeout, bool) or not isinstance(timeout, int | float) or timeout <= 0:
+        raise TargetError(f"'{name}.timeout_s' must be a number of seconds above 0")
 
 
 def parse_target(data: Any) -> dict[str, Any]:
@@ -53,7 +100,29 @@ def parse_target(data: Any) -> dict[str, Any]:
     for name in ("fixture_faults", "tool_outcomes"):
         if not isinstance(data.get(name) or {}, dict):
             raise TargetError(f"'{name}' must be an object")
+    if "allow_mutating" in data and data["allow_mutating"] not in ALLOWANCES:
+        raise TargetError(f"'allow_mutating' must be one of {list(ALLOWANCES)}")
+    for name in COMMANDS:
+        if name in data:
+            _check_command(name, data[name])
     return dict(data)
+
+
+def command_of(target: dict[str, Any] | None, name: str) -> tuple[list[str], float | None]:
+    """The command the profile gives for ``name`` and its time limit; ``([], None)`` if none."""
+    raw = (target or {}).get(name)
+    if not raw:
+        return [], None
+    timeout = raw.get("timeout_s")
+    return [str(part) for part in raw["command"]], float(timeout) if timeout else None
+
+
+def exceeds_allowance(target: dict[str, Any] | None, asked: str) -> bool:
+    """Whether a batch asking to change ``asked`` wants more than this target permits."""
+    ceiling = (target or {}).get("allow_mutating")
+    if ceiling is None or asked not in ALLOWANCES:
+        return False
+    return ALLOWANCES.index(asked) > ALLOWANCES.index(ceiling)
 
 
 def load_target(path: str | Path) -> dict[str, Any]:

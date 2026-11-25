@@ -35,6 +35,7 @@ from typing import Any
 from synthiq_caller.batch import (
     ALLOWED,
     BatchResult,
+    Hooks,
     NameBudget,
     NoHooks,
     ShellHooks,
@@ -286,8 +287,44 @@ def _named_secret(env_name: str, env_file: str | None) -> str:
     return _secret(env_name, env_file) if env_name else ""
 
 
-def _reset(args: argparse.Namespace) -> Reset | None:
-    """The batch's reset. None means scenarios that need a clean state are not run."""
+def _dry_secret(env_name: str, env_file: str | None, dry: bool) -> str:
+    """The named secret; in a dry run a stand-in, so that none is read or needed."""
+    if dry:
+        return "not-read-in-a-dry-run" if env_name else ""
+    return _named_secret(env_name, env_file)
+
+
+def _hooks(args: argparse.Namespace) -> Hooks:
+    """The batch's hooks: the command line's, else the target profile's."""
+    from synthiq_caller.target import command_of
+
+    target = _target(args)
+    before: str | list[str] = args.before_call or command_of(target, "before_call")[0]
+    after: str | list[str] = args.after_call or command_of(target, "after_call")[0]
+    if not (before or after):
+        return NoHooks()
+    limits = [command_of(target, name)[1] for name in ("before_call", "after_call")]
+    return ShellHooks(
+        before=before,
+        after=after,
+        timeout_s=max([120.0, *filter(None, limits)]),
+        # The profile's own after command only; one given on the command line runs always.
+        after_only_when_mutating=not args.after_call
+        and bool(((target or {}).get("after_call") or {}).get("only_when_mutating")),
+    )
+
+
+def _reset(args: argparse.Namespace, dry: bool = False) -> Reset | None:
+    """The batch's reset. None means scenarios that need a clean state are not run.
+
+    Left off the command line, it is the target profile's, when that gives one.
+    ``dry`` builds it for a dry run: no secret is read.
+    """
+    from synthiq_caller.target import command_of
+
+    if args.reset is None:
+        command, limit = command_of(_target(args), "reset")
+        return CommandReset(command, timeout_s=limit or args.reset_timeout) if command else None
     if args.reset == "none":
         return NoReset()
     if args.reset == "command":
@@ -299,15 +336,25 @@ def _reset(args: argparse.Namespace) -> Reset | None:
             raise SystemExit("--reset http needs --reset-url")
         return HttpReset(
             args.reset_url,
-            secret=_named_secret(args.reset_secret_env, args.env_file),
+            secret=_dry_secret(args.reset_secret_env, args.env_file, dry),
             header=args.reset_header,
             timeout_s=args.reset_timeout,
         )
     return None
 
 
-def _read_back(args: argparse.Namespace) -> ReadBack | None:
-    """The batch's read-back. None means 'stored' is what the agent's tools were sent."""
+def _read_back(args: argparse.Namespace, dry: bool = False) -> ReadBack | None:
+    """The batch's read-back. None means 'stored' is what the agent's tools were sent.
+
+    Left off the command line, it is the target profile's, when that gives one.
+    """
+    from synthiq_caller.target import command_of
+
+    if args.read_back is None:
+        command, limit = command_of(_target(args), "read_back")
+        if command:
+            return CommandReadBack(command, timeout_s=limit or args.read_back_timeout)
+        return None
     if args.read_back == "none":
         return NoReadBack()
     if args.read_back == "command":
@@ -319,7 +366,7 @@ def _read_back(args: argparse.Namespace) -> ReadBack | None:
             raise SystemExit("--read-back http needs --read-back-url")
         return HttpReadBack(
             args.read_back_url,
-            secret=_named_secret(args.read_back_secret_env, args.env_file),
+            secret=_dry_secret(args.read_back_secret_env, args.env_file, dry),
             header=args.read_back_header,
             timeout_s=args.read_back_timeout,
         )
@@ -355,16 +402,39 @@ TARGET_HELP = (
 
 
 def _batch(args: argparse.Namespace) -> int:
-    scenarios = load_scenarios(args.scenarios, _target(args))
-    chains = load_chains(args.scenarios)
+    from synthiq_caller.target import exceeds_allowance
+
+    target = _target(args)
+    if exceeds_allowance(target, args.allow_mutating):
+        # Checked before anything is loaded or run: the profile is the statement
+        # of what this system may have done to it.
+        raise SystemExit(
+            f"--allow-mutating {args.allow_mutating} is more than the target profile "
+            f"{target['name'] if target else ''!r} permits "
+            f"(allow_mutating: {target['allow_mutating'] if target else ''})"
+        )
+    scenarios = load_scenarios(args.scenarios, target)
+    chains = load_chains(args.scenarios, target)
     if args.only:
         scenarios = [(f, s) for f, s in scenarios if any(o in f for o in args.only)]
         chains = [(f, c) for f, c in chains if any(o in f for o in args.only)]
-    hooks = (
-        ShellHooks(before=args.before_call, after=args.after_call)
-        if (args.before_call or args.after_call)
-        else NoHooks()
-    )
+    hooks = _hooks(args)
+    if args.dry_run:
+        from synthiq_caller.plan import dry_run
+
+        for line in dry_run(
+            scenarios,
+            chains,
+            leg=args.leg,
+            allow_mutating=args.allow_mutating,
+            repeats=args.repeats,
+            reset=_reset(args, dry=True),
+            read_back=_read_back(args, dry=True),
+            hooks=hooks,
+            target=target,
+        ):
+            print(line)
+        return 0
     budget = NameBudget(
         limit=args.name_budget,
         window_s=args.name_window,
@@ -520,6 +590,12 @@ def main(argv: list[str] | None = None) -> int:
     bat.add_argument("scenarios")
     bat.add_argument("--leg", required=True, choices=LEGS)
     bat.add_argument("--target", default="", help=TARGET_HELP)
+    bat.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="print what would be held back and every reset, hook and read-back command "
+        "that would be used, then stop: nothing is run, called, placed or written",
+    )
     _phone_arguments(bat)
     bat.add_argument("--no-record", action="store_true", help="phone: no carrier recording")
     bat.add_argument("--no-audio", action="store_true", help="phone: keep no per-side WAV files")
@@ -741,8 +817,9 @@ def main(argv: list[str] | None = None) -> int:
                     reread_missing_traces(Path(args.directory), reader, every=args.reread_all)
                 )
                 print(f"traces fetched again: {fetched}")
-        changed = regrade(Path(args.directory), load_scenarios(args.scenarios))
-        changed += regrade_chains(Path(args.directory), load_chains(args.scenarios))
+        profile = _target(args)
+        changed = regrade(Path(args.directory), load_scenarios(args.scenarios, profile))
+        changed += regrade_chains(Path(args.directory), load_chains(args.scenarios, profile))
         print(f"regraded: {changed} run(s) changed")
         return report(args.directory, details=False)
     if args.command == "validate":

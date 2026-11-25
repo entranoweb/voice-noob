@@ -35,7 +35,7 @@ import asyncio
 import json
 import re
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
@@ -133,13 +133,19 @@ class ShellHooks:
     never through a shell (``external.py``).
     """
 
-    before: str = ""
-    after: str = ""
+    # A string is split into a program and its arguments; a list is taken as it
+    # stands, and a ``{call_ref}`` is filled in inside whichever argument names it.
+    before: str | Sequence[str] = ""
+    after: str | Sequence[str] = ""
     timeout_s: float = 120.0
+    # Skip the after command for a call whose scenario states it changes nothing
+    # (``mutates: none``): a step that records what a call created has nothing
+    # to record. A scenario that does not say what it changes still gets it.
+    after_only_when_mutating: bool = False
 
     async def _run(
         self,
-        command: str,
+        command: str | Sequence[str],
         phase: str,
         file: str,
         scenario: Scenario,
@@ -173,7 +179,8 @@ class ShellHooks:
                 }
             )
             words.update(call_ref=call.call_ref, run_file=call.run_file, run_id=call.run_id)
-        for word in _PLACEHOLDER.findall(command):
+        parts = [command] if isinstance(command, str) else [str(part) for part in command]
+        for word in {w for part in parts for w in _PLACEHOLDER.findall(part)}:
             value = words.get(word, "")
             if not _SAFE_WORD.fullmatch(value):
                 raise RuntimeError(
@@ -181,7 +188,8 @@ class ShellHooks:
                     if not value
                     else f"{phase}_call hook: {{{word}}} is not safe to put on a command line"
                 )
-            command = command.replace(f"{{{word}}}", value)
+            parts = [part.replace(f"{{{word}}}", value) for part in parts]
+        command = parts[0] if isinstance(command, str) else parts
         try:
             done = await asyncio.to_thread(run_blocking, command, env, self.timeout_s)
         except ExternalFailed as error:
@@ -195,6 +203,8 @@ class ShellHooks:
     async def after_call(
         self, scenario_file: str, scenario: Scenario, repeat: int, call: CallInfo | None = None
     ) -> None:
+        if self.after_only_when_mutating and scenario.mutates == "none":
+            return
         await self._run(self.after, "after", scenario_file, scenario, repeat, call)
 
 
@@ -380,9 +390,16 @@ def load_scenarios(
     ]
 
 
-def load_chains(directory: str | Path) -> list[tuple[str, Chain]]:
-    """Every chain file in ``directory``, in name order."""
-    return [(p.name, load_chain(p)) for p in _scenario_files(directory) if is_chain_file(p)]
+def load_chains(
+    directory: str | Path, target: dict[str, Any] | None = None
+) -> list[tuple[str, Chain]]:
+    """Every chain file in ``directory``, in name order.
+
+    ``target`` is the profile of the system under test, as for ``load_scenarios``;
+    a chain with a call that leaves parts of its appointment to the profile is
+    held back whole when they are not given.
+    """
+    return [(p.name, load_chain(p, target)) for p in _scenario_files(directory) if is_chain_file(p)]
 
 
 async def run_batch(
@@ -490,18 +507,6 @@ async def run_batch(
             trace, trace_error = await read_trace_when_ready(
                 reader, record, settle_s=settle_s, wait=wait
             )
-        held: dict[str, str] | None = None
-        read_back_error = ""
-        if read_back is not None:
-            try:
-                held = await read_back.read(
-                    ReadBackContext(
-                        file, scenario.name, repeat, record.call_ref or "", dict(scenario.facts)
-                    )
-                )
-            except Exception as error:  # noqa: BLE001 - recorded; the grader falls back
-                read_back_error = str(error) or repr(error)
-        graded = grade(scenario, record, trace, held)
         # A leg may say more about the line it used (a phone leg: numbers, times, audio files).
         describe = getattr(leg, "details", None)
         line: dict[str, Any] = dict(describe()) if callable(describe) else {}
@@ -511,6 +516,18 @@ async def run_batch(
         engine_ref = record.call_ref or ""
         if "carrier_call_ref" in line:
             engine_ref = trace.call_ref if trace is not None else ""
+        held: dict[str, str] | None = None
+        read_back_error = ""
+        if read_back is not None:
+            try:
+                # The engine's reference, as the after-call hook gets: over a
+                # phone line the carrier's id would match nothing the system holds.
+                held = await read_back.read(
+                    ReadBackContext(file, scenario.name, repeat, engine_ref, dict(scenario.facts))
+                )
+            except Exception as error:  # noqa: BLE001 - recorded; the grader falls back
+                read_back_error = str(error) or repr(error)
+        graded = grade(scenario, record, trace, held)
         payload: dict[str, Any] = {
             "scenario_file": file,
             "leg": leg_name or kind,
@@ -656,6 +673,7 @@ async def run_batch(
 
         refused = [c.id for c in chain.calls if c.mutates not in allowed]
         unrecorded = [c.id for c in chain.calls if c.missing_clips]
+        unprofiled = {c.id: list(c.missing_target) for c in chain.calls if c.missing_target}
         # Clips named outright in any call, fallback included. One chosen by a
         # captured value is only known once that call is reached, and is checked then.
         ruled_out = clips.excluded_in(
@@ -685,6 +703,14 @@ async def run_batch(
                 stop(0, why, why)
             elif unrecorded:
                 why = f"missing clips in calls {unrecorded}"
+                stop(0, why, why)
+            elif unprofiled:
+                # As for a single call: run without them, a booking would be
+                # judged on less than the chain means, or on another system's times.
+                why = (
+                    f"the target profile does not give {unprofiled} for this chain's "
+                    "appointments (--target)"
+                )
                 stop(0, why, why)
             elif ruled_out:
                 why = f"excluded clips: {ruled_out}"
