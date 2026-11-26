@@ -7,6 +7,7 @@ from typing import Any
 import httpx
 import structlog
 
+from app.core.log_redaction import log_exception
 from app.services.tools.path_ids import encode_path_id, invalid_id_result
 
 logger = structlog.get_logger()
@@ -136,7 +137,7 @@ class TwilioSMSTools:
             }
 
         except Exception as e:
-            logger.exception("twilio_send_sms_error", error=str(e))
+            log_exception(logger, "twilio_send_sms_error", e)
             return {"success": False, "error": str(e)}
 
     async def get_message_status(self, message_sid: str) -> dict[str, Any]:
@@ -166,7 +167,7 @@ class TwilioSMSTools:
             }
 
         except Exception as e:
-            logger.exception("twilio_get_message_status_error", error=str(e))
+            log_exception(logger, "twilio_get_message_status_error", e)
             return {"success": False, "error": str(e)}
 
     async def execute_tool(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -311,7 +312,7 @@ class TelnyxSMSTools:
             }
 
         except Exception as e:
-            logger.exception("telnyx_send_sms_error", error=str(e))
+            log_exception(logger, "telnyx_send_sms_error", e)
             return {"success": False, "error": str(e)}
 
     async def get_message_status(self, message_id: str) -> dict[str, Any]:
@@ -342,7 +343,7 @@ class TelnyxSMSTools:
             }
 
         except Exception as e:
-            logger.exception("telnyx_get_message_status_error", error=str(e))
+            log_exception(logger, "telnyx_get_message_status_error", e)
             return {"success": False, "error": str(e)}
 
     async def execute_tool(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:

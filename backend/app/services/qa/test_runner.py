@@ -15,6 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from app.core.config import settings
+from app.core.log_redaction import log_exception
 from app.db.session import AsyncSessionLocal
 from app.db.session import engine as default_engine
 from app.models.agent import Agent
@@ -413,7 +414,7 @@ class TestRunner:
             )
 
         except Exception as e:
-            log.exception("test_run_failed", error=str(e))
+            log_exception(log, "test_run_failed", e)
             test_run.status = TestRunStatus.ERROR.value
             test_run.completed_at = datetime.now(UTC)
             test_run.error_message = str(e)
@@ -838,7 +839,7 @@ class TestRunner:
                 )
                 results.append(test_run)
             except Exception:
-                log.exception("scenario_failed", scenario_id=str(scenario.id))
+                log_exception(log, "scenario_failed", scenario_id=str(scenario.id))
 
         return results
 
@@ -857,4 +858,4 @@ async def seed_scenarios_background() -> None:
             count = await runner.seed_built_in_scenarios()
             log.info("scenarios_seeded", count=count)
     except Exception:
-        log.exception("seeding_failed")
+        log_exception(log, "seeding_failed")

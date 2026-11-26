@@ -4,6 +4,7 @@ import httpx
 import structlog
 import telnyx
 
+from app.core.log_redaction import log_exception, redact_phone
 from app.services.telephony.base import (
     CallDirection,
     CallInfo,
@@ -64,8 +65,8 @@ class TelnyxService(TelephonyProvider):
         """
         self.logger.info(
             "initiating_call",
-            to=to_number,
-            from_=from_number,
+            to=redact_phone(to_number),
+            from_=redact_phone(from_number),
             webhook_url=webhook_url,
             agent_id=agent_id,
         )
@@ -122,8 +123,8 @@ class TelnyxService(TelephonyProvider):
         """
         self.logger.info(
             "initiating_call_via_call_control",
-            to=to_number,
-            from_=from_number,
+            to=redact_phone(to_number),
+            from_=redact_phone(from_number),
             connection_id=connection_id,
         )
 
@@ -163,7 +164,7 @@ class TelnyxService(TelephonyProvider):
             response.raise_for_status()
             return True
         except Exception:
-            self.logger.exception("hangup_failed", call_control_id=call_id)
+            log_exception(self.logger, "hangup_failed", None, call_control_id=call_id)
             return False
 
     async def answer_call(self, call_control_id: str, webhook_url: str | None = None) -> bool:
@@ -191,7 +192,7 @@ class TelnyxService(TelephonyProvider):
             response.raise_for_status()
             return True
         except Exception:
-            self.logger.exception("answer_failed", call_control_id=call_control_id)
+            log_exception(self.logger, "answer_failed", None, call_control_id=call_control_id)
             return False
 
     async def stream_audio(
@@ -228,9 +229,7 @@ class TelnyxService(TelephonyProvider):
             response.raise_for_status()
             return True
         except Exception as e:
-            self.logger.exception(
-                "stream_start_failed", call_control_id=call_control_id, error=str(e)
-            )
+            log_exception(self.logger, "stream_start_failed", e, call_control_id=call_control_id)
             return False
 
     async def list_phone_numbers(self) -> list[PhoneNumber]:
@@ -333,7 +332,7 @@ class TelnyxService(TelephonyProvider):
         Returns:
             Purchased PhoneNumber object
         """
-        self.logger.info("purchasing_phone_number", phone_number=phone_number)
+        self.logger.info("purchasing_phone_number", phone_number=redact_phone(phone_number))
 
         client = await self._get_http_client()
 
@@ -381,7 +380,7 @@ class TelnyxService(TelephonyProvider):
             response.raise_for_status()
             return True
         except Exception as e:
-            self.logger.exception("release_failed", id=phone_number_id, error=str(e))
+            log_exception(self.logger, "release_failed", e, id=phone_number_id)
             return False
 
     async def configure_phone_number(
@@ -423,7 +422,7 @@ class TelnyxService(TelephonyProvider):
             response.raise_for_status()
             return True
         except Exception as e:
-            self.logger.exception("configure_failed", id=phone_number_id, error=str(e))
+            log_exception(self.logger, "configure_failed", e, id=phone_number_id)
             return False
 
     async def configure_phone_number_webhook(
@@ -467,7 +466,7 @@ class TelnyxService(TelephonyProvider):
                 texml_application_id=texml_app_id,
             )
         except Exception as e:
-            self.logger.exception("webhook_config_failed", id=phone_number_id, error=str(e))
+            log_exception(self.logger, "webhook_config_failed", e, id=phone_number_id)
             return False
 
     async def _get_or_create_texml_application(
@@ -524,7 +523,7 @@ class TelnyxService(TelephonyProvider):
             return str(app_id) if app_id else None
 
         except Exception as e:
-            self.logger.exception("texml_app_error", error=str(e))
+            log_exception(self.logger, "texml_app_error", e)
             return None
 
     async def _get_connection_id(self) -> str:

@@ -19,6 +19,7 @@ import structlog
 from fastapi import HTTPException, Request
 
 from app.core.config import settings
+from app.core.log_redaction import scrub_text
 from app.core.public_url import public_request_url
 from app.core.webhook_replay import (
     ReplayClaim,
@@ -166,7 +167,7 @@ def validate_telnyx_signature(
 
         return True
     except Exception as e:
-        logger.warning("telnyx_signature_validation_failed", error=str(e))
+        logger.warning("telnyx_signature_validation_failed", error=scrub_text(e))
         return False
 
 
