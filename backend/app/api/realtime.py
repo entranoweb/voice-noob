@@ -224,8 +224,6 @@ async def realtime_websocket(  # noqa: PLR0911, PLR0915
 
     try:
         # Load agent configuration with workspace verification
-        from app.models.workspace import AgentWorkspace
-
         result = await db.execute(select(Agent).where(Agent.id == agent_uuid))
         agent = result.scalar_one_or_none()
 
@@ -260,14 +258,10 @@ async def realtime_websocket(  # noqa: PLR0911, PLR0915
             await websocket.close()
             return
 
-        # Verify agent is associated with the specified workspace (authorization check)
-        workspace_check = await db.execute(
-            select(AgentWorkspace).where(
-                AgentWorkspace.agent_id == agent_uuid,
-                AgentWorkspace.workspace_id == workspace_uuid,
-            )
-        )
-        if not workspace_check.scalar_one_or_none():
+        # The key is the agent's own workspace's, the same one /token and
+        # /session use. The client may name the workspace only to confirm it.
+        agent_workspace_id = await owned_agent_workspace_id(db, agent, user)
+        if agent_workspace_id != workspace_uuid:
             client_logger.warning(
                 "unauthorized_workspace_access",
                 agent_id=agent_id,

@@ -930,6 +930,65 @@ class TestRealtimeTokenKeyScope:
         assert "Workspace API Keys" in response.json()["detail"]
 
 
+class TestAgentWithTwoWorkspaces:
+    """With two links the default one is always the one whose key is used."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("default_is_new", [True, False])
+    async def test_the_default_workspaces_key_is_used(
+        self, world: World, fake_openai: _FakeOpenAI, default_is_new: bool
+    ) -> None:
+        async with world.sessions() as session:
+            second = Workspace(user_id=world.alice.user.id, name="alice second clinic")
+            session.add(second)
+            await session.commit()
+            await session.refresh(second)
+            link = (
+                await session.execute(
+                    select(AgentWorkspace).where(AgentWorkspace.agent_id == world.alice.agent.id)
+                )
+            ).scalar_one()
+            link.is_default = not default_is_new
+            session.add(
+                AgentWorkspace(
+                    agent_id=world.alice.agent.id, workspace_id=second.id, is_default=default_is_new
+                )
+            )
+            await session.commit()
+        await _store_key(world, world.alice, "sk-first", workspace_id=world.alice.workspace.id)
+        await _store_key(world, world.alice, "sk-second", workspace_id=second.id)
+
+        for _ in range(3):
+            response = await world.client.get(
+                f"/api/v1/realtime/token/{world.alice.agent.id}", headers=world.alice.headers
+            )
+            assert response.status_code == 200
+
+        assert set(fake_openai.keys) == {"sk-second" if default_is_new else "sk-first"}
+
+
+class TestRateLimitKeyIgnoresForwardedFor:
+    """The app itself never believes X-Forwarded-For: only a trusted proxy hop may rewrite
+    the peer address, in front of the app (see tests/integration/test_proxy_headers.py)."""
+
+    @pytest.mark.asyncio
+    async def test_a_changing_header_from_one_peer_shares_one_bucket(self, world: World) -> None:
+        from app.api.realtime import REALTIME_TOKEN_LIMIT
+
+        url = f"/api/v1/realtime/token/{uuid.uuid4()}"
+        allowed = int(REALTIME_TOKEN_LIMIT.split("/", maxsplit=1)[0])
+        statuses = [
+            (
+                await world.client.get(
+                    url, headers={**world.alice.headers, "X-Forwarded-For": f"203.0.113.{i % 250}"}
+                )
+            ).status_code
+            for i in range(allowed + 1)
+        ]
+
+        assert statuses[-1] == 429
+
+
 class TestRealtimeBadIds:
     """A malformed id from the client is a 404 like any other unknown id, never a 500."""
 
