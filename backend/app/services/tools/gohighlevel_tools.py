@@ -18,6 +18,8 @@ from typing import Any
 import httpx
 import structlog
 
+from app.services.tools.path_ids import encode_path_id, invalid_id_result
+
 # Type alias for tool handler functions
 ToolHandler = Callable[..., Awaitable[dict[str, Any]]]
 
@@ -349,9 +351,12 @@ class GoHighLevelTools:
         Returns:
             Contact details or error
         """
+        safe_contact_id = encode_path_id(contact_id)
+        if safe_contact_id is None:
+            return invalid_id_result("contact_id")
         try:
             client = await self._get_client()
-            response = await client.get(f"/contacts/{contact_id}")
+            response = await client.get(f"/contacts/{safe_contact_id}")
 
             if response.status_code != HTTPStatus.OK:
                 return {"success": False, "error": f"Contact not found: {response.status_code}"}
@@ -464,6 +469,9 @@ class GoHighLevelTools:
         Returns:
             Update result
         """
+        safe_contact_id = encode_path_id(contact_id)
+        if safe_contact_id is None:
+            return invalid_id_result("contact_id")
         try:
             client = await self._get_client()
 
@@ -482,7 +490,7 @@ class GoHighLevelTools:
             if not payload:
                 return {"success": False, "error": "No fields to update"}
 
-            response = await client.put(f"/contacts/{contact_id}", json=payload)
+            response = await client.put(f"/contacts/{safe_contact_id}", json=payload)
 
             if response.status_code != HTTPStatus.OK:
                 return {"success": False, "error": f"Failed to update contact: {response.text}"}
@@ -507,11 +515,14 @@ class GoHighLevelTools:
         Returns:
             Result
         """
+        safe_contact_id = encode_path_id(contact_id)
+        if safe_contact_id is None:
+            return invalid_id_result("contact_id")
         try:
             client = await self._get_client()
 
             response = await client.post(
-                f"/contacts/{contact_id}/tags",
+                f"/contacts/{safe_contact_id}/tags",
                 json={"tags": tags},
             )
 
@@ -585,6 +596,9 @@ class GoHighLevelTools:
         Returns:
             Available slots
         """
+        safe_calendar_id = encode_path_id(calendar_id)
+        if safe_calendar_id is None:
+            return invalid_id_result("calendar_id")
         try:
             client = await self._get_client()
 
@@ -598,7 +612,7 @@ class GoHighLevelTools:
             end_ms = int(end_dt.timestamp() * 1000)
 
             response = await client.get(
-                f"/calendars/{calendar_id}/free-slots",
+                f"/calendars/{safe_calendar_id}/free-slots",
                 params={
                     "startDate": start_ms,
                     "endDate": end_ms,
@@ -709,9 +723,12 @@ class GoHighLevelTools:
         Returns:
             List of appointments
         """
+        safe_contact_id = encode_path_id(contact_id)
+        if safe_contact_id is None:
+            return invalid_id_result("contact_id")
         try:
             client = await self._get_client()
-            response = await client.get(f"/contacts/{contact_id}/appointments")
+            response = await client.get(f"/contacts/{safe_contact_id}/appointments")
 
             if response.status_code != HTTPStatus.OK:
                 return {
@@ -750,9 +767,12 @@ class GoHighLevelTools:
         Returns:
             Cancellation result
         """
+        safe_event_id = encode_path_id(event_id)
+        if safe_event_id is None:
+            return invalid_id_result("event_id")
         try:
             client = await self._get_client()
-            response = await client.delete(f"/calendars/events/{event_id}")
+            response = await client.delete(f"/calendars/events/{safe_event_id}")
 
             if response.status_code not in (HTTPStatus.OK, HTTPStatus.NO_CONTENT):
                 return {"success": False, "error": f"Failed to cancel: {response.status_code}"}
