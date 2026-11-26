@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import false, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.audit import AuditAction, record_audit
+from app.core.audit import AuditAction, client_ip, record_audit
 from app.core.auth import CurrentUser, user_id_to_uuid
 from app.core.config import settings as app_settings
 from app.core.secret_box import get_box
@@ -669,7 +669,7 @@ async def record_consent(
         user_id=current_user.id,
         consent_type=request.consent_type,
         granted=request.granted,
-        ip_address=http_request.client.host if http_request.client else None,
+        ip_address=client_ip(http_request),
         user_agent=http_request.headers.get("user-agent"),
     )
     db.add(consent)
@@ -1031,7 +1031,7 @@ async def withdraw_consent(
         user_id=current_user.id,
         consent_type=request.consent_type,
         granted=False,
-        ip_address=http_request.client.host if http_request.client else None,
+        ip_address=client_ip(http_request),
         user_agent=http_request.headers.get("user-agent"),
     )
     db.add(consent)
