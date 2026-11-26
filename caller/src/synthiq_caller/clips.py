@@ -35,7 +35,6 @@ copy of its file is put back.
 
 from __future__ import annotations
 
-import csv
 import json
 import subprocess
 import wave
@@ -47,6 +46,7 @@ from typing import Any
 from synthiq_caller import consent as consent_rules
 from synthiq_caller.clipid import clip_id
 from synthiq_caller.consent import UNKNOWN, Consent
+from synthiq_caller.manifestcsv import read_rows
 from synthiq_caller.removals import read_removed
 
 OVERRIDES_FILE = "overrides.json"
@@ -181,21 +181,20 @@ class ClipBank:
     def _read_manifest(self, folder: Path) -> None:
         manifest = folder / "manifest.csv"
         if manifest.exists():
-            with manifest.open(encoding="utf-8", newline="") as handle:
-                for row in csv.DictReader(handle):
-                    info = ClipInfo(
-                        clip=clip_id(row.get("clip") or ""),
-                        call=row.get("call", ""),
-                        category=row.get("category", ""),
-                        secs=float(row.get("secs") or 0),
-                        said=row.get("said", ""),
-                        question=row.get("question", ""),
-                        checked_by_human=bool((row.get("checked_by_human") or "").strip()),
-                        review=(row.get("review") or "").strip(),
-                        consent=Consent.from_row(row),
-                        folder=str(folder),
-                    )
-                    self._info[info.clip] = info
+            for row in read_rows(manifest)[1]:
+                info = ClipInfo(
+                    clip=clip_id(row.get("clip") or ""),
+                    call=row.get("call", ""),
+                    category=row.get("category", ""),
+                    secs=float(row.get("secs") or 0),
+                    said=row.get("said", ""),
+                    question=row.get("question", ""),
+                    checked_by_human=bool((row.get("checked_by_human") or "").strip()),
+                    review=(row.get("review") or "").strip(),
+                    consent=Consent.from_row(row),
+                    folder=str(folder),
+                )
+                self._info[info.clip] = info
         self.overrides = load_overrides(self.directory)
         # What ``forget`` removed, from every directory: a clip removed from any is gone.
         self.removed = read_removed(self.directories)
@@ -305,6 +304,20 @@ class ClipBank:
                 return candidate
         raise FileNotFoundError(f"clip not found in bank: {name}")
 
+    def unusable(self, name: str) -> str:
+        """Why the file for ``name`` cannot be played; empty when it can (or is not a WAV).
+
+        Looks inside the file: one a few bytes long, with no audio, or cut short is
+        refused here, before a call, instead of playing silence and being blamed on the
+        agent. A WAV in a format this module does not decode itself (mu-law, say) is left
+        to ffmpeg and passes.
+        """
+        try:
+            path = self.path(name)
+        except (FileNotFoundError, ClipExcluded):
+            return ""  # missing or excluded is said elsewhere, in its own words
+        return wav_problem(path)
+
     def refusal(self, name: str) -> str:
         """Why ``name`` may not be played; empty when it may. The one rule every playback obeys."""
         info = self.info(name)
@@ -343,3 +356,28 @@ class ClipBank:
                 parts.append(silence(gap_s, rate))
             parts.append(self.pcm(name, rate))
         return b"".join(parts)
+
+
+def wav_problem(path: Path) -> str:
+    """Why a WAV file holds no usable audio; empty when it does."""
+    try:
+        size = path.stat().st_size
+    except OSError as error:
+        return f"cannot be read ({error.__class__.__name__})"
+    if size < 44:
+        return f"only {size} byte(s): too short to be a WAV file"
+    try:
+        with wave.open(str(path), "rb") as wav:
+            frames = wav.getnframes()
+            if frames == 0:
+                return "no audio in it (zero frames)"
+            wanted = frames * wav.getsampwidth() * wav.getnchannels()
+            if len(wav.readframes(frames)) < wanted:
+                return "the audio is cut short (the file is truncated)"
+    except wave.Error as error:
+        if "unknown format" in str(error):
+            return ""  # not plain PCM: ffmpeg decodes it at play time
+        return f"not a readable WAV ({error})"
+    except EOFError:
+        return "not a readable WAV (ends early)"
+    return ""

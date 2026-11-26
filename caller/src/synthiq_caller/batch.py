@@ -54,11 +54,12 @@ from synthiq_caller.chain import (
     load_chain,
     variables_in,
 )
-from synthiq_caller.clips import ClipBank
+from synthiq_caller.clips import ClipBank, ClipExcluded
+from synthiq_caller.completeness import read_object, read_run
 from synthiq_caller.director import Director, RunRecord
 from synthiq_caller.external import ExternalFailed, run_blocking, safe_id
 from synthiq_caller.grading import Grade, grade
-from synthiq_caller.jsonio import next_index, write_json, write_new_json
+from synthiq_caller.jsonio import next_index, write_json, write_new_run, write_run
 from synthiq_caller.leg import Leg
 from synthiq_caller.prereq import PrereqChecker, requires_state
 from synthiq_caller.readback import ReadBack, ReadBackContext
@@ -300,6 +301,9 @@ class BatchResult:
     chains: int = 0
     # The calls went to a scripted stand-in, not an agent (``--leg fake``).
     rehearsal: bool = False
+    # True once every job has ended. A batch.json without it was written by a batch that was
+    # stopped half-way: what it counts is what happened before it stopped.
+    finished: bool = False
 
     def to_json(self) -> dict[str, Any]:
         return asdict(self)
@@ -441,6 +445,7 @@ async def run_batch(
     rehearsal: bool = False,
     leg_name: str = "",
     batch_id: str = "",
+    result: BatchResult | None = None,
 ) -> BatchResult:
     if allow_mutating not in ALLOWED:
         raise ValueError(f"allow_mutating must be one of {sorted(ALLOWED)}")
@@ -460,7 +465,9 @@ async def run_batch(
     clips = copy.copy(clips)
     clips.allow_unknown_provenance = allow_unknown_provenance
     clips.allow_missing_consent = allow_missing_consent
-    result = BatchResult(out=str(out), rehearsal=rehearsal)
+    # A caller that must say what was done when the batch is stopped holds its own result.
+    result = result if result is not None else BatchResult(out=str(out), rehearsal=rehearsal)
+    result.rehearsal = rehearsal
     gate = asyncio.Semaphore(max(1, max_parallel))
     # The highest number in use, not a count: after a gap a count would name a
     # file that exists, and a stored run must never be written over.
@@ -492,6 +499,19 @@ async def run_batch(
         late = clips.expired_in(played)
         if late:
             raise NotRun(f"clips past their retention date: {late[:3]}; remove or re-consent them")
+        for clip in dict.fromkeys(played):
+            if clip.startswith("missing/"):
+                continue
+            # The rig's own fault, found before the call: a clip that is not there, or holds
+            # no audio, would play silence and the agent would be blamed for what it never heard.
+            try:
+                clips.path(clip)
+            except FileNotFoundError:
+                raise NotRun(f"clip file missing: {clip}") from None
+            except ClipExcluded:
+                continue  # said above, in its own words
+            if why := clips.unusable(clip):
+                raise NotRun(f"clip not usable: {clip}: {why}")
         unknown = clips.provenance_unknown(played)
         if unknown and not allow_unknown_provenance:
             raise NotRun(
@@ -603,7 +623,7 @@ async def run_batch(
             index = counter
             result.ran += 1
         name = f"run-{index:03d}.json"
-        write_new_json(out / name, payload)
+        write_new_run(out / name, payload)
         # The run is stored first, so the hook can be told which call this was
         # (and read the file); a hook that fails is then written into it.
         try:
@@ -615,7 +635,7 @@ async def run_batch(
             )
         except Exception as error:  # noqa: BLE001 - recorded, never hidden
             payload["hook_error"] = f"after hook: {error}"
-            write_json(out / name, payload)
+            write_run(out / name, payload)
         return Placed(name, graded, record, trace, held)
 
     async def one(file: str, scenario: Scenario, repeat: int) -> None:
@@ -783,7 +803,7 @@ async def run_batch(
                 outcome = "ungraded"  # the call passed but did not show what the next one needs
             chain_counter += 1
             result.chains += 1
-            write_new_json(
+            write_new_run(
                 out / f"chain-{chain_counter:03d}.json",
                 {
                     "chain_file": file,
@@ -807,9 +827,13 @@ async def run_batch(
     jobs += [
         one_chain(file, chain, repeat) for repeat in range(1, repeats + 1) for file, chain in chains
     ]
-    # Whatever happens to one call, the batch's own record is written.
-    finished = await asyncio.gather(*jobs, return_exceptions=True)
-    write_json(out / "batch.json", result.to_json())
+    # Whatever happens to one call, and even if the batch is stopped, its own record is
+    # written: a stopped batch says so (``finished`` false) instead of leaving no record.
+    try:
+        finished = await asyncio.gather(*jobs, return_exceptions=True)
+        result.finished = True
+    finally:
+        write_json(out / "batch.json", result.to_json())
     for outcome in finished:
         if isinstance(outcome, BaseException):
             raise outcome
@@ -825,7 +849,7 @@ async def reread_missing_traces(out: Path, reader: TraceReader, *, every: bool =
     """
     fetched = 0
     for path in sorted(out.glob("run-*.json")):
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = read_run(path)
         record = RunRecord.from_json(payload["record"])
         old = Trace.from_json(payload["trace"]) if payload.get("trace") else None
         usable = old is not None and not looks_unfinished(old, record)
@@ -836,7 +860,7 @@ async def reread_missing_traces(out: Path, reader: TraceReader, *, every: bool =
             continue  # keep what is there
         payload["trace"] = trace.to_json() if trace else None
         payload["trace_error"] = error
-        write_json(path, payload)
+        write_run(path, payload)
         fetched += trace is not None
     return fetched
 
@@ -851,7 +875,7 @@ def regrade(out: Path, scenarios: list[tuple[str, Scenario]]) -> int:
     changed = 0
     skipped = 0
     for path in sorted(out.glob("run-*.json")):
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = read_run(path)
         scenario = by_file.get(payload.get("scenario_file", ""))
         if scenario is None:
             continue
@@ -865,7 +889,7 @@ def regrade(out: Path, scenarios: list[tuple[str, Scenario]]) -> int:
         fresh = grade(scenario, record, trace, payload.get("read_back")).to_json()
         if fresh != payload["grade"]:
             payload["grade"] = fresh
-            write_json(path, payload)
+            write_run(path, payload)
             changed += 1
     _say_skipped(skipped)
     return changed
@@ -897,10 +921,12 @@ def regrade_chains(out: Path, chains: list[tuple[str, Chain]]) -> int:
     changed = 0
     skipped = 0
     for path in sorted(out.glob("run-*.json")):
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = read_run(path)
         link = payload.get("chain")
         chain = by_file.get(link["file"]) if link else None
-        call = next((c for c in chain.calls if c.id == link["id"]), None) if chain else None
+        call = (
+            next((c for c in chain.calls if c.id == link["id"]), None) if chain and link else None
+        )
         if call is None:
             continue
         if _was_redacted(payload):
@@ -917,19 +943,24 @@ def regrade_chains(out: Path, chains: list[tuple[str, Chain]]) -> int:
         fresh = grade(scenario, record, trace, payload.get("read_back")).to_json()
         if fresh != payload["grade"]:
             payload["grade"] = fresh
-            write_json(path, payload)
+            write_run(path, payload)
             changed += 1
     for path in sorted(out.glob("chain-*.json")):
-        stored = json.loads(path.read_text(encoding="utf-8"))
+        stored = read_object(path)
+        moved = False
         for row in stored["calls"]:
             if row["run"] and (out / row["run"]).exists():
-                run = json.loads((out / row["run"]).read_text(encoding="utf-8"))
-                row["outcome"] = run["grade"]["outcome"]
+                run = read_run(out / row["run"])
+                now = run["grade"]["outcome"]
+                moved = moved or row["outcome"] != now
+                row["outcome"] = now
         outcome = chain_outcome([row["outcome"] for row in stored["calls"]])
         if outcome == "incomplete" and stored.get("uncaptured"):
             outcome = "ungraded"
         if outcome != stored["outcome"]:
             stored["outcome"] = outcome
-        write_json(path, stored)
+            moved = True
+        if moved:
+            write_run(path, stored)  # only a chain that moved is written (and stamped again)
     _say_skipped(skipped)
     return changed

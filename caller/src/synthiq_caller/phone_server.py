@@ -31,6 +31,7 @@ from synthiq_caller.director import Director, RunRecord
 from synthiq_caller.jsonio import next_index, write_new_json
 from synthiq_caller.legs.fake_twilio import FakeTwilio
 from synthiq_caller.legs.twilio_media import CallNotConnected, PhoneConfig, TwilioMediaLeg
+from synthiq_caller.manifestcsv import ManifestError
 from synthiq_caller.numbers import ALLOWED_ENV, allowed_numbers, is_allowed
 from synthiq_caller.scenario import Scenario, load_scenario
 from synthiq_caller.transcribe import (
@@ -59,12 +60,15 @@ def open_bank(args: argparse.Namespace, scenario: Scenario) -> ClipBank:
     The bank enforces the same rule at playback, so a call cannot reach a clip any
     other way. Checking here stops a real call being placed that would fail half way.
     """
-    bank = ClipBank(
-        args.clips,
-        extra=tuple(args.clips_extra),
-        allow_unknown_provenance=args.allow_unknown_provenance,
-        allow_missing_consent=args.allow_missing_consent,
-    )
+    try:
+        bank = ClipBank(
+            args.clips,
+            extra=tuple(args.clips_extra),
+            allow_unknown_provenance=args.allow_unknown_provenance,
+            allow_missing_consent=args.allow_missing_consent,
+        )
+    except ManifestError as error:
+        raise UsageError(f"clips: {error}") from error
     played = [clip for step in scenario.steps for clip in step.clips]
     if scenario.fallback is not None:
         played += list(scenario.fallback.clips)

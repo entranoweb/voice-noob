@@ -36,7 +36,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from synthiq_caller import manifest, scorecard
+from synthiq_caller import completeness, manifest, scorecard
 from synthiq_caller.jsonio import write_json
 from synthiq_caller.report import gate_reading, summarise
 from synthiq_caller.scenario import UNGRADEABLE
@@ -100,7 +100,16 @@ def _provenance(
         if found is None:
             unrecorded.append(root.name)
             continue
-        batches += [e for e in found["entries"] if e.get("kind") == "batch"]
+        here = [e for e in found["entries"] if e.get("kind") == "batch"]
+        named = {
+            str(completeness.read_run(path).get("batch", "")) for path in root.glob("run-*.json")
+        }
+        if not here or not named <= {str(e.get("id")) for e in here}:
+            # A manifest that holds no batch, or not the one these runs say they were made
+            # under, ties them to no rig, scenario set or clip bank: as good as none.
+            unrecorded.append(root.name)
+            continue
+        batches += here
     if unrecorded and not allow_no_manifest:
         raise Refused(
             f"no run manifest in {unrecorded}: these runs cannot be tied to the rig, scenarios "
@@ -149,7 +158,7 @@ def _clips(roots: list[Path]) -> dict[str, Any]:
     no_consent_calls = 0
     for root in roots:
         for path in sorted(root.glob("run-*.json")):
-            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload = completeness.read_run(path)
             calls += 1
             doubts = [str(d) for d in payload.get("labels_unverified") or []]
             for doubt in doubts:
@@ -270,6 +279,13 @@ def _not_shown(report: dict[str, Any]) -> list[str]:
             "The rig ran with changes that no commit holds, or from an unknown commit, so "
             "the grading code cannot be reproduced exactly from the commit shown."
         )
+    done = report.get("completeness", {})
+    if done.get("status") == completeness.UNKNOWN:
+        limits.append(
+            "Completeness was not established: " + str(done.get("reason", "")) + ". The calls "
+            "counted here are the calls in the directory; whether any planned call is missing "
+            "cannot be told."
+        )
     limits.append(
         "Only the scenarios listed were tested. Nothing here speaks for callers, accents, "
         "requests or conditions outside them."
@@ -292,7 +308,7 @@ def _ungradeable_behind(roots: list[Path]) -> list[str]:
     found: dict[str, str] = {}
     for root in roots:
         for path in sorted(root.glob("run-*.json")):
-            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload = completeness.read_run(path)
             stated = payload.get("states_expectations")
             if stated is None:
                 raise Refused(
@@ -303,7 +319,7 @@ def _ungradeable_behind(roots: list[Path]) -> list[str]:
                 found.setdefault(f"{root.name}/{file}", ungradeable_why(file))
         batch = root / "batch.json"
         if batch.is_file():
-            for item in json.loads(batch.read_text(encoding="utf-8")).get("blocked", []):
+            for item in completeness.read_object(batch).get("blocked", []):
                 if str(item.get("reason", "")).startswith(UNGRADEABLE):
                     file = str(item.get("scenario_file", "?"))
                     found.setdefault(f"{root.name}/{file}", ungradeable_why(file))
@@ -318,6 +334,8 @@ def build(
     max_unjudged: float = 0.1,
     allow_mixed: bool = False,
     allow_no_manifest: bool = False,
+    require_complete: bool = False,
+    allow_held_back: bool = False,
     title: str = "",
     generated: str = "",
 ) -> dict[str, Any]:
@@ -350,7 +368,10 @@ def build(
         raise Refused(str(error)) from error
 
     card = scorecard.build(roots)
-    read = gate_reading(summary, claim, confidence, max_unjudged)
+    whole = completeness.combine([completeness.check(root) for root in roots])
+    read = gate_reading(summary, claim, confidence, max_unjudged, whole, allow_held_back)
+    if require_complete and whole.unknown:
+        read.refused.append(f"completeness could not be shown: {whole.reason}")
     graded = summary.passed + summary.failed
     failures = read.scenarios - read.every
     needed = calls_needed(claim, confidence, failures)
@@ -388,7 +409,16 @@ def build(
         "claim": claim,
         "confidence": confidence,
         "verdict": verdict,
-        "verdict_reason": why,
+        "verdict_reason": why
+        + (f" (completeness unknown: {whole.reason})" if whole.unknown else "")
+        + (
+            f" ({read.held_back} planned call(s) held back and not run; --allow-held-back was "
+            "used, so the claim is about the calls that ran)"
+            if read.held_back and allow_held_back
+            else ""
+        ),
+        "completeness": whole.to_json(),
+        "held_back": {"planned_calls_not_run": read.held_back, "allowed": allow_held_back},
         "made_with": _provenance(roots, allow_no_manifest, mixed),
         "clips": _clips(roots),
         "counts": {

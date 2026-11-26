@@ -16,9 +16,14 @@ You need Python 3.12 or later, [uv](https://docs.astral.sh/uv/), and ffmpeg
 ```
 cd caller
 uv sync --all-extras --frozen
-alias synthiq-caller="uv run synthiq-caller"     # or call `uv run synthiq-caller` each time
+export PATH="$PWD/.venv/bin:$PATH"               # puts synthiq-caller on PATH (bash, sh, scripts)
 synthiq-caller doctor --fake-only                # what the fake leg needs
 ```
+
+Use `export PATH=...`, not `alias`: an alias exists only in an interactive
+shell, so it fails in a script, in CI and under `sh -c`. The path is absolute,
+so it keeps working after `cd`. In a new terminal, run the `export` again from
+`caller/`, or call `uv run synthiq-caller` from there each time.
 
 Make a working folder for the target, **outside any repository** or somewhere
 git ignores. It will hold recordings of people:
@@ -44,6 +49,18 @@ export ELEVENLABS_API_KEY=...        # in your shell only; never in a file that 
 synthiq-caller doctor .              # says whether it is set, never what it is
 ```
 
+`doctor` reports two legs. **Fake leg** is what a rehearsal needs (no key, no
+network): it decides the exit code, so `doctor .` exits 0 without a key. **Live
+leg** is what a real call needs (the key, a known region, ffmpeg). Without a key
+it prints `live leg: NOT READY (key)`, still exiting 0 unless you add `--live`,
+which exits 1 when the live leg is not ready. Even when it says the settings are
+present, that is only the settings: nothing was called, and only a call shows
+the platform accepts the key.
+
+The fake leg is judged on a folder: every scenario in `scenarios/` is read with the
+loader a run uses, so a file that does not load fails it. `doctor` with no folder
+checks only the machine and prints `fake leg: not checked`, never `ready`.
+
 `env.example` lists the variable names and holds no values. Use another variable
 with `--key-env <NAME>`. The key should be read-only where the platform allows
 it: `capture` only reads.
@@ -58,8 +75,10 @@ a key from the global account does not work there. The regions are `global` (the
 synthiq-caller doctor . --region <region>
 ```
 
-It prints the address that region maps to. `capture` takes the same word with
-`--region <region>`. To check the address answers at all, add `--check-network`;
+It prints the address that region maps to. `capture`, `run`, `batch` and `regrade` take the same word with
+`--region <region>`, or read it from `ELEVENLABS_REGION`; `doctor` reads it from there too; an unknown name, from the flag or the
+environment, is an
+error (exit 1), never the global host. To check the address answers at all, add `--check-network`;
 that is the only thing that touches the network, and it sends no key.
 
 ## Step 3. Fetch a sample of recent calls
@@ -160,7 +179,8 @@ synthiq-caller validate scenarios --clips clips --target target.json
 It places no call. It checks that the files parse, that the clips they name are
 in the bank, and that what they require of the system is stated. Read every line:
 
-- `CLIPS NOT USABLE`: a clip is missing or ruled out.
+- `CLIPS NOT USABLE`: a clip is missing, ruled out, or not audio (a few bytes,
+  no audio, cut short).
 - `UNGRADEABLE until expectations are stated`: the scenario asks nothing of the
   call. The command still exits 0, because an unfinished file is not a broken
   one. Do not treat that exit code as "ready".
@@ -193,6 +213,9 @@ To see that grading is real, change a value in one script so the tool receives
 something other than the persona's fact: that run fails.
 
 If you see `ungraded` or `not run`, the report says why next to each.
+
+`batch` exits 0 even when runs failed, unless you pass `--fail-under <percent>`;
+read the report, or add `--fail-under`, before treating an exit code as a pass.
 
 ### A real call
 
