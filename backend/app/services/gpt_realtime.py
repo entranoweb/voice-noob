@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.integrations import get_workspace_integrations
 from app.api.settings import get_user_api_keys
 from app.core.auth import user_id_to_uuid
-from app.core.log_redaction import describe_value, redact_arguments
+from app.core.log_redaction import describe_value, log_exception, redact_arguments, scrub_text
 from app.core.safe_http import assert_public_url
 from app.services.realtime_models import input_transcription, realtime_model_for_tier
 from app.services.tools.registry import ToolRegistry
@@ -301,9 +301,7 @@ class GPTRealtimeSession:
             self.logger.info("connected_to_openai_realtime")
 
         except Exception as e:
-            self.logger.exception(
-                "realtime_connection_failed", error=str(e), error_type=type(e).__name__
-            )
+            log_exception(self.logger, "realtime_connection_failed", e)
             raise
 
     async def _configure_session(self) -> None:
@@ -416,9 +414,7 @@ class GPTRealtimeSession:
                     greeting=initial_greeting[:50],
                 )
         except Exception as e:
-            self.logger.exception(
-                "session_config_failed", error=str(e), error_type=type(e).__name__
-            )
+            log_exception(self.logger, "session_config_failed", e)
             raise
 
     async def handle_tool_call(self, tool_call: dict[str, Any]) -> dict[str, Any]:
@@ -496,10 +492,10 @@ class GPTRealtimeSession:
                         self.logger.error("realtime_api_error", error=event.error)
 
                 except Exception as e:
-                    self.logger.exception("event_processing_error", error=str(e))
+                    log_exception(self.logger, "event_processing_error", e)
 
         except Exception as e:
-            self.logger.exception("realtime_event_loop_error", error=str(e))
+            log_exception(self.logger, "realtime_event_loop_error", e)
             raise
 
     async def handle_function_call_event(self, event: Any) -> dict[str, Any]:
@@ -609,7 +605,7 @@ class GPTRealtimeSession:
             await self.connection.response.create()
             return True
         except Exception as e:
-            self.logger.exception("initial_greeting_failed", error=str(e))
+            log_exception(self.logger, "initial_greeting_failed", e)
             return False
 
     async def send_audio(self, audio_data: bytes) -> None:
@@ -636,7 +632,7 @@ class GPTRealtimeSession:
                 base64_length=len(audio_base64),
             )
         except Exception as e:
-            self.logger.exception("send_audio_error", error=str(e), error_type=type(e).__name__)
+            log_exception(self.logger, "send_audio_error", e)
 
     def add_user_transcript(self, text: str) -> None:
         """Add a user transcript entry.
@@ -710,7 +706,7 @@ class GPTRealtimeSession:
                     await self.connection.aclose()
                 self.logger.info("realtime_connection_closed")
             except Exception as e:
-                self.logger.warning("connection_close_failed", error=str(e))
+                self.logger.warning("connection_close_failed", error=scrub_text(e))
 
         # Cleanup tool registry
         if self.tool_registry:

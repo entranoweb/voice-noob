@@ -1,5 +1,7 @@
 """Unit tests for the log redaction helpers."""
 
+import structlog
+
 from app.core.log_redaction import (
     describe_text,
     describe_value,
@@ -61,3 +63,43 @@ def test_scrub_text_masks_numbers_and_emails_inside_prose() -> None:
     assert "+*********42" in out
     assert "***@example.com" in out
     assert out.endswith(": invalid")
+
+
+def _fail(exc: Exception) -> None:
+    raise exc
+
+
+def test_log_exception_logs_type_masked_message_and_place_but_no_traceback() -> None:
+    from structlog.testing import capture_logs
+
+    from app.core.log_redaction import log_exception
+
+    with capture_logs() as records:
+        try:
+            _fail(ValueError(f"bad {NUMBER} for jane@example.com"))
+        except ValueError as exc:
+            log_exception(structlog.get_logger(), "thing_failed", exc, call_id="c1")
+
+    (record,) = records
+    assert record["event"] == "thing_failed"
+    assert record["log_level"] == "error"
+    assert record["error_type"] == "ValueError"
+    assert record["call_id"] == "c1"
+    assert "test_log_redaction.py" in record["where"]
+    assert "exc_info" not in record
+    assert NUMBER not in repr(record)
+    assert "jane" not in repr(record)
+
+
+def test_log_exception_uses_the_exception_being_handled_by_default() -> None:
+    from structlog.testing import capture_logs
+
+    from app.core.log_redaction import log_exception
+
+    with capture_logs() as records:
+        try:
+            _fail(RuntimeError("boom"))
+        except RuntimeError:
+            log_exception(structlog.get_logger(), "thing_failed")
+
+    assert records[0]["error_type"] == "RuntimeError"

@@ -6,7 +6,7 @@ from typing import Any, TypeVar
 import httpx
 import structlog
 
-from app.core.log_redaction import scrub_text
+from app.core.log_redaction import log_exception, scrub_text
 
 logger = structlog.get_logger()
 
@@ -155,8 +155,10 @@ class BaseExternalService:
                     HTTP_CLIENT_ERROR_MIN <= e.response.status_code < HTTP_CLIENT_ERROR_MAX
                     and e.response.status_code != HTTP_TOO_MANY_REQUESTS
                 ):
-                    logger.exception(
+                    log_exception(
+                        logger,
                         "External service client error",
+                        e,
                         service=self.base_url,
                         status_code=e.response.status_code,
                         detail=scrub_text(e.response.text[:200]),
@@ -178,10 +180,11 @@ class BaseExternalService:
 
             except Exception as e:
                 last_exception = e
-                logger.exception(
+                log_exception(
+                    logger,
                     "Unexpected error calling external service",
+                    e,
                     service=self.base_url,
-                    error=str(e),
                     attempt=attempt + 1,
                 )
                 if attempt < self.max_retries - 1:

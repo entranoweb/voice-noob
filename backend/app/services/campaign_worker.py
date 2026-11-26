@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.settings import get_user_api_keys
-from app.core.log_redaction import redact_phone
+from app.core.log_redaction import log_exception, redact_phone
 from app.db.session import AsyncSessionLocal
 from app.models.campaign import (
     Campaign,
@@ -77,7 +77,7 @@ class CampaignWorker:
             try:
                 await self._process_campaigns()
             except Exception:
-                self.logger.exception("Error in campaign worker loop")
+                log_exception(self.logger, "Error in campaign worker loop", None)
 
             await asyncio.sleep(POLL_INTERVAL_SECONDS)
 
@@ -101,8 +101,10 @@ class CampaignWorker:
                 try:
                     await self._process_campaign(campaign, db)
                 except Exception:
-                    self.logger.exception(
+                    log_exception(
+                        self.logger,
                         "Error processing campaign",
+                        None,
                         campaign_id=str(campaign.id),
                         campaign_name=campaign.name,
                     )
@@ -231,8 +233,10 @@ class CampaignWorker:
                     telephony_service=telephony_service,
                 )
             except Exception:
-                log.exception(
+                log_exception(
+                    log,
                     "Failed to initiate call",
+                    None,
                     contact_id=contact.id,
                     phone=redact_phone(contact.phone_number),
                 )

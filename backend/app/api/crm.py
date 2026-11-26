@@ -541,8 +541,12 @@ async def create_contact(
         ) from e
     except DBAPIError as e:
         await db.rollback()
-        logger.exception(
-            "Database error creating contact: phone=%s", redact_phone(contact_data.phone_number)
+        # DBAPIError text carries the bound SQL parameters (the whole contact, names
+        # included, which scrub_text cannot recognise), so only the type is logged.
+        logger.error(  # noqa: TRY400 - a traceback would carry the SQL parameters
+            "Database error creating contact: phone=%s error_type=%s",
+            redact_phone(contact_data.phone_number),
+            type(e).__name__,
         )
         raise HTTPException(
             status_code=503,
@@ -550,10 +554,11 @@ async def create_contact(
         ) from e
     except Exception as e:
         await db.rollback()
-        logger.exception(
-            "Unexpected error creating contact: user_id=%d, phone=%s",
+        logger.error(  # noqa: TRY400 - a traceback would carry the SQL parameters
+            "Unexpected error creating contact: user_id=%d, phone=%s error_type=%s",
             user_id,
             redact_phone(contact_data.phone_number),
+            type(e).__name__,
         )
         raise HTTPException(
             status_code=500,

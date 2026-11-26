@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.cache import cache_invalidate
-from app.core.log_redaction import describe_text, scrub_text
+from app.core.log_redaction import describe_text, log_exception
 from app.models.appointment import Appointment
 from app.models.contact import Contact
 
@@ -281,9 +281,7 @@ class CRMTools:
             }
 
         except Exception as e:
-            self.logger.exception(
-                "search_customer_failed", query=describe_text(query), error=scrub_text(e)
-            )
+            log_exception(self.logger, "search_customer_failed", e, query=describe_text(query))
             return {"success": False, "error": str(e)}
 
     async def create_contact(
@@ -337,7 +335,7 @@ class CRMTools:
             }
 
         except Exception as e:
-            self.logger.exception("create_contact_failed", error=str(e))
+            log_exception(self.logger, "create_contact_failed", e)
             return {"success": False, "error": str(e)}
 
     async def check_availability(
@@ -400,7 +398,7 @@ class CRMTools:
             }
 
         except Exception as e:
-            self.logger.exception("check_availability_failed", error=str(e))
+            log_exception(self.logger, "check_availability_failed", e)
             return {"success": False, "error": str(e)}
 
     async def book_appointment(
@@ -509,7 +507,7 @@ class CRMTools:
             }
 
         except Exception as e:
-            self.logger.exception("book_appointment_failed", error=str(e))
+            log_exception(self.logger, "book_appointment_failed", e)
             return {"success": False, "error": str(e)}
 
     async def list_appointments(
@@ -583,7 +581,7 @@ class CRMTools:
             }
 
         except Exception as e:
-            self.logger.exception("list_appointments_failed", error=str(e))
+            log_exception(self.logger, "list_appointments_failed", e)
             return {"success": False, "error": str(e)}
 
     async def cancel_appointment(
@@ -634,7 +632,7 @@ class CRMTools:
             }
 
         except Exception as e:
-            self.logger.exception("cancel_appointment_failed", error=str(e))
+            log_exception(self.logger, "cancel_appointment_failed", e)
             return {"success": False, "error": str(e)}
 
     async def reschedule_appointment(
@@ -684,7 +682,7 @@ class CRMTools:
             }
 
         except Exception as e:
-            self.logger.exception("reschedule_appointment_failed", error=str(e))
+            log_exception(self.logger, "reschedule_appointment_failed", e)
             return {"success": False, "error": str(e)}
 
     async def execute_tool(  # noqa: PLR0911

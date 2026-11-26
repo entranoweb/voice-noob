@@ -11,6 +11,7 @@ Ids (agent, call, record, user) are not personal data and are logged as is.
 from __future__ import annotations
 
 import re
+import sys
 from collections.abc import Mapping
 from typing import Any
 
@@ -89,3 +90,31 @@ def scrub_text(text: object) -> str:
     """
     out = _EMAIL_IN_TEXT.sub(lambda m: "***@" + m.group(1), str(text))
     return _PHONE_IN_TEXT.sub(lambda m: redact_phone(m.group(0)) or "", out)
+
+
+def log_exception(log: Any, event: str, exc: BaseException | None = None, **fields: Any) -> None:
+    """Log a caught exception without putting its message in the record.
+
+    ``log.exception`` sets ``exc_info`` and structlog renders the whole
+    traceback, which ends in ``ExcType: message``. Carrier and CRM client
+    errors put request URLs, response bodies and the numbers and emails in
+    them in that message, and a call site cannot redact text that a renderer
+    adds later. So this logs at error level *without* ``exc_info``: the
+    exception type, the message through :func:`scrub_text`, and the file, line
+    and function where it was raised, which is what the traceback was for.
+
+    Call it from inside ``except``; ``exc`` defaults to the exception being
+    handled. Leave framework-internal exceptions on plain ``log.exception``.
+    """
+    exc = exc if exc is not None else sys.exc_info()[1]
+    if exc is None:
+        log.error(event, **fields)
+        return
+    where = None
+    tb = exc.__traceback__
+    while tb is not None and tb.tb_next is not None:
+        tb = tb.tb_next
+    if tb is not None:
+        code = tb.tb_frame.f_code
+        where = f"{code.co_filename.rsplit('/', 1)[-1]}:{tb.tb_lineno} in {code.co_name}"
+    log.error(event, error_type=type(exc).__name__, error=scrub_text(exc), where=where, **fields)

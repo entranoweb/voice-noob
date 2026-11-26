@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.integrations import get_workspace_integrations
 from app.core.auth import CurrentUser, user_id_to_uuid
-from app.core.log_redaction import redact_arguments
+from app.core.log_redaction import log_exception, redact_arguments
 from app.core.ownership import get_owned_agent, owned_agent_workspace_id
 from app.db.session import get_db
 from app.services.tools.registry import ToolRegistry
@@ -85,5 +85,5 @@ async def execute_tool(
         return result
 
     except Exception as e:
-        tool_logger.exception("tool_execution_failed", error=str(e))
+        log_exception(tool_logger, "tool_execution_failed", e)
         raise HTTPException(status_code=500, detail="Tool execution failed") from e
