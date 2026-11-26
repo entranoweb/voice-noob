@@ -32,6 +32,7 @@ from app.models.appointment import Appointment
 from app.models.audit_event import AuditEvent
 from app.models.contact import Contact
 from app.models.phone_number import PhoneNumber, PhoneNumberStatus
+from app.models.test_scenario import TestScenario as ScenarioRow
 from app.models.user import User
 from app.models.workspace import AgentWorkspace, Workspace
 
@@ -756,3 +757,481 @@ class TestAzureEndpointSetting:
         )
 
         assert response.status_code == 422
+
+
+PLATFORM_KEY = "sk-platform-key-not-for-tenants"
+USER_LEVEL_KEY = "sk-user-level-key-not-for-the-agent"
+WORKSPACE_KEY = "sk-workspace-key-for-the-agent"
+
+
+class _FakeOpenAI:
+    """Stands in for the client-secret call; records the keys it was asked with."""
+
+    def __init__(self) -> None:
+        self.keys: list[str] = []
+
+    async def __call__(self, api_key: str, session: dict[str, Any], **_: Any) -> Any:
+        import httpx
+
+        self.keys.append(api_key)
+        return httpx.Response(200, json={"value": "ek_fake", "expires_at": 1})
+
+
+@pytest.fixture
+def fake_openai(monkeypatch: pytest.MonkeyPatch) -> _FakeOpenAI:
+    fake = _FakeOpenAI()
+    monkeypatch.setattr("app.api.realtime.post_client_secret", fake)
+    monkeypatch.setattr(settings, "OPENAI_API_KEY", PLATFORM_KEY)
+    return fake
+
+
+async def _store_key(
+    world: World, tenant: Tenant, key: str, *, workspace_id: uuid.UUID | None
+) -> None:
+    from app.models.user_settings import UserSettings
+
+    async with world.sessions() as session:
+        session.add(
+            UserSettings(
+                user_id=user_id_to_uuid(tenant.user.id),
+                workspace_id=workspace_id,
+                openai_api_key=key,
+            )
+        )
+        await session.commit()
+
+
+class TestRealtimeTokenKeyScope:
+    """The browser key is minted on the agent's own workspace key and nothing else."""
+
+    @pytest.mark.asyncio
+    async def test_tenant_without_a_workspace_key_is_refused(
+        self, world: World, fake_openai: _FakeOpenAI
+    ) -> None:
+        # A user-level key and the platform key both exist; neither may be used.
+        await _store_key(world, world.alice, USER_LEVEL_KEY, workspace_id=None)
+
+        response = await world.client.get(
+            f"/api/v1/realtime/token/{world.alice.agent.id}", headers=world.alice.headers
+        )
+
+        assert response.status_code == 400
+        assert "Workspace API Keys" in response.json()["detail"]
+        assert fake_openai.keys == []
+
+    @pytest.mark.asyncio
+    async def test_explicit_own_workspace_without_a_key_is_refused(
+        self, world: World, fake_openai: _FakeOpenAI
+    ) -> None:
+        response = await world.client.get(
+            f"/api/v1/realtime/token/{world.alice.agent.id}",
+            headers=world.alice.headers,
+            params={"workspace_id": str(world.alice.workspace.id)},
+        )
+
+        assert response.status_code == 400
+        assert fake_openai.keys == []
+
+    @pytest.mark.asyncio
+    async def test_key_comes_from_the_agents_workspace_when_none_is_passed(
+        self, world: World, fake_openai: _FakeOpenAI
+    ) -> None:
+        await _store_key(world, world.alice, USER_LEVEL_KEY, workspace_id=None)
+        await _store_key(world, world.alice, WORKSPACE_KEY, workspace_id=world.alice.workspace.id)
+
+        response = await world.client.get(
+            f"/api/v1/realtime/token/{world.alice.agent.id}", headers=world.alice.headers
+        )
+
+        assert response.status_code == 200
+        assert response.json()["value"] == "ek_fake"
+        assert fake_openai.keys == [WORKSPACE_KEY]
+
+    @pytest.mark.asyncio
+    async def test_another_customers_agent_is_404_and_mints_nothing(
+        self, world: World, fake_openai: _FakeOpenAI
+    ) -> None:
+        await _store_key(world, world.alice, WORKSPACE_KEY, workspace_id=world.alice.workspace.id)
+
+        response = await world.client.get(
+            f"/api/v1/realtime/token/{world.bob.agent.id}", headers=world.alice.headers
+        )
+
+        assert response.status_code == 404
+        assert fake_openai.keys == []
+
+    @pytest.mark.asyncio
+    async def test_a_workspace_that_is_not_the_agents_is_404(
+        self, world: World, fake_openai: _FakeOpenAI
+    ) -> None:
+        await _store_key(world, world.alice, WORKSPACE_KEY, workspace_id=world.alice.workspace.id)
+        async with world.sessions() as session:
+            other = Workspace(user_id=world.alice.user.id, name="alice second clinic")
+            session.add(other)
+            await session.commit()
+            await session.refresh(other)
+        await _store_key(world, world.alice, USER_LEVEL_KEY, workspace_id=other.id)
+
+        for workspace_id in (other.id, world.bob.workspace.id):
+            response = await world.client.get(
+                f"/api/v1/realtime/token/{world.alice.agent.id}",
+                headers=world.alice.headers,
+                params={"workspace_id": str(workspace_id)},
+            )
+            assert response.status_code == 404
+        assert fake_openai.keys == []
+
+    @pytest.mark.asyncio
+    async def test_an_agent_with_no_workspace_is_refused(
+        self, world: World, fake_openai: _FakeOpenAI
+    ) -> None:
+        async with world.sessions() as session:
+            link = await session.execute(
+                select(AgentWorkspace).where(AgentWorkspace.agent_id == world.alice.agent.id)
+            )
+            await session.delete(link.scalar_one())
+            await session.commit()
+        await _store_key(world, world.alice, USER_LEVEL_KEY, workspace_id=None)
+
+        response = await world.client.get(
+            f"/api/v1/realtime/token/{world.alice.agent.id}", headers=world.alice.headers
+        )
+
+        assert response.status_code == 400
+        assert fake_openai.keys == []
+
+    @pytest.mark.asyncio
+    async def test_session_route_refuses_a_foreign_workspace(
+        self, world: World, fake_openai: _FakeOpenAI
+    ) -> None:
+        response = await world.client.post(
+            f"/api/v1/realtime/session/{world.alice.agent.id}",
+            headers=world.alice.headers,
+            params={"workspace_id": str(world.bob.workspace.id)},
+            content=b"v=0\r\n",
+        )
+
+        assert response.status_code == 404
+        assert fake_openai.keys == []
+
+    @pytest.mark.asyncio
+    async def test_session_route_without_a_workspace_key_is_refused(
+        self, world: World, fake_openai: _FakeOpenAI
+    ) -> None:
+        await _store_key(world, world.alice, USER_LEVEL_KEY, workspace_id=None)
+
+        response = await world.client.post(
+            f"/api/v1/realtime/session/{world.alice.agent.id}",
+            headers=world.alice.headers,
+            params={"workspace_id": str(world.alice.workspace.id)},
+            content=b"v=0\r\n",
+        )
+
+        assert response.status_code == 400
+        assert "Workspace API Keys" in response.json()["detail"]
+
+
+class TestAgentWithTwoWorkspaces:
+    """With two links the default one is always the one whose key is used."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("default_is_new", [True, False])
+    async def test_the_default_workspaces_key_is_used(
+        self, world: World, fake_openai: _FakeOpenAI, default_is_new: bool
+    ) -> None:
+        async with world.sessions() as session:
+            second = Workspace(user_id=world.alice.user.id, name="alice second clinic")
+            session.add(second)
+            await session.commit()
+            await session.refresh(second)
+            link = (
+                await session.execute(
+                    select(AgentWorkspace).where(AgentWorkspace.agent_id == world.alice.agent.id)
+                )
+            ).scalar_one()
+            link.is_default = not default_is_new
+            session.add(
+                AgentWorkspace(
+                    agent_id=world.alice.agent.id, workspace_id=second.id, is_default=default_is_new
+                )
+            )
+            await session.commit()
+        await _store_key(world, world.alice, "sk-first", workspace_id=world.alice.workspace.id)
+        await _store_key(world, world.alice, "sk-second", workspace_id=second.id)
+
+        for _ in range(3):
+            response = await world.client.get(
+                f"/api/v1/realtime/token/{world.alice.agent.id}", headers=world.alice.headers
+            )
+            assert response.status_code == 200
+
+        assert set(fake_openai.keys) == {"sk-second" if default_is_new else "sk-first"}
+
+
+class TestRateLimitKeyIgnoresForwardedFor:
+    """The app itself never believes X-Forwarded-For: only a trusted proxy hop may rewrite
+    the peer address, in front of the app (see tests/integration/test_proxy_headers.py)."""
+
+    @pytest.mark.asyncio
+    async def test_a_changing_header_from_one_peer_shares_one_bucket(self, world: World) -> None:
+        from app.api.realtime import REALTIME_TOKEN_LIMIT
+
+        url = f"/api/v1/realtime/token/{uuid.uuid4()}"
+        allowed = int(REALTIME_TOKEN_LIMIT.split("/", maxsplit=1)[0])
+        statuses = [
+            (
+                await world.client.get(
+                    url, headers={**world.alice.headers, "X-Forwarded-For": f"203.0.113.{i % 250}"}
+                )
+            ).status_code
+            for i in range(allowed + 1)
+        ]
+
+        assert statuses[-1] == 429
+
+
+class TestRealtimeBadIds:
+    """A malformed id from the client is a 404 like any other unknown id, never a 500."""
+
+    @pytest.mark.asyncio
+    async def test_token_with_a_malformed_workspace_id(self, world: World) -> None:
+        response = await world.client.get(
+            f"/api/v1/realtime/token/{world.alice.agent.id}",
+            headers=world.alice.headers,
+            params={"workspace_id": "not-a-uuid"},
+        )
+
+        assert response.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_session_with_a_malformed_workspace_id(self, world: World) -> None:
+        response = await world.client.post(
+            f"/api/v1/realtime/session/{world.alice.agent.id}",
+            headers=world.alice.headers,
+            params={"workspace_id": "not-a-uuid"},
+            content=b"v=0\r\n",
+        )
+
+        assert response.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_transcript_with_a_malformed_workspace_id(self, world: World) -> None:
+        response = await world.client.post(
+            f"/api/v1/realtime/transcript/{world.alice.agent.id}",
+            headers=world.alice.headers,
+            params={"workspace_id": "not-a-uuid"},
+            json={"session_id": "s-1", "transcript": "hello", "duration_seconds": 1},
+        )
+
+        assert response.status_code < 500
+
+
+class TestRealtimeRateLimits:
+    """The routes that mint a key or run a tool are limited per client address."""
+
+    @staticmethod
+    def _allowed(route_limit: str) -> int:
+        return int(route_limit.split("/", maxsplit=1)[0])
+
+    @pytest.mark.asyncio
+    async def test_token_route_is_limited(self, world: World) -> None:
+        from app.api.realtime import REALTIME_TOKEN_LIMIT
+
+        url = f"/api/v1/realtime/token/{uuid.uuid4()}"
+        statuses = [
+            (await world.client.get(url, headers=world.alice.headers)).status_code
+            for _ in range(self._allowed(REALTIME_TOKEN_LIMIT) + 1)
+        ]
+
+        assert set(statuses[:-1]) == {404}
+        assert statuses[-1] == 429
+
+    @pytest.mark.asyncio
+    async def test_session_route_is_limited(self, world: World) -> None:
+        from app.api.realtime import REALTIME_SESSION_LIMIT
+
+        url = f"/api/v1/realtime/session/{uuid.uuid4()}"
+        statuses = [
+            (
+                await world.client.post(
+                    url,
+                    headers=world.alice.headers,
+                    params={"workspace_id": str(world.alice.workspace.id)},
+                    content=b"v=0\r\n",
+                )
+            ).status_code
+            for _ in range(self._allowed(REALTIME_SESSION_LIMIT) + 1)
+        ]
+
+        assert set(statuses[:-1]) == {404}
+        assert statuses[-1] == 429
+
+    @pytest.mark.asyncio
+    async def test_tool_execute_route_is_limited(self, world: World) -> None:
+        from app.api.tools import TOOL_EXECUTE_LIMIT
+
+        body = {"tool_name": "x", "arguments": {}, "agent_id": str(uuid.uuid4())}
+        statuses = [
+            (
+                await world.client.post(
+                    "/api/v1/tools/execute", headers=world.alice.headers, json=body
+                )
+            ).status_code
+            for _ in range(self._allowed(TOOL_EXECUTE_LIMIT) + 1)
+        ]
+
+        assert set(statuses[:-1]) == {404}
+        assert statuses[-1] == 429
+
+
+# A malformed id is the caller's mistake (4xx, never a 500), and an id that is
+# someone else's answers exactly like one that does not exist.
+_UNKNOWN = "00000000-0000-4000-8000-000000000000"
+_NOT_A_UUID = "not-a-uuid"
+
+
+def _by_id_requests(world: World, other: dict[str, str]) -> list[tuple[str, str, str, Any]]:
+    """(label, method, url template with {}, json body) for every route under test."""
+    ws = "workspace_id={}"
+    return [
+        ("call", "GET", "/api/v1/calls/{}", None),
+        ("call-metrics", "GET", "/api/v1/calls/{}/metrics", None),
+        ("agent-call-stats", "GET", "/api/v1/calls/agent/{}/stats", None),
+        ("calls-agent-filter", "GET", "/api/v1/calls?agent_id={}", None),
+        ("calls-workspace-filter", "GET", "/api/v1/calls?" + ws, None),
+        ("agent", "GET", "/api/v1/agents/{}", None),
+        ("phone-number", "GET", "/api/v1/phone-numbers/{}", None),
+        ("phone-number-update", "PUT", "/api/v1/phone-numbers/{}", {"friendly_name": "x"}),
+        ("phone-number-delete", "DELETE", "/api/v1/phone-numbers/{}", None),
+        ("phone-numbers-workspace-filter", "GET", "/api/v1/phone-numbers?" + ws, None),
+        ("qa-settings-get", "GET", "/api/v1/qa/workspace/{}/settings", None),
+        (
+            "qa-settings-put",
+            "PUT",
+            "/api/v1/qa/workspace/{}/settings",
+            {"auto_evaluate": False},
+        ),
+        ("scenario-update", "PUT", "/api/v1/testing/scenarios/{}", {"name": "renamed"}),
+        ("scenario-delete", "DELETE", "/api/v1/testing/scenarios/{}", None),
+    ]
+
+
+class TestBadIdsAreNotServerErrors:
+    @pytest.mark.asyncio
+    async def test_a_malformed_id_is_a_client_error_on_every_by_id_route(
+        self, world: World
+    ) -> None:
+        for label, method, url, body in _by_id_requests(world, world.alice.headers):
+            response = await world.client.request(
+                method, url.format(_NOT_A_UUID), headers=world.alice.headers, json=body
+            )
+            assert 400 <= response.status_code < 500, (label, response.status_code)
+
+    @pytest.mark.asyncio
+    async def test_a_malformed_agent_id_in_an_outbound_call_is_a_client_error(
+        self, world: World
+    ) -> None:
+        response = await world.client.post(
+            f"/api/v1/telephony/calls?workspace_id={world.alice.workspace.id}",
+            headers=world.alice.headers,
+            json={"to_number": "+442079460010", "from_number": ALICE_NUMBER, "agent_id": "x"},
+        )
+
+        assert 400 <= response.status_code < 500
+
+
+class TestNotYoursLooksLikeNotThere:
+    """Another customer's id and an id nobody has give the same status and body."""
+
+    @pytest.mark.asyncio
+    async def test_phone_number_routes(self, world: World) -> None:
+        bobs = await _register_number(world, world.bob, BOB_NUMBER)
+        for method, body in (
+            ("GET", None),
+            ("PUT", {"friendly_name": "x"}),
+            ("DELETE", None),
+        ):
+            theirs = await world.client.request(
+                method, f"/api/v1/phone-numbers/{bobs.id}", headers=world.alice.headers, json=body
+            )
+            nobodys = await world.client.request(
+                method, f"/api/v1/phone-numbers/{_UNKNOWN}", headers=world.alice.headers, json=body
+            )
+            assert theirs.status_code == nobodys.status_code == 404, method
+            assert theirs.json() == nobodys.json(), method
+
+    @pytest.mark.asyncio
+    async def test_a_phone_number_cannot_be_registered_into_another_customers_workspace(
+        self, world: World
+    ) -> None:
+        responses = []
+        for workspace_id in (str(world.bob.workspace.id), _UNKNOWN):
+            responses.append(
+                await world.client.post(
+                    "/api/v1/phone-numbers",
+                    headers=world.alice.headers,
+                    json={
+                        "phone_number": ALICE_NUMBER,
+                        "provider": "twilio",
+                        "provider_id": "PN-test",
+                        "workspace_id": workspace_id,
+                    },
+                )
+            )
+
+        assert responses[0].status_code == responses[1].status_code == 404
+        assert responses[0].json() == responses[1].json()
+
+    @pytest.mark.asyncio
+    async def test_qa_workspace_settings(self, world: World) -> None:
+        for method, body in (("GET", None), ("PUT", {"auto_evaluate": False})):
+            theirs = await world.client.request(
+                method,
+                f"/api/v1/qa/workspace/{world.bob.workspace.id}/settings",
+                headers=world.alice.headers,
+                json=body,
+            )
+            nobodys = await world.client.request(
+                method,
+                f"/api/v1/qa/workspace/{_UNKNOWN}/settings",
+                headers=world.alice.headers,
+                json=body,
+            )
+            assert theirs.status_code == nobodys.status_code == 404, method
+            assert theirs.json() == nobodys.json(), method
+
+    @pytest.mark.asyncio
+    async def test_testing_scenarios(self, world: World) -> None:
+        async with world.sessions() as session:
+            scenario = ScenarioRow(
+                user_id=world.bob.user.id,
+                name="bob's scenario",
+                description="d",
+                category="greeting",
+                difficulty="easy",
+                caller_persona={"name": "c"},
+                conversation_flow=[],
+                expected_behaviors=[],
+                success_criteria={},
+                is_active=True,
+                is_built_in=False,
+            )
+            session.add(scenario)
+            await session.commit()
+            await session.refresh(scenario)
+
+        for method, body in (("PUT", {"name": "renamed"}), ("DELETE", None)):
+            theirs = await world.client.request(
+                method,
+                f"/api/v1/testing/scenarios/{scenario.id}",
+                headers=world.alice.headers,
+                json=body,
+            )
+            nobodys = await world.client.request(
+                method,
+                f"/api/v1/testing/scenarios/{_UNKNOWN}",
+                headers=world.alice.headers,
+                json=body,
+            )
+            assert theirs.status_code == nobodys.status_code == 404, method
+            assert theirs.json() == nobodys.json(), method
