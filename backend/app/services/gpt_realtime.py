@@ -3,6 +3,7 @@
 import json
 import types
 import uuid
+from collections import defaultdict
 from typing import Any, Self
 
 import structlog
@@ -16,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.integrations import get_workspace_integrations
 from app.api.settings import get_user_api_keys
 from app.core.auth import user_id_to_uuid
+from app.core.limits import MARKER_RESERVE, TRANSCRIPT_MAX_CHARS, truncation_marker
 from app.core.log_redaction import describe_value, log_exception, redact_arguments, scrub_text
 from app.core.safe_http import assert_public_url
 from app.services.realtime_models import input_transcription, realtime_model_for_tier
@@ -128,6 +130,12 @@ Current: {current_datetime}
     return instructions
 
 
+# How a transcript line starts, by role. Any role but the caller's reads as the agent.
+_ROLE_LABELS: defaultdict[str, str] = defaultdict(
+    lambda: "[Assistant]: ", {"user": "[User]: ", "assistant": "[Assistant]: "}
+)
+
+
 class TranscriptEntry:
     """Single transcript entry representing one turn in the conversation."""
 
@@ -187,6 +195,14 @@ class GPTRealtimeSession:
         # Transcript accumulation
         self._transcript_entries: list[TranscriptEntry] = []
         self._current_assistant_text: str = ""
+        # Length of the transcript as ``get_transcript`` renders it (labels and
+        # blank lines included) so far, and the content characters dropped once
+        # it reached its budget. The budget is TRANSCRIPT_MAX_CHARS less the room
+        # for the marker, so the rendered text with its marker is within the cap.
+        # A long call is cut, never failed.
+        self._transcript_chars: int = 0
+        self._transcript_omitted: int = 0
+        self._transcript_cap_logged = False
         # Initial greeting (triggered after event loop starts to avoid race condition)
         self._pending_initial_greeting: str | None = None
         self._greeting_triggered: bool = False
@@ -640,15 +656,36 @@ class GPTRealtimeSession:
         except Exception as e:
             log_exception(self.logger, "send_audio_error", e)
 
+    def _admit_transcript_text(self, role: str, text: str) -> None:
+        """Keep ``text`` as an entry while the budget allows; count what it drops.
+
+        The budget is spent on the rendered line, label and separator included,
+        so the cap holds for the text that is stored and nothing downstream has
+        to cut it a second time.
+        """
+        text = text.strip()
+        if not text:
+            return
+        overhead = len(_ROLE_LABELS[role]) + (2 if self._transcript_entries else 0)
+        room = max(TRANSCRIPT_MAX_CHARS - MARKER_RESERVE - self._transcript_chars - overhead, 0)
+        kept = text[:room]
+        self._transcript_omitted += len(text) - len(kept)
+        if kept:
+            self._transcript_entries.append(TranscriptEntry(role=role, content=kept))
+            self._transcript_chars += overhead + len(kept)
+        if len(kept) < len(text) and not self._transcript_cap_logged:
+            self._transcript_cap_logged = True  # once a session, not once an entry
+            self.logger.warning(
+                "transcript_cap_reached", cap=TRANSCRIPT_MAX_CHARS, omitted=self._transcript_omitted
+            )
+
     def add_user_transcript(self, text: str) -> None:
         """Add a user transcript entry.
 
         Args:
             text: Transcribed user speech
         """
-        if text.strip():
-            self._transcript_entries.append(TranscriptEntry(role="user", content=text.strip()))
-            self.logger.debug("user_transcript_added", text_length=len(text))
+        self._admit_transcript_text("user", text)
 
     def add_assistant_transcript(self, text: str) -> None:
         """Add an assistant transcript entry.
@@ -656,9 +693,7 @@ class GPTRealtimeSession:
         Args:
             text: Assistant response text
         """
-        if text.strip():
-            self._transcript_entries.append(TranscriptEntry(role="assistant", content=text.strip()))
-            self.logger.debug("assistant_transcript_added", text_length=len(text))
+        self._admit_transcript_text("assistant", text)
 
     def accumulate_assistant_text(self, delta: str) -> None:
         """Accumulate assistant text delta for transcript.
@@ -666,7 +701,17 @@ class GPTRealtimeSession:
         Args:
             delta: Text delta from response.text.delta event
         """
-        self._current_assistant_text += delta
+        # One response is held in memory until it is flushed; it may not outgrow
+        # what the transcript could still keep.
+        room = max(
+            TRANSCRIPT_MAX_CHARS
+            - MARKER_RESERVE
+            - self._transcript_chars
+            - len(self._current_assistant_text),
+            0,
+        )
+        self._current_assistant_text += delta[:room]
+        self._transcript_omitted += len(delta) - len(delta[:room])
 
     def flush_assistant_text(self) -> None:
         """Flush accumulated assistant text to transcript."""
@@ -682,8 +727,9 @@ class GPTRealtimeSession:
         """
         lines = []
         for entry in self._transcript_entries:
-            role_label = "User" if entry.role == "user" else "Assistant"
-            lines.append(f"[{role_label}]: {entry.content}")
+            lines.append(f"{_ROLE_LABELS[entry.role]}{entry.content}")
+        if self._transcript_omitted:
+            lines.append(truncation_marker(self._transcript_omitted))
         return "\n\n".join(lines)
 
     def get_transcript_entries(self) -> list[dict[str, str]]:

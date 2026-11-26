@@ -69,6 +69,9 @@ class TurnData:
     audio_duration_ms: float | None = None
     interrupted: bool = False
     barge_in: bool = False
+    # Words of this turn were left out to stay within the transcript cap. The
+    # text is incomplete, so a metric that reads words must not grade it.
+    text_truncated: bool = False
 
     @property
     def text(self) -> str:

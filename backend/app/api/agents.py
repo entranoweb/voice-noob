@@ -1,9 +1,9 @@
 """API endpoints for managing voice agents."""
 
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StringConstraints
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -11,6 +11,13 @@ from app.core.audit import AuditAction, record_audit
 from app.core.auth import CurrentUser
 from app.core.config import settings
 from app.core.limiter import limiter
+from app.core.limits import (
+    DESCRIPTION_MAX_CHARS,
+    PROMPT_MAX_CHARS,
+    TURN_TEXT_MAX_CHARS,
+    enforce_caps_on_update,
+    enforce_merge_cap_on_update,
+)
 from app.core.ownership import ensure_phone_reference_is_owned, parse_uuid
 from app.core.public_id import generate_public_id
 from app.core.public_url import frontend_base_url
@@ -28,9 +35,9 @@ class CreateAgentRequest(BaseModel):
     """Request to create a voice agent."""
 
     name: str = Field(..., min_length=1, max_length=200)
-    description: str | None = None
+    description: str | None = Field(default=None, max_length=DESCRIPTION_MAX_CHARS)
     pricing_tier: str = Field(..., pattern="^(budget|balanced|premium-mini|premium)$")
-    system_prompt: str = Field(..., min_length=10)
+    system_prompt: str = Field(..., min_length=10, max_length=PROMPT_MAX_CHARS)
     language: str = Field(default="en-US")
     voice: str = Field(default="shimmer")
     enabled_tools: list[str] = Field(default_factory=list)
@@ -52,8 +59,16 @@ class CreateAgentRequest(BaseModel):
     # Initial greeting (optional)
     initial_greeting: str | None = Field(
         default=None,
+        max_length=TURN_TEXT_MAX_CHARS,
         description="Optional initial greeting the agent speaks when call starts",
     )
+
+
+UPDATE_AGENT_CAPS: dict[str, Any] = {
+    "description": Annotated[str, StringConstraints(max_length=DESCRIPTION_MAX_CHARS)],
+    "system_prompt": Annotated[str, StringConstraints(max_length=PROMPT_MAX_CHARS)],
+    "initial_greeting": Annotated[str, StringConstraints(max_length=TURN_TEXT_MAX_CHARS)],
+}
 
 
 class UpdateAgentRequest(BaseModel):
@@ -391,6 +406,12 @@ def _apply_agent_updates(agent: Agent, request: UpdateAgentRequest) -> None:
         request: Update request with optional fields
     """
     # Map of simple field updates (field_name -> request attribute)
+    # Held to the caps only when the value changes: an agent saved before the
+    # caps existed may already hold a longer one, and sending it back as it is
+    # must keep working. Nothing stored is ever cut.
+    enforce_caps_on_update(
+        request.model_dump(include=set(UPDATE_AGENT_CAPS)), agent, UPDATE_AGENT_CAPS
+    )
     simple_fields = [
         "name",
         "description",
@@ -651,6 +672,9 @@ async def update_embed_settings(
         agent.allowed_domains = update_request.allowed_domains
 
     if update_request.embed_settings is not None:
+        enforce_merge_cap_on_update(
+            "embed_settings", update_request.embed_settings, agent.embed_settings
+        )
         # Merge with existing settings - create new dict to ensure SQLAlchemy detects change
         current_settings = dict(agent.embed_settings or {})
         current_settings.update(update_request.embed_settings)

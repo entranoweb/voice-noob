@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.api import telephony_ws
 from app.core.config import Settings, settings
+from app.core.limits import MARKER_RESERVE, TRANSCRIPT_MAX_CHARS, truncation_marker
 from app.main import app
 from app.models.agent import Agent
 from app.models.call_record import CallRecord
@@ -727,6 +728,30 @@ class TestPersistenceFailure:
 
         record = await open_call.record()
         assert record.transcript == "User: hello"
+        assert record.termination_reason == "caller_hangup"
+        await _no_bridge_tasks_left()
+
+    @pytest.mark.asyncio
+    async def test_a_transcript_over_the_cap_is_stored_cut_and_the_call_still_completes(
+        self, open_call: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            _LiveSession,
+            "transcript",
+            "x" * (TRANSCRIPT_MAX_CHARS + 321),
+        )
+        async with open_call.call() as call:
+            await call.media()
+            await call.stop()
+            await _closed_within(_session(), HANG_UP_BUDGET_S)
+
+        record = await open_call.record()
+        assert record.transcript is not None
+        kept = TRANSCRIPT_MAX_CHARS - MARKER_RESERVE
+        assert record.transcript == "x" * kept + "\n" + truncation_marker(
+            TRANSCRIPT_MAX_CHARS + 321 - kept
+        )
+        assert len(record.transcript) <= TRANSCRIPT_MAX_CHARS
         assert record.termination_reason == "caller_hangup"
         await _no_bridge_tasks_left()
 
