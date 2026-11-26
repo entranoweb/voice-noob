@@ -402,6 +402,7 @@ async def embed_websocket(
             "enabled_tools": agent.enabled_tools if tools_allowed(agent.embed_settings) else [],
             "language": agent.language,
             "voice": agent.voice or "shimmer",
+            "pricing_tier": agent.pricing_tier,
         }
 
         if agent.pricing_tier in ("premium", "premium-mini"):
