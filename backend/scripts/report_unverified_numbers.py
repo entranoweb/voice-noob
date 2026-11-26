@@ -12,6 +12,10 @@ reason. Registrations with no workspace are listed (they cannot be checked),
 and so are agents whose `phone_number_id` has no live registration (no carrier
 call is needed for those).
 
+Agents that would stop getting calls under the read-path routing rule
+(registered, active, with a workspace, agent in that workspace) are listed with
+the reason, so the impact is visible before the rule ships.
+
 It makes one carrier API request per registered number using customers' saved
 credentials, hence the required flag. Exit status: 0 when every number passes,
 1 when any is listed.
@@ -34,11 +38,13 @@ async def _run() -> int:
         find_unregistered_agent_numbers,
         find_unverified_numbers,
     )
+    from app.services.telephony.number_routing import find_agents_that_stop_routing
 
     try:
         async with AsyncSessionLocal() as db:
             failures = await find_unverified_numbers(db, factory=default_lookup_factory)
             agents = await find_unregistered_agent_numbers(db)
+            stopped = await find_agents_that_stop_routing(db)
             await db.rollback()  # nothing was written; make sure nothing is kept
     finally:
         await engine.dispose()
@@ -52,7 +58,10 @@ async def _run() -> int:
     for agent in agents:
         print(f"agent={agent.agent_id} phone_number_id={agent.reference}: no live registration")
     print(f"{len(agents)} agent(s) name a phone number with no live registration.")
-    return 1 if failures or agents else 0
+    for item in stopped:
+        print(f"agent={item.agent_id} stops routing: {item.reason}")
+    print(f"{len(stopped)} agent(s) name a number they would no longer receive calls on.")
+    return 1 if failures or agents or stopped else 0
 
 
 def main() -> int:

@@ -41,6 +41,7 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.auth import user_id_to_uuid
 from app.core.config import settings
 from app.core.stream_token import STREAM_TOKEN_REJECTED, mint_stream_token
 from app.db.redis import get_redis
@@ -48,7 +49,9 @@ from app.db.session import get_db
 from app.main import app
 from app.models.agent import Agent
 from app.models.call_record import CallRecord, CallStatus
+from app.models.phone_number import PhoneNumber, PhoneNumberStatus
 from app.models.user import User
+from app.models.workspace import AgentWorkspace, Workspace
 from app.monitoring import call_trace as schema
 from app.services.qa.call_metrics import metrics_for_call
 from tests.websocket.asgi_ws import ASGIWebSocketClient
@@ -217,6 +220,21 @@ async def inbound_call_env(test_engine: Any, monkeypatch: pytest.MonkeyPatch) ->
         session.add(agent)
         await session.commit()
         await session.refresh(agent)
+        workspace = Workspace(user_id=user.id, name="Main")
+        session.add(workspace)
+        await session.commit()
+        session.add(AgentWorkspace(agent_id=agent.id, workspace_id=workspace.id, is_default=True))
+        session.add(
+            PhoneNumber(
+                user_id=user_id_to_uuid(user.id),
+                workspace_id=workspace.id,
+                phone_number=AGENT_NUMBER,
+                provider="telnyx",
+                provider_id=f"pn-{uuid.uuid4()}",
+                status=PhoneNumberStatus.ACTIVE.value,
+            )
+        )
+        await session.commit()
 
     private_key = Ed25519PrivateKey.generate()
     public_key = base64.b64encode(

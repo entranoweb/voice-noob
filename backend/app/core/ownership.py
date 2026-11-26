@@ -86,7 +86,10 @@ async def owned_agent_workspace_id(db: AsyncSession, agent: Agent, user: User) -
     """The workspace an owned agent acts in, when that workspace is also the user's.
 
     The link table is written by the owner, but a row is only trusted when the
-    workspace on the other end belongs to the same user.
+    workspace on the other end belongs to the same user. An agent can be in
+    several workspaces; the pick is then the default one, otherwise the lowest
+    id, so it is at least the same every time. It is for the pages that need "a"
+    workspace; call routing never uses it (the number's workspace decides).
 
     An agent can be linked to several workspaces. The answer is the default link
     first, then the oldest, then the lowest id, so the same workspace (and so the
@@ -201,37 +204,52 @@ def reference_condition(reference: str) -> ColumnElement[bool]:
     return or_(*conditions)
 
 
-async def ensure_agent_number_fits_workspaces(
-    db: AsyncSession, agent: Agent, workspace_ids: list[uuid.UUID]
-) -> None:
-    """Refuse linking an agent into a workspace its own phone number is not in.
+async def agent_number_conflicts(
+    db: AsyncSession, agent: Agent, workspace_ids: list[uuid.UUID] | set[uuid.UUID]
+) -> bool:
+    """Whether the agent would be cut off from a live number that names it.
 
-    The agent's `phone_number_id` routes calls, and a registered number was
-    proven against one workspace's carrier account. Linking the agent into
-    another workspace would let calls on that number reach it from there, so the
-    link is refused with 422. A number with no live record, or a record that
-    predates workspaces, does not block the link (nothing was proven either way).
+    Both columns count: a live record that has this agent as `assigned_agent_id`,
+    or a live record that the agent's own `phone_number_id` refers to. Such a
+    number only routes while the agent is in the number's workspace, so a set of
+    workspaces that does not contain that workspace is a conflict. Records with
+    no workspace are not (they route nowhere, whatever the agent does).
     """
-    reference = (agent.phone_number_id or "").strip()
-    if not reference or not workspace_ids:
-        return
     live = PhoneNumber.status != PhoneNumberStatus.RELEASED.value
-    records = (
-        (await db.execute(select(PhoneNumber).where(reference_condition(reference), live)))
-        .scalars()
-        .all()
-    )
-    if any(
+    conditions = [PhoneNumber.assigned_agent_id == agent.id]
+    reference = (agent.phone_number_id or "").strip()
+    if reference:
+        conditions.append(reference_condition(reference))
+    records = (await db.execute(select(PhoneNumber).where(or_(*conditions), live))).scalars().all()
+    return any(
         record.workspace_id is not None and record.workspace_id not in workspace_ids
         for record in records
-    ):
+    )
+
+
+async def ensure_agent_number_fits_workspaces(
+    db: AsyncSession, agent: Agent, workspace_ids: list[uuid.UUID] | set[uuid.UUID]
+) -> None:
+    """Refuse (422) linking an agent into workspaces its numbers are not in.
+
+    This is a clear message at the write; routing does not rely on it (the read
+    path in `number_routing` checks the same fact on every call).
+    """
+    if workspace_ids and await agent_number_conflicts(db, agent, workspace_ids):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=(
-                "That agent's phone number is registered to a different workspace. "
-                "Move the number to this workspace or clear the agent's phone number first."
+                "That agent is used by a phone number registered to a different workspace. "
+                "Move the number to this workspace or unassign the agent first."
             ),
         )
+
+
+async def agent_workspace_set(db: AsyncSession, agent_id: uuid.UUID) -> set[uuid.UUID]:
+    rows = await db.execute(
+        select(AgentWorkspace.workspace_id).where(AgentWorkspace.agent_id == agent_id)
+    )
+    return set(rows.scalars().all())
 
 
 async def agents_dialling_number_outside(

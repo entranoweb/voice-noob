@@ -36,10 +36,9 @@ from app.models.campaign import Campaign, CampaignContact, CampaignContactStatus
 
 # Aliased: `PhoneNumber` in this module already means the provider DTO from
 # services.telephony.base, which is a different thing from the table.
-from app.models.phone_number import PhoneNumber as PhoneNumberRecord
-from app.models.phone_number import PhoneNumberStatus
 from app.models.workspace import AgentWorkspace
 from app.services.qa import trigger_qa_evaluation
+from app.services.telephony.number_routing import resolve_number_route
 from app.services.telephony.telnyx_events import parse_telnyx_webhook
 from app.services.telephony.telnyx_service import TelnyxService
 from app.services.telephony.twilio_service import TwilioService
@@ -157,6 +156,30 @@ async def twilio_auth_token_for_agent(agent: Agent | None, db: AsyncSession) -> 
     return (user_settings.twilio_auth_token or None) if user_settings else None
 
 
+async def twilio_auth_token_for_workspace(
+    agent: Agent | None, workspace_id: uuid.UUID | None, db: AsyncSession
+) -> str | None:
+    """The Twilio auth token of the workspace a number routed in (not the agent's pick)."""
+    if agent is None or workspace_id is None:
+        return None
+    user_settings = await get_user_api_keys(
+        user_id_to_uuid(agent.user_id), db, workspace_id=workspace_id
+    )
+    return (user_settings.twilio_auth_token or None) if user_settings else None
+
+
+async def telnyx_public_key_for_workspace(
+    agent: Agent | None, workspace_id: uuid.UUID | None, db: AsyncSession
+) -> str | None:
+    """The Telnyx public key of the workspace a number routed in (not the agent's pick)."""
+    if agent is None or workspace_id is None:
+        return None
+    user_settings = await get_user_api_keys(
+        user_id_to_uuid(agent.user_id), db, workspace_id=workspace_id
+    )
+    return (user_settings.telnyx_public_key or None) if user_settings else None
+
+
 async def telnyx_public_key_for_agent(agent: Agent | None, db: AsyncSession) -> str | None:
     """The Telnyx public key of the workspace that owns ``agent``, if it has one.
 
@@ -209,91 +232,12 @@ async def get_telnyx_service(
 async def get_agent_by_phone_number(phone_number: str, db: AsyncSession) -> Agent | None:
     """Find the agent a call to this number should reach.
 
-    Two places record that relationship and only one of them used to be read.
-
-    ``Agent.phone_number_id`` is written by ``CreateAgentRequest`` and
-    ``UpdateAgentRequest``; the agent create and edit pages send it.
-
-    ``PhoneNumber.assigned_agent_id`` is written by
-    ``PUT /api/v1/phone-numbers/{id}``; the phone-numbers page sends that, and
-    it sets no column on the agent.
-
-    Two screens offer the same choice and they write different tables. Only the
-    first used to route, so a number assigned from the phone-numbers page left
-    this lookup returning None, and the caller heard "no agent is configured for
-    this number" while that page showed the agent assigned. Both are honoured
-    now.
-
-    Released and suspended numbers do not route: a number taken out of service
-    should stop reaching an agent, and it is the assignment table that knows.
+    The rule lives in ``app.services.telephony.number_routing``: a registered,
+    active number with a workspace, and an agent in that workspace (the
+    assigned agent first, then agents whose ``phone_number_id`` names it).
+    Anything else reaches nobody.
     """
-    # Remove + prefix for comparison if present
-    normalized = phone_number.lstrip("+")
-    candidates = (phone_number, normalized, f"+{normalized}")
-
-    # Who holds this number. The record table is the authority on ownership:
-    # one live record per number is enforced by a unique index, and a number
-    # that somehow has two owners reaches nobody rather than whichever row the
-    # database returns first.
-    records = (
-        (
-            await db.execute(
-                select(PhoneNumberRecord).where(
-                    PhoneNumberRecord.phone_number.in_(candidates),
-                    PhoneNumberRecord.status != PhoneNumberStatus.RELEASED.value,
-                )
-            )
-        )
-        .scalars()
-        .all()
-    )
-    record_owners = {record.user_id for record in records}
-    if len(record_owners) > 1:
-        logger.error("inbound_number_has_several_owners", owners=len(record_owners))
-        return None
-
-    # The agent's own free-text field. It is honoured only for the account that
-    # holds the number: an agent in any other account that has written this
-    # number into the field is ignored, so it can neither take the calls nor
-    # break the owner's signature check. With no record at all (rows that
-    # predate the table), it is honoured only when every agent claiming the
-    # number belongs to one account.
-    claimants = (
-        (
-            await db.execute(
-                select(Agent)
-                .where(Agent.phone_number_id.in_(candidates))
-                .order_by(Agent.created_at, Agent.id)
-            )
-        )
-        .scalars()
-        .all()
-    )
-    if record_owners:
-        owner = next(iter(record_owners))
-        claimants = [agent for agent in claimants if user_id_to_uuid(agent.user_id) == owner]
-    elif len({agent.user_id for agent in claimants}) > 1:
-        logger.error("inbound_number_claimed_by_several_accounts")
-        return None
-    if claimants:
-        return claimants[0]
-
-    result = await db.execute(
-        select(Agent)
-        .join(PhoneNumberRecord, PhoneNumberRecord.assigned_agent_id == Agent.id)
-        .where(
-            PhoneNumberRecord.phone_number.in_(candidates),
-            PhoneNumberRecord.status == PhoneNumberStatus.ACTIVE.value,
-        )
-        .limit(1)
-    )
-    agent = result.scalars().first()
-    # An assignment is only as good as the agent's owner: a record must not
-    # route to an agent in another account, however the row came to say so.
-    if agent is not None and user_id_to_uuid(agent.user_id) not in record_owners:
-        logger.error("inbound_number_assigned_across_accounts")
-        return None
-    return agent
+    return (await resolve_number_route(phone_number, db)).agent
 
 
 async def get_agent_workspace_id(agent_id: uuid.UUID, db: AsyncSession) -> uuid.UUID | None:
@@ -962,8 +906,11 @@ async def twilio_voice_webhook(
     # The number decides whose Twilio account should have signed this: the
     # workspace that owns the agent the number routes to. Looked up before the
     # signature is checked (a read, nothing is written) and then verified.
-    agent = await get_agent_by_phone_number(to_number, db)
-    await verify_twilio_webhook(request, await twilio_auth_token_for_agent(agent, db))
+    route = await resolve_number_route(to_number, db)
+    agent = route.agent
+    await verify_twilio_webhook(
+        request, await twilio_auth_token_for_workspace(agent, route.workspace_id, db)
+    )
 
     log = logger.bind(
         webhook="twilio_voice",
@@ -989,7 +936,7 @@ async def twilio_voice_webhook(
         )
 
     # Get workspace for the agent
-    agent_workspace_id = await get_agent_workspace_id(agent.id, db)
+    agent_workspace_id = route.workspace_id
 
     # Create call record for inbound call
     call_record = CallRecord(
@@ -1156,8 +1103,11 @@ async def telnyx_voice_webhook(
     # number decides whose Telnyx account should have signed it. Nothing is
     # logged, stored or answered from it until the signature has been checked.
     event = await parse_telnyx_webhook(request)
-    agent = await get_agent_by_phone_number(event.to_number, db)
-    await verify_telnyx_webhook(request, await telnyx_public_key_for_agent(agent, db))
+    route = await resolve_number_route(event.to_number, db)
+    agent = route.agent
+    await verify_telnyx_webhook(
+        request, await telnyx_public_key_for_workspace(agent, route.workspace_id, db)
+    )
 
     log = logger.bind(
         webhook="telnyx_voice",
@@ -1183,7 +1133,7 @@ async def telnyx_voice_webhook(
         )
 
     # Get workspace for the agent
-    agent_workspace_id = await get_agent_workspace_id(agent.id, db)
+    agent_workspace_id = route.workspace_id
 
     # Create call record for inbound call
     call_record = CallRecord(

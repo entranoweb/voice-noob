@@ -160,7 +160,7 @@ async def _register_number(world: World, tenant: Tenant, number: str, **extra: A
             provider="twilio",
             provider_id=f"PN{uuid.uuid4().hex}",
             status=PhoneNumberStatus.ACTIVE.value,
-            **extra,
+            **{"workspace_id": tenant.workspace.id, **extra},
         )
         session.add(record)
         await session.commit()

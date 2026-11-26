@@ -33,6 +33,7 @@ from app.db.session import get_db
 from app.main import app
 from app.models.agent import Agent
 from app.models.call_record import CallDirection, CallRecord, CallStatus
+from app.models.phone_number import PhoneNumber, PhoneNumberStatus
 from app.models.user import User
 from app.models.user_settings import UserSettings
 from app.models.workspace import AgentWorkspace, Workspace
@@ -124,6 +125,18 @@ async def _tenant(
     session.add_all([workspace, agent])
     await session.commit()
     session.add(AgentWorkspace(id=uuid.uuid4(), agent_id=agent.id, workspace_id=workspace.id))
+    if number:
+        # Routing needs a registered, active number in the agent's workspace.
+        session.add(
+            PhoneNumber(
+                user_id=user_id_to_uuid(user.id),
+                workspace_id=workspace.id,
+                phone_number=number,
+                provider="telnyx",
+                provider_id=f"pn-{uuid.uuid4()}",
+                status=PhoneNumberStatus.ACTIVE.value,
+            )
+        )
     session.add(
         UserSettings(
             user_id=user_id_to_uuid(user.id),

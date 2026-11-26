@@ -18,10 +18,10 @@ from app.core.ownership import (
     agents_dialling_number_outside,
     get_owned_agent,
     number_variants,
-    owned_agent_workspace_id,
     parse_uuid,
 )
 from app.db.session import get_db
+from app.models.agent import Agent
 from app.models.phone_number import PhoneNumber, PhoneNumberStatus
 from app.models.workspace import Workspace
 from app.services.telephony.number_ownership import (
@@ -539,8 +539,9 @@ async def update_phone_number(  # noqa: PLR0912, PLR0915
             agent = await get_owned_agent(db, update_request.assigned_agent_id, current_user)
             # Carrier proof is per workspace; an agent of another workspace
             # would route this number's calls across that boundary.
-            agent_workspace = await owned_agent_workspace_id(db, agent, current_user)
-            if agent_workspace is not None and agent_workspace != target_workspace:
+            if target_workspace is None or not await agent_is_in_workspace(
+                db, agent.id, target_workspace
+            ):
                 raise HTTPException(
                     status_code=422,
                     detail="That agent belongs to a different workspace than this phone number.",
@@ -640,5 +641,20 @@ async def delete_phone_number(
     if not phone_number:
         raise HTTPException(status_code=404, detail="Phone number not found")
 
+    # Agents that name this number in their own field would otherwise keep a
+    # dangling reference; routing ignores it without a record, but clear it.
+    for agent in (
+        (
+            await db.execute(
+                select(Agent).where(
+                    Agent.user_id == current_user.id,
+                    Agent.phone_number_id.in_(number_variants(phone_number.phone_number)),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    ):
+        agent.phone_number_id = None
     await db.delete(phone_number)
     await db.commit()

@@ -30,13 +30,16 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.api import telephony_ws
+from app.core.auth import user_id_to_uuid
 from app.core.config import settings
 from app.core.stream_token import STREAM_TOKEN_REJECTED, mint_stream_token
 from app.db.redis import get_redis
 from app.db.session import get_db
 from app.main import app
 from app.models.agent import Agent
+from app.models.phone_number import PhoneNumber, PhoneNumberStatus
 from app.models.user import User
+from app.models.workspace import AgentWorkspace, Workspace
 from tests.websocket.asgi_ws import ASGIWebSocketClient
 
 AGENT_NUMBER = "+15558886666"
@@ -131,6 +134,21 @@ async def twilio_env(test_engine: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
         session.add(agent)
         await session.commit()
         await session.refresh(agent)
+        workspace = Workspace(user_id=user.id, name="Main")
+        session.add(workspace)
+        await session.commit()
+        session.add(AgentWorkspace(agent_id=agent.id, workspace_id=workspace.id, is_default=True))
+        session.add(
+            PhoneNumber(
+                user_id=user_id_to_uuid(user.id),
+                workspace_id=workspace.id,
+                phone_number=AGENT_NUMBER,
+                provider="twilio",
+                provider_id=f"pn-{uuid.uuid4()}",
+                status=PhoneNumberStatus.ACTIVE.value,
+            )
+        )
+        await session.commit()
 
     monkeypatch.setattr(settings, "TWILIO_AUTH_TOKEN", AUTH_TOKEN)
     monkeypatch.setattr(settings, "PUBLIC_URL", PUBLIC_ORIGIN)

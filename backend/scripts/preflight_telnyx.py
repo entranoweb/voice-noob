@@ -184,59 +184,76 @@ async def check_redis() -> list[Result]:
     return [ok("redis", f"reachable, version {version} (7.0+ needed)")]
 
 
-async def _dialable() -> list[tuple[Any, str, str]]:
-    """(agent, number, where the routing came from), resolved as the webhook does.
+async def _dialable() -> tuple[list[tuple[Any, str, str]], list[str]]:
+    """What routes, and what names a number but does not, decided as the webhook does.
 
-    `get_agent_by_phone_number` accepts two routes: the legacy string on the
-    agent, and the assignment the phone-numbers API writes. Anything this script
-    reports has to agree with that function, or it reports on a deployment other
-    than the one that will take the call — which it did, failing a correctly
-    assigned number because it only knew about the first route.
+    The webhook uses `resolve_number_route` (app.services.telephony.number_routing):
+    a registered, active number with a workspace, and an agent in THAT workspace
+    (the assigned agent first, then agents whose `phone_number_id` names it).
+    This calls that function, so it cannot drift from it again. It first
+    drifted by knowing only one of the two columns; a second copy of the rule
+    would drift the same way.
+
+    Returns (routed as (agent, number, source), notes on what does not route).
     """
     from sqlalchemy import select
 
     from app.db.session import AsyncSessionLocal
     from app.models.agent import Agent
     from app.models.phone_number import PhoneNumber, PhoneNumberStatus
+    from app.services.telephony.number_routing import resolve_number_route
 
-    found: list[tuple[Any, str, str]] = []
+    routed: list[tuple[Any, str, str]] = []
+    notes: list[str] = []
     async with AsyncSessionLocal() as session:
-        legacy = (
+        numbers: dict[str, str] = {}
+        for record in (
+            (
+                await session.execute(
+                    select(PhoneNumber).where(
+                        PhoneNumber.status != PhoneNumberStatus.RELEASED.value
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        ):
+            numbers.setdefault(record.phone_number.lstrip("+"), record.phone_number)
+        for agent in (
             (await session.execute(select(Agent).where(Agent.phone_number_id.isnot(None))))
             .scalars()
             .all()
-        )
-        found += [(a, a.phone_number_id or "", "agent.phone_number_id") for a in legacy]
+        ):
+            if agent.phone_number_id:
+                numbers.setdefault(agent.phone_number_id.lstrip("+"), agent.phone_number_id)
 
-        assigned = (
-            await session.execute(
-                select(Agent, PhoneNumber.phone_number)
-                .join(PhoneNumber, PhoneNumber.assigned_agent_id == Agent.id)
-                .where(PhoneNumber.status == PhoneNumberStatus.ACTIVE.value)
-            )
-        ).all()
-        seen = {(a.id, n) for a, n, _ in found}
-        found += [(a, n, "phone number assignment") for a, n in assigned if (a.id, n) not in seen]
-    return found
+        for number in numbers.values():
+            decision = await resolve_number_route(number, session)
+            if decision.agent is not None:
+                routed.append((decision.agent, number, f"workspace {decision.workspace_id}"))
+            else:
+                notes.append(f"{number} routes nowhere: {decision.reason}")
+    return routed, notes
 
 
 async def check_agent() -> list[Result]:
     """An active agent, reachable on a number in the shape the lookup matches."""
     try:
-        dialable = await _dialable()
+        dialable, notes = await _dialable()
     except Exception as exc:  # any failure here is a failed check
         return [fail("agent", f"{type(exc).__name__}: {exc}")]
 
+    results: list[Result] = [fail("agent", note) for note in notes]
     if not dialable:
-        return [
+        results.append(
             fail(
                 "agent",
-                "no agent is reachable on a number: nothing has agent.phone_number_id "
-                "set, and no active phone number is assigned to an agent",
+                "no agent is reachable on a number: no registered, active number with a "
+                "workspace has an agent in that workspace",
             )
-        ]
+        )
+        return results
 
-    results: list[Result] = []
     reachable = 0
     for agent, number, source in dialable:
         label = f"{agent.name} ({agent.id})"

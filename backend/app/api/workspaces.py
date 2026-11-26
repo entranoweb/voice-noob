@@ -13,10 +13,15 @@ from sqlalchemy.orm import selectinload
 
 from app.core.auth import CurrentUser
 from app.core.limiter import limiter
-from app.core.ownership import ensure_agent_number_fits_workspaces
+from app.core.ownership import (
+    agent_number_conflicts,
+    agent_workspace_set,
+    ensure_agent_number_fits_workspaces,
+)
 from app.db.session import get_db
 from app.models.agent import Agent
 from app.models.contact import Contact
+from app.models.phone_number import PhoneNumber, PhoneNumberStatus
 from app.models.workspace import (
     MAX_AUDIO_RETENTION_DAYS,
     MIN_AUDIO_RETENTION_DAYS,
@@ -433,6 +438,27 @@ async def delete_workspace(
             detail="Cannot delete the default workspace. Set another workspace as default first.",
         )
 
+    held = (
+        await db.execute(
+            select(PhoneNumber.id)
+            .where(
+                PhoneNumber.workspace_id == workspace_uuid,
+                PhoneNumber.status != PhoneNumberStatus.RELEASED.value,
+            )
+            .limit(1)
+        )
+    ).first()
+    if held is not None:
+        # Deleting would null the number's workspace and leave it assigned and
+        # active; refuse so its calls are not silently left unproven.
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "This workspace still has phone numbers. "
+                "Release or move them to another workspace first."
+            ),
+        )
+
     try:
         await db.delete(workspace)
         await db.commit()
@@ -536,8 +562,11 @@ async def add_agent_to_workspace(
     if existing:
         raise HTTPException(status_code=409, detail="Agent is already in this workspace")
 
-    # The agent's own phone number must not belong to another workspace.
-    await ensure_agent_number_fits_workspaces(db, agent, [workspace_uuid])
+    # Adding a workspace never takes one away: the agent's numbers must still
+    # be in one of the workspaces it will be in.
+    await ensure_agent_number_fits_workspaces(
+        db, agent, {*await agent_workspace_set(db, agent.id), workspace_uuid}
+    )
 
     # If setting as default, unset other defaults for this agent
     if data.is_default:
@@ -605,6 +634,19 @@ async def remove_agent_from_workspace(
     agent_workspace = result.scalar_one_or_none()
     if not agent_workspace:
         raise HTTPException(status_code=404, detail="Agent is not in this workspace")
+
+    remaining = await agent_workspace_set(db, agent_uuid) - {workspace_uuid}
+    agent_row = (
+        await db.execute(select(Agent).where(Agent.id == agent_uuid, Agent.user_id == user_id))
+    ).scalar_one_or_none()
+    if agent_row is not None and await agent_number_conflicts(db, agent_row, remaining):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "That agent is used by a phone number in this workspace. "
+                "Unassign the agent from the number first."
+            ),
+        )
 
     try:
         await db.delete(agent_workspace)
@@ -712,7 +754,7 @@ async def set_agent_workspaces(
                 detail=f"Invalid workspace IDs: {', '.join(invalid_ids)}",
             )
 
-    await ensure_agent_number_fits_workspaces(db, agent, workspace_uuids)
+    await ensure_agent_number_fits_workspaces(db, agent, set(workspace_uuids))
 
     try:
         # Delete all existing workspace associations for this agent using bulk delete

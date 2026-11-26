@@ -57,11 +57,30 @@ Two columns record this and they are not the same:
   `PUT /api/v1/phone-numbers/{id}`. The **phone-numbers page** sends this, and
   it sets no column on the agent.
 
-Two screens offer the user the same choice and they write different tables.
-Only the first used to route, so a number assigned from the phone-numbers page
-left the caller hearing *"no agent is configured for this number"* while that
-page showed the agent assigned. `get_agent_by_phone_number` honours both now,
-and released or suspended numbers deliberately route nowhere.
+Two screens offer the user the same choice and they write different tables, and
+only the first used to route. Neither is enough on its own now. The rule is one
+function, `resolve_number_route` in `app/services/telephony/number_routing.py`
+(`get_agent_by_phone_number` wraps it), and a call routes only when ALL hold:
+
+1. a `PhoneNumber` record exists for the number, is not released, and is the
+   only live record for it;
+2. its status is `active` (pending and suspended route nowhere);
+3. it has a `workspace_id` (the workspace whose carrier account proved it, and
+   whose key signs the webhook);
+4. the agent is the owner's and has an `agent_workspaces` row for THAT workspace.
+
+Among agents that pass 4: `assigned_agent_id` first, then agents naming the
+number in `phone_number_id`, oldest first. Anything else routes nowhere and logs
+`inbound_number_routes_nowhere` with a reason, never the number. The webhook
+verifies the signature with the key of the number's workspace, not the agent's
+first workspace. An agent in no workspace, a number with no record (legacy
+rows), or a workspace deleted from under a number therefore silently stop
+routing; `scripts/report_unverified_numbers.py` lists who.
+
+The write paths (phone numbers, agents, workspace links, unlink, workspace
+delete) refuse the changes that would break this with a 409/422, but they are
+only a courtesy: the read path is the invariant. Do not add a route by patching
+a write path.
 
 How that stayed hidden is worth copying down. An OpenAPI dump was searched for
 schemas named `AgentCreate` and `AgentUpdate`, which do not exist — the models
@@ -69,9 +88,9 @@ are `CreateAgentRequest` and `UpdateAgentRequest` — and the empty result was
 read as "the field is not exposed anywhere". An empty answer is only evidence
 once you have checked you asked the right question.
 
-If you add a third way to associate a number with an agent, that function is
-where it has to be taught, and `check_agent` in the preflight has to learn it
-too — it drifted once and reported a working deployment as broken.
+If you add a third way to associate a number with an agent, `resolve_number_route` is
+where it has to be taught. `check_agent` in the preflight calls it, so it follows;
+it drifted once while it had its own copy of the rule.
 
 An inactive agent closes the media stream with **4003**; an unknown agent id
 closes it with **4004**.
