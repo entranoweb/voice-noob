@@ -2,10 +2,11 @@
 
 import uuid
 from datetime import datetime
+from typing import Annotated
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, StringConstraints, field_validator
 from sqlalchemy import desc, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.audit import AuditAction, record_audit
 from app.core.auth import CurrentUser, user_id_to_uuid
 from app.core.limiter import limiter
+from app.core.limits import NOTES_MAX_CHARS, enforce_caps_on_update
 from app.core.log_redaction import redact_phone
 from app.core.ownership import (
     agent_is_in_workspace,
@@ -118,7 +120,7 @@ class CreatePhoneNumberRequest(BaseModel):
     can_make_calls: bool = True
     can_receive_sms: bool = False
     can_send_sms: bool = False
-    notes: str | None = None
+    notes: str | None = Field(default=None, max_length=NOTES_MAX_CHARS)
 
 
 class UpdatePhoneNumberRequest(BaseModel):
@@ -454,6 +456,11 @@ async def update_phone_number(  # noqa: PLR0912, PLR0915
     if not phone_number:
         raise HTTPException(status_code=404, detail="Phone number not found")
 
+    enforce_caps_on_update(
+        {"notes": update_request.notes},
+        phone_number,
+        {"notes": Annotated[str, StringConstraints(max_length=NOTES_MAX_CHARS)]},
+    )
     # Where the number will sit after this update, and whether it is entering
     # that place (a different workspace, or back from released).
     target_workspace = phone_number.workspace_id

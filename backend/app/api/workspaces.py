@@ -13,6 +13,7 @@ from sqlalchemy.orm import selectinload
 
 from app.core.auth import CurrentUser
 from app.core.limiter import limiter
+from app.core.limits import BoundedDict, enforce_caps_on_update
 from app.core.ownership import (
     agent_number_conflicts,
     agent_workspace_set,
@@ -71,7 +72,7 @@ class WorkspaceCreate(BaseModel):
 
     name: str
     description: str | None = None
-    settings: dict[str, Any] | None = None
+    settings: BoundedDict | None = None
 
     @field_validator("name")
     @classmethod
@@ -352,6 +353,11 @@ async def update_workspace(
 
     if not workspace:
         raise HTTPException(status_code=404, detail="Workspace not found")
+
+    # A changed settings object is held to the cap; one sent back as stored is not.
+    enforce_caps_on_update(
+        {"settings": workspace_data.settings}, workspace, {"settings": BoundedDict}
+    )
 
     # Update fields
     update_data = workspace_data.model_dump(exclude_unset=True)

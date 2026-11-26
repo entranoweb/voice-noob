@@ -95,8 +95,11 @@ class TranscriptionAccuracy(BaseMetric):
         pairs = [
             (turn.text_intended, turn.text_transcribed)
             for turn in context.turns
-            if turn.text_intended and turn.text_transcribed
+            if turn.text_intended and turn.text_transcribed and not turn.text_truncated
         ]
+        # A turn whose words were cut to stay within the transcript cap would be
+        # compared against a partial text and score a false error. It is void.
+        skipped_truncated = sum(1 for turn in context.turns if turn.text_truncated)
         rates = [
             rate
             for intended, transcribed in pairs
@@ -104,7 +107,10 @@ class TranscriptionAccuracy(BaseMetric):
         ]
 
         if not rates:
-            return self.not_measurable("no turn carried both intended and transcribed text")
+            return self.not_measurable(
+                "no turn carried both intended and transcribed text",
+                turns_void_truncated=skipped_truncated,
+            )
 
         limit = _as_float(context.success_criteria.get("max_wer")) or DEFAULT_MAX_WER
         # Weighted by nothing: every turn counts once. A long turn is not more
@@ -116,6 +122,7 @@ class TranscriptionAccuracy(BaseMetric):
             overall,
             passed=overall <= limit,
             turns_compared=len(rates),
+            turns_void_truncated=skipped_truncated,
             worst_turn_wer=worst,
             limit=limit,
         )
