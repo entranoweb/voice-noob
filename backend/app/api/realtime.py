@@ -296,6 +296,8 @@ async def realtime_websocket(  # noqa: PLR0911, PLR0915
             "enabled_tool_ids": agent.enabled_tool_ids,
             "language": agent.language,
             "voice": agent.voice or "shimmer",
+            # The session picks its model from the tier (premium-mini is not premium).
+            "pricing_tier": agent.pricing_tier,
         }
 
         # Initialize GPT Realtime session with internal tools
