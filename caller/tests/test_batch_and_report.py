@@ -18,7 +18,7 @@ from synthiq_caller.traces.base import ToolCall, Trace, TraceReader
 from synthiq_caller.turns import TurnSettings
 
 FAST = TurnSettings(hangover_s=0.2, audio_start_wait_s=0.6, min_speech_s=0.06)
-SCENARIOS = Path(__file__).parent.parent / "scenarios" / "sophie"
+SCENARIOS = Path(__file__).parent.parent / "scenarios" / "example-receptionist"
 
 
 def scenario(
@@ -61,7 +61,9 @@ class FixedTrace:
         self.stored = stored
 
     async def read(self, call_ref: str) -> Trace:
-        call = ToolCall("sophie_v2_new_patient_check", {"dateOfBirth": self.stored}, {}, True, "NP")
+        call = ToolCall(
+            "example_v2_new_patient_check", {"dateOfBirth": self.stored}, {}, True, "NP"
+        )
         return Trace(call_ref=call_ref, tool_calls=[call], step_path=["I1", "NP_CHECK"])
 
 

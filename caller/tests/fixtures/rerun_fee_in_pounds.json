@@ -10,7 +10,7 @@
    {
     "t": 0.41,
     "kind": "agent",
-    "text": "Hi, this is Sophie from ClinWell. How can I help you today?"
+    "text": "Hi, this is Alex from Example Clinic. How can I help you today?"
    },
    {
     "t": 11.58,
@@ -85,7 +85,7 @@
     "dtmf": "",
     "seconds": 3.0,
     "talk_over": false,
-    "answering": "Hi, this is Sophie from ClinWell. How can I help you today?",
+    "answering": "Hi, this is Alex from Example Clinic. How can I help you today?",
     "heard": [
      "Sophie, can you book an MRI appointment for me?"
     ],
@@ -271,7 +271,7 @@
   "call_ref": "conv_fixture_5",
   "tool_calls": [
    {
-    "name": "sophie_v2_identify_returning_patient",
+    "name": "example_v2_identify_returning_patient",
     "arguments": {},
     "result": {
      "success": true
@@ -288,7 +288,7 @@
     }
    },
    {
-    "name": "sophie_v2_check_scope",
+    "name": "example_v2_check_scope",
     "arguments": {},
     "result": {
      "success": true,
@@ -306,7 +306,7 @@
     }
    },
    {
-    "name": "sophie_v2_new_patient_check",
+    "name": "example_v2_new_patient_check",
     "arguments": {},
     "result": {
      "success": true
@@ -320,7 +320,7 @@
     }
    },
    {
-    "name": "sophie_v2_new_patient_fee",
+    "name": "example_v2_new_patient_fee",
     "arguments": {},
     "result": {
      "success": true
@@ -337,7 +337,7 @@
     }
    },
    {
-    "name": "sophie_v2_prepare_register_patient",
+    "name": "example_v2_prepare_register_patient",
     "arguments": {},
     "result": {
      "success": true
@@ -352,7 +352,7 @@
     }
    },
    {
-    "name": "sophie_v2_register_patient",
+    "name": "example_v2_register_patient",
     "arguments": {},
     "result": "Error code: 409. Details: HTTP 409",
     "ok": false,

@@ -6,7 +6,7 @@
   "identity_budget": 2,
   "allow_mutating": "books",
   "fixture_faults": {
-    "sophie_v2_register_patient": [
+    "example_v2_register_patient": [
       "DUPLICATE_FOUND"
     ]
   },

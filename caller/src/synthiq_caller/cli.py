@@ -5,13 +5,14 @@
     synthiq-caller report runs/ --fail-under 95
     synthiq-caller preflight --leg phone --public-url https://... --from +44... --to +44... \\
         --allowed-numbers allowed.txt                (places no call)
-    synthiq-caller batch scenarios/sophie --leg phone --public-url https://... \\
+    synthiq-caller batch scenarios/example-receptionist --leg phone --public-url https://... \\
         --from +44... --to +44... --allowed-numbers allowed.txt --clips <dir> --out runs/
-    synthiq-caller batch scenarios/sophie --leg elevenlabs-socket --agent <id> \
+    synthiq-caller batch scenarios/example-receptionist --leg elevenlabs-socket --agent <id> \
         --clips <dir> --repeats 3 --out runs/        (runs lookup-only scenarios)
-    synthiq-caller validate scenarios/sophie --clips <dir> [--check-requires-command "..."]
+    synthiq-caller validate scenarios/example-receptionist --clips <dir> \
+        [--check-requires-command "..."]
     synthiq-caller scorecard runs/a runs/b --out card.html [--previous last.html]
-    synthiq-caller regrade runs/ --scenarios scenarios/sophie   (no calls placed)
+    synthiq-caller regrade runs/ --scenarios scenarios/example-receptionist   (no calls placed)
     synthiq-caller baseline runs/ --out baseline.json
     synthiq-caller compare runs-new/ --baseline baseline.json --fail-on beyond-noise
     synthiq-caller gate runs/ --rate 0.95 --confidence 0.95

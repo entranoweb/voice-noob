@@ -32,7 +32,7 @@ from synthiq_caller.validation import validate_directory
 
 FIXTURES = Path(__file__).parent / "fixtures"
 FAST = TurnSettings(hangover_s=0.2, audio_start_wait_s=0.6, min_speech_s=0.06)
-LOOKUP = "sophie_v2_identify_returning_patient"
+LOOKUP = "example_v2_identify_returning_patient"
 
 
 def stored_lookup() -> dict[str, Any]:

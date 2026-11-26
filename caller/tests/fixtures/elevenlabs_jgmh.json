@@ -8,7 +8,7 @@
 {
 "role": "agent",
 "time_in_call_secs": 0,
-"message": "Hi, this is Sophie from ClinWell. How can I help you today?",
+"message": "Hi, this is Alex from Example Clinic. How can I help you today?",
 "workflow_node_id": "R0"
 },
 {
@@ -506,7 +506,7 @@
 "node_id": "NP_SCOPE",
 "requests": [
 {
-"tool_name": "sophie_v2_check_scope_dkc",
+"tool_name": "example_v2_check_scope_dkc",
 "params_as_json": {
 "reason": "Having knee pain",
 "continuingCare": false
@@ -515,7 +515,7 @@
 ],
 "results": [
 {
-"tool_name": "sophie_v2_check_scope_dkc",
+"tool_name": "example_v2_check_scope_dkc",
 "result_value": {
 "success": true,
 "scopeStatus": "in_scope"
@@ -715,7 +715,7 @@
 "node_id": "NP_CHECK",
 "requests": [
 {
-"tool_name": "sophie_v2_new_patient_check_dkc",
+"tool_name": "example_v2_new_patient_check_dkc",
 "params_as_json": {
 "fullName": "Dom De Silva",
 "dateOfBirth": "12th December, 1992"
@@ -724,7 +724,7 @@
 ],
 "results": [
 {
-"tool_name": "sophie_v2_new_patient_check_dkc",
+"tool_name": "example_v2_new_patient_check_dkc",
 "result_value": {
 "success": true
 },
@@ -1169,7 +1169,7 @@
 "node_id": "NP_FEE",
 "requests": [
 {
-"tool_name": "sophie_v2_new_patient_fee_dkc",
+"tool_name": "example_v2_new_patient_fee_dkc",
 "params_as_json": {
 "reason": "Having knee pain"
 }
@@ -1177,7 +1177,7 @@
 ],
 "results": [
 {
-"tool_name": "sophie_v2_new_patient_fee_dkc",
+"tool_name": "example_v2_new_patient_fee_dkc",
 "result_value": {
 "success": true
 },
@@ -1376,7 +1376,7 @@
 "node_id": "NP_PREP",
 "requests": [
 {
-"tool_name": "sophie_v2_prepare_register_patient_dkc",
+"tool_name": "example_v2_prepare_register_patient_dkc",
 "params_as_json": {
 "fullName": "Dom De Silva",
 "dateOfBirth": "12th December, 1992",
@@ -1389,7 +1389,7 @@
 ],
 "results": [
 {
-"tool_name": "sophie_v2_prepare_register_patient_dkc",
+"tool_name": "example_v2_prepare_register_patient_dkc",
 "result_value": {
 "success": true
 },
@@ -1532,7 +1532,7 @@
 "node_id": "MR",
 "requests": [
 {
-"tool_name": "sophie_v2_register_patient_dkc",
+"tool_name": "example_v2_register_patient_dkc",
 "params_as_json": {
 "proposalToken": "dynamic",
 "conversationHistory": "[omitted]"
@@ -1541,7 +1541,7 @@
 ],
 "results": [
 {
-"tool_name": "sophie_v2_register_patient_dkc",
+"tool_name": "example_v2_register_patient_dkc",
 "result_value": {
 "success": true
 },
@@ -1617,7 +1617,7 @@
 "node_id": "BK_LIST",
 "requests": [
 {
-"tool_name": "sophie_v2_list_practitioners_dkc",
+"tool_name": "example_v2_list_practitioners_dkc",
 "params_as_json": {
 "nameQuery": ""
 }
@@ -1625,7 +1625,7 @@
 ],
 "results": [
 {
-"tool_name": "sophie_v2_list_practitioners_dkc",
+"tool_name": "example_v2_list_practitioners_dkc",
 "result_value": {
 "success": true,
 "total": 1
@@ -1731,7 +1731,7 @@
 {
 "role": "agent",
 "time_in_call_secs": 115,
-"message": "Lovely, you're all set up. That would be with Kirti Moholkar. Is that all right?",
+"message": "Lovely, you're all set up. That would be with Jordan Example. Is that all right?",
 "workflow_node_id": "SAY_BOOK_SOLE_NP"
 },
 {
@@ -1881,7 +1881,7 @@
 "node_id": "BK_SCOPE",
 "requests": [
 {
-"tool_name": "sophie_v2_check_scope_dkc",
+"tool_name": "example_v2_check_scope_dkc",
 "params_as_json": {
 "reason": "Having knee pain",
 "appointmentType": "new knee or shoulder consultation",
@@ -1891,7 +1891,7 @@
 ],
 "results": [
 {
-"tool_name": "sophie_v2_check_scope_dkc",
+"tool_name": "example_v2_check_scope_dkc",
 "result_value": {
 "success": true,
 "scopeStatus": "in_scope"
@@ -1968,13 +1968,13 @@
 "node_id": "BK_PREF_GET",
 "requests": [
 {
-"tool_name": "sophie_v2_get_patient_preferences_dkc",
+"tool_name": "example_v2_get_patient_preferences_dkc",
 "params_as_json": {}
 }
 ],
 "results": [
 {
-"tool_name": "sophie_v2_get_patient_preferences_dkc",
+"tool_name": "example_v2_get_patient_preferences_dkc",
 "result_value": {
 "success": true
 },
@@ -2507,7 +2507,7 @@
 "node_id": "BK_PREP",
 "requests": [
 {
-"tool_name": "sophie_v2_prepare_book_dkc",
+"tool_name": "example_v2_prepare_book_dkc",
 "params_as_json": {
 "slotRef": "[token]"
 }
@@ -2515,7 +2515,7 @@
 ],
 "results": [
 {
-"tool_name": "sophie_v2_prepare_book_dkc",
+"tool_name": "example_v2_prepare_book_dkc",
 "result_value": {
 "success": true
 },
@@ -2564,7 +2564,7 @@
 {
 "role": "agent",
 "time_in_call_secs": 148,
-"message": "Let me just read that back. That's a consultation with Kirti Moholkar on Monday the twenty-third of November...",
+"message": "Let me just read that back. That's a consultation with Jordan Example on Monday the twenty-third of November...",
 "workflow_node_id": "SAY_BOOK_CONFIRM"
 },
 {
@@ -2631,7 +2631,7 @@
 {
 "role": "agent",
 "time_in_call_secs": 157,
-"message": "Sorry, I just want to be sure I've got this right. That's a consultation with Kirti Moholkar on Monday the twenty-third of November at half past two in the afternoon. Is that right?",
+"message": "Sorry, I just want to be sure I've got this right. That's a consultation with Jordan Example on Monday the twenty-third of November at half past two in the afternoon. Is that right?",
 "workflow_node_id": "BK_C0"
 },
 {
@@ -2669,7 +2669,7 @@
 "node_id": "BPC0",
 "requests": [
 {
-"tool_name": "sophie_v2_confirm_check_dkc",
+"tool_name": "example_v2_confirm_check_dkc",
 "params_as_json": {
 "proposalToken": "dynamic",
 "conversationHistory": "[omitted]"
@@ -2678,7 +2678,7 @@
 ],
 "results": [
 {
-"tool_name": "sophie_v2_confirm_check_dkc",
+"tool_name": "example_v2_confirm_check_dkc",
 "result_value": {
 "success": true
 },
@@ -2754,7 +2754,7 @@
 "node_id": "MB",
 "requests": [
 {
-"tool_name": "sophie_v2_book_dkc",
+"tool_name": "example_v2_book_dkc",
 "params_as_json": {
 "proposalToken": "dynamic",
 "conversationHistory": "[omitted]"
@@ -2763,7 +2763,7 @@
 ],
 "results": [
 {
-"tool_name": "sophie_v2_book_dkc",
+"tool_name": "example_v2_book_dkc",
 "result_value": null,
 "is_error": true,
 "error_type": "external_client",
