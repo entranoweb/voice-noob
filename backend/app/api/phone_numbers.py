@@ -17,6 +17,7 @@ from app.core.ownership import get_owned_agent, number_variants, parse_uuid
 from app.db.session import get_db
 from app.models.phone_number import PhoneNumber, PhoneNumberStatus
 from app.models.workspace import Workspace
+from app.services.realtime_models import is_legacy_tier, legacy_tier_refusal
 
 router = APIRouter(prefix="/api/v1/phone-numbers", tags=["phone-numbers"])
 logger = structlog.get_logger()
@@ -426,6 +427,8 @@ async def update_phone_number(  # noqa: PLR0912
             # The agent must be the caller's own: assigning routes this number's
             # calls to it, and the response names it.
             agent = await get_owned_agent(db, update_request.assigned_agent_id, current_user)
+            if agent.id != previous_agent and is_legacy_tier(agent.pricing_tier):
+                raise HTTPException(status_code=422, detail=legacy_tier_refusal(agent.pricing_tier))
             phone_number.assigned_agent_id = agent.id
         else:
             phone_number.assigned_agent_id = None

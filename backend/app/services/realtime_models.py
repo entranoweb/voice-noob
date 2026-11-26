@@ -21,6 +21,50 @@ from app.core.config import settings
 
 CLIENT_SECRETS_URL = "https://api.openai.com/v1/realtime/client_secrets"
 
+# The tiers a Realtime session can run. The browser, the embed and the phone
+# bridge all take their allowed set from here.
+REALTIME_TIERS: tuple[str, ...] = ("premium", "premium-mini")
+
+# Tiers an older cascaded pipeline used. That pipeline is gone: no code path runs
+# them, and `realtime_model_for_tier` would hand a phone call the premium model
+# (and the premium price) for either.
+LEGACY_TIERS: tuple[str, ...] = ("budget", "balanced")
+
+
+def is_legacy_tier(pricing_tier: str | None) -> bool:
+    """True for a tier that no longer names a way to run a call."""
+    return pricing_tier in LEGACY_TIERS
+
+
+def legacy_tier_refusal(pricing_tier: str) -> str:
+    """The plain message for refusing a legacy tier, naming what is allowed."""
+    allowed = ", ".join(REALTIME_TIERS)
+    return (
+        f'The "{pricing_tier}" pricing tier is no longer available, so an agent on it '
+        f"cannot take phone calls. Choose one of: {allowed}."
+    )
+
+
+def warn_if_legacy_tier(log: Any, agent: Any) -> bool:
+    """Log, once per call, that an agent configured before the rule is on a legacy tier.
+
+    The call is not refused: the owner's rule is that a tier is refused when an
+    agent is configured, not mid-call. It keeps running as it always has, on the
+    model `realtime_model_for_tier` returns, and this line is what says so. Call
+    it once where the media stream loads the agent. Returns whether it logged.
+    """
+    tier = getattr(agent, "pricing_tier", None)
+    if not is_legacy_tier(tier):
+        return False
+    log.warning(
+        "legacy_pricing_tier_on_call",
+        agent_id=str(getattr(agent, "id", "")),
+        pricing_tier=tier,
+        model=realtime_model_for_tier(str(tier)),
+        detail="call runs on the Realtime model; reconfigure the agent to premium or premium-mini",
+    )
+    return True
+
 
 def realtime_model_for_tier(pricing_tier: str) -> str:
     """The Realtime model for an agent's pricing tier."""

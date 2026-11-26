@@ -117,6 +117,12 @@ the turn text *and* the tool arguments and tool errors — see DECISIONS §32.
 
 State these before any claim built on the harness.
 
+- **Model choices unverified until one live call.** `gpt-transcribe` is used with
+  `server_vad`; OpenAI's no-VAD rule names only `gpt-live-transcribe` and
+  `gpt-realtime-whisper`, so it is not excluded but not confirmed. And no call has
+  confirmed OpenAI serves `gpt-realtime-2.1` / `gpt-realtime-2.1-mini` (PR #56) as
+  configured. What to check on the call: `.claude/skills/synthiq-voice-calls/SKILL.md`,
+  "Models not yet confirmed by a call".
 - **No call has ever gone through Telnyx.** Still true after PR #11. The inbound path is now
   exercised end to end against the real application — signed webhook, TeXML
   document, websocket, µ-law frames both ways, a row in Postgres, spans out —

@@ -116,6 +116,11 @@ No cascaded STT/LLM/TTS pipeline exists; Deepgram and ElevenLabs are declared
 dependencies whose clients are never constructed. Pipecat was removed in
 `dd186f0` as an unused dependency — see `docs/COMPETITIVE_LANDSCAPE.md` before
 reintroducing it
+**Unverified until one live call**: `gpt-transcribe` with `server_vad` (OpenAI's
+no-VAD rule names only `gpt-live-transcribe` and `gpt-realtime-whisper`, so
+`gpt-transcribe` is not excluded, but it is not shown to work either), and
+whether OpenAI serves `gpt-realtime-2.1` / `gpt-realtime-2.1-mini` as configured.
+What to check is in `.claude/skills/synthiq-voice-calls/SKILL.md`
 **Backend**: FastAPI, PostgreSQL 17, Redis 7, SQLAlchemy 2.0, Python 3.12+, uv
 **Frontend**: Next.js 15, React 19, TypeScript 5.7, Tailwind, shadcn/ui
 **Telephony**: Telnyx (primary), Twilio (optional)

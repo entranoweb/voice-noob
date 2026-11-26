@@ -58,6 +58,7 @@ from app.models.agent import Agent
 from app.models.workspace import Workspace
 from app.services.gpt_realtime import GPTRealtimeSession
 from app.services.realtime_models import (
+    REALTIME_TIERS,
     ClientSecretError,
     input_transcription,
     parse_client_secret,
@@ -401,7 +402,7 @@ async def embed_websocket(
             "pricing_tier": agent.pricing_tier,
         }
 
-        if agent.pricing_tier in ("premium", "premium-mini"):
+        if agent.pricing_tier in REALTIME_TIERS:
             async with GPTRealtimeSession(
                 db=db,
                 user_id=user_id_int,
@@ -567,7 +568,7 @@ async def get_embed_ephemeral_token(  # noqa: PLR0915
     site = _require_allowed_site(origin, x_embed_parent_origin, agent, log)
 
     # Check premium tier
-    if agent.pricing_tier not in ("premium", "premium-mini"):
+    if agent.pricing_tier not in REALTIME_TIERS:
         raise HTTPException(
             status_code=400, detail="WebRTC Realtime only available for Premium tier agents"
         )

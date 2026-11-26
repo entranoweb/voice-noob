@@ -305,6 +305,16 @@ Visit `https://app.synthiqvoice.com` - you should see the login page.
 
 ## Post-Deployment Setup
 
+> **Unverified until one live call:** `gpt-transcribe` with `server_vad` turn
+> detection (OpenAI's no-VAD rule names only `gpt-live-transcribe` and
+> `gpt-realtime-whisper`; `gpt-transcribe` is neither excluded nor confirmed), and
+> that OpenAI serves `gpt-realtime-2.1` / `gpt-realtime-2.1-mini` as configured.
+> On the first call confirm `session.updated` arrives with no `error` event, caller
+> transcript events carry text, turns still end on silence, and the model OpenAI
+> reports is the configured one, for a `premium` and a `premium-mini` agent. If not,
+> set `OPENAI_REALTIME_INPUT_TRANSCRIPTION_MODEL` empty or override the model
+> variables. Details: `.claude/skills/synthiq-voice-calls/SKILL.md`.
+
 ### 1. Login & Initial Setup
 
 1. Go to `https://app.synthiqvoice.com`

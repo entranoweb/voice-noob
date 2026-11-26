@@ -215,6 +215,8 @@ class Settings(BaseSettings):
     # name in `llm_model` or an Azure deployment keeps working with no data
     # migration. Override per deployment with the environment variables of the
     # same name.
+    # UNVERIFIED until a live call: that OpenAI serves these two names as
+    # configured. See the synthiq-voice-calls skill.
     OPENAI_REALTIME_MODEL_PREMIUM: str = "gpt-realtime-2.1"
     OPENAI_REALTIME_MODEL_PREMIUM_MINI: str = "gpt-realtime-2.1-mini"
     # Transcription of the caller's speech inside a Realtime session. Empty
@@ -226,6 +228,9 @@ class Settings(BaseSettings):
     # in a dedicated transcription session. `gpt-live-transcribe` is not usable
     # here: the same guide says it "doesn't support `server_vad` or
     # `semantic_vad`", and every session this app opens sets server_vad.
+    # UNVERIFIED until a live call: the docs' no-VAD rule names only
+    # `gpt-live-transcribe` and `gpt-realtime-whisper`, so `gpt-transcribe` with
+    # `server_vad` is not excluded, but no call has shown it works.
     OPENAI_REALTIME_INPUT_TRANSCRIPTION_MODEL: str = "gpt-transcribe"
     DEEPGRAM_API_KEY: str | None = None
     ELEVENLABS_API_KEY: str | None = None
