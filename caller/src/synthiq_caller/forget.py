@@ -1192,9 +1192,11 @@ def _mark_result(
         # now would make an edited result read as untouched: leave its digest exactly as it was.
         write_json(path, data)
         raise NotRestamped(
-            f"{_label(path)}: the values were blanked but the file was NOT restamped, because "
-            + ("it was edited" if state == ALTERED else "its integrity digest was removed")
-            + " after the rig wrote it; it stays altered for gate, acceptance and compare"
+            f"{_label(path)}: erasure is done (the values are blanked); only the integrity "
+            "digest was left untouched, because the file "
+            + ("was edited" if state == ALTERED else "had its digest removed")
+            + " after the rig wrote it, so it still reads as altered for gate, acceptance and "
+            "compare"
         )
     write_run(path, data)
 
@@ -1215,7 +1217,7 @@ def execute(
     keep_text: bool = False,
     verify: Callable[[], list[str]] | None = None,
     everywhere: bool = False,
-) -> tuple[str, list[str]]:
+) -> tuple[str, list[str], list[str]]:
     """Carry the plan out; return the id of the record and what failed (empty when nothing).
 
     The record is appended first (outcome ``started``), so a run that dies leaves
@@ -1239,6 +1241,7 @@ def execute(
     }
     removals.append(log, {**base, "outcome": "started"})
     failed: list[str] = []
+    untouched: list[str] = []  # erased, but already altered: the digest was left as it was
     done = {"audio_files": 0, "manifest_rows": 0, "overrides": 0, "scenarios": 0, "results": 0}
 
     def attempt(
@@ -1246,10 +1249,13 @@ def execute(
     ) -> None:
         try:
             action()
+        except NotRestamped as error:
+            untouched.append(str(error))  # the work is done: not a step that failed
+            done[counter] += n
         except Exception as error:  # noqa: BLE001 - one file failing must not stop the others
             failed.append(
                 str(error)
-                if isinstance(error, NotDeleted | NotRestamped)
+                if isinstance(error, NotDeleted)
                 else f"{what} {_label(path)}: {type(error).__name__}"
             )
         else:
@@ -1306,6 +1312,7 @@ def execute(
             **base,
             "outcome": "incomplete" if failed else "complete",
             "failed": failed,
+            "digest_untouched": untouched,
             "effects": {
                 **done,
                 "scenario_files": sorted(p.name for p in plan.scenarios),
@@ -1313,7 +1320,7 @@ def execute(
             },
         },
     )
-    return removal, failed
+    return removal, failed, untouched
 
 
 def _left_to_do(plan: Plan) -> list[str]:
@@ -1409,7 +1416,7 @@ def run(args: argparse.Namespace) -> int:
         return [f"left to do after the run: {line}" for line in _left_to_do(again)]
 
     try:
-        removal, failed = execute(
+        removal, failed, untouched = execute(
             plan,
             banks,
             operator=args.operator,
@@ -1429,6 +1436,14 @@ def run(args: argparse.Namespace) -> int:
         print("The record says so. Fix the cause and run the same command again to finish.")
         return 1
     print(f"removal {removal} complete; recorded in {log}")
+    if untouched:
+        print(
+            f"forget: {len(untouched)} result file(s) were already altered, so their integrity "
+            "digest was left untouched (the erasure itself is done; nothing is left to rerun):"
+        )
+        print("\n".join(f"  {line}" for line in untouched))
+        _still_open(banks)
+        return 1
     return _still_open(banks)
 
 

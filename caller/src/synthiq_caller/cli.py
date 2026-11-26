@@ -594,6 +594,21 @@ def _require_something(args: argparse.Namespace, scenarios: list[Any], chains: l
         )
 
 
+def _has_graded(scenarios: dict[str, list[int]], chains: dict[str, list[int]]) -> bool:
+    """True when some scenario or chain has at least one graded call ([passed, graded])."""
+    return any(v[1] > 0 for v in (*scenarios.values(), *chains.values()))
+
+
+def _blocked_without_plan(directory: str | Path, shape: completeness.Completeness) -> int:
+    """Calls batch.json says were blocked, for a directory that has no plan to count them from."""
+    if shape.planned:
+        return 0
+    path = Path(directory) / "batch.json"
+    if not path.exists():
+        return 0
+    return len(completeness.read_object(path).get("blocked", []))
+
+
 def _fraction(text: str) -> float:
     """A rate, claim or confidence: a fraction strictly between 0 and 1 (0.95, not 95)."""
     try:
@@ -1328,20 +1343,26 @@ def _main(argv: list[str] | None = None) -> int:
             return 1
         for line in shape.lines():
             print(line)
-        if shape.held_back and not args.allow_held_back:
+        held_count = shape.held_back or _blocked_without_plan(args.directory, shape)
+        if held_count and not args.allow_held_back:
             # A held-back call did not run (COMPLETENESS.md): a baseline of the rest would leave
             # it out of every later compare, so a regression in it would never be seen.
             print(
-                f"baseline NOT written: {shape.held_back} of {shape.planned} planned call(s) "
-                "were HELD BACK and did not run. Fix what held them back and run the batch again, "
+                f"baseline NOT written: {held_count} call(s) were HELD BACK and did not run"
+                + (f" (of {shape.planned} planned)" if shape.planned else "")
+                + ". Fix what held them back and run the batch again, "
                 "or pass --allow-held-back to make a baseline of the calls that ran (it is "
                 "recorded in the baseline and printed by every compare)."
             )
             return 1
         summary = summarise(args.directory)
-        if not summary.by_scenario and not summary.chains:
+        if not _has_graded(
+            {k: list(v) for k, v in summary.by_scenario.items()},
+            {k: list(v[:2]) for k, v in summary.chains.items()},
+        ):
             print(
-                "baseline NOT written: no graded scenario or chain in this directory; a baseline "
+                "baseline NOT written: no graded call in this directory (every scenario and "
+                "chain has 0 graded calls); a baseline "
                 "with nothing in it would pass every later compare."
             )
             return 1
@@ -1349,7 +1370,7 @@ def _main(argv: list[str] | None = None) -> int:
             summary,
             source=str(args.directory),
             completeness=shape.status,
-            held_back=shape.held_back,
+            held_back=held_count,
         )
         save_baseline(stored, args.out)
         print(f"baseline of {len(stored.scenarios)} scenario(s), {len(stored.chains)} chain(s)")
@@ -1368,10 +1389,11 @@ def _main(argv: list[str] | None = None) -> int:
                 f"{baseline.completeness.upper()}; it is not a baseline. Make it again."
             )
             return 1
-        if not baseline.scenarios and not baseline.chains:
+        if not _has_graded(baseline.scenarios, baseline.chains):
             print(
-                f"ERROR: {args.baseline}: the baseline has no scenarios and no chains, so there "
-                "is nothing to compare against; it is not a baseline. Make it again."
+                f"ERROR: {args.baseline}: the baseline has no graded call in any scenario or "
+                "chain, so there is nothing to compare against; it is not a baseline. Make it "
+                "again."
             )
             return 1
         shape = completeness.check(args.directory)

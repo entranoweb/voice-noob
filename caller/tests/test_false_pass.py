@@ -59,8 +59,16 @@ def test_forget_does_not_restamp_a_result_that_was_already_altered(
     assert completeness.altered(after) is (True if how == "edited" else None)
     # and forget says so, and does not end complete
     assert code == 1
-    assert "INCOMPLETE" in out and "run-001.json" in out
-    assert "NOT restamped" in out
+    assert "run-001.json" in out and "already altered" in out
+    # the erasure is DONE: it is not reported as a step that failed, and nothing is left to rerun
+    assert "INCOMPLETE" not in out and "erasure is done" in out
+    record = [json.loads(x) for x in (world["bank"] / "removals.jsonl").read_text().splitlines()]
+    assert record[-1]["outcome"] == "complete"
+    assert record[-1]["failed"] == [] and "run-001.json" in record[-1]["digest_untouched"][0]
+    # a rerun finds nothing to do, claims nothing, and leaves the file as altered as it was
+    assert cli.main(forget_args(world, "a1")) == 0
+    assert "complete" not in capsys.readouterr().out
+    assert read(path).get("integrity") == before
 
 
 def test_forget_still_restamps_an_intact_result(tmp_path: Path) -> None:
@@ -72,7 +80,7 @@ def test_forget_still_restamps_an_intact_result(tmp_path: Path) -> None:
 
 # --- baseline: held-back calls and empty baselines -----------------------------------------
 
-from test_completeness import drop_run, planned  # noqa: E402
+from test_completeness import baseline_of, drop_run, planned  # noqa: E402
 
 
 def drop_held(out: Path, *numbers: int) -> None:
@@ -126,7 +134,7 @@ def test_a_baseline_with_nothing_in_it_is_refused_and_cannot_pass_a_compare(
     run = planned(tmp_path / "run", ["passed"] * 3)
     for fail_on in ("any", "beyond-noise", "never"):
         assert cli.main(["compare", str(run), "--baseline", str(empty), "--fail-on", fail_on]) == 1
-    assert "no scenarios" in capsys.readouterr().out
+    assert "no graded call" in capsys.readouterr().out
     # and a directory with no runs at all does not become one
     bare = tmp_path / "bare"
     bare.mkdir()
@@ -228,3 +236,53 @@ def test_a_batch_with_an_unknown_mutates_value_names_the_file_and_places_no_call
         )
     assert "bad.json" in str(stop.value) and "mutates must be one of" in str(stop.value)
     assert not (tmp_path / "o").exists()
+
+
+# --- review of #63: all-ungraded baselines, blocked calls with no plan -----------------------
+
+
+def test_a_baseline_where_no_call_was_graded_is_refused_and_so_is_one_already_written(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    out = planned(tmp_path / "voids", ["void"] * 3)
+    stored = tmp_path / "b.json"
+    assert cli.main(["baseline", str(out), "--out", str(stored)]) == 1
+    assert not stored.exists()
+    assert "no graded call" in capsys.readouterr().out
+
+    # a baseline file with only zero totals (written by an older build) is no baseline either
+    good = baseline_of(planned(tmp_path / "good", ["passed"] * 3), tmp_path)
+    zero = read(good)
+    zero["scenarios"] = {"lookup": [0, 0]}
+    zero["chains"] = {}
+    write_json(tmp_path / "zero.json", zero)
+    for mode in ("any", "beyond-noise"):
+        code = cli.main(
+            ["compare", str(out), "--baseline", str(tmp_path / "zero.json"), "--fail-on", mode]
+        )
+        assert code == 1
+    assert "no graded call" in capsys.readouterr().out
+
+
+def test_baseline_counts_blocked_calls_in_batch_json_when_there_is_no_plan(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    out = planned(tmp_path / "noplan", ["passed"] * 3)
+    (out / "manifest.json").unlink()
+    write_json(out / "batch.json", {"out": str(out), "ran": 3, "blocked": [{}, {}]})
+    stored = tmp_path / "b.json"
+    assert cli.main(["baseline", str(out), "--out", str(stored)]) == 1
+    assert "HELD BACK" in capsys.readouterr().out and not stored.exists()
+    assert cli.main(["baseline", str(out), "--out", str(stored), "--allow-held-back"]) == 0
+    assert read(stored)["held_back"] == {"allowed": True, "count": 2}
+
+
+def test_forget_blanks_only_the_fields_the_rig_writes_on_an_intact_file(tmp_path: Path) -> None:
+    """Pins what is NOT covered (PR body, Not verified): a hand-added field keeps the words."""
+    world = forget_world(tmp_path)
+    path = stamped_result(world)
+    data = read(path)
+    data["notes"] = "Zebediah said this"  # not a field the rig writes
+    write_json(path, completeness.stamp(data))
+    assert cli.main(forget_args(world, "a1")) == 0
+    assert "Zebediah" in read(path)["notes"]  # known gap, stated in the PR; not widened here
