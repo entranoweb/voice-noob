@@ -353,12 +353,15 @@ async def update_agent(
             detail="Agent not found",
         )
 
-    await ensure_phone_reference_is_owned(
-        db,
-        update_request.phone_number_id,
-        current_user,
-        agent_workspace_id=await owned_agent_workspace_id(db, agent, current_user),
-    )
+    # Only a changed value is checked: an unchanged one is what the edit page
+    # sends back for a legacy agent, and refusing it would block every edit.
+    if update_request.phone_number_id != agent.phone_number_id:
+        await ensure_phone_reference_is_owned(
+            db,
+            update_request.phone_number_id,
+            current_user,
+            agent_workspace_id=await owned_agent_workspace_id(db, agent, current_user),
+        )
 
     # Apply updates from request
     previous_number = agent.phone_number_id

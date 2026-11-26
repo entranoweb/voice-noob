@@ -283,3 +283,53 @@ async def find_unverified_numbers(
                 )
             )
     return failures
+
+
+@dataclass(frozen=True)
+class UnregisteredAgentNumber:
+    """An agent whose `phone_number_id` is not a live registered number."""
+
+    agent_id: uuid.UUID
+    user_id: int
+    reference: str
+
+
+async def find_unregistered_agent_numbers(db: AsyncSession) -> list[UnregisteredAgentNumber]:
+    """Agents whose `phone_number_id` has no live registered record.
+
+    Read-only, and no carrier is asked. Routing still honours the field for
+    agents that predate registration, so this is the list of agents whose number
+    nobody ever proved. A diallable value is matched on the number itself; any
+    other value on a record's carrier id or id, as `ensure_phone_reference_is_owned`
+    does.
+    """
+    from app.core.ownership import reference_condition
+    from app.models.agent import Agent
+    from app.models.phone_number import PhoneNumber, PhoneNumberStatus
+
+    agents = (
+        (
+            await db.execute(
+                select(Agent)
+                .where(Agent.phone_number_id.is_not(None), Agent.phone_number_id != "")
+                .order_by(Agent.created_at, Agent.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    live = PhoneNumber.status != PhoneNumberStatus.RELEASED.value
+    listed: list[UnregisteredAgentNumber] = []
+    for agent in agents:
+        reference = (agent.phone_number_id or "").strip()
+        if not reference:
+            continue
+        condition = reference_condition(reference)
+        found = (await db.execute(select(PhoneNumber.id).where(condition, live).limit(1))).first()
+        if found is None:
+            listed.append(
+                UnregisteredAgentNumber(
+                    agent_id=agent.id, user_id=agent.user_id, reference=reference
+                )
+            )
+    return listed

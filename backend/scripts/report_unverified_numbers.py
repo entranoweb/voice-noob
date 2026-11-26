@@ -8,7 +8,9 @@ account holds the number, and prints those that registration would refuse
 today. It changes nothing: no row is written, deleted or reassigned, and no
 carrier call purchases, releases or configures anything. A registration that
 cannot be checked (carrier down, no credentials saved) is listed with that
-reason.
+reason. Registrations with no workspace are listed (they cannot be checked),
+and so are agents whose `phone_number_id` has no live registration (no carrier
+call is needed for those).
 
 It makes one carrier API request per registered number using customers' saved
 credentials, hence the required flag. Exit status: 0 when every number passes,
@@ -29,12 +31,14 @@ async def _run() -> int:
     from app.db.session import AsyncSessionLocal, engine
     from app.services.telephony.number_ownership import (
         default_lookup_factory,
+        find_unregistered_agent_numbers,
         find_unverified_numbers,
     )
 
     try:
         async with AsyncSessionLocal() as db:
             failures = await find_unverified_numbers(db, factory=default_lookup_factory)
+            agents = await find_unregistered_agent_numbers(db)
             await db.rollback()  # nothing was written; make sure nothing is kept
     finally:
         await engine.dispose()
@@ -45,7 +49,10 @@ async def _run() -> int:
             f"number={item.phone_number} record={item.phone_number_id}: {item.reason}"
         )
     print(f"{len(failures)} registered number(s) would be refused today.")
-    return 1 if failures else 0
+    for agent in agents:
+        print(f"agent={agent.agent_id} phone_number_id={agent.reference}: no live registration")
+    print(f"{len(agents)} agent(s) name a phone number with no live registration.")
+    return 1 if failures or agents else 0
 
 
 def main() -> int:

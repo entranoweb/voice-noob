@@ -34,6 +34,7 @@ from app.services.telephony.number_ownership import (
     CarrierLookupError,
     TelnyxNumberLookup,
     TwilioNumberLookup,
+    find_unregistered_agent_numbers,
     find_unverified_numbers,
     get_carrier_lookup_factory,
 )
@@ -176,10 +177,12 @@ async def world(test_engine: Any, test_redis: Any) -> AsyncGenerator[World, None
         app.dependency_overrides.clear()
 
 
-def _holds(world: World, tenant: Tenant, *numbers: str, provider: str = "telnyx") -> None:
-    key = f"telnyx-{tenant.user.full_name.lower()}-0"
+def _holds(
+    world: World, tenant: Tenant, *numbers: str, provider: str = "telnyx", workspace: int = 0
+) -> None:
+    key = f"telnyx-{tenant.user.full_name.lower()}-{workspace}"
     if provider == "twilio":
-        key = f"AC{tenant.user.full_name.lower()}0"
+        key = f"AC{tenant.user.full_name.lower()}{workspace}"
     world.carrier.accounts.setdefault(key, set()).update(numbers)
 
 
@@ -818,3 +821,223 @@ class TestNumberLifecycle:
 
         assert response.status_code == 201
         assert response.json()["phone_number"] == NUMBER_A
+
+
+async def _loose_agent(world: World, name: str, phone_number_id: str | None = None) -> Agent:
+    """An agent of Alice's that is in no workspace yet."""
+    async with world.sessions() as session:
+        agent = Agent(
+            user_id=world.alice.user.id,
+            name=name,
+            system_prompt="You answer the phone politely.",
+            pricing_tier="premium",
+            is_active=True,
+            enabled_tools=[],
+            enabled_tool_ids={},
+            phone_number_id=phone_number_id,
+        )
+        session.add(agent)
+        await session.commit()
+        await session.refresh(agent)
+        return agent
+
+
+async def _link(world: World, agent: Agent, workspace: Workspace) -> None:
+    async with world.sessions() as session:
+        session.add(AgentWorkspace(agent_id=agent.id, workspace_id=workspace.id, is_default=False))
+        await session.commit()
+
+
+async def _linked_workspaces(world: World, agent: Agent) -> set[uuid.UUID]:
+    async with world.sessions() as session:
+        rows = await session.execute(
+            select(AgentWorkspace.workspace_id).where(AgentWorkspace.agent_id == agent.id)
+        )
+        return set(rows.scalars().all())
+
+
+class TestMovingANumberBetweenWorkspaces:
+    """Routing must not keep reaching the old workspace's agents after a move."""
+
+    async def _assigned(self, world: World) -> str:
+        _holds(world, world.alice, NUMBER_A)
+        _holds(world, world.alice, NUMBER_A, workspace=1)
+        number_id = str((await _register(world, world.alice, NUMBER_A)).json()["id"])
+        assigned = await world.client.put(
+            f"/api/v1/phone-numbers/{number_id}",
+            headers=world.alice.headers,
+            json={"assigned_agent_id": str(world.alice.second_agent.id)},
+        )
+        assert assigned.status_code == 200
+        async with world.sessions() as session:
+            assert await get_agent_by_phone_number(NUMBER_A, session) is not None
+        return number_id
+
+    async def _move(self, world: World, number_id: str) -> httpx.Response:
+        return await world.client.put(
+            f"/api/v1/phone-numbers/{number_id}",
+            headers=world.alice.headers,
+            json={"workspace_id": str(world.alice.second_workspace.id)},
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_old_workspaces_agent_is_unassigned_on_a_move(self, world: World) -> None:
+        number_id = await self._assigned(world)
+
+        moved = await self._move(world, number_id)
+
+        assert moved.status_code == 200
+        assert moved.json()["workspace_id"] == str(world.alice.second_workspace.id)
+        assert moved.json()["assigned_agent_id"] is None
+        async with world.sessions() as session:
+            assert await get_agent_by_phone_number(NUMBER_A, session) is None
+
+    @pytest.mark.asyncio
+    async def test_an_agent_that_is_also_in_the_new_workspace_stays_assigned(
+        self, world: World
+    ) -> None:
+        number_id = await self._assigned(world)
+        await _link(world, world.alice.second_agent, world.alice.second_workspace)
+
+        moved = await self._move(world, number_id)
+
+        assert moved.status_code == 200
+        assert moved.json()["assigned_agent_id"] == str(world.alice.second_agent.id)
+
+    @pytest.mark.asyncio
+    async def test_a_move_is_refused_while_an_agent_there_dials_the_number(
+        self, world: World
+    ) -> None:
+        _holds(world, world.alice, NUMBER_A)
+        _holds(world, world.alice, NUMBER_A, workspace=1)
+        number_id = str((await _register(world, world.alice, NUMBER_A)).json()["id"])
+        written = await world.client.put(
+            f"/api/v1/agents/{world.alice.agent.id}",
+            headers=world.alice.headers,
+            json={"phone_number_id": NUMBER_A},
+        )
+        assert written.status_code == 200
+
+        moved = await self._move(world, number_id)
+
+        assert moved.status_code == 409
+        assert world.alice.agent.name in moved.json()["detail"]
+        async with world.sessions() as session:
+            record = await session.get(PhoneNumber, uuid.UUID(number_id))
+            assert record is not None
+            assert record.workspace_id == world.alice.workspace.id
+
+
+class TestLinkingAnAgentIntoAWorkspace:
+    """The link step is where an agent's number meets the workspace's proof."""
+
+    async def _agent_with_number_of_workspace_one(self, world: World) -> Agent:
+        _holds(world, world.alice, NUMBER_A)
+        assert (await _register(world, world.alice, NUMBER_A)).status_code == 201
+        return await _loose_agent(world, "Loose agent", NUMBER_A)
+
+    @pytest.mark.asyncio
+    async def test_adding_the_agent_to_another_workspace_is_refused(self, world: World) -> None:
+        agent = await self._agent_with_number_of_workspace_one(world)
+
+        refused = await world.client.post(
+            f"/api/v1/workspaces/{world.alice.second_workspace.id}/agents",
+            headers=world.alice.headers,
+            json={"agent_id": str(agent.id)},
+        )
+
+        assert refused.status_code == 422
+        assert "different workspace" in refused.json()["detail"]
+        assert await _linked_workspaces(world, agent) == set()
+
+    @pytest.mark.asyncio
+    async def test_setting_the_agents_workspaces_in_bulk_is_refused_too(self, world: World) -> None:
+        agent = await self._agent_with_number_of_workspace_one(world)
+
+        refused = await world.client.put(
+            f"/api/v1/workspaces/agent/{agent.id}/workspaces",
+            headers=world.alice.headers,
+            json={"workspace_ids": [str(world.alice.second_workspace.id)]},
+        )
+
+        assert refused.status_code == 422
+        assert await _linked_workspaces(world, agent) == set()
+
+    @pytest.mark.asyncio
+    async def test_the_number_s_own_workspace_is_accepted(self, world: World) -> None:
+        agent = await self._agent_with_number_of_workspace_one(world)
+
+        added = await world.client.post(
+            f"/api/v1/workspaces/{world.alice.workspace.id}/agents",
+            headers=world.alice.headers,
+            json={"agent_id": str(agent.id)},
+        )
+
+        assert added.status_code == 201
+        async with world.sessions() as session:
+            routed = await get_agent_by_phone_number(NUMBER_A, session)
+            assert routed is not None
+            assert routed.id == agent.id
+
+
+class TestEditingAnAgentWithALegacyNumber:
+    @pytest.mark.asyncio
+    async def test_resending_the_unchanged_number_does_not_break_the_edit(
+        self, world: World
+    ) -> None:
+        legacy = await _loose_agent(world, "Legacy agent", NUMBER_B)  # never registered
+
+        same = await world.client.put(
+            f"/api/v1/agents/{legacy.id}",
+            headers=world.alice.headers,
+            json={"name": "Renamed", "phone_number_id": NUMBER_B},
+        )
+        other = await world.client.put(
+            f"/api/v1/agents/{legacy.id}",
+            headers=world.alice.headers,
+            json={"phone_number_id": NUMBER_C},
+        )
+
+        assert same.status_code == 200
+        assert same.json()["name"] == "Renamed"
+        assert other.status_code == 403
+
+
+class TestReportCoversWhatRoutingStillReads:
+    @pytest.mark.asyncio
+    async def test_workspace_less_rows_are_listed(self, world: World) -> None:
+        async with world.sessions() as session:
+            session.add(
+                PhoneNumber(
+                    user_id=user_id_to_uuid(world.alice.user.id),
+                    workspace_id=None,
+                    phone_number=NUMBER_A,
+                    provider="telnyx",
+                    provider_id="x",
+                )
+            )
+            await session.commit()
+
+        async with world.sessions() as session:
+            failures = await find_unverified_numbers(session, factory=world.carrier.factory)
+
+        assert [f.phone_number for f in failures] == [NUMBER_A]
+        assert failures[0].workspace_id is None
+        assert world.carrier.asked == []
+
+    @pytest.mark.asyncio
+    async def test_agents_naming_a_number_with_no_live_record_are_listed(
+        self, world: World
+    ) -> None:
+        _holds(world, world.alice, NUMBER_A)
+        assert (await _register(world, world.alice, NUMBER_A)).status_code == 201
+        registered = await _loose_agent(world, "Registered", NUMBER_A)
+        legacy = await _loose_agent(world, "Legacy", NUMBER_B)
+        await _loose_agent(world, "Blank", None)
+
+        async with world.sessions() as session:
+            listed = await find_unregistered_agent_numbers(session)
+            await session.rollback()
+
+        assert [(item.agent_id, item.reference) for item in listed] == [(legacy.id, NUMBER_B)]
+        assert registered.id not in {item.agent_id for item in listed}

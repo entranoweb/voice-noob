@@ -26,6 +26,7 @@ from app.models.phone_number import PhoneNumber, PhoneNumberStatus
 from app.models.workspace import AgentWorkspace, Workspace
 
 if TYPE_CHECKING:
+    from sqlalchemy import ColumnElement
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from app.models.user import User
@@ -170,3 +171,97 @@ async def ensure_phone_reference_is_owned(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="That phone number belongs to a different workspace than this agent.",
         )
+
+
+def reference_condition(reference: str) -> ColumnElement[bool]:
+    """Which records an agent's `phone_number_id` value refers to.
+
+    A diallable value is the number itself (either spelling); anything else is a
+    carrier id or a record id.
+    """
+    if is_diallable(reference):
+        return PhoneNumber.phone_number.in_(number_variants(reference))
+    conditions = [PhoneNumber.provider_id == reference]
+    with contextlib.suppress(ValueError):
+        conditions.append(PhoneNumber.id == uuid.UUID(reference))
+    return or_(*conditions)
+
+
+async def ensure_agent_number_fits_workspaces(
+    db: AsyncSession, agent: Agent, workspace_ids: list[uuid.UUID]
+) -> None:
+    """Refuse linking an agent into a workspace its own phone number is not in.
+
+    The agent's `phone_number_id` routes calls, and a registered number was
+    proven against one workspace's carrier account. Linking the agent into
+    another workspace would let calls on that number reach it from there, so the
+    link is refused with 422. A number with no live record, or a record that
+    predates workspaces, does not block the link (nothing was proven either way).
+    """
+    reference = (agent.phone_number_id or "").strip()
+    if not reference or not workspace_ids:
+        return
+    live = PhoneNumber.status != PhoneNumberStatus.RELEASED.value
+    records = (
+        (await db.execute(select(PhoneNumber).where(reference_condition(reference), live)))
+        .scalars()
+        .all()
+    )
+    if any(
+        record.workspace_id is not None and record.workspace_id not in workspace_ids
+        for record in records
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "That agent's phone number is registered to a different workspace. "
+                "Move the number to this workspace or clear the agent's phone number first."
+            ),
+        )
+
+
+async def agents_dialling_number_outside(
+    db: AsyncSession, user: User, number: str, workspace_id: uuid.UUID
+) -> list[Agent]:
+    """Agents of `user` whose `phone_number_id` is `number` and that are not in `workspace_id`.
+
+    Agents in no workspace are not counted: they are not reached from any
+    workspace's webhook, and the link step governs where they may go.
+    """
+    agents = (
+        (
+            await db.execute(
+                select(Agent).where(
+                    Agent.user_id == user.id,
+                    Agent.phone_number_id.in_(number_variants(number)),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    outside: list[Agent] = []
+    for agent in agents:
+        linked = set(
+            (
+                await db.execute(
+                    select(AgentWorkspace.workspace_id).where(AgentWorkspace.agent_id == agent.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if linked and workspace_id not in linked:
+            outside.append(agent)
+    return outside
+
+
+async def agent_is_in_workspace(
+    db: AsyncSession, agent_id: uuid.UUID, workspace_id: uuid.UUID
+) -> bool:
+    result = await db.execute(
+        select(AgentWorkspace.agent_id).where(
+            AgentWorkspace.agent_id == agent_id, AgentWorkspace.workspace_id == workspace_id
+        )
+    )
+    return result.first() is not None

@@ -14,6 +14,8 @@ from app.core.audit import AuditAction, record_audit
 from app.core.auth import CurrentUser, user_id_to_uuid
 from app.core.limiter import limiter
 from app.core.ownership import (
+    agent_is_in_workspace,
+    agents_dialling_number_outside,
     get_owned_agent,
     number_variants,
     owned_agent_workspace_id,
@@ -474,7 +476,24 @@ async def update_phone_number(  # noqa: PLR0912, PLR0915
             and phone_number.status != PhoneNumberStatus.ACTIVE.value
         )
     )
-    if target_workspace != phone_number.workspace_id or reviving:
+    moving = target_workspace != phone_number.workspace_id
+    if moving and target_workspace is not None:
+        # An agent in another workspace that dials this number would keep
+        # receiving its calls from there, past the proof the move just asked for.
+        stranded = await agents_dialling_number_outside(
+            db, current_user, phone_number.phone_number, target_workspace
+        )
+        if stranded:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Agent "
+                    + ", ".join(f"'{a.name}'" for a in stranded)
+                    + " is in another workspace and uses this phone number. "
+                    "Clear its phone number before moving the number."
+                ),
+            )
+    if moving or reviving:
         await verify_number_on_workspace_account(
             db,
             user_id=user_uuid,
@@ -496,6 +515,22 @@ async def update_phone_number(  # noqa: PLR0912, PLR0915
             phone_number.workspace_id = workspace_uuid
         else:
             phone_number.workspace_id = None
+    if (
+        moving
+        and phone_number.assigned_agent_id is not None
+        and update_request.assigned_agent_id is None
+        and not (
+            target_workspace is not None
+            and await agent_is_in_workspace(db, phone_number.assigned_agent_id, target_workspace)
+        )
+    ):
+        # The assigned agent is not in the number's new workspace: calls must
+        # not keep routing to it. Say so rather than do it silently.
+        log.info(
+            "phone_number_unassigned_on_workspace_move",
+            agent_id=str(phone_number.assigned_agent_id),
+        )
+        update_request.assigned_agent_id = ""
     if update_request.assigned_agent_id is not None:
         previous_agent = phone_number.assigned_agent_id
         if update_request.assigned_agent_id:

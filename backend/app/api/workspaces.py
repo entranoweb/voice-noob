@@ -13,6 +13,7 @@ from sqlalchemy.orm import selectinload
 
 from app.core.auth import CurrentUser
 from app.core.limiter import limiter
+from app.core.ownership import ensure_agent_number_fits_workspaces
 from app.db.session import get_db
 from app.models.agent import Agent
 from app.models.contact import Contact
@@ -517,8 +518,10 @@ async def add_agent_to_workspace(
         raise HTTPException(status_code=404, detail="Workspace not found")
 
     # Verify agent exists and belongs to user
-    result = await db.execute(select(Agent).where(Agent.id == agent_uuid, Agent.user_id == user_id))
-    agent = result.scalar_one_or_none()
+    agent_result = await db.execute(
+        select(Agent).where(Agent.id == agent_uuid, Agent.user_id == user_id)
+    )
+    agent = agent_result.scalar_one_or_none()
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
 
@@ -532,6 +535,9 @@ async def add_agent_to_workspace(
     existing = result.scalar_one_or_none()
     if existing:
         raise HTTPException(status_code=409, detail="Agent is already in this workspace")
+
+    # The agent's own phone number must not belong to another workspace.
+    await ensure_agent_number_fits_workspaces(db, agent, [workspace_uuid])
 
     # If setting as default, unset other defaults for this agent
     if data.is_default:
@@ -705,6 +711,8 @@ async def set_agent_workspaces(
                 status_code=400,
                 detail=f"Invalid workspace IDs: {', '.join(invalid_ids)}",
             )
+
+    await ensure_agent_number_fits_workspaces(db, agent, workspace_uuids)
 
     try:
         # Delete all existing workspace associations for this agent using bulk delete
