@@ -22,7 +22,7 @@ from sqlalchemy import or_, select
 
 from app.core.auth import user_id_to_uuid
 from app.models.agent import Agent
-from app.models.phone_number import PhoneNumber
+from app.models.phone_number import PhoneNumber, PhoneNumberStatus
 from app.models.workspace import AgentWorkspace, Workspace
 
 if TYPE_CHECKING:
@@ -99,43 +99,74 @@ def number_variants(number: str) -> tuple[str, str]:
 
 
 async def ensure_phone_reference_is_owned(
-    db: AsyncSession, reference: str | None, user: User
+    db: AsyncSession,
+    reference: str | None,
+    user: User,
+    agent_workspace_id: uuid.UUID | None = None,
 ) -> None:
-    """Refuse an agent's `phone_number_id` that points at someone else's number.
+    """Refuse an agent's `phone_number_id` that is not a live number of this account.
 
     The field is free text and inbound routing reads it, so without this check
     any signed-in user could write another customer's public phone number into
     their own agent and have that customer's calls resolve to it.
 
-    Three cases:
+    A diallable reference (digits, with or without the plus) is matched on the
+    registered number itself and nothing else. `provider_id` is free text the
+    registrant typed and is never proven, so it must not make a different
+    number claimable: a reference is accepted only when a live (not released)
+    record of the user holds that number, which registration proved.
 
-    - It matches a phone number record (by id, carrier id or the number
-      itself) owned by somebody else: refused.
-    - It is a diallable number and the user holds no record for it: refused.
-      A number has to be registered to its owner before an agent can claim it.
-    - It is an opaque carrier id with no record anywhere (what the agent pages
-      send from the carrier's own listing): accepted. It can never equal a
-      dialled number, so it cannot route anybody's call.
+    A non-diallable reference is an opaque carrier id or a record id:
+
+    - It matches a record owned by somebody else: refused.
+    - It matches only released records of the user: refused.
+    - It matches nothing anywhere (what the agent pages send from the carrier's
+      own listing): accepted. It can never equal a dialled number, so it
+      cannot route anybody's call.
+
+    When `agent_workspace_id` is given (the agent already belongs to a
+    workspace), a record in a different workspace is refused with 422: the
+    carrier proof is per workspace, so routing across workspaces defeats it.
     """
     if reference is None or not reference.strip():
         return
     reference = reference.strip()
     user_uuid = user_id_to_uuid(user.id)
-
-    conditions = [PhoneNumber.provider_id == reference]
-    if is_diallable(reference):
-        conditions.append(PhoneNumber.phone_number.in_(number_variants(reference)))
-    with contextlib.suppress(ValueError):
-        conditions.append(PhoneNumber.id == uuid.UUID(reference))
-
-    result = await db.execute(select(PhoneNumber.user_id).where(or_(*conditions)))
-    owners = set(result.scalars().all())
+    live = PhoneNumber.status != PhoneNumberStatus.RELEASED.value
 
     refused = HTTPException(
         status_code=status.HTTP_403_FORBIDDEN,
         detail="That phone number is not registered to your account",
     )
-    if owners - {user_uuid}:
-        raise refused
-    if is_diallable(reference) and user_uuid not in owners:
-        raise refused
+
+    if is_diallable(reference):
+        result = await db.execute(
+            select(PhoneNumber).where(
+                PhoneNumber.phone_number.in_(number_variants(reference)), live
+            )
+        )
+        records = list(result.scalars().all())
+        if not records or any(record.user_id != user_uuid for record in records):
+            raise refused
+    else:
+        conditions = [PhoneNumber.provider_id == reference]
+        with contextlib.suppress(ValueError):
+            conditions.append(PhoneNumber.id == uuid.UUID(reference))
+        result = await db.execute(select(PhoneNumber).where(or_(*conditions)))
+        records = list(result.scalars().all())
+        if any(record.user_id != user_uuid for record in records):
+            raise refused
+        if records and not any(
+            record.status != PhoneNumberStatus.RELEASED.value for record in records
+        ):
+            raise refused
+
+    if agent_workspace_id is not None and any(
+        record.workspace_id is not None and record.workspace_id != agent_workspace_id
+        for record in records
+        if record.status != PhoneNumberStatus.RELEASED.value
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="That phone number belongs to a different workspace than this agent.",
+        )

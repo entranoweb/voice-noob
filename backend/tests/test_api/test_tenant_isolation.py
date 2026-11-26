@@ -322,7 +322,9 @@ class TestPhoneNumberAssignment:
 
     @pytest.mark.asyncio
     async def test_a_number_can_be_assigned_to_ones_own_agent(self, world: World) -> None:
-        record = await _register_number(world, world.alice, ALICE_NUMBER)
+        record = await _register_number(
+            world, world.alice, ALICE_NUMBER, workspace_id=world.alice.workspace.id
+        )
 
         response = await world.client.put(
             f"/api/v1/phone-numbers/{record.id}",

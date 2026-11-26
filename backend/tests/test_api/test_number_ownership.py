@@ -20,6 +20,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.api.auth import create_access_token, get_password_hash
+from app.api.telephony import get_agent_by_phone_number
 from app.core.auth import user_id_to_uuid
 from app.db.redis import get_redis
 from app.db.session import get_db
@@ -641,3 +642,179 @@ class TestReport:
         assert [f.reason for f in failures] == [
             "Could not verify the phone number with the carrier, try again."
         ]
+
+
+class TestAgentPhoneFieldIsNotAnotherWayIn:
+    """`Agent.phone_number_id` routes calls, so it must not accept what registration refuses."""
+
+    async def _agent_put(self, world: World, reference: str, agent: Agent | None = None) -> Any:
+        target = agent or world.alice.agent
+        return await world.client.put(
+            f"/api/v1/agents/{target.id}",
+            headers=world.alice.headers,
+            json={"phone_number_id": reference},
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_spoofed_provider_id_cannot_claim_a_number_never_proven(
+        self, world: World
+    ) -> None:
+        """Alice proves NUMBER_A, but writes NUMBER_B into the free-text provider_id."""
+        _holds(world, world.alice, NUMBER_A)
+        registered = await _register(world, world.alice, NUMBER_A, provider_id=NUMBER_B)
+        assert registered.status_code == 201
+
+        put = await self._agent_put(world, NUMBER_B)
+        post = await world.client.post(
+            "/api/v1/agents",
+            headers=world.alice.headers,
+            json={
+                "name": "Claimer",
+                "pricing_tier": "premium",
+                "system_prompt": "You answer the phone politely.",
+                "phone_number_id": NUMBER_B,
+            },
+        )
+
+        assert put.status_code == 403
+        assert post.status_code == 403
+        async with world.sessions() as session:
+            assert await get_agent_by_phone_number(NUMBER_B, session) is None
+
+    @pytest.mark.asyncio
+    async def test_a_released_number_cannot_be_written_into_an_agent(self, world: World) -> None:
+        _holds(world, world.alice, NUMBER_A)
+        number_id = (await _register(world, world.alice, NUMBER_A)).json()["id"]
+        await world.client.put(
+            f"/api/v1/phone-numbers/{number_id}",
+            headers=world.alice.headers,
+            json={"status": PhoneNumberStatus.RELEASED.value},
+        )
+
+        by_number = await self._agent_put(world, NUMBER_A)
+        by_carrier_id = await self._agent_put(world, "carrier-id")
+
+        assert by_number.status_code == 403
+        assert by_carrier_id.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_an_agent_cannot_take_a_number_from_another_workspace(self, world: World) -> None:
+        _holds(world, world.alice, NUMBER_A)
+        assert (await _register(world, world.alice, NUMBER_A)).status_code == 201
+        async with world.sessions() as session:
+            elsewhere = Agent(
+                user_id=world.alice.user.id,
+                name="Other workspace agent",
+                system_prompt="You answer the phone politely.",
+                pricing_tier="premium",
+                is_active=True,
+                enabled_tools=[],
+                enabled_tool_ids={},
+            )
+            session.add(elsewhere)
+            await session.commit()
+            await session.refresh(elsewhere)
+            session.add(
+                AgentWorkspace(
+                    agent_id=elsewhere.id,
+                    workspace_id=world.alice.second_workspace.id,
+                    is_default=True,
+                )
+            )
+            await session.commit()
+
+        response = await self._agent_put(world, NUMBER_A, agent=elsewhere)
+
+        assert response.status_code == 422
+        assert "different workspace" in response.json()["detail"]
+
+
+class TestNumberLifecycle:
+    async def _registered(self, world: World) -> str:
+        _holds(world, world.alice, NUMBER_A)
+        response = await _register(world, world.alice, NUMBER_A)
+        assert response.status_code == 201
+        world.carrier.asked.clear()
+        return str(response.json()["id"])
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_status_is_refused(self, world: World) -> None:
+        number_id = await self._registered(world)
+
+        response = await world.client.put(
+            f"/api/v1/phone-numbers/{number_id}",
+            headers=world.alice.headers,
+            json={"status": "bogus"},
+        )
+
+        assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_suspended_back_to_active_is_verified_again(self, world: World) -> None:
+        number_id = await self._registered(world)
+        url = f"/api/v1/phone-numbers/{number_id}"
+        suspended = await world.client.put(
+            url, headers=world.alice.headers, json={"status": "suspended"}
+        )
+        assert suspended.status_code == 200
+        world.carrier.accounts.clear()  # the number left the account while suspended
+
+        refused = await world.client.put(
+            url, headers=world.alice.headers, json={"status": "active"}
+        )
+        _holds(world, world.alice, NUMBER_A)
+        allowed = await world.client.put(
+            url, headers=world.alice.headers, json={"status": "active"}
+        )
+
+        assert refused.status_code == 422
+        assert allowed.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_a_number_is_assigned_only_to_an_agent_of_its_own_workspace(
+        self, world: World
+    ) -> None:
+        number_id = await self._registered(world)
+        async with world.sessions() as session:
+            elsewhere = Agent(
+                user_id=world.alice.user.id,
+                name="Other workspace agent",
+                system_prompt="You answer the phone politely.",
+                pricing_tier="premium",
+                is_active=True,
+                enabled_tools=[],
+                enabled_tool_ids={},
+            )
+            session.add(elsewhere)
+            await session.commit()
+            await session.refresh(elsewhere)
+            session.add(
+                AgentWorkspace(
+                    agent_id=elsewhere.id,
+                    workspace_id=world.alice.second_workspace.id,
+                    is_default=True,
+                )
+            )
+            await session.commit()
+
+        response = await world.client.put(
+            f"/api/v1/phone-numbers/{number_id}",
+            headers=world.alice.headers,
+            json={"assigned_agent_id": str(elsewhere.id)},
+        )
+
+        assert response.status_code == 422
+        assert "different workspace" in response.json()["detail"]
+        async with world.sessions() as session:
+            stored = await session.get(PhoneNumber, uuid.UUID(number_id))
+            assert stored is not None
+            assert stored.assigned_agent_id is None
+
+    @pytest.mark.asyncio
+    async def test_the_number_is_stored_in_e164_form(self, world: World) -> None:
+        _holds(world, world.alice, NUMBER_A)
+
+        response = await _register(world, world.alice, NUMBER_A.lstrip("+"))
+
+        assert response.status_code == 201
+        assert response.json()["phone_number"] == NUMBER_A

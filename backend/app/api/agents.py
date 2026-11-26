@@ -11,7 +11,11 @@ from app.core.audit import AuditAction, record_audit
 from app.core.auth import CurrentUser
 from app.core.config import settings
 from app.core.limiter import limiter
-from app.core.ownership import ensure_phone_reference_is_owned, parse_uuid
+from app.core.ownership import (
+    ensure_phone_reference_is_owned,
+    owned_agent_workspace_id,
+    parse_uuid,
+)
 from app.core.public_id import generate_public_id
 from app.core.public_url import frontend_base_url
 from app.db.session import get_db
@@ -349,7 +353,12 @@ async def update_agent(
             detail="Agent not found",
         )
 
-    await ensure_phone_reference_is_owned(db, update_request.phone_number_id, current_user)
+    await ensure_phone_reference_is_owned(
+        db,
+        update_request.phone_number_id,
+        current_user,
+        agent_workspace_id=await owned_agent_workspace_id(db, agent, current_user),
+    )
 
     # Apply updates from request
     previous_number = agent.phone_number_id

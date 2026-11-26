@@ -5,7 +5,7 @@ from datetime import datetime
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sqlalchemy import desc, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,13 +13,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.audit import AuditAction, record_audit
 from app.core.auth import CurrentUser, user_id_to_uuid
 from app.core.limiter import limiter
-from app.core.ownership import get_owned_agent, number_variants, parse_uuid
+from app.core.ownership import (
+    get_owned_agent,
+    number_variants,
+    owned_agent_workspace_id,
+    parse_uuid,
+)
 from app.db.session import get_db
 from app.models.phone_number import PhoneNumber, PhoneNumberStatus
 from app.models.workspace import Workspace
 from app.services.telephony.number_ownership import (
     CarrierLookupFactory,
     get_carrier_lookup_factory,
+    normalise_number,
     verify_number_on_workspace_account,
 )
 
@@ -120,6 +126,14 @@ class UpdatePhoneNumberRequest(BaseModel):
     assigned_agent_id: str | None = None
     status: str | None = None
     notes: str | None = None
+
+    @field_validator("status")
+    @classmethod
+    def _known_status(cls, value: str | None) -> str | None:
+        if value is not None and value not in {item.value for item in PhoneNumberStatus}:
+            allowed = ", ".join(item.value for item in PhoneNumberStatus)
+            raise ValueError(f"status must be one of: {allowed}")
+        return value
 
 
 # =============================================================================
@@ -337,7 +351,8 @@ async def create_phone_number(
     # One number, one owner. Inbound routing looks a dialled number up across
     # every account, so a second account registering the same number would
     # either take the first one's calls or kill its line.
-    number = create_request.phone_number.strip()
+    # Stored in one spelling (E.164 with the plus), already validated above.
+    number = normalise_number(create_request.phone_number)
     taken = await db.execute(
         select(PhoneNumber.id).where(
             PhoneNumber.phone_number.in_(number_variants(number)),
@@ -395,7 +410,7 @@ async def create_phone_number(
 
 @router.put("/{phone_number_id}", response_model=PhoneNumberResponse)
 @limiter.limit("30/minute")  # Rate limit phone number updates
-async def update_phone_number(  # noqa: PLR0912
+async def update_phone_number(  # noqa: PLR0912, PLR0915
     phone_number_id: str,
     update_request: UpdatePhoneNumberRequest,
     request: Request,
@@ -406,9 +421,10 @@ async def update_phone_number(  # noqa: PLR0912
     """Update a phone number.
 
     Moving a number into a different workspace, or bringing a released one back,
-    is a number entering a workspace, so it is verified against that workspace's
-    carrier account like a new registration. Assigning it to another agent is
-    not: the number's place in its workspace was proven when it got there.
+    or putting one back to active is a number entering a workspace, so it is
+    verified against that workspace's carrier account like a new registration.
+    Assigning it to another agent is not (the number's place in its workspace
+    was proven when it got there), but the agent must be in the same workspace.
 
     Args:
         phone_number_id: Phone number ID
@@ -444,10 +460,19 @@ async def update_phone_number(  # noqa: PLR0912
             if update_request.workspace_id
             else None
         )
-    reviving = (
-        phone_number.status == PhoneNumberStatus.RELEASED.value
-        and update_request.status is not None
-        and update_request.status != PhoneNumberStatus.RELEASED.value
+    # A number coming back into service is entering a workspace again: from
+    # released to anything live, or from any other state to active. The account
+    # may have lost it meanwhile.
+    new_status = update_request.status
+    reviving = new_status is not None and (
+        (
+            phone_number.status == PhoneNumberStatus.RELEASED.value
+            and new_status != PhoneNumberStatus.RELEASED.value
+        )
+        or (
+            new_status == PhoneNumberStatus.ACTIVE.value
+            and phone_number.status != PhoneNumberStatus.ACTIVE.value
+        )
     )
     if target_workspace != phone_number.workspace_id or reviving:
         await verify_number_on_workspace_account(
@@ -477,6 +502,14 @@ async def update_phone_number(  # noqa: PLR0912
             # The agent must be the caller's own: assigning routes this number's
             # calls to it, and the response names it.
             agent = await get_owned_agent(db, update_request.assigned_agent_id, current_user)
+            # Carrier proof is per workspace; an agent of another workspace
+            # would route this number's calls across that boundary.
+            agent_workspace = await owned_agent_workspace_id(db, agent, current_user)
+            if agent_workspace is not None and agent_workspace != target_workspace:
+                raise HTTPException(
+                    status_code=422,
+                    detail="That agent belongs to a different workspace than this phone number.",
+                )
             phone_number.assigned_agent_id = agent.id
         else:
             phone_number.assigned_agent_id = None
