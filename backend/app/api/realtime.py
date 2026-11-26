@@ -675,7 +675,11 @@ async def get_ephemeral_token(
     # GA endpoint: POST /v1/realtime/client_secrets with the session wrapped in
     # {"session": ...}; the key comes back as `value`.
     try:
-        response = await post_client_secret(api_key, session_config)
+        response = await post_client_secret(
+            api_key,
+            session_config,
+            expires_after_seconds=settings.REALTIME_DASHBOARD_KEY_TTL_SECONDS,
+        )
         if not response.is_success:
             token_logger.error(
                 "openai_token_error",

@@ -35,7 +35,7 @@ from app.api import settings as settings_api
 from app.core.config import InsecureDefaultCredentialsError, settings
 from app.core.first_admin import ensure_first_admin
 from app.core.limiter import limiter
-from app.db.redis import close_redis, get_redis
+from app.db.redis import close_redis, get_redis, require_min_redis_version
 from app.db.session import AsyncSessionLocal, engine
 from app.middleware.body_limit import BodySizeLimitMiddleware
 from app.middleware.request_tracing import RequestTracingMiddleware
@@ -81,8 +81,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:  # noqa: PLR0912
 
     try:
         # Initialize Redis (fatal if fails)
-        await get_redis()
+        redis_for_check = await get_redis()
         logger.info("Redis connection established")
+        # An unreachable Redis already refuses to start; so does one too old for
+        # the embed key limiter, with a message naming the requirement.
+        logger.info("Redis version ok", version=await require_min_redis_version(redis_for_check))
 
         # Clear any stale shutdown flag from previous crash
         await set_shutting_down(False)

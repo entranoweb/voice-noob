@@ -339,6 +339,60 @@ def test_the_documented_path_reaches_a_graded_run_on_the_fake_leg(
     assert all(r["leg"] == "fake" for r in stored)
 
 
+def test_the_documented_steps_8_to_12_run_as_written(
+    tmp_path: Path, capsys: Any, no_network: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Gate, acceptance, baseline, compare, upload and forget: the commands in the guide."""
+    monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
+    target = tmp_path / "target"
+    assert cli.main(["init", str(target)]) == 0
+    monkeypatch.chdir(target)
+    arguments = ["batch", "scenarios", "--leg", "fake", "--fake-agent", "agent-scripts"]
+    arguments += ["--clips", "clips", "--target", "target.json", "--out", "runs", "--settle", "0"]
+    assert cli.main(arguments) == 0
+    capsys.readouterr()
+
+    # step 8 and 9: a rehearsal can never meet a claim or make an acceptance page
+    assert cli.main(["gate", "runs", "--rate", "0.95", "--confidence", "0.95"]) == 1
+    assert "rehearsals" in capsys.readouterr().out
+    acceptance = ["acceptance", "runs", "--claim", "0.95", "--confidence", "0.95"]
+    assert cli.main([*acceptance, "--out", "acceptance.html"]) == 2
+    assert not Path("acceptance.html").exists()
+    with pytest.raises(SystemExit) as usage:  # a percentage is a usage error, exit 2
+        cli.main(["gate", "runs", "--rate", "95"])
+    assert usage.value.code == 2
+
+    # step 10
+    Path("baselines").mkdir()
+    assert cli.main(["baseline", "runs", "--out", "baselines/first.json"]) == 0
+    compare = ["compare", "runs", "--baseline", "baselines/first.json", "--fail-on", "any"]
+    assert cli.main(compare) == 0
+
+    # step 11: write the bundle, send nothing
+    assert cli.main(["upload", "runs", "--bundle-out", "bundle.json"]) == 0
+    assert Path("bundle.json").exists()
+    capsys.readouterr()
+
+    # step 12: look, then do it, with ids shaped as the guide says
+    forget = ["forget", "dob", "--clips", "clips", "--scenarios", "scenarios", "--results", "runs"]
+    assert cli.main([*forget, "--dry-run"]) == 0
+    assert Path("clips/dob.wav").exists()
+    real = ["--operator", "op_a1b2c3d4e5", "--reason", "erasure_request"]
+    code = cli.main([*forget, *real, "--request-ref", "req_a1b2c3d4"])
+    assert not Path("clips/dob.wav").exists()
+    assert code in (0, 1)  # 1 only for the NOT DONE items it lists (uploads, backups)
+
+
+def test_the_guide_covers_steps_8_to_12_with_the_real_flags() -> None:
+    guide = (DOCS / "ONBOARDING.md").read_text(encoding="utf-8")
+    for step in range(8, 13):
+        assert f"### Step {step}." in guide
+    for command in ("gate", "acceptance", "baseline", "compare", "upload", "forget"):
+        assert re.search(rf"^\s*synthiq-caller {command} ", guide, re.M), command
+    assert "--erase-altered" in guide and "refuses" in guide
+    assert "--rate 0.95" in guide and "fractions between 0 and 1" in guide
+
+
 def test_a_scaffolded_scenario_stripped_of_its_expectations_is_flagged_not_passed(
     tmp_path: Path, capsys: Any
 ) -> None:

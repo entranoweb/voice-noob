@@ -33,12 +33,14 @@ from fastapi import (
     WebSocketDisconnect,
 )
 from pydantic import BaseModel, Field
+from slowapi.util import get_remote_address
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.integrations import get_workspace_integrations
 from app.core.auth import user_id_to_uuid
 from app.core.config import settings
+from app.core.embed_key_limit import release_embed_key, reserve_embed_key
 from app.core.embed_session import (
     EMBED_SESSION_EXPIRED,
     EMBED_SESSION_REJECTED,
@@ -541,6 +543,7 @@ async def get_embed_ephemeral_token(  # noqa: PLR0915
     db: AsyncSession = Depends(get_db),
     origin: str | None = Header(None),
     x_embed_parent_origin: str | None = Header(None),
+    x_embed_session: str | None = Header(None),
 ) -> dict[str, Any]:
     """Get an ephemeral token for OpenAI Realtime API WebRTC connection.
 
@@ -550,7 +553,17 @@ async def get_embed_ephemeral_token(  # noqa: PLR0915
     Security:
     - Origin validation against allowed domains
     - Rate limiting (inherited from router)
-    - Short-lived tokens (expire in ~60 seconds)
+    - Short-lived key (``EMBED_KEY_TTL_SECONDS``, 60 by default): OpenAI will
+      not accept it to start a session after that. OpenAI lets one key start
+      several sessions inside that window; that is not enforceable here.
+    - One key per embed session: a request presenting a live session token is
+      refused, so a session cannot ask again for itself.
+    - Per-address and per-agent hourly ceilings on keys minted (``EMBED_KEYS_PER_AGENT_PER_HOUR``),
+      (``EMBED_KEYS_PER_IP_PER_AGENT_PER_HOUR`` and
+      ``EMBED_KEYS_PER_AGENT_PER_HOUR``): 429 with Retry-After, counted in Redis;
+      503 if Redis is down.
+    - A client that omits the session header is limited only by the key's
+      expiry and those two hourly caps.
     """
     import httpx
 
@@ -575,6 +588,18 @@ async def get_embed_ephemeral_token(  # noqa: PLR0915
         raise HTTPException(status_code=403, detail="Agent is not active")
 
     site = _require_allowed_site(origin, x_embed_parent_origin, agent, log)
+
+    # A session that already holds a key does not get another. A client that
+    # leaves the header off is a new session and goes through the hourly count.
+    if (
+        x_embed_session
+        and verify_embed_session(x_embed_session, agent_id=str(agent.id), site=site).ok
+    ):
+        log.warning("embed_key_second_mint_refused")
+        raise HTTPException(
+            status_code=409,
+            detail="This session already has a key. Start a new session to get another.",
+        )
 
     # Check premium tier
     if agent.pricing_tier not in ("premium", "premium-mini"):
@@ -665,16 +690,46 @@ async def get_embed_ephemeral_token(  # noqa: PLR0915
         model=realtime_model, voice=agent_voice, instructions=instructions, tools=tools
     )
 
+    # Everything that could refuse the request has run; this is the spend.
+    decision = await reserve_embed_key(str(agent.id), get_remote_address(request))
+    if not decision.allowed:
+        if decision.store_unavailable:
+            raise HTTPException(
+                status_code=503,
+                detail="Voice sessions are temporarily unavailable. Try again shortly.",
+                headers={"Retry-After": str(decision.retry_after)},
+            )
+        # Per agent in the log, so the owner can see when to raise the limit.
+        # The visitor is a hash, never the address.
+        log.warning(
+            "embed_key_hourly_limit_reached",
+            agent_id=str(agent.id),
+            scope=decision.scope,
+            limit=decision.limit,
+            client_hash=decision.client_hash,
+        )
+        raise HTTPException(
+            status_code=429,
+            detail="This voice assistant is busy right now. Please try again shortly.",
+            headers={"Retry-After": str(decision.retry_after)},
+        )
+
     log.info("requesting_ephemeral_token", model=realtime_model)
 
     # Request ephemeral key from OpenAI (GA endpoint: /v1/realtime/client_secrets)
     try:
-        response = await post_client_secret(api_key, session_config)
+        response = await post_client_secret(
+            api_key,
+            session_config,
+            expires_after_seconds=settings.EMBED_KEY_TTL_SECONDS,
+        )
     except httpx.RequestError as e:
+        await release_embed_key(decision)
         log.exception("openai_token_request_error", error=str(e))
         raise HTTPException(status_code=500, detail=f"Failed to connect to OpenAI: {e!s}") from e
 
     if not response.is_success:
+        await release_embed_key(decision)
         log.error(
             "openai_token_error",
             status_code=response.status_code,
@@ -687,6 +742,7 @@ async def get_embed_ephemeral_token(  # noqa: PLR0915
     try:
         key = parse_client_secret(response)
     except ClientSecretError as e:
+        await release_embed_key(decision)
         log.exception("openai_token_unusable", error=str(e))
         raise HTTPException(
             status_code=502, detail="The voice provider returned no session key"

@@ -35,13 +35,23 @@ def input_transcription() -> dict[str, str] | None:
     return {"model": model} if model else None
 
 
-def build_client_secret_body(session: dict[str, Any]) -> dict[str, Any]:
-    """The request body for a browser key, refused here if it is not GA-shaped."""
+def build_client_secret_body(
+    session: dict[str, Any], *, expires_after_seconds: int | None = None
+) -> dict[str, Any]:
+    """The request body for a browser key, refused here if it is not GA-shaped.
+
+    `expires_after_seconds` becomes `expires_after: {anchor: created_at, seconds}`,
+    how long the key may be used to start a session. Left out, OpenAI's default
+    of ten minutes applies.
+    """
     # Imported here because gpt_realtime imports this module for the model names.
     from app.services.gpt_realtime import _assert_ga_session
 
     _assert_ga_session(session)
-    return {"session": session}
+    body: dict[str, Any] = {"session": session}
+    if expires_after_seconds is not None:
+        body["expires_after"] = {"anchor": "created_at", "seconds": expires_after_seconds}
+    return body
 
 
 class ClientSecretError(Exception):
@@ -65,13 +75,14 @@ async def post_client_secret(
     session: dict[str, Any],
     *,
     transport: httpx.AsyncBaseTransport | None = None,
+    expires_after_seconds: int | None = None,
 ) -> httpx.Response:
     """Ask OpenAI for a short-lived browser key for `session`.
 
     `transport` exists so tests can supply a fake; nothing here is reached in
     tests without one.
     """
-    body = build_client_secret_body(session)
+    body = build_client_secret_body(session, expires_after_seconds=expires_after_seconds)
     async with httpx.AsyncClient(transport=transport) as client:
         return await client.post(
             CLIENT_SECRETS_URL,

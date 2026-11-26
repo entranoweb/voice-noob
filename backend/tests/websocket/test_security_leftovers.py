@@ -401,3 +401,181 @@ class TestTelnyxIsVerifiedPerWorkspace:
         assert after_theirs == [CallStatus.IN_PROGRESS.value]
         assert ours.status_code == 200, ours.text
         assert [c.status for c in await self._calls(env)] != [CallStatus.IN_PROGRESS.value]
+
+
+class TestTheWidgetKeyIsShortLivedAndCapped:
+    """A public page mints a key billed to the owner: short expiry, one per session, hourly cap."""
+
+    async def _token(
+        self, agent: Agent, *, headers: dict[str, str] | None = None, origin: str | None = CUSTOMER
+    ) -> httpx.Response:
+        sent = dict(headers or {})
+        if origin:
+            sent["origin"] = origin
+        async with _client() as client:
+            return await client.post(f"/api/public/embed/{agent.public_id}/token", headers=sent)
+
+    @pytest.mark.asyncio
+    async def test_the_request_asks_for_a_one_minute_key(self, env: dict[str, Any]) -> None:
+        response = await self._token(env["owner"]["agent"])
+
+        assert response.status_code == 200, response.text
+        sent = _FakeOpenAI.requests[0]["json"]
+        assert sent["expires_after"] == {"anchor": "created_at", "seconds": 60}
+
+    @pytest.mark.asyncio
+    async def test_a_session_that_holds_a_key_cannot_mint_another(
+        self, env: dict[str, Any]
+    ) -> None:
+        agent = env["owner"]["agent"]
+        first = await self._token(agent)
+        assert first.status_code == 200, first.text
+
+        token = first.json()["session_token"]
+        second = await self._token(agent, headers={"x-embed-session": token})
+
+        assert second.status_code == 409
+        assert len(_FakeOpenAI.requests) == 1
+
+    @pytest.mark.asyncio
+    async def test_the_hourly_limit_refuses_with_retry_after(
+        self, env: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(settings, "EMBED_KEYS_PER_AGENT_PER_HOUR", 3)
+        agent = env["owner"]["agent"]
+        for _ in range(3):
+            assert (await self._token(agent)).status_code == 200
+
+        refused = await self._token(agent)
+
+        assert refused.status_code == 429
+        assert refused.json()["detail"] == (
+            "This voice assistant is busy right now. Please try again shortly."
+        )
+        assert 0 < int(refused.headers["retry-after"]) <= 3601
+        assert len(_FakeOpenAI.requests) == 3
+
+    @pytest.mark.asyncio
+    async def test_agents_count_separately(
+        self, env: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(settings, "EMBED_KEYS_PER_AGENT_PER_HOUR", 2)
+        owner, other = env["owner"]["agent"], env["other"]["agent"]
+        for _ in range(2):
+            assert (await self._token(owner)).status_code == 200
+        assert (await self._token(owner)).status_code == 429
+
+        # The other agent is embedded nowhere, so it is reached as the widget page itself.
+        assert (await self._token(other, origin=None)).status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_a_provider_refusal_does_not_use_up_the_count(
+        self, env: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(settings, "EMBED_KEYS_PER_AGENT_PER_HOUR", 1)
+        agent = env["owner"]["agent"]
+        _FakeOpenAI.refuse = True
+        assert (await self._token(agent)).status_code == 502
+        _FakeOpenAI.refuse = False
+
+        assert (await self._token(agent)).status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_without_redis_no_key_is_minted(
+        self, env: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def down() -> Any:
+            raise ConnectionError("redis is down")
+
+        monkeypatch.setattr("app.core.embed_key_limit._store", down)
+
+        response = await self._token(env["owner"]["agent"])
+
+        assert response.status_code == 503
+        assert int(response.headers["retry-after"]) > 0
+        assert _FakeOpenAI.requests == []
+
+    @pytest.mark.asyncio
+    async def test_one_address_cannot_use_up_the_agents_hour(
+        self, env: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(settings, "EMBED_KEYS_PER_AGENT_PER_HOUR", 10)
+        monkeypatch.setattr(settings, "EMBED_KEYS_PER_IP_PER_AGENT_PER_HOUR", 2)
+        agent = env["owner"]["agent"]
+        for _ in range(2):
+            assert (await self._token(agent)).status_code == 200
+
+        refused = await self._token(agent)
+
+        assert refused.status_code == 429
+        assert "try again shortly" in refused.json()["detail"].lower()
+        assert int(refused.headers["retry-after"]) > 0
+        assert len(_FakeOpenAI.requests) == 2
+
+
+class TestTheRefusalIsLoggedPerAgent:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("scope", ["agent", "ip"])
+    async def test_the_warning_names_agent_scope_and_limit_but_not_the_address(
+        self, env: dict[str, Any], monkeypatch: pytest.MonkeyPatch, scope: str
+    ) -> None:
+        from structlog.testing import capture_logs
+
+        monkeypatch.setattr(settings, "EMBED_KEYS_PER_AGENT_PER_HOUR", 1 if scope == "agent" else 9)
+        monkeypatch.setattr(
+            settings, "EMBED_KEYS_PER_IP_PER_AGENT_PER_HOUR", 1 if scope == "ip" else 9
+        )
+        agent = env["owner"]["agent"]
+        helper = TestTheWidgetKeyIsShortLivedAndCapped()
+        assert (await helper._token(agent)).status_code == 200
+
+        with capture_logs() as logs:
+            refused = await helper._token(agent)
+
+        assert refused.status_code == 429
+        events = [e for e in logs if e["event"] == "embed_key_hourly_limit_reached"]
+        assert len(events) == 1
+        event = events[0]
+        assert event["log_level"] == "warning"
+        assert event["agent_id"] == str(agent.id)
+        # The IP check runs first, so with both at 1 the visitor share is what ran out.
+        assert event["scope"] == ("agent" if scope == "agent" else "ip")
+        assert event["limit"] == 1
+        assert event["client_hash"]
+        assert "127.0.0.1" not in str(events)
+
+
+class TestEmbedKeyCounters:
+    """The counters themselves, against a store, at the edges."""
+
+    @pytest.mark.asyncio
+    async def test_every_counter_has_a_ttl_the_moment_it_exists(
+        self, embed_key_limit_store: Any
+    ) -> None:
+        from app.core.embed_key_limit import reserve_embed_key
+
+        decision = await reserve_embed_key("agent-1", "203.0.113.7")
+
+        assert decision.allowed
+        assert len(decision.keys) == 2
+        for key in decision.keys:
+            assert await embed_key_limit_store.ttl(key) > 0
+
+    @pytest.mark.asyncio
+    async def test_a_refund_after_the_hour_turns_hits_the_counter_it_took(
+        self, embed_key_limit_store: Any
+    ) -> None:
+        from app.core.embed_key_limit import release_embed_key, reserve_embed_key
+
+        before_boundary = 3600 * 100 - 1.0
+        decision = await reserve_embed_key("agent-1", "203.0.113.7", now=before_boundary)
+        # The next hour's counter already exists (another visitor took one).
+        next_hour = await reserve_embed_key("agent-1", "198.51.100.9", now=before_boundary + 2)
+
+        await release_embed_key(decision)
+
+        for key in decision.keys:
+            assert await embed_key_limit_store.get(key) == "0"
+        # Untouched: not decremented below what its own mint made it.
+        agent_next = next_hour.keys[1]
+        assert await embed_key_limit_store.get(agent_next) == "1"
