@@ -867,8 +867,8 @@ class TestRealtimeTokenKeyScope:
         )
 
         assert response.status_code == 200
-        assert fake_openai.expiries == [settings.REALTIME_DASHBOARD_KEY_TTL_SECONDS]
-        assert settings.REALTIME_DASHBOARD_KEY_TTL_SECONDS < 600
+        # Pinned: the signed-in dashboard is 300 s, the public embed widget 60 s.
+        assert fake_openai.expiries == [300]
 
     @pytest.mark.asyncio
     async def test_another_customers_agent_is_404_and_mints_nothing(

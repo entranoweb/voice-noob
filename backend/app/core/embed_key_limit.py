@@ -4,9 +4,16 @@
 sessions billed to the agent's owner. The per-IP limit on the route stops one
 address; this stops the sum: no more than ``EMBED_KEYS_PER_AGENT_PER_HOUR`` keys
 for one agent in one clock hour, whoever asks, and no more than
-``EMBED_KEYS_PER_IP_PER_AGENT_PER_HOUR`` of those for one client address, so one
-address cannot use up an agent's whole allowance (the route's 10/minute per IP
-would otherwise allow 600 an hour). The address share is checked first.
+``EMBED_KEYS_PER_IP_PER_AGENT_PER_HOUR`` of those for one visitor, so one visitor
+cannot use up an agent's whole allowance (the route's 10/minute per IP would
+otherwise allow 600 an hour). The visitor share is checked first.
+
+A visitor is the client address as the rate limiter sees it
+(``slowapi.util.get_remote_address``, which reads ``request.client``): behind a
+reverse proxy that is the right-most ``X-Forwarded-For`` entry not in
+``TRUSTED_PROXY_IPS`` (see ``app.core.proxy``), otherwise the socket peer. It is
+SHA-256 hashed before it goes into a Redis key or a log line. Everyone behind
+one address, an office or a carrier-grade NAT, shares one visitor's allowance.
 
 Counts live in Redis (``INCR`` on a key per agent per hour, expiring with the
 hour), so the limit is one limit for the deployment. It fails closed: when Redis
@@ -42,6 +49,7 @@ class MintDecision:
     retry_after: int = 0
     limit: int = 0
     scope: str = "agent"  # "agent" or "ip": which allowance ran out
+    client_hash: str = ""  # SHA-256 prefix of the client address; never the address
     # The exact counter keys this reservation incremented, for `release_embed_key`.
     # Releasing them, not a recomputed key, keeps a refund from landing in the
     # next hour's counter when it straddles a boundary.
@@ -92,7 +100,13 @@ async def reserve_embed_key(
                 # A refused attempt is not a mint: give back everything taken so
                 # refusals do not extend the lockout by themselves.
                 await release_embed_key(MintDecision(True, keys=tuple(taken)))
-                return MintDecision(False, retry_after=remaining, limit=limit, scope=scope)
+                return MintDecision(
+                    False,
+                    retry_after=remaining,
+                    limit=limit,
+                    scope=scope,
+                    client_hash=ip_hash[:12],
+                )
     except Exception as exc:
         logger.error(  # noqa: TRY400
             "embed_key_limit_store_unavailable",

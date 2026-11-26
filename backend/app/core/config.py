@@ -188,9 +188,12 @@ class Settings(BaseSettings):
     # 30 sessions an hour; raise it for a busy site. The per-IP limit on the
     # endpoint (10/minute) stays on top.
     EMBED_KEYS_PER_AGENT_PER_HOUR: int = Field(default=30, ge=1)
-    # How many of those one client address may take. The route's per-IP limit is
-    # 10/minute, which alone would let one address use an agent's whole hour for
-    # everyone else. 10 leaves room for a household or office behind one address.
+    # How many of those one visitor may take. A visitor is the client address the
+    # rate limiter sees (request.client; behind a proxy, the right-most
+    # X-Forwarded-For entry not in TRUSTED_PROXY_IPS), hashed. An office behind
+    # one address shares this allowance. The route's per-IP limit is 10/minute,
+    # which alone would let one address use an agent's whole hour for everyone
+    # else.
     EMBED_KEYS_PER_IP_PER_AGENT_PER_HOUR: int = Field(default=10, ge=1)
     # Dashboard test page keys (authenticated). The page asks for the microphone
     # after it has the key, and a first-time permission prompt can take a while.

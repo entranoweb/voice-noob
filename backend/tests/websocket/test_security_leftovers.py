@@ -449,8 +449,9 @@ class TestTheWidgetKeyIsShortLivedAndCapped:
         refused = await self._token(agent)
 
         assert refused.status_code == 429
-        assert "3" in refused.json()["detail"]
-        assert "hour" in refused.json()["detail"]
+        assert refused.json()["detail"] == (
+            "This voice assistant is busy right now. Please try again shortly."
+        )
         assert 0 < int(refused.headers["retry-after"]) <= 3601
         assert len(_FakeOpenAI.requests) == 3
 
@@ -507,10 +508,41 @@ class TestTheWidgetKeyIsShortLivedAndCapped:
         refused = await self._token(agent)
 
         assert refused.status_code == 429
-        assert "2" in refused.json()["detail"]
-        assert "your address" in refused.json()["detail"]
+        assert "try again shortly" in refused.json()["detail"].lower()
         assert int(refused.headers["retry-after"]) > 0
         assert len(_FakeOpenAI.requests) == 2
+
+
+class TestTheRefusalIsLoggedPerAgent:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("scope", ["agent", "ip"])
+    async def test_the_warning_names_agent_scope_and_limit_but_not_the_address(
+        self, env: dict[str, Any], monkeypatch: pytest.MonkeyPatch, scope: str
+    ) -> None:
+        from structlog.testing import capture_logs
+
+        monkeypatch.setattr(settings, "EMBED_KEYS_PER_AGENT_PER_HOUR", 1 if scope == "agent" else 9)
+        monkeypatch.setattr(
+            settings, "EMBED_KEYS_PER_IP_PER_AGENT_PER_HOUR", 1 if scope == "ip" else 9
+        )
+        agent = env["owner"]["agent"]
+        helper = TestTheWidgetKeyIsShortLivedAndCapped()
+        assert (await helper._token(agent)).status_code == 200
+
+        with capture_logs() as logs:
+            refused = await helper._token(agent)
+
+        assert refused.status_code == 429
+        events = [e for e in logs if e["event"] == "embed_key_hourly_limit_reached"]
+        assert len(events) == 1
+        event = events[0]
+        assert event["log_level"] == "warning"
+        assert event["agent_id"] == str(agent.id)
+        # The IP check runs first, so with both at 1 the visitor share is what ran out.
+        assert event["scope"] == ("agent" if scope == "agent" else "ip")
+        assert event["limit"] == 1
+        assert event["client_hash"]
+        assert "127.0.0.1" not in str(events)
 
 
 class TestEmbedKeyCounters:

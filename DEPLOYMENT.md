@@ -164,12 +164,26 @@ Three things follow that are not settings.
   stream is refused, by design: the log line is
   `stream_token_claim_store_unavailable`, and a replayed token logs as
   `replayed`. All backend instances must share one Redis.
-- **The embed widget's key limiter needs Redis 7.0 or newer.** It counts keys
-  minted per agent and per address with `EXPIRE ... NX`, which older Redis does
-  not have. On an older Redis, or while Redis is unreachable, every embed key
-  request fails closed with 503 (`embed_key_limit_store_unavailable` in the
-  log) and no key is minted. Limits: `EMBED_KEYS_PER_AGENT_PER_HOUR` (30),
-  `EMBED_KEYS_PER_IP_PER_AGENT_PER_HOUR` (10), `EMBED_KEY_TTL_SECONDS` (60).
+- **Redis must be 7.0 or newer.** The embed widget's key limiter counts with
+  `EXPIRE ... NX`, which older Redis lacks. The backend reads `INFO server` at
+  start-up and **refuses to start** on anything older, with a message naming the
+  7.0 requirement; `make preflight` reports the same. (A Redis that cannot be
+  reached at start-up already refuses to start; that is unchanged.) If Redis
+  becomes unreachable while running, every embed key request fails closed with
+  503 (`embed_key_limit_store_unavailable` in the log) and no key is minted.
+- **Embed key limits.** `EMBED_KEY_TTL_SECONDS` (60) is how long the key OpenAI
+  issues to a widget can start a session; the signed-in dashboard's is
+  `REALTIME_DASHBOARD_KEY_TTL_SECONDS` (300). `EMBED_KEYS_PER_AGENT_PER_HOUR`
+  (30) caps keys per agent per clock hour, and `EMBED_KEYS_PER_IP_PER_AGENT_PER_HOUR`
+  (10) caps what one visitor may take of that. A visitor is the client address
+  as the rate limiter sees it: the socket peer, or behind a reverse proxy the
+  right-most `X-Forwarded-For` entry not in `TRUSTED_PROXY_IPS`; it is hashed
+  before it is stored or logged. An office or mobile carrier behind one address
+  shares the 10, so raise it for a site whose visitors arrive that way. A visitor
+  over either limit sees "This voice assistant is busy right now. Please try
+  again shortly." with a `Retry-After` header, and the log carries
+  `embed_key_hourly_limit_reached` with `agent_id`, `scope` (`agent` or `ip`),
+  `limit` and a `client_hash`: when that line appears for an agent, raise the limit.
 - **Twilio webhooks are verified per workspace.** The signature is checked
   against the Twilio auth token of the workspace that owns the number, agent or
   call the webhook is about (Settings > Workspace API Keys), then against the

@@ -693,14 +693,18 @@ async def get_embed_ephemeral_token(  # noqa: PLR0915
                 detail="Voice sessions are temporarily unavailable. Try again shortly.",
                 headers={"Retry-After": str(decision.retry_after)},
             )
-        log.warning("embed_key_hourly_limit_reached", limit=decision.limit, scope=decision.scope)
-        who = "from your address " if decision.scope == "ip" else ""
+        # Per agent in the log, so the owner can see when to raise the limit.
+        # The visitor is a hash, never the address.
+        log.warning(
+            "embed_key_hourly_limit_reached",
+            agent_id=str(agent.id),
+            scope=decision.scope,
+            limit=decision.limit,
+            client_hash=decision.client_hash,
+        )
         raise HTTPException(
             status_code=429,
-            detail=(
-                f"This agent has reached its limit of {decision.limit} new voice "
-                f"sessions {who}per hour. Try again later."
-            ),
+            detail="This voice assistant is busy right now. Please try again shortly.",
             headers={"Retry-After": str(decision.retry_after)},
         )
 
