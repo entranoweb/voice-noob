@@ -1,7 +1,9 @@
 """Unit tests for the log redaction helpers."""
 
+import pytest
 import structlog
 
+from app.core import log_redaction
 from app.core.log_redaction import (
     describe_text,
     describe_value,
@@ -185,18 +187,46 @@ def test_processor_scrubs_event_error_and_rendered_exception() -> None:
     assert "pat.example" not in text
     assert "+15550100042" not in repr({k: v for k, v in out.items() if k != "count"})
     assert "Pat Example" not in text
-    assert out["count"] == 15550100042  # non-strings are left alone
+    assert "15550100042" not in repr(out)  # a phone logged as an int is masked too
 
 
 # --- review round 4 -------------------------------------------------------
 
 
+def _run_with_deadline(fn, seconds: float) -> None:  # type: ignore[no-untyped-def]
+    """Run ``fn`` in a thread; fail (not hang) if it takes longer than ``seconds``."""
+    import threading
+
+    box: list[BaseException] = []
+
+    def target() -> None:
+        try:
+            fn()
+        except BaseException as exc:
+            box.append(exc)
+
+    worker = threading.Thread(target=target, daemon=True)
+    worker.start()
+    worker.join(seconds)
+    assert not worker.is_alive(), (
+        f"still running after {seconds}s: a regression made it super-linear"
+    )
+    if box:
+        raise box[0]
+
+
 def test_scrub_text_is_linear_on_hostile_input() -> None:
     import time
 
-    for hostile in ("a" * 1_000_000, "1 " * 500_000, "x." * 500_000, "+1" + " " * 1_000_000):
+    for hostile in (
+        "a" * 1_000_000,
+        "1 " * 500_000,
+        "x." * 500_000,
+        "+1" + " " * 1_000_000,
+        "%2" * 500_000,
+    ):
         started = time.perf_counter()
-        scrub_text(hostile)
+        _run_with_deadline(lambda h=hostile: scrub_text(h), 5)
         assert time.perf_counter() - started < 0.5, hostile[:6]
 
 
@@ -236,3 +266,114 @@ def test_processor_converts_non_primitives_to_scrubbed_text() -> None:
     assert "private note" not in text
     assert out["db"] == "DBAPIError"
     assert out["n"] == 3
+
+
+# --- review round 5: encoded values, truncation, numbers, extras ----------
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "GET /v1/calls?To=%2B1%20555%20010%200042 HTTP/1.1",
+        "GET /v1/users?email=user%40example.com HTTP/1.1",
+        "GET /v1/users?email=user@example.com HTTP/1.1",
+        r'{"to": "\u002b15550100042"}',
+        r'{"email": "user\u0040example.com"}',
+        "to=%2B15550100042&x=1",
+    ],
+)
+def test_scrub_text_masks_percent_and_unicode_escaped_values(line: str) -> None:
+    out = scrub_text(line)
+    assert "user" not in out.replace("users", "")
+    assert "0100042" not in out
+    assert "010%200042" not in out
+    assert "example.com" not in out or "***@" in out
+    assert "42" in out or "***@" in out or "x=1" in out
+
+
+def test_scrub_text_keeps_the_rest_of_an_escaped_line() -> None:
+    out = scrub_text("GET /v1/calls?To=%2B15550100042&page=2 HTTP/1.1")
+    assert out.endswith("&page=2 HTTP/1.1")
+    assert out.startswith("GET /v1/calls?To=")
+
+
+def test_truncation_never_leaves_part_of_a_number_or_address() -> None:
+    cap = log_redaction._MAX_SCRUBBED_CHARS
+    for pad, secret in (
+        (cap - 6, "+155501 00042"),
+        (cap - 12, "user@example.com"),
+        (cap - 3, "+15550100042"),
+    ):
+        out = scrub_text("a " * (pad // 2) + "a" * (pad % 2) + " " + secret + " tail")
+        assert out.endswith("[truncated]")
+        assert "+15550" not in out.replace("+*", "")
+        assert "user@" not in out
+        assert "@example" not in out
+        assert "155501" not in out
+
+
+def test_traceback_tail_slice_drops_the_leading_partial_token() -> None:
+    from app.core.log_redaction import scrub_traceback
+
+    text = "x" * 20_000 + " +15550 100042 end"
+    out = scrub_traceback(text)
+    assert "100042" not in out.replace("*", "") or "+*" in out
+    cut = scrub_traceback("1" * 20_000 + " a@b.example\nRuntimeError: bad")
+    assert cut.startswith("[truncated]")
+    assert "1111" not in cut
+
+
+@pytest.mark.parametrize("value", [15550100042, 15550100042.0, -15550100042])
+def test_numbers_that_could_be_phones_are_masked(value: float) -> None:
+    out = redact_event_dict(None, "info", {"to": value, "nested": {"n": value}})
+    assert "15550100042" not in repr(out)
+
+
+def test_short_numbers_are_left_alone() -> None:
+    out = redact_event_dict(None, "info", {"port": 8000, "count": 3, "ratio": 0.5})
+    assert out == {"port": 8000, "count": 3, "ratio": 0.5}
+
+
+def test_dict_keys_are_scrubbed() -> None:
+    out = redact_event_dict(None, "info", {"by_email": {"pat@example.com": 1}})
+    assert "pat@example.com" not in repr(out)
+
+
+def test_extra_attributes_and_stack_info_are_scrubbed(caplog: pytest.LogCaptureFixture) -> None:
+    import logging
+
+    from app.core.log_redaction import install_stdlib_redaction
+
+    install_stdlib_redaction()
+    caplog.set_level(logging.DEBUG)
+    logging.getLogger("lib.extra").warning(
+        "hello",
+        extra={"caller": "+15550100042", "who": {"email": "pat@example.com"}},
+        stack_info=True,
+    )
+    rec = next(r for r in caplog.records if r.name == "lib.extra")
+    assert "15550100042" not in repr(rec.caller)  # type: ignore[attr-defined]
+    assert "pat@example.com" not in repr(rec.who)  # type: ignore[attr-defined]
+
+
+def _boom(message: str) -> None:
+    raise RuntimeError(message)
+
+
+def test_formatter_scrubs_a_traceback_but_exc_info_survives() -> None:
+    import logging
+
+    from app.core.log_redaction import install_stdlib_redaction
+
+    install_stdlib_redaction()
+    try:
+        _boom("lookup failed for pat@example.com +15550100042")
+    except RuntimeError:
+        rec = logging.getLogger("lib.tb").makeRecord(
+            "lib.tb", logging.ERROR, __file__, 1, "x", (), __import__("sys").exc_info()
+        )
+    assert rec.exc_info is not None  # handlers such as Sentry still get the exception
+    rendered = logging.Formatter().format(rec)
+    assert "RuntimeError" in rendered
+    assert "pat@example.com" not in rendered
+    assert "15550100042" not in rendered
