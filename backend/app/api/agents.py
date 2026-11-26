@@ -1,6 +1,5 @@
 """API endpoints for managing voice agents."""
 
-import uuid
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status

@@ -160,7 +160,9 @@ async def list_phone_numbers(
     # Get total count
     count_query = select(PhoneNumber.id).where(PhoneNumber.user_id == user_uuid)
     if workspace_id:
-        count_query = count_query.where(PhoneNumber.workspace_id == parse_uuid(workspace_id, "Workspace"))
+        count_query = count_query.where(
+            PhoneNumber.workspace_id == parse_uuid(workspace_id, "Workspace")
+        )
     if status:
         count_query = count_query.where(PhoneNumber.status == status)
 

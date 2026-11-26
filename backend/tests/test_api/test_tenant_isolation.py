@@ -32,7 +32,7 @@ from app.models.appointment import Appointment
 from app.models.audit_event import AuditEvent
 from app.models.contact import Contact
 from app.models.phone_number import PhoneNumber, PhoneNumberStatus
-from app.models.test_scenario import TestScenario
+from app.models.test_scenario import TestScenario as ScenarioRow
 from app.models.user import User
 from app.models.workspace import AgentWorkspace, Workspace
 
@@ -878,7 +878,7 @@ class TestNotYoursLooksLikeNotThere:
     @pytest.mark.asyncio
     async def test_testing_scenarios(self, world: World) -> None:
         async with world.sessions() as session:
-            scenario = TestScenario(
+            scenario = ScenarioRow(
                 user_id=world.bob.user.id,
                 name="bob's scenario",
                 description="d",

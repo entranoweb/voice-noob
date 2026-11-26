@@ -154,7 +154,9 @@ async def list_calls(
     if agent_id:
         count_query = count_query.where(CallRecord.agent_id == parse_uuid(agent_id, "Agent"))
     if workspace_id:
-        count_query = count_query.where(CallRecord.workspace_id == parse_uuid(workspace_id, "Workspace"))
+        count_query = count_query.where(
+            CallRecord.workspace_id == parse_uuid(workspace_id, "Workspace")
+        )
     if direction:
         count_query = count_query.where(CallRecord.direction == direction)
     if status:
