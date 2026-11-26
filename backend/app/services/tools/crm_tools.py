@@ -485,7 +485,7 @@ class CRMTools:
             if not contact:
                 return {
                     "success": False,
-                    "error": f"No contact found with phone {contact_phone}. Please create contact first.",
+                    "error": "No contact found with that number. Please create the contact first.",
                 }
 
             # Parse datetime and handle timezone

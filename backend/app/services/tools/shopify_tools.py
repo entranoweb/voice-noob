@@ -9,7 +9,7 @@ import httpx
 import structlog
 
 from app.core.log_redaction import log_exception
-from app.core.safe_errors import UPSTREAM_ERROR, tool_failure
+from app.core.safe_errors import tool_failure, upstream_failure
 from app.services.tools.path_ids import encode_path_id, invalid_id_result
 
 logger = structlog.get_logger()
@@ -258,11 +258,9 @@ class ShopifyTools:
                 response = await self.client.get("/orders.json", params=params)
 
             if response.status_code != HTTPStatus.OK:
-                return {
-                    "success": False,
-                    "error": "Failed to search orders",
-                    "error_code": UPSTREAM_ERROR,
-                }
+                return upstream_failure(
+                    "store system", response.status_code, message="Failed to search orders"
+                )
 
             data = response.json()
             orders = []
@@ -314,11 +312,9 @@ class ShopifyTools:
                         response = await self.client.get(f"/orders/{found_id}.json")
 
             if response.status_code != HTTPStatus.OK:
-                return {
-                    "success": False,
-                    "error": "Order not found",
-                    "error_code": UPSTREAM_ERROR,
-                }
+                return upstream_failure(
+                    "store system", response.status_code, not_found="Order not found"
+                )
 
             order = response.json()["order"]
 
@@ -381,11 +377,9 @@ class ShopifyTools:
             response = await self.client.get(f"/orders/{safe_order_id}/fulfillments.json")
 
             if response.status_code != HTTPStatus.OK:
-                return {
-                    "success": False,
-                    "error": "Failed to get tracking",
-                    "error_code": UPSTREAM_ERROR,
-                }
+                return upstream_failure(
+                    "store system", response.status_code, message="Failed to get tracking"
+                )
 
             data = response.json()
             fulfillments = []
@@ -428,11 +422,9 @@ class ShopifyTools:
             response = await self.client.get("/products.json", params=params)
 
             if response.status_code != HTTPStatus.OK:
-                return {
-                    "success": False,
-                    "error": "Failed to search products",
-                    "error_code": UPSTREAM_ERROR,
-                }
+                return upstream_failure(
+                    "store system", response.status_code, message="Failed to search products"
+                )
 
             data = response.json()
             products = []
@@ -478,11 +470,9 @@ class ShopifyTools:
             response = await self.client.get(f"/products/{safe_product_id}.json")
 
             if response.status_code != HTTPStatus.OK:
-                return {
-                    "success": False,
-                    "error": "Product not found",
-                    "error_code": UPSTREAM_ERROR,
-                }
+                return upstream_failure(
+                    "store system", response.status_code, not_found="Product not found"
+                )
 
             product = response.json()["product"]
             inventory = []
@@ -526,11 +516,9 @@ class ShopifyTools:
             response = await self.client.get("/customers/search.json", params=params)
 
             if response.status_code != HTTPStatus.OK:
-                return {
-                    "success": False,
-                    "error": "Failed to search customers",
-                    "error_code": UPSTREAM_ERROR,
-                }
+                return upstream_failure(
+                    "store system", response.status_code, message="Failed to search customers"
+                )
 
             data = response.json()
             customers = []
@@ -565,11 +553,9 @@ class ShopifyTools:
             response = await self.client.get("/orders.json", params=params)
 
             if response.status_code != HTTPStatus.OK:
-                return {
-                    "success": False,
-                    "error": "Failed to get customer orders",
-                    "error_code": UPSTREAM_ERROR,
-                }
+                return upstream_failure(
+                    "store system", response.status_code, message="Failed to get customer orders"
+                )
 
             data = response.json()
             orders = []

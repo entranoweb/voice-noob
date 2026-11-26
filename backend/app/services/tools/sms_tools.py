@@ -8,10 +8,63 @@ import httpx
 import structlog
 
 from app.core.log_redaction import log_exception
-from app.core.safe_errors import UPSTREAM_ERROR, tool_failure
+from app.core.safe_errors import (
+    INVALID_NUMBER,
+    is_unavailable_status,
+    tool_failure,
+    upstream_failure,
+)
 from app.services.tools.path_ids import encode_path_id, invalid_id_result
 
 logger = structlog.get_logger()
+
+# Provider error codes that mean "the destination number is wrong or unreachable".
+# Twilio: 21211 invalid 'To' number, 21214 'To' not reachable, 21612 cannot route,
+# 21614 'To' is not a valid mobile number (twilio.com/docs/api/errors).
+# Telnyx: 40310 invalid destination number, 40008 invalid 'to' address (developers.telnyx.com
+# messaging error codes). Not re-checked against the live docs; an unknown code falls through
+# to the generic refusal, never to the provider's text.
+_TWILIO_BAD_NUMBER_CODES = frozenset({"21211", "21214", "21612", "21614"})
+_TELNYX_BAD_NUMBER_CODES = frozenset({"40310", "40008"})
+_BAD_NUMBER_MESSAGE = "That phone number could not be reached. Please check the number."
+
+
+def _provider_codes(response: httpx.Response) -> set[str]:
+    """Error codes from a provider reply, without keeping any of its text."""
+    try:
+        body = response.json()
+    except ValueError:
+        return set()
+    if not isinstance(body, dict):
+        return set()
+    entries = [body, *(e for e in body.get("errors", []) if isinstance(e, dict))]
+    return {str(e["code"]) for e in entries if e.get("code") is not None}
+
+
+def _send_rejection(
+    provider: str, response: httpx.Response, bad_number_codes: frozenset[str]
+) -> dict[str, Any]:
+    """Speakable reason for a refused send: bad number, service down, or refused.
+
+    The provider's message can quote the number back, so it is not passed on.
+    """
+    if (
+        not is_unavailable_status(response.status_code)
+        and _provider_codes(response) & bad_number_codes
+    ):
+        logger.warning(
+            "sms_send_rejected",
+            provider=provider,
+            status_code=response.status_code,
+            reason="number",
+        )
+        return {"success": False, "error": _BAD_NUMBER_MESSAGE, "error_code": INVALID_NUMBER}
+    return upstream_failure(
+        "text messaging service",
+        response.status_code,
+        message="The text message could not be sent.",
+    )
+
 
 ToolHandler = Callable[..., Awaitable[dict[str, Any]]]
 
@@ -121,14 +174,7 @@ class TwilioSMSTools:
             )
 
             if response.status_code != HTTPStatus.CREATED:
-                # The provider's message can quote the number back; it stays out
-                # of the result the model may read aloud.
-                logger.warning("twilio_send_sms_rejected", status_code=response.status_code)
-                return {
-                    "success": False,
-                    "error": "The text message could not be sent.",
-                    "error_code": UPSTREAM_ERROR,
-                }
+                return _send_rejection("twilio", response, _TWILIO_BAD_NUMBER_CODES)
 
             data = response.json()
             return {
@@ -153,11 +199,9 @@ class TwilioSMSTools:
             response = await self.client.get(f"/Messages/{safe_message_sid}.json")
 
             if response.status_code != HTTPStatus.OK:
-                return {
-                    "success": False,
-                    "error": "Message not found",
-                    "error_code": UPSTREAM_ERROR,
-                }
+                return upstream_failure(
+                    "text messaging service", response.status_code, not_found="Message not found"
+                )
 
             data = response.json()
             return {
@@ -298,12 +342,7 @@ class TelnyxSMSTools:
             response = await self.client.post("/messages", json=payload)
 
             if response.status_code != HTTPStatus.OK:
-                logger.warning("telnyx_send_sms_rejected", status_code=response.status_code)
-                return {
-                    "success": False,
-                    "error": "The text message could not be sent.",
-                    "error_code": UPSTREAM_ERROR,
-                }
+                return _send_rejection("telnyx", response, _TELNYX_BAD_NUMBER_CODES)
 
             data = response.json()["data"]
             return {
@@ -328,11 +367,9 @@ class TelnyxSMSTools:
             response = await self.client.get(f"/messages/{safe_message_id}")
 
             if response.status_code != HTTPStatus.OK:
-                return {
-                    "success": False,
-                    "error": "Message not found",
-                    "error_code": UPSTREAM_ERROR,
-                }
+                return upstream_failure(
+                    "text messaging service", response.status_code, not_found="Message not found"
+                )
 
             data = response.json()["data"]
             to_info = data.get("to", [{}])[0] if data.get("to") else {}

@@ -738,7 +738,7 @@ async def get_embed_ephemeral_token(  # noqa: PLR0915
         log.error(
             "openai_token_error",
             status_code=response.status_code,
-            response_text=response.text,
+            response_length=len(response.text),
         )
         # The provider's own words stay in the log. Its error can quote the
         # request back, and the request now carries the agent's instructions.

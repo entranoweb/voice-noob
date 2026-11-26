@@ -29,7 +29,7 @@ from app.core.limits import (
 )
 from app.core.log_redaction import redact_arguments
 from app.core.ownership import get_owned_agent, owned_agent_workspace_id, parse_uuid
-from app.core.safe_errors import public_error
+from app.core.safe_errors import provider_refusal, public_error
 from app.db.session import get_db
 from app.models.agent import Agent
 from app.models.user import User
@@ -604,12 +604,9 @@ async def create_webrtc_session(
                 session_logger.error(
                     "openai_api_error",
                     status_code=response.status_code,
-                    response_text=response.text,
+                    response_length=len(response.text),
                 )
-                raise HTTPException(
-                    status_code=response.status_code,
-                    detail="The voice provider returned an error",
-                )
+                raise provider_refusal(response.status_code)
 
             sdp_answer = response.text
             session_logger.info("webrtc_session_created")
@@ -697,12 +694,9 @@ async def get_ephemeral_token(
             token_logger.error(
                 "openai_token_error",
                 status_code=response.status_code,
-                response_text=response.text,
+                response_length=len(response.text),
             )
-            raise HTTPException(
-                status_code=response.status_code,
-                detail="The voice provider returned an error",
-            )
+            raise provider_refusal(response.status_code)
 
         try:
             key = parse_client_secret(response)

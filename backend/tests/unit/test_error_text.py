@@ -138,3 +138,119 @@ def test_tool_failure_is_fixed_per_class_and_keeps_success_false() -> None:
 def test_public_error_is_message_plus_type_only() -> None:
     text = public_error(_db_error(), "Could not reach the provider")
     assert text == "Could not reach the provider (DBAPIError)"
+
+
+def _status(
+    code: int, body: dict[str, Any] | None = None
+) -> Callable[[httpx.Request], httpx.Response]:
+    return lambda _request: httpx.Response(code, json=body or {"message": f"echo {PHONE}"})
+
+
+@pytest.mark.asyncio
+async def test_shopify_only_404_is_not_found() -> None:
+    base = f"https://demo-shop.myshopify.com/admin/api/{ShopifyTools.API_VERSION}"
+    results = {}
+    for code in (404, 500):
+        tools = ShopifyTools("token", "demo-shop.myshopify.com")
+        _wire(tools, base, _status(code))
+        results[code] = await tools.get_order("1001")
+    assert results[404]["error_code"] == "not_found"
+    assert results[404]["error"] == "Order not found"
+    assert results[500]["error_code"] == "unavailable"
+    assert "not found" not in results[500]["error"].lower()
+    assert results[500]["success"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("make", "base", "call"),
+    [
+        (lambda: CalendlyTools("t"), CalendlyTools.BASE_URL, lambda t: t.get_event("abc")),
+        (
+            lambda: ShopifyTools("t", "demo-shop.myshopify.com"),
+            f"https://demo-shop.myshopify.com/admin/api/{ShopifyTools.API_VERSION}",
+            lambda t: t.get_order_tracking("1001"),
+        ),
+        (
+            lambda: TwilioSMSTools("ACtest", "s", "+15550100000"),
+            f"{TwilioSMSTools.BASE_URL}/Accounts/ACtest",
+            lambda t: t.get_message_status("SM123"),
+        ),
+    ],
+    ids=["calendly", "shopify", "twilio"],
+)
+async def test_non_success_replies_log_service_and_status_without_the_body(
+    make: Callable[[], Any], base: str, call: Callable[[Any], Any]
+) -> None:
+    from structlog.testing import capture_logs
+
+    tools = make()
+    _wire(tools, base, _status(403))
+    with capture_logs() as logs:
+        result = await call(tools)
+    assert result["success"] is False
+    entries = [e for e in logs if e.get("status_code") == 403 and e.get("service")]
+    assert entries, logs
+    assert PHONE not in repr(logs)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("code", "body", "expected"),
+    [
+        (
+            400,
+            {"code": 21211, "message": f"The 'To' number {PHONE} is not valid"},
+            "invalid_number",
+        ),
+        (400, {"code": 20003, "message": f"auth {KEY}"}, "upstream_error"),
+        (503, {"message": "down"}, "unavailable"),
+    ],
+)
+async def test_twilio_send_reason_is_a_small_speakable_set(
+    code: int, body: dict[str, Any], expected: str
+) -> None:
+    tools = TwilioSMSTools("ACtest", "secret", "+15550100000")
+    _wire(tools, f"{TwilioSMSTools.BASE_URL}/Accounts/ACtest", _status(code, body))
+    result = await tools.send_sms(PHONE, "hello")
+    assert result["success"] is False
+    assert result["error_code"] == expected
+    assert PHONE not in repr(result)
+    assert KEY not in repr(result)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("code", "body", "expected"),
+    [
+        (422, {"errors": [{"code": "40310", "detail": f"bad {PHONE}"}]}, "invalid_number"),
+        (422, {"errors": [{"code": "10001", "detail": f"x {PHONE}"}]}, "upstream_error"),
+        (500, {"errors": []}, "unavailable"),
+    ],
+)
+async def test_telnyx_send_reason_is_a_small_speakable_set(
+    code: int, body: dict[str, Any], expected: str
+) -> None:
+    tools = TelnyxSMSTools("key", "+15550100000")
+    _wire(tools, TelnyxSMSTools.BASE_URL, _status(code, body))
+    result = await tools.send_sms(PHONE, "hello")
+    assert result["success"] is False
+    assert result["error_code"] == expected
+    assert PHONE not in repr(result)
+
+
+@pytest.mark.asyncio
+async def test_crm_unknown_contact_does_not_echo_the_number() -> None:
+    class _NoRows:
+        def scalar_one_or_none(self) -> None:
+            return None
+
+    class _Db:
+        async def execute(self, *_: Any, **__: Any) -> _NoRows:
+            return _NoRows()
+
+    result = await CRMTools(_Db(), user_id=1).book_appointment(  # type: ignore[arg-type]
+        PHONE, "2030-01-02T10:00:00Z"
+    )
+    assert result["success"] is False
+    assert PHONE not in repr(result)

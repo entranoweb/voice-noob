@@ -9,7 +9,7 @@ import httpx
 import structlog
 
 from app.core.log_redaction import log_exception
-from app.core.safe_errors import UPSTREAM_ERROR, tool_failure
+from app.core.safe_errors import tool_failure, upstream_failure
 from app.services.tools.path_ids import encode_path_id, invalid_id_result
 
 logger = structlog.get_logger()
@@ -226,11 +226,9 @@ class CalendlyTools:
             response = await self.client.get("/event_types", params=params)
 
             if response.status_code != HTTPStatus.OK:
-                return {
-                    "success": False,
-                    "error": "Failed to get event types",
-                    "error_code": UPSTREAM_ERROR,
-                }
+                return upstream_failure(
+                    "scheduling system", response.status_code, message="Failed to get event types"
+                )
 
             data = response.json()
             event_types = []
@@ -268,11 +266,9 @@ class CalendlyTools:
             )
 
             if response.status_code != HTTPStatus.OK:
-                return {
-                    "success": False,
-                    "error": "Failed to get availability",
-                    "error_code": UPSTREAM_ERROR,
-                }
+                return upstream_failure(
+                    "scheduling system", response.status_code, message="Failed to get availability"
+                )
 
             data = response.json()
             slots = []
@@ -314,11 +310,11 @@ class CalendlyTools:
             response = await self.client.post("/scheduling_links", json=payload)
 
             if response.status_code != HTTPStatus.CREATED:
-                return {
-                    "success": False,
-                    "error": "Failed to create scheduling link",
-                    "error_code": UPSTREAM_ERROR,
-                }
+                return upstream_failure(
+                    "scheduling system",
+                    response.status_code,
+                    message="Failed to create scheduling link",
+                )
 
             data = response.json()
             booking_url = data["resource"]["booking_url"]
@@ -371,11 +367,9 @@ class CalendlyTools:
             response = await self.client.get("/scheduled_events", params=params)
 
             if response.status_code != HTTPStatus.OK:
-                return {
-                    "success": False,
-                    "error": "Failed to list events",
-                    "error_code": UPSTREAM_ERROR,
-                }
+                return upstream_failure(
+                    "scheduling system", response.status_code, message="Failed to list events"
+                )
 
             data = response.json()
             events = []
@@ -409,11 +403,9 @@ class CalendlyTools:
             response = await self.client.get(f"/scheduled_events/{safe_event_uuid}")
 
             if response.status_code != HTTPStatus.OK:
-                return {
-                    "success": False,
-                    "error": "Failed to get event",
-                    "error_code": UPSTREAM_ERROR,
-                }
+                return upstream_failure(
+                    "scheduling system", response.status_code, message="Failed to get event"
+                )
 
             event = response.json()["resource"]
 
@@ -467,11 +459,9 @@ class CalendlyTools:
             )
 
             if response.status_code not in (HTTPStatus.OK, HTTPStatus.CREATED):
-                return {
-                    "success": False,
-                    "error": "Failed to cancel event",
-                    "error_code": UPSTREAM_ERROR,
-                }
+                return upstream_failure(
+                    "scheduling system", response.status_code, message="Failed to cancel event"
+                )
 
             return {
                 "success": True,

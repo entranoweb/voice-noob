@@ -434,7 +434,7 @@ class GoHighLevelTools:
                     status_code=response.status_code,
                     response=describe_text(response.text),
                 )
-                return upstream_failure("CRM")
+                return upstream_failure("CRM", response.status_code)
 
             data = response.json()
             contact = data.get("contact", {})
@@ -495,7 +495,7 @@ class GoHighLevelTools:
             response = await client.put(f"/contacts/{safe_contact_id}", json=payload)
 
             if response.status_code != HTTPStatus.OK:
-                return upstream_failure("CRM")
+                return upstream_failure("CRM", response.status_code)
 
             return {
                 "success": True,
@@ -529,7 +529,7 @@ class GoHighLevelTools:
             )
 
             if response.status_code != HTTPStatus.OK:
-                return upstream_failure("CRM")
+                return upstream_failure("CRM", response.status_code)
 
             return {
                 "success": True,
@@ -697,7 +697,7 @@ class GoHighLevelTools:
                     status_code=response.status_code,
                     response=describe_text(response.text),
                 )
-                return upstream_failure("CRM")
+                return upstream_failure("CRM", response.status_code)
 
             data = response.json()
             event = data.get("event", data)
@@ -864,7 +864,7 @@ class GoHighLevelTools:
             response = await client.post("/opportunities/", json=payload)
 
             if response.status_code not in (HTTPStatus.OK, HTTPStatus.CREATED):
-                return upstream_failure("CRM")
+                return upstream_failure("CRM", response.status_code)
 
             data = response.json()
             opp = data.get("opportunity", data)

@@ -1304,6 +1304,10 @@ class TestRealtimeTokenErrorText:
             f"/api/v1/realtime/token/{world.alice.agent.id}", headers=world.alice.headers
         )
 
-        assert response.status_code == 401, response.text
+        # Our 401 signs the dashboard user out; the provider refusing the key is not that.
+        assert response.status_code == 502, response.text
+        assert (
+            "key was refused" in response.json()["detail"] or "refused" in response.json()["detail"]
+        )
         assert "sk-placeholder-0000" not in response.text
         assert "+15550100042" not in response.text
