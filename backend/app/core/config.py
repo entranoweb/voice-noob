@@ -302,7 +302,12 @@ class Settings(BaseSettings):
     ENABLE_CALL_QUEUE: bool = False  # Sprint 2: Call queuing
 
     # Production Hardening Settings
-    SHUTDOWN_DRAIN_TIMEOUT: int = 120  # Seconds to wait for calls to drain
+    # Seconds to wait for calls to drain. On SIGTERM uvicorn closes every call's
+    # socket at once, so this only waits on registry entries that outlive their
+    # call. It runs inside the worker's gunicorn graceful_timeout (40 s) after
+    # the bridges' tool grace and database writes, so it must stay well below:
+    # a longer drain is cut off by the SIGKILL that follows.
+    SHUTDOWN_DRAIN_TIMEOUT: int = 15
     CALL_REGISTRY_TTL: int = 1800  # 30 minutes TTL for call entries
     MAX_CALL_QUEUE_SIZE: int = 1000  # Max queued calls (Sprint 2)
 

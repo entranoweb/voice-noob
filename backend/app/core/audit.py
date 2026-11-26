@@ -20,6 +20,7 @@ import structlog
 from fastapi import Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.proxy import stored_client_address
 from app.models.audit_event import AuditEvent
 
 
@@ -139,7 +140,7 @@ def _mask(value: Any) -> str:
 def client_ip(request: Request | None) -> str | None:
     if request is None or request.client is None:
         return None
-    return request.client.host
+    return stored_client_address(request.client.host)
 
 
 async def record_audit(

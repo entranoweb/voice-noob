@@ -305,6 +305,20 @@ class ClipBank:
                 return candidate
         raise FileNotFoundError(f"clip not found in bank: {name}")
 
+    def unusable(self, name: str) -> str:
+        """Why the file for ``name`` cannot be played; empty when it can (or is not a WAV).
+
+        Looks inside the file: one a few bytes long, with no audio, or cut short is
+        refused here, before a call, instead of playing silence and being blamed on the
+        agent. A WAV in a format this module does not decode itself (mu-law, say) is left
+        to ffmpeg and passes.
+        """
+        try:
+            path = self.path(name)
+        except (FileNotFoundError, ClipExcluded):
+            return ""  # missing or excluded is said elsewhere, in its own words
+        return wav_problem(path)
+
     def refusal(self, name: str) -> str:
         """Why ``name`` may not be played; empty when it may. The one rule every playback obeys."""
         info = self.info(name)
@@ -343,3 +357,28 @@ class ClipBank:
                 parts.append(silence(gap_s, rate))
             parts.append(self.pcm(name, rate))
         return b"".join(parts)
+
+
+def wav_problem(path: Path) -> str:
+    """Why a WAV file holds no usable audio; empty when it does."""
+    try:
+        size = path.stat().st_size
+    except OSError as error:
+        return f"cannot be read ({error.__class__.__name__})"
+    if size < 44:
+        return f"only {size} byte(s): too short to be a WAV file"
+    try:
+        with wave.open(str(path), "rb") as wav:
+            frames = wav.getnframes()
+            if frames == 0:
+                return "no audio in it (zero frames)"
+            wanted = frames * wav.getsampwidth() * wav.getnchannels()
+            if len(wav.readframes(frames)) < wanted:
+                return "the audio is cut short (the file is truncated)"
+    except wave.Error as error:
+        if "unknown format" in str(error):
+            return ""  # not plain PCM: ffmpeg decodes it at play time
+        return f"not a readable WAV ({error})"
+    except EOFError:
+        return "not a readable WAV (ends early)"
+    return ""
