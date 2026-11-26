@@ -17,7 +17,7 @@ import structlog
 from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -965,6 +965,42 @@ async def _call_already_answered(provider: str, provider_call_id: str, db: Async
     return found is not None
 
 
+async def _claim_outbound_answer(provider: str, provider_call_id: str, db: AsyncSession) -> bool:
+    """Win the one-shot right to mint a stream token for an outbound call.
+
+    The dial API writes the row (``answered_at`` NULL); the answer webhook claims
+    it with a single ``UPDATE ... WHERE answered_at IS NULL AND ended_at IS NULL
+    RETURNING``. Exactly one concurrent answer gets a row back, so it is
+    permanent, independent of Redis and serialised by the database. Status
+    callbacks never set ``answered_at`` on an outbound call (see the callbacks),
+    so one that arrives before the answer cannot make a legitimate answer lose.
+
+    A call with no row at all cannot be gated, so it is let through (and logged)
+    rather than dropped: the dial API commits its row right after dialling and
+    the answer comes seconds later, so a missing row is an id mismatch to look
+    at, not a reason to hang up a live call.
+    """
+    claimed = await db.scalar(
+        update(CallRecord)
+        .where(
+            CallRecord.provider == provider,
+            CallRecord.provider_call_id == provider_call_id,
+            CallRecord.direction == CallDirection.OUTBOUND.value,
+            CallRecord.answered_at.is_(None),
+            CallRecord.ended_at.is_(None),
+        )
+        .values(answered_at=datetime.now(UTC))
+        .returning(CallRecord.id)
+    )
+    if claimed is not None:
+        await db.commit()
+        return True
+    if await _call_already_answered(provider, provider_call_id, db):
+        return False
+    logger.warning("outbound_answer_without_call_row", provider=provider, call_id=provider_call_id)
+    return True
+
+
 @webhook_router.post(
     "/twilio/voice", dependencies=[Depends(release_claim_on_error)], response_class=HTMLResponse
 )
@@ -1120,7 +1156,13 @@ async def twilio_status_callback(
         call_record.status = new_status
 
         # Update timestamps based on status
-        if call_status == "in-progress" and not call_record.answered_at:
+        if (
+            call_status == "in-progress"
+            and not call_record.answered_at
+            and call_record.direction != CallDirection.OUTBOUND.value
+        ):
+            # Outbound calls: the answer webhook owns answered_at (it is the
+            # one-shot claim on minting the stream token).
             call_record.answered_at = datetime.now(UTC)
         elif call_status in ("completed", "busy", "failed", "no-answer", "canceled"):
             call_record.ended_at = datetime.now(UTC)
@@ -1174,6 +1216,9 @@ async def twilio_answer_webhook(
     call_sid = str(form.get("CallSid", ""))
 
     log = logger.bind(webhook="twilio_answer", agent_id=agent_id, call_sid=call_sid)
+    if not await _claim_outbound_answer("twilio", call_sid, db):
+        log.warning("outbound_answer_already_claimed")
+        return Response(content=EMPTY_DOCUMENT, media_type="application/xml")
     log.info("twilio_outbound_answered")
 
     stream_url = build_twilio_stream_url(request, agent_id)
@@ -1303,6 +1348,9 @@ async def telnyx_answer_webhook(
         call_control_id=event.call_id,
         wire_format=event.wire_format.value,
     )
+    if not await _claim_outbound_answer("telnyx", event.call_id, db):
+        log.warning("outbound_answer_already_claimed")
+        return Response(content=EMPTY_DOCUMENT, media_type="application/xml")
     log.info("telnyx_outbound_answered")
 
     stream_url = build_telnyx_stream_url(
@@ -1350,7 +1398,13 @@ async def telnyx_status_callback(
         if new_status is not None:
             call_record.status = new_status.value
 
-        if event.is_answered and not call_record.answered_at:
+        if (
+            event.is_answered
+            and not call_record.answered_at
+            and call_record.direction != CallDirection.OUTBOUND.value
+        ):
+            # Outbound calls: the answer webhook owns answered_at (it is the
+            # one-shot claim on minting the stream token).
             call_record.answered_at = datetime.now(UTC)
         elif event.is_hangup:
             call_record.ended_at = datetime.now(UTC)

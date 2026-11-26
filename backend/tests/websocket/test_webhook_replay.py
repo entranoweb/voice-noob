@@ -7,6 +7,7 @@ minted a second stream token.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -30,7 +31,7 @@ from app.db.redis import get_redis
 from app.db.session import get_db
 from app.main import app
 from app.models.agent import Agent
-from app.models.call_record import CallRecord
+from app.models.call_record import CallDirection, CallRecord, CallStatus
 from app.models.user import User
 
 AGENT_NUMBER = "+15559997777"
@@ -94,7 +95,7 @@ async def env(test_engine: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
     app.dependency_overrides[get_db] = override_get_db
     app.dependency_overrides[get_redis] = override_get_redis
     try:
-        yield {"key": key, "session_maker": session_maker}
+        yield {"key": key, "session_maker": session_maker, "agent_id": str(agent.id)}
     finally:
         app.dependency_overrides.clear()
         await redis.aclose()
@@ -347,3 +348,123 @@ class TestExistingCallRowIsPermanent:
         assert second.status_code == 200
         assert 'name="token"' not in second.text
         assert await _rows(env) == 1
+
+
+async def _seed_outbound(env: dict[str, Any], call_id: str, status: str = "initiated") -> None:
+    """What the dial API writes: an outbound row, not yet answered."""
+    async with env["session_maker"]() as session:
+        agent = await session.get(Agent, uuid.UUID(env["agent_id"]))
+        assert agent is not None
+        session.add(
+            CallRecord(
+                user_id=uuid.uuid4(),
+                provider="twilio" if call_id.startswith("CA") else "telnyx",
+                provider_call_id=call_id,
+                agent_id=agent.id,
+                direction=CallDirection.OUTBOUND.value,
+                status=status,
+                from_number=AGENT_NUMBER,
+                to_number=CALLER_NUMBER,
+            )
+        )
+        await session.commit()
+
+
+def _telnyx_answer(env: dict[str, Any], call_id: str, ts: str | None = None) -> Any:
+    body = _form({"CallSid": call_id})
+    return body, _telnyx_headers(env, body, ts)
+
+
+class TestOutboundAnswerIsOneShot:
+    """The answer webhook mints a token only by winning an UPDATE on the row."""
+
+    @pytest.mark.asyncio
+    async def test_telnyx_second_answer_with_redis_flushed_gets_no_token(
+        self, env: dict[str, Any], webhook_replay_store: Any
+    ) -> None:
+        await _seed_outbound(env, "v3:out-1")
+        url = f"/webhooks/telnyx/answer?agent_id={env['agent_id']}"
+        async with _client() as client:
+            body, headers = _telnyx_answer(env, "v3:out-1")
+            first = await client.post(url, content=body, headers=headers)
+            await webhook_replay_store.flushall()
+            second = await client.post(url, content=body, headers=headers)
+        assert "token=" in first.text
+        assert second.status_code == 200
+        assert "token=" not in second.text
+
+    @pytest.mark.asyncio
+    async def test_twilio_second_answer_with_redis_flushed_gets_no_token(
+        self, env: dict[str, Any], webhook_replay_store: Any
+    ) -> None:
+        await _seed_outbound(env, "CA500")
+        path = "/webhooks/twilio/answer"
+        query = f"?agent_id={env['agent_id']}"
+        params = {"CallSid": "CA500"}
+        data = BASE + path + query + "CallSidCA500"
+        digest = hmac.new(TWILIO_TOKEN.encode(), data.encode(), hashlib.sha1).digest()
+        headers = {
+            "content-type": "application/x-www-form-urlencoded",
+            "X-Twilio-Signature": base64.b64encode(digest).decode(),
+        }
+        async with _client() as client:
+            first = await client.post(path + query, content=_form(params), headers=headers)
+            await webhook_replay_store.flushall()
+            second = await client.post(path + query, content=_form(params), headers=headers)
+        assert 'name="token"' in first.text
+        assert 'name="token"' not in second.text
+
+    @pytest.mark.asyncio
+    async def test_two_concurrent_answers_mint_exactly_one_token(self, env: dict[str, Any]) -> None:
+        await _seed_outbound(env, "v3:out-race")
+        url = f"/webhooks/telnyx/answer?agent_id={env['agent_id']}"
+        now = int(time.time())
+        async with _client() as client:
+            # Distinct timestamps, so distinct Redis keys: only the row can decide.
+            responses = await asyncio.gather(
+                *[
+                    client.post(
+                        url,
+                        content=_telnyx_answer(env, "v3:out-race", str(now - i))[0],
+                        headers=_telnyx_answer(env, "v3:out-race", str(now - i))[1],
+                    )
+                    for i in range(4)
+                ]
+            )
+        assert sum("token=" in r.text for r in responses) == 1
+        assert all(r.status_code == 200 for r in responses)
+
+    @pytest.mark.asyncio
+    async def test_a_ringing_callback_before_the_answer_still_leaves_it_answerable(
+        self, env: dict[str, Any]
+    ) -> None:
+        await _seed_outbound(env, "v3:out-cb")
+        cb = _form({"CallSid": "v3:out-cb", "CallStatus": "in-progress"})
+        url = f"/webhooks/telnyx/answer?agent_id={env['agent_id']}"
+        async with _client() as client:
+            await client.post(
+                "/webhooks/telnyx/status", content=cb, headers=_telnyx_headers(env, cb)
+            )
+            body, headers = _telnyx_answer(env, "v3:out-cb", str(int(time.time()) - 1))
+            answered = await client.post(url, content=body, headers=headers)
+        assert "token=" in answered.text
+
+    @pytest.mark.asyncio
+    async def test_an_answer_after_the_call_ended_gets_no_token(self, env: dict[str, Any]) -> None:
+        await _seed_outbound(env, "v3:out-done", status=CallStatus.COMPLETED.value)
+        async with env["session_maker"]() as session:
+            record = (
+                await session.execute(
+                    select(CallRecord).where(CallRecord.provider_call_id == "v3:out-done")
+                )
+            ).scalar_one()
+            from datetime import UTC, datetime
+
+            record.ended_at = datetime.now(UTC)
+            await session.commit()
+        body, headers = _telnyx_answer(env, "v3:out-done")
+        async with _client() as client:
+            response = await client.post(
+                f"/webhooks/telnyx/answer?agent_id={env['agent_id']}", content=body, headers=headers
+            )
+        assert "token=" not in response.text
