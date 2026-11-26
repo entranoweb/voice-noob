@@ -58,7 +58,10 @@ class TwilioService(TelephonyProvider):
         )
 
         # Build callback URLs
-        status_callback = webhook_url.replace("/answer", "/status")
+        # Twilio retries only a failed connection by default; `#rp=5xx` (a
+        # connection override, not part of the signed URL) also retries a 5xx,
+        # which the status webhook answers with for a call it cannot find yet.
+        status_callback = webhook_url.replace("/answer", "/status") + "#rc=3&rp=5xx,ct"
 
         call = self.client.calls.create(
             to=to_number,

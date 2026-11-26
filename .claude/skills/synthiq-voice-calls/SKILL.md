@@ -75,9 +75,12 @@ number in `phone_number_id`, oldest first. Anything else routes nowhere and logs
 verifies the signature with the key of the number's workspace, not the agent's
 first workspace; the call record it writes carries that workspace, and the
 answer and status webhooks and the media stream all read it from that record
-(by provider and call id), closing the stream with 4403 if it is missing. An
-outbound call's `/calls` request must name a workspace the agent is in and an
-active number registered there. An agent in no workspace, a number with no record (legacy
+(by provider and call id), closing the stream with 4403 if it is missing. Every outbound call (`/calls` and the campaign worker) is placed by
+`app/services/telephony/outbound.py`: it checks the workspace and the
+from-number, writes the call record BEFORE dialling (`provider_call_id` is
+`pending:<record id>` until the carrier answers the dial) and names the record
+in the answer URL. A status callback for a call with no record answers 503,
+never 200. An agent in no workspace, a number with no record (legacy
 rows), or a workspace deleted from under a number therefore silently stop
 routing; `scripts/report_unverified_numbers.py` lists who.
 
