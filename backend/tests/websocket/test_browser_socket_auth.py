@@ -455,6 +455,47 @@ class TestEmbedToolCall:
         assert response.json()["success"] is False
 
 
+    @pytest.mark.asyncio
+    async def test_a_tool_failure_does_not_hand_the_visitor_the_exception_text(
+        self, env: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The visitor is unauthenticated. A database error carries the SQL and
+        the bound parameters of whoever the query was about."""
+        from sqlalchemy.exc import DBAPIError
+
+        from app.services.tools.registry import ToolRegistry
+
+        async with env["sessions"]() as session:
+            agent = (
+                await session.execute(select(Agent).where(Agent.id == env["agent"].id))
+            ).scalar_one()
+            agent.embed_settings = {"allow_tools": True}
+            await session.commit()
+
+        async def boom(*_: Any, **__: Any) -> Any:
+            raise DBAPIError(
+                "SELECT * FROM contacts WHERE phone_number = :phone",
+                {"phone": "+15550100042"},
+                Exception("driver says +15550100042"),
+            )
+
+        monkeypatch.setattr(ToolRegistry, "execute_tool", boom)
+        monkeypatch.setattr(
+            ToolRegistry, "get_all_tool_definitions", lambda *_a, **_k: [{"name": "crm_search"}]
+        )
+        async with _client() as client:
+            response = await client.post(
+                self._url(env),
+                headers={"Origin": CUSTOMER, "X-Embed-Session": self._session(env)},
+                json={"tool_name": "crm_search", "arguments": {}},
+            )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["success"] is False
+        for leak in ("+15550100042", "SELECT", "contacts", "phone_number"):
+            assert leak not in response.text
+
+
 class TestEmbedTranscript:
     @pytest.mark.asyncio
     async def test_without_a_session_nothing_is_written(self, env: dict[str, Any]) -> None:
