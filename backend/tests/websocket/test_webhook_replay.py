@@ -156,8 +156,9 @@ class TestTelnyxReplay:
         assert "token=" in first.text
         # A retry must not be answered with an error: that can drop a live call.
         assert second.status_code == 200
-        assert "token=" not in second.text
-        assert "<Stream" not in second.text
+        # An identical retry inside the token's life is a genuine retry of a lost
+        # answer: it gets the same document, not a second token and not a new row.
+        assert second.text == first.text
         assert await _rows(env) == 1
 
     @pytest.mark.asyncio
@@ -219,8 +220,7 @@ class TestTwilioReplay:
         assert first.status_code == 200
         assert 'name="token"' in first.text
         assert second.status_code == 200
-        assert 'name="token"' not in second.text
-        assert "<Stream" not in second.text
+        assert second.text == first.text
         assert await _rows(env) == 1
 
     @pytest.mark.asyncio
@@ -468,3 +468,313 @@ class TestOutboundAnswerIsOneShot:
                 f"/webhooks/telnyx/answer?agent_id={env['agent_id']}", content=body, headers=headers
             )
         assert "token=" not in response.text
+
+
+# ---------------------------------------------------------------------------
+# Security review of #71
+# ---------------------------------------------------------------------------
+
+
+class TestReplayKeyIsOnSignedContent:
+    @pytest.mark.asyncio
+    async def test_a_signature_with_junk_spliced_in_is_refused_not_a_new_key(
+        self, env: dict[str, Any]
+    ) -> None:
+        body = _telnyx_body("v3:spliced")
+        headers = _telnyx_headers(env, body)
+        sig = headers["telnyx-signature-ed25519"]
+        spliced = {**headers, "telnyx-signature-ed25519": sig[:10] + "-" + sig[10:]}
+        async with _client() as client:
+            first = await client.post("/webhooks/telnyx/voice", content=body, headers=headers)
+            second = await client.post("/webhooks/telnyx/voice", content=body, headers=spliced)
+        assert "token=" in first.text
+        assert second.status_code == 403
+        assert "token=" not in second.text
+        assert await _rows(env) == 1
+
+    def test_keys_do_not_depend_on_the_signature_string(self) -> None:
+        from app.core.webhook_replay import telnyx_replay_key, twilio_replay_key
+
+        assert telnyx_replay_key("1", b"a") == telnyx_replay_key("1", b"a")
+        assert telnyx_replay_key("1", b"a") != telnyx_replay_key("2", b"a")
+        assert twilio_replay_key("u", {"b": "2", "a": "1"}) == twilio_replay_key(
+            "u", {"a": "1", "b": "2"}
+        )
+        assert twilio_replay_key("u", {"a": "1"}) != twilio_replay_key("v", {"a": "1"})
+
+
+async def _fetch(env: dict[str, Any], call_id: str) -> CallRecord:
+    async with env["session_maker"]() as session:
+        return (
+            await session.execute(select(CallRecord).where(CallRecord.provider_call_id == call_id))
+        ).scalar_one()
+
+
+@pytest.fixture
+def side_effects(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
+    counts = {"campaign": 0, "qa": 0}
+
+    async def campaign(**_: Any) -> None:
+        counts["campaign"] += 1
+
+    def qa(*_: Any, **__: Any) -> None:
+        counts["qa"] += 1
+
+    async def qa_async(*_: Any, **__: Any) -> None:
+        counts["qa"] += 1
+
+    monkeypatch.setattr("app.api.telephony.update_campaign_contact_from_call", campaign)
+    monkeypatch.setattr("app.api.telephony.trigger_qa_evaluation", qa_async)
+    return counts
+
+
+class TestTerminalCallIsFinal:
+    async def _status(
+        self, env: dict[str, Any], client: AsyncClient, call_id: str, status: str, ts: int
+    ) -> None:
+        body = _form({"CallSid": call_id, "CallStatus": status})
+        response = await client.post(
+            "/webhooks/telnyx/status", content=body, headers=_telnyx_headers(env, body, str(ts))
+        )
+        assert response.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_telnyx_replayed_answered_after_hangup_does_not_reopen(
+        self, env: dict[str, Any], side_effects: dict[str, int]
+    ) -> None:
+        await _seed_outbound(env, "v3:term-1", status="in_progress")
+        now = int(time.time())
+        async with _client() as client:
+            await self._status(env, client, "v3:term-1", "completed", now)
+            await self._status(env, client, "v3:term-1", "in-progress", now - 1)
+        record = await _fetch(env, "v3:term-1")
+        assert record.status == "completed"
+
+    @pytest.mark.asyncio
+    async def test_telnyx_replayed_hangup_writes_ended_at_once_and_fires_effects_once(
+        self, env: dict[str, Any], side_effects: dict[str, int]
+    ) -> None:
+        await _seed_outbound(env, "v3:term-2", status="in_progress")
+        now = int(time.time())
+        async with _client() as client:
+            await self._status(env, client, "v3:term-2", "completed", now)
+            first = await _fetch(env, "v3:term-2")
+            # A different timestamp makes a different Redis key: only the call's
+            # own state can stop this one.
+            await self._status(env, client, "v3:term-2", "completed", now - 1)
+        again = await _fetch(env, "v3:term-2")
+        assert first.ended_at is not None
+        assert again.ended_at == first.ended_at
+        assert again.duration_seconds == first.duration_seconds
+        assert side_effects == {"campaign": 1, "qa": 1}
+
+    @pytest.mark.asyncio
+    async def test_twilio_replayed_hangup_fires_effects_once(
+        self, env: dict[str, Any], side_effects: dict[str, int]
+    ) -> None:
+        await _seed_outbound(env, "CA800", status="in_progress")
+        path = "/webhooks/twilio/status"
+        async with _client() as client:
+            for duration in ("12", "99"):  # distinct params: distinct keys
+                params = {"CallSid": "CA800", "CallStatus": "completed", "CallDuration": duration}
+                response = await client.post(
+                    path, content=_form(params), headers=_twilio_headers(path, params)
+                )
+                assert response.status_code == 200
+        record = await _fetch(env, "CA800")
+        assert record.duration_seconds == 12
+        assert side_effects == {"campaign": 1, "qa": 1}
+
+
+class TestReplayOutlivesTheRow:
+    def test_twilio_memory_outlives_the_longest_retention_plus_a_day(self) -> None:
+        from app.core.webhook_replay import twilio_ttl_seconds
+        from app.services.data_protection import MAX_RETENTION_DAYS
+
+        assert twilio_ttl_seconds() >= (MAX_RETENTION_DAYS + 1) * 86400
+
+    @pytest.mark.asyncio
+    async def test_a_replay_after_the_row_is_erased_gets_no_token_and_no_row(
+        self, env: dict[str, Any]
+    ) -> None:
+        path = "/webhooks/twilio/voice"
+        params = {"CallSid": "CA900", "From": CALLER_NUMBER, "To": AGENT_NUMBER}
+        headers = _twilio_headers(path, params)
+        async with _client() as client:
+            first = await client.post(path, content=_form(params), headers=headers)
+            async with env["session_maker"]() as session:
+                await session.execute(CallRecord.__table__.delete())  # erasure
+                await session.commit()
+            assert await _rows(env) == 0
+            # Past the stored document's two minutes, but well inside the key's life.
+            from app.core import webhook_replay
+
+            store = await webhook_replay._store()
+            for key in await store.keys(f"{webhook_replay._DOC_PREFIX}*"):
+                await store.delete(key)
+            replay = await client.post(path, content=_form(params), headers=headers)
+        assert 'name="token"' in first.text
+        assert 'name="token"' not in replay.text
+        assert await _rows(env) == 0
+
+
+class TestAnswerWithNoRow:
+    @pytest.fixture(autouse=True)
+    def _fast(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("app.api.telephony._ROW_RECHECK_DELAY_SECONDS", 0.0)
+
+    @pytest.mark.asyncio
+    async def test_a_rowless_answer_is_claimable_once_even_with_distinct_signatures(
+        self, env: dict[str, Any]
+    ) -> None:
+        url = f"/webhooks/telnyx/answer?agent_id={env['agent_id']}"
+        now = int(time.time())
+        async with _client() as client:
+            first_body, first_headers = _telnyx_answer(env, "v3:norow", str(now))
+            first = await client.post(url, content=first_body, headers=first_headers)
+            later_body, later_headers = _telnyx_answer(env, "v3:norow", str(now - 1))
+            later = await client.post(url, content=later_body, headers=later_headers)
+        assert "token=" in first.text
+        assert "token=" not in later.text
+
+    @pytest.mark.asyncio
+    async def test_a_row_that_lands_during_the_recheck_is_answered_normally(
+        self, env: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        real_sleep = asyncio.sleep
+        seeded = {"done": False}
+
+        async def sleep_then_seed(_: float) -> None:
+            if not seeded["done"]:
+                seeded["done"] = True
+                await _seed_outbound(env, "v3:late-row")
+            await real_sleep(0)
+
+        monkeypatch.setattr("app.api.telephony.asyncio.sleep", sleep_then_seed)
+        body, headers = _telnyx_answer(env, "v3:late-row")
+        async with _client() as client:
+            response = await client.post(
+                f"/webhooks/telnyx/answer?agent_id={env['agent_id']}", content=body, headers=headers
+            )
+        assert "token=" in response.text
+        assert (await _fetch(env, "v3:late-row")).answered_at is not None
+
+
+class TestIdempotentRetry:
+    @pytest.mark.asyncio
+    async def test_retry_inside_two_minutes_gets_the_same_document(
+        self, env: dict[str, Any]
+    ) -> None:
+        body = _telnyx_body("v3:retry")
+        headers = _telnyx_headers(env, body)
+        async with _client() as client:
+            first = await client.post("/webhooks/telnyx/voice", content=body, headers=headers)
+            retry = await client.post("/webhooks/telnyx/voice", content=body, headers=headers)
+        assert "token=" in first.text
+        assert retry.text == first.text
+        assert await _rows(env) == 1
+
+    @pytest.mark.asyncio
+    async def test_after_the_document_expires_the_retry_gets_the_empty_document(
+        self, env: dict[str, Any], webhook_replay_store: Any
+    ) -> None:
+        from app.core.webhook_replay import EMPTY_DOCUMENT
+
+        body = _telnyx_body("v3:retry-late")
+        headers = _telnyx_headers(env, body)
+        async with _client() as client:
+            await client.post("/webhooks/telnyx/voice", content=body, headers=headers)
+            for key in await webhook_replay_store.keys("webhook-replay-doc:*"):
+                await webhook_replay_store.delete(key)  # two minutes have passed
+            late = await client.post("/webhooks/telnyx/voice", content=body, headers=headers)
+        assert late.text == EMPTY_DOCUMENT
+
+    @pytest.mark.asyncio
+    async def test_the_stored_document_lives_no_longer_than_the_token(
+        self, env: dict[str, Any], webhook_replay_store: Any
+    ) -> None:
+        body = _telnyx_body("v3:ttl")
+        async with _client() as client:
+            await client.post(
+                "/webhooks/telnyx/voice", content=body, headers=_telnyx_headers(env, body)
+            )
+        (key,) = await webhook_replay_store.keys("webhook-replay-doc:*")
+        assert 0 < await webhook_replay_store.ttl(key) <= 120
+
+
+class TestHangingRedis:
+    @pytest.fixture(autouse=True)
+    def _hang(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        class Hung:
+            async def _hang(self, *_: Any, **__: Any) -> Any:
+                await asyncio.sleep(30)
+
+            set = get = exists = delete = _hang  # noqa: A003
+
+        async def store() -> Any:
+            return Hung()
+
+        monkeypatch.setattr("app.core.webhook_replay._store", store)
+        monkeypatch.setattr("app.core.webhook_replay.STORE_TIMEOUT_SECONDS", 0.05)
+
+    @pytest.mark.asyncio
+    async def test_a_hung_store_fails_open_quickly(self, env: dict[str, Any]) -> None:
+        body = _telnyx_body("v3:hang-open")
+        started = time.monotonic()
+        async with _client() as client:
+            response = await client.post(
+                "/webhooks/telnyx/voice", content=body, headers=_telnyx_headers(env, body)
+            )
+        assert time.monotonic() - started < 3
+        assert response.status_code == 200
+        assert "token=" in response.text
+
+    @pytest.mark.asyncio
+    async def test_a_hung_store_fails_closed_quickly_when_configured(
+        self, env: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(settings, "WEBHOOK_REPLAY_FAIL_CLOSED", True)
+        body = _telnyx_body("v3:hang-closed")
+        started = time.monotonic()
+        async with _client() as client:
+            response = await client.post(
+                "/webhooks/telnyx/voice", content=body, headers=_telnyx_headers(env, body)
+            )
+        assert time.monotonic() - started < 3
+        assert response.status_code == 503
+
+
+class TestClaimReleaseAfterCommit:
+    @pytest.mark.asyncio
+    async def test_a_failure_after_the_commit_keeps_the_claim(
+        self, env: dict[str, Any], monkeypatch: pytest.MonkeyPatch, webhook_replay_store: Any
+    ) -> None:
+        body = _telnyx_body("v3:after-commit")
+        headers = _telnyx_headers(env, body)
+
+        def boom(*_: Any, **__: Any) -> Any:
+            raise RuntimeError("after the row was committed")
+
+        monkeypatch.setattr("app.api.telephony.build_telnyx_stream_url", boom)
+        async with AsyncClient(
+            transport=ASGITransport(app=app, raise_app_exceptions=False), base_url=BASE
+        ) as client:
+            failed = await client.post("/webhooks/telnyx/voice", content=body, headers=headers)
+        assert failed.status_code == 500
+        assert await _rows(env) == 1
+        assert await webhook_replay_store.keys("webhook-replay:*")
+
+
+class TestRedisDuplicatePathWithoutARow:
+    @pytest.mark.asyncio
+    async def test_a_replayed_status_callback_for_an_unknown_call_is_a_duplicate(
+        self, env: dict[str, Any]
+    ) -> None:
+        path = "/webhooks/twilio/status"
+        params = {"CallSid": "CA-unknown", "CallStatus": "completed", "CallDuration": "3"}
+        headers = _twilio_headers(path, params)
+        async with _client() as client:
+            first = await client.post(path, content=_form(params), headers=headers)
+            second = await client.post(path, content=_form(params), headers=headers)
+        assert first.json() == {"status": "received"}
+        assert second.json() == {"status": "duplicate"}

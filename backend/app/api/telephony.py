@@ -8,9 +8,10 @@ This module provides:
 - WebSocket endpoint for telephony media streaming
 """
 
+import asyncio
 import uuid
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
 import structlog
@@ -29,7 +30,18 @@ from app.core.log_redaction import redact_phone
 from app.core.ownership import parse_uuid
 from app.core.public_url import public_base_url, public_ws_base_url
 from app.core.stream_token import mint_stream_token
-from app.core.webhook_replay import EMPTY_DOCUMENT, release_claim_on_error, webhook_is_duplicate
+from app.core.webhook_replay import (
+    EMPTY_DOCUMENT,
+    ReplayClaim,
+    answer_already_issued,
+    claim_answer_issued,
+    mark_committed,
+    release_claim_on_error,
+    store_answer_document,
+    stored_answer_document,
+    twilio_ttl_seconds,
+    webhook_is_duplicate,
+)
 from app.core.webhook_security import verify_telnyx_webhook, verify_twilio_webhook
 from app.db.session import get_db
 from app.models.agent import Agent
@@ -970,40 +982,117 @@ async def _call_already_answered(provider: str, provider_call_id: str, db: Async
     return found is not None
 
 
-async def _claim_outbound_answer(provider: str, provider_call_id: str, db: AsyncSession) -> bool:
-    """Win the one-shot right to mint a stream token for an outbound call.
+_TERMINAL_STATUSES = frozenset(
+    {
+        CallStatus.COMPLETED.value,
+        CallStatus.BUSY.value,
+        CallStatus.FAILED.value,
+        CallStatus.NO_ANSWER.value,
+        CallStatus.CANCELED.value,
+    }
+)
 
-    The dial API writes the row (``answered_at`` NULL); the answer webhook claims
-    it with a single ``UPDATE ... WHERE answered_at IS NULL AND ended_at IS NULL
-    RETURNING``. Exactly one concurrent answer gets a row back, so it is
-    permanent, independent of Redis and serialised by the database. Status
-    callbacks never set ``answered_at`` on an outbound call (see the callbacks),
-    so one that arrives before the answer cannot make a legitimate answer lose.
 
-    A call with no row at all cannot be gated, so it is let through (and logged)
-    rather than dropped: the dial API commits its row right after dialling and
-    the answer comes seconds later, so a missing row is an id mismatch to look
-    at, not a reason to hang up a live call.
+def _is_terminal(call_record: CallRecord) -> bool:
+    return call_record.status in _TERMINAL_STATUSES or call_record.ended_at is not None
+
+
+async def _duplicate_answer(request: Request) -> Response:
+    """An identical request inside the token lifetime gets the first document
+    (a genuine retry whose first response was lost); after it, an empty one."""
+    document = await stored_answer_document(request)
+    return Response(content=document or EMPTY_DOCUMENT, media_type="application/xml")
+
+
+async def _answer_response(request: Request, document: str) -> Response:
+    await store_answer_document(request, document)
+    return Response(content=document, media_type="application/xml")
+
+
+async def _finish_call(
+    db: AsyncSession, call_record: CallRecord, status: str, duration_seconds: int | None
+) -> bool:
+    """Move a call to a terminal state, once.
+
+    One ``UPDATE ... WHERE ended_at IS NULL AND status NOT IN (terminal)``: only
+    the callback that actually makes the transition gets a row back, so
+    ``ended_at`` and the duration are written once and the caller fires the
+    campaign and QA side effects only when this returns True. A replayed or
+    reordered callback finds the call already finished and changes nothing.
     """
-    claimed = await db.scalar(
+    now = datetime.now(UTC)
+    if duration_seconds is None and call_record.answered_at is not None:
+        duration_seconds = int((now - call_record.answered_at).total_seconds())
+    values: dict[str, Any] = {"status": status, "ended_at": now}
+    if duration_seconds is not None:
+        values["duration_seconds"] = duration_seconds
+    won = await db.scalar(
         update(CallRecord)
         .where(
-            CallRecord.provider == provider,
-            CallRecord.provider_call_id == provider_call_id,
-            CallRecord.direction == CallDirection.OUTBOUND.value,
-            CallRecord.answered_at.is_(None),
+            CallRecord.id == call_record.id,
             CallRecord.ended_at.is_(None),
+            CallRecord.status.not_in(_TERMINAL_STATUSES),
         )
-        .values(answered_at=datetime.now(UTC))
+        .values(**values)
         .returning(CallRecord.id)
     )
-    if claimed is not None:
-        await db.commit()
-        return True
-    if await _call_already_answered(provider, provider_call_id, db):
+    if won is None:
         return False
-    logger.warning("outbound_answer_without_call_row", provider=provider, call_id=provider_call_id)
+    await db.refresh(call_record)
     return True
+
+
+_ROW_RECHECKS = 3
+_ROW_RECHECK_DELAY_SECONDS = 0.2
+
+
+async def _claim_outbound_answer(
+    request: Request, provider: str, provider_call_id: str, db: AsyncSession
+) -> bool:
+    """Win the one-shot right to mint a stream token for an outbound call.
+
+    The dial API writes the row (``answered_at`` NULL) *after* the carrier has
+    been asked to dial; the answer webhook claims it with a single
+    ``UPDATE ... WHERE answered_at IS NULL AND ended_at IS NULL RETURNING``.
+    Exactly one concurrent answer gets a row back: permanent, independent of
+    Redis, serialised by the database. Status callbacks never set ``answered_at``
+    on an outbound call, so one that arrives first cannot make a legitimate
+    answer lose.
+
+    No row yet: the answer can beat the dial API's commit, so look again a few
+    times. Still nothing: claim the call id in Redis with ``SET NX`` and the long
+    replay TTL (and log it), and the row path refuses a call that key already
+    covers, so the answer cannot be claimed twice by either route.
+    """
+    if await answer_already_issued(provider, provider_call_id):
+        return False
+
+    for attempt in range(_ROW_RECHECKS + 1):
+        claimed = await db.scalar(
+            update(CallRecord)
+            .where(
+                CallRecord.provider == provider,
+                CallRecord.provider_call_id == provider_call_id,
+                CallRecord.direction == CallDirection.OUTBOUND.value,
+                CallRecord.answered_at.is_(None),
+                CallRecord.ended_at.is_(None),
+            )
+            .values(answered_at=datetime.now(UTC))
+            .returning(CallRecord.id)
+        )
+        if claimed is not None:
+            await db.commit()
+            mark_committed(request)
+            return True
+        if await _call_already_answered(provider, provider_call_id, db):
+            return False
+        if attempt < _ROW_RECHECKS:
+            await asyncio.sleep(_ROW_RECHECK_DELAY_SECONDS)
+
+    logger.warning("outbound_answer_without_call_row", provider=provider, call_id=provider_call_id)
+    claim = await claim_answer_issued(provider, provider_call_id, twilio_ttl_seconds())
+    # Unreachable store: fail open, as everywhere in the replay guard (it logged).
+    return claim is not ReplayClaim.DUPLICATE
 
 
 @webhook_router.post(
@@ -1028,7 +1117,7 @@ async def twilio_voice_webhook(
     agent = await get_agent_by_phone_number(to_number, db)
     await verify_twilio_webhook(request, await twilio_auth_token_for_agent(agent, db))
     if webhook_is_duplicate(request):
-        return Response(content=EMPTY_DOCUMENT, media_type="application/xml")
+        return await _duplicate_answer(request)
 
     log = logger.bind(
         webhook="twilio_voice",
@@ -1077,6 +1166,7 @@ async def twilio_voice_webhook(
     )
     db.add(call_record)
     await db.commit()
+    mark_committed(request)
     log.info("call_record_created", record_id=str(call_record.id))
 
     # Build WebSocket URL for media streaming, and the token that admits this
@@ -1091,7 +1181,7 @@ async def twilio_voice_webhook(
 
     log.info("twilio_twiml_generated", agent_id=agent_id)
 
-    return Response(content=twiml, media_type="application/xml")
+    return await _answer_response(request, twiml)
 
 
 @webhook_router.post("/twilio/status", dependencies=[Depends(release_claim_on_error)])
@@ -1140,17 +1230,11 @@ async def twilio_status_callback(
         }
 
         new_status = status_map.get(call_status, call_status)
-        terminal = {
-            CallStatus.COMPLETED.value,
-            CallStatus.BUSY.value,
-            CallStatus.FAILED.value,
-            CallStatus.NO_ANSWER.value,
-            CallStatus.CANCELED.value,
-        }
-        if call_record.status in terminal and new_status not in terminal:
-            # Bound to the call's state: a signed callback that arrives after the
-            # call ended (reordered, or a captured one replayed under a different
-            # key) cannot reopen it.
+        if _is_terminal(call_record):
+            # Transition-only: a call that has ended is never changed again. A
+            # signed callback that arrives after (reordered, or a captured one
+            # replayed under any key) cannot reopen it, rewrite ended_at or the
+            # duration, or fire the campaign and QA side effects a second time.
             log.warning(
                 "twilio_status_after_terminal_ignored",
                 recorded=call_record.status,
@@ -1158,34 +1242,33 @@ async def twilio_status_callback(
             )
             return {"status": "ignored"}
 
-        call_record.status = new_status
-
-        # Update timestamps based on status
-        if (
-            call_status == "in-progress"
-            and not call_record.answered_at
-            and call_record.direction != CallDirection.OUTBOUND.value
-        ):
-            # Outbound calls: the answer webhook owns answered_at (it is the
-            # one-shot claim on minting the stream token).
-            call_record.answered_at = datetime.now(UTC)
-        elif call_status in ("completed", "busy", "failed", "no-answer", "canceled"):
-            call_record.ended_at = datetime.now(UTC)
-            if call_duration:
-                call_record.duration_seconds = int(call_duration)
-
-            # Update campaign contact status if this was a campaign call
-            await update_campaign_contact_from_call(
-                call_record=call_record,
-                call_status=call_record.status,
-                duration_seconds=call_record.duration_seconds or 0,
-                db=db,
-            )
-
-            # Trigger QA evaluation for completed calls
-            if call_record.status == CallStatus.COMPLETED.value:
-                background_tasks.add_task(trigger_qa_evaluation, call_record.id)
-                log.info("qa_evaluation_triggered", call_id=str(call_record.id))
+        if new_status in _TERMINAL_STATUSES:
+            duration = int(call_duration) if call_duration else None
+            if await _finish_call(db, call_record, new_status, duration):
+                await db.commit()
+                mark_committed(request)
+                await update_campaign_contact_from_call(
+                    call_record=call_record,
+                    call_status=call_record.status,
+                    duration_seconds=call_record.duration_seconds or 0,
+                    db=db,
+                )
+                if call_record.status == CallStatus.COMPLETED.value:
+                    background_tasks.add_task(trigger_qa_evaluation, call_record.id)
+                    log.info("qa_evaluation_triggered", call_id=str(call_record.id))
+            else:
+                log.warning("twilio_status_lost_race_ignored", received=call_status)
+                return {"status": "ignored"}
+        else:
+            call_record.status = new_status
+            if (
+                call_status == "in-progress"
+                and not call_record.answered_at
+                and call_record.direction != CallDirection.OUTBOUND.value
+            ):
+                # Outbound calls: the answer webhook owns answered_at (it is the
+                # one-shot claim on minting the stream token).
+                call_record.answered_at = datetime.now(UTC)
 
         await db.commit()
         log.info("call_record_updated", record_id=str(call_record.id), status=call_status)
@@ -1213,7 +1296,7 @@ async def twilio_answer_webhook(
     owner = await _agent_by_id(agent_id, db)
     await verify_twilio_webhook(request, await twilio_auth_token_for_agent(owner, db))
     if webhook_is_duplicate(request):
-        return Response(content=EMPTY_DOCUMENT, media_type="application/xml")
+        return await _duplicate_answer(request)
 
     # Twilio posts the CallSid with the answer request; the stream's start
     # frame announces the same one, and the token is bound to it.
@@ -1221,7 +1304,7 @@ async def twilio_answer_webhook(
     call_sid = str(form.get("CallSid", ""))
 
     log = logger.bind(webhook="twilio_answer", agent_id=agent_id, call_sid=call_sid)
-    if not await _claim_outbound_answer("twilio", call_sid, db):
+    if not await _claim_outbound_answer(request, "twilio", call_sid, db):
         log.warning("outbound_answer_already_claimed")
         return Response(content=EMPTY_DOCUMENT, media_type="application/xml")
     log.info("twilio_outbound_answered")
@@ -1232,7 +1315,7 @@ async def twilio_answer_webhook(
     twilio_service = TwilioService("", "")
     twiml = twilio_service.generate_answer_response(stream_url, agent_id, stream_token=stream_token)
 
-    return Response(content=twiml, media_type="application/xml")
+    return await _answer_response(request, twiml)
 
 
 # =============================================================================
@@ -1264,7 +1347,7 @@ async def telnyx_voice_webhook(
     agent = await get_agent_by_phone_number(event.to_number, db)
     await verify_telnyx_webhook(request, await telnyx_public_key_for_agent(agent, db))
     if webhook_is_duplicate(request):
-        return Response(content=EMPTY_DOCUMENT, media_type="application/xml")
+        return await _duplicate_answer(request)
 
     log = logger.bind(
         webhook="telnyx_voice",
@@ -1313,6 +1396,7 @@ async def telnyx_voice_webhook(
     )
     db.add(call_record)
     await db.commit()
+    mark_committed(request)
     log.info("call_record_created", record_id=str(call_record.id))
 
     stream_url = build_telnyx_stream_url(request, agent_id, call_id=event.call_id)
@@ -1322,7 +1406,7 @@ async def telnyx_voice_webhook(
 
     log.info("telnyx_texml_generated", agent_id=agent_id)
 
-    return Response(content=texml, media_type="application/xml")
+    return await _answer_response(request, texml)
 
 
 @webhook_router.post(
@@ -1343,7 +1427,7 @@ async def telnyx_answer_webhook(
     owner = await _agent_by_id(agent_id, db)
     await verify_telnyx_webhook(request, await telnyx_public_key_for_agent(owner, db))
     if webhook_is_duplicate(request):
-        return Response(content=EMPTY_DOCUMENT, media_type="application/xml")
+        return await _duplicate_answer(request)
 
     event = await parse_telnyx_webhook(request)
 
@@ -1353,7 +1437,7 @@ async def telnyx_answer_webhook(
         call_control_id=event.call_id,
         wire_format=event.wire_format.value,
     )
-    if not await _claim_outbound_answer("telnyx", event.call_id, db):
+    if not await _claim_outbound_answer(request, "telnyx", event.call_id, db):
         log.warning("outbound_answer_already_claimed")
         return Response(content=EMPTY_DOCUMENT, media_type="application/xml")
     log.info("telnyx_outbound_answered")
@@ -1365,7 +1449,7 @@ async def telnyx_answer_webhook(
     telnyx_service = TelnyxService("")
     texml = telnyx_service.generate_answer_response(stream_url, agent_id)
 
-    return Response(content=texml, media_type="application/xml")
+    return await _answer_response(request, texml)
 
 
 @webhook_router.post("/telnyx/status", dependencies=[Depends(release_claim_on_error)])
@@ -1400,40 +1484,45 @@ async def telnyx_status_callback(
 
     if call_record:
         new_status = event.resolved_status()
-        if new_status is not None:
-            call_record.status = new_status.value
+        if _is_terminal(call_record):
+            # Transition-only, as for Twilio: an ended call is never changed.
+            log.warning(
+                "telnyx_event_after_terminal_ignored",
+                recorded=call_record.status,
+                received=event.event_type,
+            )
+            return {"status": "ignored"}
 
-        if (
-            event.is_answered
-            and not call_record.answered_at
-            and call_record.direction != CallDirection.OUTBOUND.value
-        ):
-            # Outbound calls: the answer webhook owns answered_at (it is the
-            # one-shot claim on minting the stream token).
-            call_record.answered_at = datetime.now(UTC)
-        elif event.is_hangup:
-            call_record.ended_at = datetime.now(UTC)
+        if event.is_hangup:
             # Prefer the carrier's own figure; fall back to our timestamps. The
             # carrier bills on its number, and a call answered before this
             # process restarted has no answered_at to subtract from.
-            if event.duration_seconds is not None:
-                call_record.duration_seconds = event.duration_seconds
-            elif call_record.answered_at:
-                duration = (call_record.ended_at - call_record.answered_at).total_seconds()
-                call_record.duration_seconds = int(duration)
-
-            # Update campaign contact status if this was a campaign call
-            await update_campaign_contact_from_call(
-                call_record=call_record,
-                call_status=call_record.status,
-                duration_seconds=call_record.duration_seconds or 0,
-                db=db,
-            )
-
-            # Trigger QA evaluation for completed calls
-            if call_record.status == CallStatus.COMPLETED.value:
-                background_tasks.add_task(trigger_qa_evaluation, call_record.id)
-                log.info("qa_evaluation_triggered", call_id=str(call_record.id))
+            final = new_status.value if new_status is not None else call_record.status
+            if await _finish_call(db, call_record, final, event.duration_seconds):
+                await db.commit()
+                mark_committed(request)
+                await update_campaign_contact_from_call(
+                    call_record=call_record,
+                    call_status=call_record.status,
+                    duration_seconds=call_record.duration_seconds or 0,
+                    db=db,
+                )
+                if call_record.status == CallStatus.COMPLETED.value:
+                    background_tasks.add_task(trigger_qa_evaluation, call_record.id)
+                    log.info("qa_evaluation_triggered", call_id=str(call_record.id))
+            else:
+                return {"status": "ignored"}
+        else:
+            if new_status is not None:
+                call_record.status = new_status.value
+            if (
+                event.is_answered
+                and not call_record.answered_at
+                and call_record.direction != CallDirection.OUTBOUND.value
+            ):
+                # Outbound calls: the answer webhook owns answered_at (it is the
+                # one-shot claim on minting the stream token).
+                call_record.answered_at = datetime.now(UTC)
 
         await db.commit()
         # Not `event=`: structlog reserves that key for the message itself, and

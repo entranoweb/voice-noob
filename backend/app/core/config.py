@@ -154,8 +154,11 @@ class Settings(BaseSettings):
     # that admits the sender to the agent. Telnyx recommends five minutes.
     TELNYX_WEBHOOK_MAX_AGE_SECONDS: int = 300
     # Twilio signatures carry no timestamp, so replay memory is the only bound:
-    # how long an accepted request is remembered.
-    TWILIO_WEBHOOK_REPLAY_TTL_SECONDS: int = 86400
+    # how long an accepted request is remembered. It must outlive the call row
+    # (erasure and retention delete rows; a replay after that would find none):
+    # the longest retention period an account may set (3650 days,
+    # app.services.data_protection.MAX_RETENTION_DAYS) plus one day.
+    TWILIO_WEBHOOK_REPLAY_TTL_SECONDS: int = (3650 + 1) * 86400
     # Redis unreachable: accept signed webhooks anyway (False, default) or refuse
     # them with 503 (True). See app/core/webhook_replay.py.
     WEBHOOK_REPLAY_FAIL_CLOSED: bool = False

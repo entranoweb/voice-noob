@@ -148,14 +148,16 @@ def validate_telnyx_signature(
         from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
         # Decode the public key
-        public_key_bytes = base64.b64decode(key)
+        public_key_bytes = base64.b64decode(key, validate=True)
         ed25519_key = Ed25519PublicKey.from_public_bytes(public_key_bytes)
 
         # Create the signed payload (timestamp + payload)
         signed_payload = f"{timestamp}|".encode() + payload
 
         # Decode and verify signature
-        signature_bytes = base64.b64decode(signature)
+        # Strict: the default decoder drops characters outside the alphabet, so a
+        # signature with junk spliced in would verify under a different spelling.
+        signature_bytes = base64.b64decode(signature, validate=True)
         ed25519_key.verify(signature_bytes, signed_payload)
 
         # A genuine signature on an old webhook is a replay. The timestamp is
@@ -251,7 +253,7 @@ async def verify_twilio_webhook(request: Request, workspace_auth_token: str | No
             logger.debug("twilio_signature_verified", credential=source)
             await _guard_replay(
                 request,
-                twilio_replay_key(signature, url, params),
+                twilio_replay_key(url, params),
                 twilio_ttl_seconds(),
             )
             return True
@@ -322,7 +324,7 @@ async def verify_telnyx_webhook(request: Request, workspace_public_key: str | No
             logger.debug("telnyx_signature_verified", credential=source)
             await _guard_replay(
                 request,
-                telnyx_replay_key(signature, timestamp),
+                telnyx_replay_key(timestamp, body),
                 telnyx_ttl_seconds(),
             )
             return True
