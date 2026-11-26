@@ -8,6 +8,7 @@ from urllib.parse import urlencode
 import httpx
 import structlog
 
+from app.core.log_redaction import log_exception
 from app.services.tools.path_ids import encode_path_id, invalid_id_result
 
 logger = structlog.get_logger()
@@ -247,7 +248,7 @@ class CalendlyTools:
             return {"success": True, "event_types": event_types}
 
         except Exception as e:
-            logger.exception("calendly_get_event_types_error", error=str(e))
+            log_exception(logger, "calendly_get_event_types_error", e)
             return {"success": False, "error": str(e)}
 
     async def get_availability(
@@ -284,7 +285,7 @@ class CalendlyTools:
             return {"success": True, "available_slots": slots}
 
         except Exception as e:
-            logger.exception("calendly_get_availability_error", error=str(e))
+            log_exception(logger, "calendly_get_availability_error", e)
             return {"success": False, "error": str(e)}
 
     async def create_scheduling_link(
@@ -334,7 +335,7 @@ class CalendlyTools:
             }
 
         except Exception as e:
-            logger.exception("calendly_schedule_event_error", error=str(e))
+            log_exception(logger, "calendly_schedule_event_error", e)
             return {"success": False, "error": str(e)}
 
     async def list_events(
@@ -391,7 +392,7 @@ class CalendlyTools:
             return {"success": True, "events": events, "total": len(events)}
 
         except Exception as e:
-            logger.exception("calendly_list_events_error", error=str(e))
+            log_exception(logger, "calendly_list_events_error", e)
             return {"success": False, "error": str(e)}
 
     async def get_event(self, event_uuid: str) -> dict[str, Any]:
@@ -442,7 +443,7 @@ class CalendlyTools:
             }
 
         except Exception as e:
-            logger.exception("calendly_get_event_error", error=str(e))
+            log_exception(logger, "calendly_get_event_error", e)
             return {"success": False, "error": str(e)}
 
     async def cancel_event(self, event_uuid: str, reason: str | None = None) -> dict[str, Any]:
@@ -472,7 +473,7 @@ class CalendlyTools:
             }
 
         except Exception as e:
-            logger.exception("calendly_cancel_event_error", error=str(e))
+            log_exception(logger, "calendly_cancel_event_error", e)
             return {"success": False, "error": str(e)}
 
     async def execute_tool(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:

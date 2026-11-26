@@ -7,6 +7,8 @@ from collections.abc import Callable
 from enum import Enum
 from typing import Any
 
+from app.core.log_redaction import describe_exception
+
 logger = logging.getLogger(__name__)
 
 
@@ -103,14 +105,15 @@ class CircuitBreaker:
                     self.name,
                     self.failure_count,
                     self.failure_threshold,
-                    str(e),
+                    describe_exception(e),
                 )
 
                 if self.failure_count >= self.failure_threshold:
-                    logger.exception(
-                        "Circuit breaker %s OPENED after %d failures",
+                    logger.error(  # noqa: TRY400 - a traceback would carry the message
+                        "Circuit breaker %s OPENED after %d failures: %s",
                         self.name,
                         self.failure_count,
+                        describe_exception(e),
                     )
                     self.state = CircuitState.OPEN
 

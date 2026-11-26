@@ -4,6 +4,7 @@ import structlog
 from twilio.rest import Client
 from twilio.twiml.voice_response import Connect, VoiceResponse
 
+from app.core.log_redaction import log_exception, redact_phone
 from app.services.telephony.base import (
     CallDirection,
     CallInfo,
@@ -50,8 +51,8 @@ class TwilioService(TelephonyProvider):
         """
         self.logger.info(
             "initiating_call",
-            to=to_number,
-            from_=from_number,
+            to=redact_phone(to_number),
+            from_=redact_phone(from_number),
             webhook_url=webhook_url,
             agent_id=agent_id,
         )
@@ -95,7 +96,7 @@ class TwilioService(TelephonyProvider):
             self.client.calls(call_id).update(status="completed")
             return True
         except Exception as e:
-            self.logger.exception("hangup_failed", call_sid=call_id, error=str(e))
+            log_exception(self.logger, "hangup_failed", e, call_sid=call_id)
             return False
 
     async def list_phone_numbers(self) -> list[PhoneNumber]:
@@ -190,7 +191,7 @@ class TwilioService(TelephonyProvider):
         Returns:
             Purchased PhoneNumber object
         """
-        self.logger.info("purchasing_phone_number", phone_number=phone_number)
+        self.logger.info("purchasing_phone_number", phone_number=redact_phone(phone_number))
 
         number = self.client.incoming_phone_numbers.create(phone_number=phone_number)
 
@@ -223,7 +224,7 @@ class TwilioService(TelephonyProvider):
             self.client.incoming_phone_numbers(phone_number_id).delete()
             return True
         except Exception as e:
-            self.logger.exception("release_failed", sid=phone_number_id, error=str(e))
+            log_exception(self.logger, "release_failed", e, sid=phone_number_id)
             return False
 
     async def configure_phone_number_webhook(
@@ -260,7 +261,7 @@ class TwilioService(TelephonyProvider):
             self.client.incoming_phone_numbers(phone_number_id).update(**update_params)
             return True
         except Exception as e:
-            self.logger.exception("webhook_config_failed", sid=phone_number_id, error=str(e))
+            log_exception(self.logger, "webhook_config_failed", e, sid=phone_number_id)
             return False
 
     def generate_answer_response(
@@ -365,5 +366,5 @@ class TwilioService(TelephonyProvider):
                 duration_seconds=int(call.duration) if call.duration else 0,
             )
         except Exception as e:
-            self.logger.exception("get_call_info_failed", call_sid=call_sid, error=str(e))
+            log_exception(self.logger, "get_call_info_failed", e, call_sid=call_sid)
             return None

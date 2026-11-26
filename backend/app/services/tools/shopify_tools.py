@@ -8,6 +8,7 @@ from typing import Any
 import httpx
 import structlog
 
+from app.core.log_redaction import log_exception
 from app.services.tools.path_ids import encode_path_id, invalid_id_result
 
 logger = structlog.get_logger()
@@ -281,7 +282,7 @@ class ShopifyTools:
             return {"success": True, "orders": orders, "total": len(orders)}
 
         except Exception as e:
-            logger.exception("shopify_search_orders_error", error=str(e))
+            log_exception(logger, "shopify_search_orders_error", e)
             return {"success": False, "error": str(e)}
 
     async def get_order(self, order_id: str) -> dict[str, Any]:
@@ -365,7 +366,7 @@ class ShopifyTools:
             }
 
         except Exception as e:
-            logger.exception("shopify_get_order_error", error=str(e))
+            log_exception(logger, "shopify_get_order_error", e)
             return {"success": False, "error": str(e)}
 
     async def get_order_tracking(self, order_id: str) -> dict[str, Any]:
@@ -408,7 +409,7 @@ class ShopifyTools:
             }
 
         except Exception as e:
-            logger.exception("shopify_get_order_tracking_error", error=str(e))
+            log_exception(logger, "shopify_get_order_tracking_error", e)
             return {"success": False, "error": str(e)}
 
     async def search_products(self, query: str, limit: int = 10) -> dict[str, Any]:
@@ -460,7 +461,7 @@ class ShopifyTools:
             return {"success": True, "products": products, "total": len(products)}
 
         except Exception as e:
-            logger.exception("shopify_search_products_error", error=str(e))
+            log_exception(logger, "shopify_search_products_error", e)
             return {"success": False, "error": str(e)}
 
     async def check_inventory(self, product_id: str) -> dict[str, Any]:
@@ -504,7 +505,7 @@ class ShopifyTools:
             }
 
         except Exception as e:
-            logger.exception("shopify_check_inventory_error", error=str(e))
+            log_exception(logger, "shopify_check_inventory_error", e)
             return {"success": False, "error": str(e)}
 
     async def search_customers(self, query: str, limit: int = 10) -> dict[str, Any]:
@@ -541,7 +542,7 @@ class ShopifyTools:
             return {"success": True, "customers": customers, "total": len(customers)}
 
         except Exception as e:
-            logger.exception("shopify_search_customers_error", error=str(e))
+            log_exception(logger, "shopify_search_customers_error", e)
             return {"success": False, "error": str(e)}
 
     async def get_customer_orders(self, customer_id: str, limit: int = 10) -> dict[str, Any]:
@@ -584,7 +585,7 @@ class ShopifyTools:
             }
 
         except Exception as e:
-            logger.exception("shopify_get_customer_orders_error", error=str(e))
+            log_exception(logger, "shopify_get_customer_orders_error", e)
             return {"success": False, "error": str(e)}
 
     async def execute_tool(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
