@@ -10,6 +10,7 @@ This module provides:
 
 import asyncio
 import uuid
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
@@ -31,9 +32,11 @@ from app.core.ownership import parse_uuid
 from app.core.public_url import public_base_url, public_ws_base_url
 from app.core.stream_token import mint_stream_token
 from app.core.webhook_replay import (
+    DOCUMENT_TTL_SECONDS,
     EMPTY_DOCUMENT,
     ReplayClaim,
     answer_already_issued,
+    claim_age_seconds,
     claim_answer_issued,
     mark_committed,
     release_claim_on_error,
@@ -964,45 +967,99 @@ async def hangup_call(
 # =============================================================================
 
 
-async def _call_already_answered(provider: str, provider_call_id: str, db: AsyncSession) -> bool:
-    """Whether an inbound call with this carrier id already has a row.
+def _age_seconds(moment: datetime | None) -> float | None:
+    if moment is None:
+        return None
+    if moment.tzinfo is None:  # SQLite hands back naive datetimes; the column is UTC
+        moment = moment.replace(tzinfo=UTC)
+    return (datetime.now(UTC) - moment).total_seconds()
+
+
+async def _existing_call_age(
+    provider: str, provider_call_id: str, db: AsyncSession
+) -> float | None:
+    """Seconds since an inbound call with this carrier id got its row; ``None``
+    if it has none.
 
     A permanent, database-backed replay check for the inbound answering
     webhooks: unlike the Redis replay memory it does not expire and does not
     depend on Redis. A second answer for the same call would otherwise insert a
     second row and mint a second stream token. Uses
-    ``ix_call_records_provider_call_id`` (non-unique).
+    ``ix_call_records_provider_call_id`` (non-unique). The age tells the caller
+    whether the first answer may still be in flight (see ``_refuse_answer``).
     """
     if not provider_call_id:
-        return False
-    found = await db.scalar(
-        select(CallRecord.id)
+        return None
+    created = await db.scalar(
+        select(CallRecord.created_at)
         .where(CallRecord.provider == provider, CallRecord.provider_call_id == provider_call_id)
         .limit(1)
     )
-    return found is not None
+    return _age_seconds(created)
+
+
+def _refuse_answer(age_seconds: float | None) -> Response:
+    """No token for this answer: an empty document, or a retryable error.
+
+    An empty ``<Response/>`` ends the call. That is right only once the first
+    attempt has definitely finished and its stored document has expired
+    (``age_seconds`` past ``DOCUMENT_TTL_SECONDS``). Inside that window, or when
+    the age is unknown, this may be a genuine retry of an answer still in
+    flight, or one whose document was never stored, so it gets 503 with
+    ``Retry-After``: Telnyx retries 5xx, and for Twilio an error is the
+    response its fallback URL and retry settings act on, where an empty
+    document would certainly hang up.
+    """
+    if age_seconds is not None and age_seconds >= DOCUMENT_TTL_SECONDS:
+        return Response(content=EMPTY_DOCUMENT, media_type="application/xml")
+    return Response(
+        content="answer in progress, retry",
+        status_code=503,
+        headers={"Retry-After": "1"},
+        media_type="text/plain",
+    )
 
 
 # Matches PrivacySettings.data_retention_days default.
 DEFAULT_RETENTION_DAYS = 365
 
 
-async def _replay_ttl_for(agent: Agent | None, db: AsyncSession) -> int:
-    """How long a Twilio inbound/answer replay key must be remembered.
+async def _retention_days_for(agent: Agent, db: AsyncSession) -> int | None:
+    days: int | None = await db.scalar(
+        select(PrivacySettings.data_retention_days).where(PrivacySettings.user_id == agent.user_id)
+    )
+    return days
+
+
+def _replay_ttl_for(agent: Agent | None, db: AsyncSession) -> Callable[[], Awaitable[int]]:
+    """How long a Twilio inbound/answer replay key must be remembered, resolved
+    lazily so it runs only AFTER the signature has verified (an unsigned request
+    must not cost a database query).
 
     The call row is what stops a replay while it exists; the key has to cover
     the time after the row is gone. Rows go when the account's retention sweep
     (``PrivacySettings.data_retention_days``) or an erasure deletes them, so the
     key lives that period + 1 day. No settings row: the sweep never runs for the
     account, rows leave only by erasure, so the model default (365) is used.
-    Owner unresolved: the longest period an account may set.
+    Owner unresolved, or the lookup failing (logged ``replay_ttl_lookup_failed``;
+    its savepoint is unwound so the webhook can go on): the longest period an
+    account may set.
     """
-    if agent is None:
-        return twilio_long_ttl_seconds(None)
-    days = await db.scalar(
-        select(PrivacySettings.data_retention_days).where(PrivacySettings.user_id == agent.user_id)
-    )
-    return twilio_long_ttl_seconds(days if days is not None else DEFAULT_RETENTION_DAYS)
+
+    async def resolve() -> int:
+        if agent is None:
+            return twilio_long_ttl_seconds(None)
+        try:
+            # A savepoint: a failed lookup unwinds only itself, and does not
+            # expire the objects the webhook still holds (a full rollback would).
+            async with db.begin_nested():
+                days = await _retention_days_for(agent, db)
+        except Exception as exc:
+            logger.error("replay_ttl_lookup_failed", error=type(exc).__name__)  # noqa: TRY400
+            return twilio_long_ttl_seconds(None)
+        return twilio_long_ttl_seconds(days if days is not None else DEFAULT_RETENTION_DAYS)
+
+    return resolve
 
 
 _TERMINAL_STATUSES = frozenset(
@@ -1016,15 +1073,34 @@ _TERMINAL_STATUSES = frozenset(
 )
 
 
+# queued/initiated < ringing < in-progress < terminal. A callback that would
+# move a call to an earlier rank (reordered, or replayed) is ignored.
+_RANK = {
+    CallStatus.INITIATED.value: 0,
+    CallStatus.RINGING.value: 1,
+    CallStatus.IN_PROGRESS.value: 2,
+}
+
+
+def _steps_backwards(current: str, new: str | None) -> bool:
+    if new is None or current not in _RANK or new not in _RANK:
+        return False
+    return _RANK[new] < _RANK[current]
+
+
 def _is_terminal(call_record: CallRecord) -> bool:
     return call_record.status in _TERMINAL_STATUSES or call_record.ended_at is not None
 
 
 async def _duplicate_answer(request: Request) -> Response:
     """An identical request inside the token lifetime gets the first document
-    (a genuine retry whose first response was lost); after it, an empty one."""
+    (a genuine retry whose first response was lost). With no stored document it
+    is empty only once the first attempt is old enough to be done and expired;
+    before that it is a retryable 503 (``_refuse_answer``)."""
     document = await stored_answer_document(request)
-    return Response(content=document or EMPTY_DOCUMENT, media_type="application/xml")
+    if document:
+        return Response(content=document, media_type="application/xml")
+    return _refuse_answer(await claim_age_seconds(request))
 
 
 async def _answer_response(request: Request, document: str) -> Response:
@@ -1065,13 +1141,36 @@ async def _finish_call(
     return True
 
 
+_NO_ROW: Any = object()
+
+
+async def _lost_answer_age(provider: str, provider_call_id: str, db: AsyncSession) -> Any:
+    """For an outbound row that exists but cannot be claimed: seconds since it
+    was answered, a large number if it has ended, or ``_NO_ROW`` if there is
+    no row."""
+    row = (
+        await db.execute(
+            select(CallRecord.answered_at, CallRecord.ended_at, CallRecord.created_at).where(
+                CallRecord.provider == provider,
+                CallRecord.provider_call_id == provider_call_id,
+            )
+        )
+    ).first()
+    if row is None:
+        return _NO_ROW
+    answered_at, ended_at, created_at = row
+    if ended_at is not None:
+        return float("inf")
+    return _age_seconds(answered_at or created_at)
+
+
 _ROW_RECHECKS = 3
 _ROW_RECHECK_DELAY_SECONDS = 0.2
 
 
 async def _claim_outbound_answer(
     request: Request, provider: str, provider_call_id: str, db: AsyncSession
-) -> bool:
+) -> tuple[bool, float | None]:
     """Win the one-shot right to mint a stream token for an outbound call.
 
     The dial API writes the row (``answered_at`` NULL) *after* the carrier has
@@ -1088,7 +1187,7 @@ async def _claim_outbound_answer(
     covers, so the answer cannot be claimed twice by either route.
     """
     if await answer_already_issued(provider, provider_call_id):
-        return False
+        return False, None
 
     for attempt in range(_ROW_RECHECKS + 1):
         claimed = await db.scalar(
@@ -1106,16 +1205,17 @@ async def _claim_outbound_answer(
         if claimed is not None:
             await db.commit()
             mark_committed(request)
-            return True
-        if await _call_already_answered(provider, provider_call_id, db):
-            return False
+            return True, None
+        lost_age = await _lost_answer_age(provider, provider_call_id, db)
+        if lost_age is not _NO_ROW:
+            return False, lost_age
         if attempt < _ROW_RECHECKS:
             await asyncio.sleep(_ROW_RECHECK_DELAY_SECONDS)
 
     logger.warning("outbound_answer_without_call_row", provider=provider, call_id=provider_call_id)
     claim = await claim_answer_issued(request, provider, provider_call_id)
     # Unreachable store: fail open, as everywhere in the replay guard (it logged).
-    return claim is not ReplayClaim.DUPLICATE
+    return claim is not ReplayClaim.DUPLICATE, None
 
 
 @webhook_router.post(
@@ -1141,7 +1241,7 @@ async def twilio_voice_webhook(
     await verify_twilio_webhook(
         request,
         await twilio_auth_token_for_agent(agent, db),
-        replay_ttl_seconds=await _replay_ttl_for(agent, db),
+        replay_ttl=_replay_ttl_for(agent, db),
     )
     if webhook_is_duplicate(request):
         return await _duplicate_answer(request)
@@ -1169,9 +1269,10 @@ async def twilio_voice_webhook(
             media_type="application/xml",
         )
 
-    if await _call_already_answered("twilio", call_sid, db):
+    existing_age = await _existing_call_age("twilio", call_sid, db)
+    if existing_age is not None:
         log.warning("answer_webhook_for_existing_call", call_sid=call_sid)
-        return Response(content=EMPTY_DOCUMENT, media_type="application/xml")
+        return _refuse_answer(existing_age)
 
     # Get workspace for the agent
     agent_workspace_id = await get_agent_workspace_id(agent.id, db)
@@ -1287,6 +1388,13 @@ async def twilio_status_callback(
                 log.warning("twilio_status_lost_race_ignored", received=call_status)
                 return {"status": "ignored"}
         else:
+            if _steps_backwards(call_record.status, new_status):
+                log.warning(
+                    "twilio_status_backwards_ignored",
+                    recorded=call_record.status,
+                    received=call_status,
+                )
+                return {"status": "ignored"}
             call_record.status = new_status
             if (
                 call_status == "in-progress"
@@ -1324,7 +1432,7 @@ async def twilio_answer_webhook(
     await verify_twilio_webhook(
         request,
         await twilio_auth_token_for_agent(owner, db),
-        replay_ttl_seconds=await _replay_ttl_for(owner, db),
+        replay_ttl=_replay_ttl_for(owner, db),
     )
     if webhook_is_duplicate(request):
         return await _duplicate_answer(request)
@@ -1335,9 +1443,10 @@ async def twilio_answer_webhook(
     call_sid = str(form.get("CallSid", ""))
 
     log = logger.bind(webhook="twilio_answer", agent_id=agent_id, call_sid=call_sid)
-    if not await _claim_outbound_answer(request, "twilio", call_sid, db):
+    won, lost_age = await _claim_outbound_answer(request, "twilio", call_sid, db)
+    if not won:
         log.warning("outbound_answer_already_claimed")
-        return Response(content=EMPTY_DOCUMENT, media_type="application/xml")
+        return _refuse_answer(lost_age)
     log.info("twilio_outbound_answered")
 
     stream_url = build_twilio_stream_url(request, agent_id)
@@ -1403,9 +1512,10 @@ async def telnyx_voice_webhook(
             media_type="application/xml",
         )
 
-    if await _call_already_answered("telnyx", event.call_id, db):
+    existing_age = await _existing_call_age("telnyx", event.call_id, db)
+    if existing_age is not None:
         log.warning("answer_webhook_for_existing_call", call_control_id=event.call_id)
-        return Response(content=EMPTY_DOCUMENT, media_type="application/xml")
+        return _refuse_answer(existing_age)
 
     # Get workspace for the agent
     agent_workspace_id = await get_agent_workspace_id(agent.id, db)
@@ -1468,9 +1578,10 @@ async def telnyx_answer_webhook(
         call_control_id=event.call_id,
         wire_format=event.wire_format.value,
     )
-    if not await _claim_outbound_answer(request, "telnyx", event.call_id, db):
+    won, lost_age = await _claim_outbound_answer(request, "telnyx", event.call_id, db)
+    if not won:
         log.warning("outbound_answer_already_claimed")
-        return Response(content=EMPTY_DOCUMENT, media_type="application/xml")
+        return _refuse_answer(lost_age)
     log.info("telnyx_outbound_answered")
 
     stream_url = build_telnyx_stream_url(
@@ -1544,6 +1655,13 @@ async def telnyx_status_callback(
             else:
                 return {"status": "ignored"}
         else:
+            if _steps_backwards(call_record.status, new_status.value if new_status else None):
+                log.warning(
+                    "telnyx_event_backwards_ignored",
+                    recorded=call_record.status,
+                    received=event.event_type,
+                )
+                return {"status": "ignored"}
             if new_status is not None:
                 call_record.status = new_status.value
             if (

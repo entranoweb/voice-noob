@@ -12,6 +12,7 @@ when it is on.
 import hashlib
 import hmac
 import time
+from collections.abc import Awaitable, Callable
 from functools import wraps
 from typing import Any
 
@@ -196,7 +197,7 @@ async def verify_twilio_webhook(
     request: Request,
     workspace_auth_token: str | None = None,
     *,
-    replay_ttl_seconds: int | None = None,
+    replay_ttl: Callable[[], Awaitable[int]] | None = None,
 ) -> bool:
     """Verify Twilio webhook signature from request.
 
@@ -256,11 +257,9 @@ async def verify_twilio_webhook(
     for source, auth_token in candidates:
         if validate_twilio_signature(signature, url, params, auth_token):
             logger.debug("twilio_signature_verified", credential=source)
-            await _guard_replay(
-                request,
-                twilio_replay_key(url, params),
-                replay_ttl_seconds or twilio_ttl_seconds(),
-            )
+            # Resolved only now: an unsigned request costs no lookup.
+            ttl = await replay_ttl() if replay_ttl is not None else twilio_ttl_seconds()
+            await _guard_replay(request, twilio_replay_key(url, params), ttl)
             return True
 
     logger.warning("invalid_twilio_signature", url=url, tried=[source for source, _ in candidates])

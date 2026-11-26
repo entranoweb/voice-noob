@@ -11,6 +11,7 @@ import asyncio
 import base64
 import hashlib
 import hmac
+import os
 import time
 import uuid
 from typing import Any
@@ -141,6 +142,33 @@ def _telnyx_body(call_id: str) -> bytes:
             "Direction": "inbound",
         }
     )
+
+
+needs_postgres = pytest.mark.skipif(
+    not os.getenv("TEST_DATABASE_URL"),
+    reason=(
+        "overlapping writers on one row: SQLite serialises the whole file and raises "
+        "'database is locked' (the per-test fallback engine); the atomic UPDATE being "
+        "tested is a Postgres row-lock behaviour. Runs, never skips, where "
+        "TEST_DATABASE_URL is set (CI)."
+    ),
+)
+
+
+async def _age_claims(store: Any, seconds: float) -> None:
+    for key in await store.keys("webhook-replay:*"):
+        await store.set(key, str(time.time() - seconds), keepttl=True)
+
+
+async def _age_rows(env: dict[str, Any], seconds: float) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    async with env["session_maker"]() as session:
+        for record in (await session.execute(select(CallRecord))).scalars().all():
+            record.created_at = datetime.now(UTC) - timedelta(seconds=seconds)
+            if record.answered_at:
+                record.answered_at = record.created_at
+        await session.commit()
 
 
 class TestTelnyxReplay:
@@ -324,7 +352,10 @@ class TestExistingCallRowIsPermanent:
                 "/webhooks/telnyx/voice", content=body, headers=_telnyx_headers(env, body)
             )
         assert "token=" in first.text
-        assert second.status_code == 200
+        # The row is seconds old: this may be a retry of an answer still in
+        # flight, so it is a retryable error, never an empty document.
+        assert second.status_code == 503
+        assert second.headers["retry-after"] == "1"
         assert "token=" not in second.text
         assert await _rows(env) == 1
 
@@ -345,7 +376,7 @@ class TestExistingCallRowIsPermanent:
             await webhook_replay_store.flushall()
             second = await client.post(path, content=_form(params), headers=headers)
         assert 'name="token"' in first.text
-        assert second.status_code == 200
+        assert second.status_code == 503
         assert 'name="token"' not in second.text
         assert await _rows(env) == 1
 
@@ -390,7 +421,7 @@ class TestOutboundAnswerIsOneShot:
             await webhook_replay_store.flushall()
             second = await client.post(url, content=body, headers=headers)
         assert "token=" in first.text
-        assert second.status_code == 200
+        assert second.status_code == 503
         assert "token=" not in second.text
 
     @pytest.mark.asyncio
@@ -415,6 +446,7 @@ class TestOutboundAnswerIsOneShot:
         assert 'name="token"' not in second.text
 
     @pytest.mark.asyncio
+    @needs_postgres
     async def test_two_concurrent_answers_mint_exactly_one_token(self, env: dict[str, Any]) -> None:
         await _seed_outbound(env, "v3:out-race")
         url = f"/webhooks/telnyx/answer?agent_id={env['agent_id']}"
@@ -432,7 +464,7 @@ class TestOutboundAnswerIsOneShot:
                 ]
             )
         assert sum("token=" in r.text for r in responses) == 1
-        assert all(r.status_code == 200 for r in responses)
+        assert all(r.status_code in (200, 503) for r in responses)
 
     @pytest.mark.asyncio
     async def test_a_ringing_callback_before_the_answer_still_leaves_it_answerable(
@@ -639,6 +671,7 @@ class TestAnswerWithNoRow:
         assert "token=" not in later.text
 
     @pytest.mark.asyncio
+    @needs_postgres
     async def test_a_row_that_lands_during_the_recheck_is_answered_normally(
         self, env: dict[str, Any], monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -685,9 +718,47 @@ class TestIdempotentRetry:
         headers = _telnyx_headers(env, body)
         async with _client() as client:
             await client.post("/webhooks/telnyx/voice", content=body, headers=headers)
+            await _age_claims(webhook_replay_store, 200)  # past the document's 2 minutes
             for key in await webhook_replay_store.keys("webhook-replay-doc:*"):
-                await webhook_replay_store.delete(key)  # two minutes have passed
+                await webhook_replay_store.delete(key)
             late = await client.post("/webhooks/telnyx/voice", content=body, headers=headers)
+        assert late.status_code == 200
+        assert late.text == EMPTY_DOCUMENT
+
+    @pytest.mark.asyncio
+    async def test_a_retry_while_the_first_is_in_flight_is_a_retryable_error_not_empty(
+        self, env: dict[str, Any], webhook_replay_store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The first attempt claimed the key but has not stored a document yet.
+        monkeypatch.setattr("app.core.webhook_replay._DOC_POLLS", 1)
+        body = _telnyx_body("v3:in-flight")
+        headers = _telnyx_headers(env, body)
+        async with _client() as client:
+            await client.post("/webhooks/telnyx/voice", content=body, headers=headers)
+            for key in await webhook_replay_store.keys("webhook-replay-doc:*"):
+                await webhook_replay_store.delete(key)  # first attempt's document not (yet) there
+            retry = await client.post("/webhooks/telnyx/voice", content=body, headers=headers)
+        assert retry.status_code == 503
+        assert retry.headers["retry-after"] == "1"
+        assert "<Response" not in retry.text
+
+    @pytest.mark.asyncio
+    async def test_an_old_row_with_no_key_gets_the_empty_document(
+        self, env: dict[str, Any], webhook_replay_store: Any
+    ) -> None:
+        from app.core.webhook_replay import EMPTY_DOCUMENT
+
+        body = _telnyx_body("v3:old-row")
+        async with _client() as client:
+            await client.post(
+                "/webhooks/telnyx/voice", content=body, headers=_telnyx_headers(env, body)
+            )
+            await webhook_replay_store.flushall()
+            await _age_rows(env, 600)
+            late = await client.post(
+                "/webhooks/telnyx/voice", content=body, headers=_telnyx_headers(env, body)
+            )
+        assert late.status_code == 200
         assert late.text == EMPTY_DOCUMENT
 
     @pytest.mark.asyncio
@@ -878,3 +949,170 @@ class TestPerKeyTtl:
         # The row still exists (retention is now 365 days), so the row check refuses.
         assert 'name="token"' not in replay.text
         assert await _rows(env) == 1
+
+
+class TestFinishCallGuardAlone:
+    """The pre-check (`_is_terminal`) masks the UPDATE's own guard. Bypass it, so
+    both handlers act as if they had read the call before it ended: only the
+    ``ended_at IS NULL AND status NOT IN terminal`` guard is left to stop the
+    second side effect."""
+
+    @pytest.mark.asyncio
+    async def test_the_update_alone_keeps_one_transition_and_one_side_effect(
+        self, env: dict[str, Any], side_effects: dict[str, int], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("app.api.telephony._is_terminal", lambda _record: False)
+        await _seed_outbound(env, "v3:guard", status="in_progress")
+        now = int(time.time())
+        async with _client() as client:
+            for offset in (0, 1):
+                body = _form({"CallSid": "v3:guard", "CallStatus": "completed"})
+                response = await client.post(
+                    "/webhooks/telnyx/status",
+                    content=body,
+                    headers=_telnyx_headers(env, body, str(now - offset)),
+                )
+                assert response.status_code == 200
+        record = await _fetch(env, "v3:guard")
+        assert record.status == "completed"
+        assert side_effects == {"campaign": 1, "qa": 1}
+
+    @pytest.mark.asyncio
+    @needs_postgres
+    async def test_two_concurrent_hangups_make_one_transition(
+        self, env: dict[str, Any], side_effects: dict[str, int], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("app.api.telephony._is_terminal", lambda _record: False)
+        await _seed_outbound(env, "v3:guard-race", status="in_progress")
+        now = int(time.time())
+        async with _client() as client:
+            bodies = [_form({"CallSid": "v3:guard-race", "CallStatus": "completed"})] * 4
+            await asyncio.gather(
+                *[
+                    client.post(
+                        "/webhooks/telnyx/status",
+                        content=b,
+                        headers=_telnyx_headers(env, b, str(now - i)),
+                    )
+                    for i, b in enumerate(bodies)
+                ]
+            )
+        assert side_effects == {"campaign": 1, "qa": 1}
+
+
+class TestReplayTtlLookup:
+    PATH = "/webhooks/twilio/voice"
+
+    @pytest.mark.asyncio
+    async def test_a_failing_lookup_falls_back_to_the_max_and_the_call_is_answered(
+        self,
+        env: dict[str, Any],
+        webhook_replay_store: Any,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        async def boom(*_: Any, **__: Any) -> Any:
+            raise RuntimeError("settings table unavailable")
+
+        monkeypatch.setattr("app.api.telephony._retention_days_for", boom)
+        params = {"CallSid": "CA-lk", "From": CALLER_NUMBER, "To": AGENT_NUMBER}
+        async with _client() as client:
+            response = await client.post(
+                self.PATH, content=_form(params), headers=_twilio_headers(self.PATH, params)
+            )
+        assert response.status_code == 200
+        assert 'name="token"' in response.text
+        (ttl,) = await _ttls(webhook_replay_store)
+        assert (3650 + 1) * 86400 - 5 <= ttl <= (3650 + 1) * 86400
+
+    @pytest.mark.asyncio
+    async def test_the_lookup_runs_only_after_the_signature_verifies(
+        self, env: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls: list[int] = []
+
+        async def spy(*_: Any, **__: Any) -> Any:
+            calls.append(1)
+
+        monkeypatch.setattr("app.api.telephony._retention_days_for", spy)
+        params = {"CallSid": "CA-unsigned", "From": CALLER_NUMBER, "To": AGENT_NUMBER}
+        async with _client() as client:
+            response = await client.post(
+                self.PATH,
+                content=_form(params),
+                headers={"content-type": "application/x-www-form-urlencoded"},
+            )
+        assert response.status_code == 403
+        assert calls == []
+
+
+class TestRetryDuringFirstAttempt:
+    @pytest.mark.asyncio
+    async def test_an_aged_answered_outbound_row_gets_the_empty_document(
+        self, env: dict[str, Any], webhook_replay_store: Any
+    ) -> None:
+        from app.core.webhook_replay import EMPTY_DOCUMENT
+
+        await _seed_outbound(env, "v3:out-aged")
+        url = f"/webhooks/telnyx/answer?agent_id={env['agent_id']}"
+        now = int(time.time())
+        async with _client() as client:
+            body, headers = _telnyx_answer(env, "v3:out-aged", str(now))
+            first = await client.post(url, content=body, headers=headers)
+            await _age_rows(env, 600)
+            body2, headers2 = _telnyx_answer(env, "v3:out-aged", str(now - 1))
+            late = await client.post(url, content=body2, headers=headers2)
+        assert "token=" in first.text
+        assert late.status_code == 200
+        assert late.text == EMPTY_DOCUMENT
+
+    @pytest.mark.asyncio
+    async def test_a_young_answered_outbound_row_gets_a_retryable_error(
+        self, env: dict[str, Any]
+    ) -> None:
+        await _seed_outbound(env, "v3:out-young")
+        url = f"/webhooks/telnyx/answer?agent_id={env['agent_id']}"
+        now = int(time.time())
+        async with _client() as client:
+            body, headers = _telnyx_answer(env, "v3:out-young", str(now))
+            await client.post(url, content=body, headers=headers)
+            body2, headers2 = _telnyx_answer(env, "v3:out-young", str(now - 1))
+            second = await client.post(url, content=body2, headers=headers2)
+        assert second.status_code == 503
+        assert second.headers["retry-after"] == "1"
+
+
+class TestStatusNeverStepsBackwards:
+    @pytest.mark.asyncio
+    async def test_telnyx_ringing_after_in_progress_is_ignored(self, env: dict[str, Any]) -> None:
+        await _seed_outbound(env, "v3:rank", status="in_progress")
+        body = _form({"CallSid": "v3:rank", "CallStatus": "ringing"})
+        async with _client() as client:
+            response = await client.post(
+                "/webhooks/telnyx/status", content=body, headers=_telnyx_headers(env, body)
+            )
+        assert response.json() == {"status": "ignored"}
+        assert (await _fetch(env, "v3:rank")).status == "in_progress"
+
+    @pytest.mark.asyncio
+    async def test_twilio_ringing_after_in_progress_is_ignored_and_forward_moves_apply(
+        self, env: dict[str, Any]
+    ) -> None:
+        await _seed_outbound(env, "CA-rank", status="ringing")
+        path = "/webhooks/twilio/status"
+        async with _client() as client:
+            for status, expected in (
+                ("in-progress", "in_progress"),
+                ("ringing", "in_progress"),
+            ):
+                params = {"CallSid": "CA-rank", "CallStatus": status}
+                await client.post(
+                    path, content=_form(params), headers=_twilio_headers(path, params)
+                )
+                assert (await _fetch(env, "CA-rank")).status == expected
+
+
+def test_twilio_key_encodes_keys_and_values_before_joining() -> None:
+    from app.core.webhook_replay import twilio_replay_key
+
+    # Joined raw, both of these read "a=1&b=2".
+    assert twilio_replay_key("u", {"a": "1&b=2"}) != twilio_replay_key("u", {"a": "1", "b": "2"})

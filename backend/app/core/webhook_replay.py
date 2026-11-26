@@ -53,9 +53,11 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import time
 from collections.abc import AsyncIterator  # noqa: TC003 (FastAPI resolves the annotation)
 from enum import StrEnum
 from typing import Any
+from urllib.parse import quote
 
 import structlog
 from fastapi import Request  # noqa: TC002 (FastAPI injects by annotation)
@@ -102,7 +104,11 @@ def telnyx_replay_key(timestamp: str, body: bytes) -> str:
 def twilio_replay_key(url: str, params: dict[str, Any]) -> str:
     """Keyed on the signed content: full URL and the sorted parameters (which
     carry CallSid/MessageSid and CallStatus), not the signature."""
-    sorted_params = "&".join(f"{k}={v}" for k, v in sorted(params.items()))
+    # Each key and value is percent-encoded before joining, so a value containing
+    # "&" or "=" cannot be made to read as a different parameter list.
+    sorted_params = "&".join(
+        f"{quote(str(k), safe='')}={quote(str(v), safe='')}" for k, v in sorted(params.items())
+    )
     return _digest("twilio", url, sorted_params)
 
 
@@ -137,7 +143,7 @@ def answer_issued_key(provider: str, provider_call_id: str) -> str:
 
 async def _set_nx(key: str, ttl_seconds: int) -> Any:
     redis = await _store()
-    return await redis.set(key, "1", nx=True, ex=ttl_seconds)
+    return await redis.set(key, str(time.time()), nx=True, ex=ttl_seconds)
 
 
 async def claim_webhook(key: str, *, ttl_seconds: int) -> ReplayClaim:
@@ -216,6 +222,19 @@ async def stored_answer_document(request: Request) -> str | None:
         if attempt < _DOC_POLLS - 1:
             await asyncio.sleep(0.2)
     return None
+
+
+async def claim_age_seconds(request: Request) -> float | None:
+    """Seconds since the first request with this key was accepted; ``None`` if unknown."""
+    key = getattr(request.state, _STATE_KEY, None)
+    if not key:
+        return None
+    try:
+        redis = await _store()
+        value = await asyncio.wait_for(redis.get(key), STORE_TIMEOUT_SECONDS)
+        return max(0.0, time.time() - float(value))
+    except Exception:
+        return None
 
 
 async def claim_answer_issued(
