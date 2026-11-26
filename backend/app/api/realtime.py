@@ -20,13 +20,9 @@ from app.api.integrations import get_workspace_integrations
 from app.api.settings import get_user_api_keys
 from app.core.auth import CurrentUser, user_id_to_uuid
 from app.core.config import settings
-<<<<<<< HEAD
-from app.core.log_redaction import redact_arguments
-from app.core.ownership import get_owned_agent
-=======
 from app.core.limiter import limiter
+from app.core.log_redaction import redact_arguments
 from app.core.ownership import get_owned_agent, owned_agent_workspace_id, parse_uuid
->>>>>>> origin/main
 from app.db.session import get_db
 from app.models.agent import Agent
 from app.models.user import User

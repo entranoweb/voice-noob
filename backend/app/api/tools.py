@@ -9,11 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.integrations import get_workspace_integrations
 from app.core.auth import CurrentUser, user_id_to_uuid
-<<<<<<< HEAD
-from app.core.log_redaction import log_exception, redact_arguments
-=======
 from app.core.limiter import limiter
->>>>>>> origin/main
+from app.core.log_redaction import log_exception, redact_arguments
 from app.core.ownership import get_owned_agent, owned_agent_workspace_id
 from app.db.session import get_db
 from app.services.tools.registry import ToolRegistry
@@ -65,11 +62,7 @@ async def execute_tool(
         user_id=user_id,
     )
 
-<<<<<<< HEAD
-    tool_logger.info("tool_execution_requested", arguments=redact_arguments(request.arguments))
-=======
-    tool_logger.info("tool_execution_requested", arguments=body.arguments)
->>>>>>> origin/main
+    tool_logger.info("tool_execution_requested", arguments=redact_arguments(body.arguments))
 
     # The agent id comes from the client. It selects whose contacts, bookings
     # and integration credentials the tool acts on, so it has to be the
