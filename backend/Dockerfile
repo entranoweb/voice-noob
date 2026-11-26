@@ -39,7 +39,7 @@ RUN chmod +x /app/scripts/docker-entrypoint.sh
 # dependency should not hand out root inside the container.
 # The call-audio folder is made here, owned by the app user, so that a volume
 # mounted on it for the first time inherits that ownership and can be written.
-RUN mkdir -p /app/data/caller-audio \
+RUN mkdir -p /app/data/caller-audio /app/data/backups \
     && groupadd --system --gid 10001 app \
     && useradd --system --uid 10001 --gid app --home-dir /app --no-create-home app \
     && chown -R app:app /app

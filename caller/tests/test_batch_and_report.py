@@ -191,8 +191,11 @@ async def test_hooks_are_told_which_scenario_they_are_resetting_for(
     bank: ClipBank, tmp_path: Path
 ) -> None:
     seen = tmp_path / "seen.txt"
+    import shlex
+    import sys
+
     command = (
-        "python -c \"import os; open(os.environ['SEEN'], 'a').write("
+        f"{shlex.quote(sys.executable)} -c \"import os; open(os.environ['SEEN'], 'a').write("
         "os.environ['SYNTHIQ_PHASE'] + ':' + os.environ['SYNTHIQ_MUTATES'] + ' ')\""
     )
     import os

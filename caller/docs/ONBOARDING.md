@@ -179,7 +179,8 @@ synthiq-caller validate scenarios --clips clips --target target.json
 It places no call. It checks that the files parse, that the clips they name are
 in the bank, and that what they require of the system is stated. Read every line:
 
-- `CLIPS NOT USABLE`: a clip is missing or ruled out.
+- `CLIPS NOT USABLE`: a clip is missing, ruled out, or not audio (a few bytes,
+  no audio, cut short).
 - `UNGRADEABLE until expectations are stated`: the scenario asks nothing of the
   call. The command still exits 0, because an unfinished file is not a broken
   one. Do not treat that exit code as "ready".

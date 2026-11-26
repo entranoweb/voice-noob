@@ -587,6 +587,8 @@ async def test_a_real_run_marked_by_forget_says_so_in_its_report(tmp_path: Path)
     assert code == 0
     after = json.loads((tmp_path / "out" / "run-001.json").read_text(encoding="utf-8"))
     assert after.pop("clips_removed")[0]["clip"] == "dob"
+    # The mark is a rig write, so the digest is stamped again for the new content.
+    assert after.pop("integrity") != before.pop("integrity", None)
     assert after == before  # nothing else about the stored call changed
     assert "clips removed: 1 call(s)" in render(summarise(str(tmp_path / "out")))
 

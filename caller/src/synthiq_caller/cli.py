@@ -29,11 +29,12 @@ import argparse
 import asyncio
 import json
 import os
+import signal
 import sys
 from pathlib import Path
 from typing import Any
 
-from synthiq_caller import manifest
+from synthiq_caller import completeness, manifest
 from synthiq_caller.batch import (
     ALLOWED,
     BatchResult,
@@ -51,6 +52,7 @@ from synthiq_caller.batch import (
 from synthiq_caller.clips import ClipBank
 from synthiq_caller.compare import (
     compare,
+    comparison_failures,
     load_baseline,
     make_baseline,
     render_comparison,
@@ -176,13 +178,17 @@ def report(directory: str, *, details: bool = True, fail_under: float | None = N
     if not files and not (Path(directory) / "batch.json").exists():
         print("no runs found")
         return 1
+    shape = completeness.check(directory)  # raises Unreadable before anything is printed
     if details:
         for index, path in enumerate(files, start=1):
-            _print_grade(index, json.loads(path.read_text(encoding="utf-8")))
+            _print_grade(index, completeness.read_run(path))
         print()
     summary = summarise(directory)
     print(render(summary))
-    code, line = fail_under_exit(summary, fail_under)
+    print()
+    for line in shape.lines():
+        print(line)
+    code, line = fail_under_exit(summary, fail_under, shape)
     if line:
         print(f"\n{line}")
     return code
@@ -207,6 +213,9 @@ def validate(args: argparse.Namespace) -> int:
             header=args.check_requires_header,
             timeout_s=args.check_requires_timeout,
         )
+    if not Path(args.scenarios).is_dir():
+        print(f"ERROR: {args.scenarios}: not a directory of scenarios; nothing was checked")
+        return 1
     try:
         rows = validate_directory(
             args.scenarios, _bank(args) if args.clips else None, checker, _target(args)
@@ -215,6 +224,10 @@ def validate(args: argparse.Namespace) -> int:
         # A file that does not load is an error with or without --strict.
         for line in load_problems(args.scenarios, _target(args)) or [str(error)]:
             print(f"ERROR: {line}")
+        return 1
+    if not rows:
+        # Nothing checked is not a check that passed.
+        print(f"ERROR: {args.scenarios}: no scenario or chain files; nothing was checked")
         return 1
     for row in rows:
         print(row.line())
@@ -232,6 +245,7 @@ def validate(args: argparse.Namespace) -> int:
                 "invalid field",
                 "consent record missing",
                 "unfinished removal",
+                "unusable audio",
             ):
                 print(f"  ... {count - BANK_LINES} more {kind} finding(s) not listed")
     unchecked = sum(row.requires_state == "unchecked" for row in rows)
@@ -273,12 +287,36 @@ def _scorecard(args: argparse.Namespace) -> int:
     return 0
 
 
-def _gate(directory: str, rate: float, confidence: float, max_unjudged: float = 0.1) -> int:
+def _gate(
+    directory: str,
+    rate: float,
+    confidence: float,
+    max_unjudged: float = 0.1,
+    *,
+    allow_mixed: bool = False,
+    require_complete: bool = False,
+    allow_held_back: bool = False,
+) -> int:
     """Judge a batch against a claimed pass rate. Exit 0 only when it is demonstrated.
 
-    The rule is ``report.gate_reading``; this prints it.
+    The rule is ``report.gate_reading``; this prints it. Exit 1 when it is not
+    demonstrated, which includes a directory that is not what was planned (a call
+    that never ran, a run file removed or edited) and runs made against different
+    versions of one scenario. Exit 2 when a file cannot be read.
     """
-    read = gate_reading(summarise(directory), rate, confidence, max_unjudged)
+    root = Path(directory)
+    summary = summarise(directory)
+    shape = completeness.check(directory)
+    try:
+        manifest.refuse_mixed([root], allow=allow_mixed)
+    except manifest.MixedScenarios as error:
+        print(f"NOT met: {error}")
+        return 1
+    read = gate_reading(summary, rate, confidence, max_unjudged, shape, allow_held_back)
+    if require_complete and shape.unknown:
+        read.refused.append(f"completeness could not be shown: {shape.reason}")
+    for line in shape.lines():
+        print(line)
     print(f"by call:     {read.by_call}")
     print(f"by scenario: {read.by_scenario}")
     print(
@@ -287,12 +325,47 @@ def _gate(directory: str, rate: float, confidence: float, max_unjudged: float = 
         f"re-run them), ungraded {read.ungraded}, ungradeable {read.ungradeable}, "
         f"not run {read.not_run}. Calls that were placed and could not be graded count against."
     )
+    print(
+        f"held back: {read.held_back} of {shape.planned or read.attempted} planned call(s)"
+        + (
+            " (--allow-held-back: the verdict judges only the calls that ran)"
+            if read.held_back and read.held_back_allowed
+            else ""
+        )
+    )
     if read.met_calls and not read.met_scenarios:
         print("The by-call reading is met only by counting repeats as independent calls.")
+    # What acceptance says about the audio, said here too. It does not change the verdict.
+    for warning in _clip_warnings([root]):
+        print(f"warning: {warning}")
     if read.refused:
         print("NOT met: " + "; ".join(read.refused) + ".")
         return 1
     return 0 if read.met else 1
+
+
+def _clip_warnings(roots: list[Path]) -> list[str]:
+    """The clip warnings acceptance gives, from the same counts (``acceptance._clips``)."""
+    from synthiq_caller import acceptance
+
+    clips = acceptance._clips(roots)
+    found = []
+    if clips["consent_missing"]:
+        found.append(
+            f"{clips['consent_missing_calls']} call(s) played a clip with no lawful basis or "
+            "consent record (consent record missing), allowed for the run"
+        )
+    if clips["provenance_unknown"]:
+        found.append(
+            f"{clips['provenance_unknown_calls']} call(s) played a clip whose manifest does not "
+            "say if it is a real recording or a synthetic voice (provenance unknown)"
+        )
+    if clips["unverified"]:
+        found.append(
+            f"{clips['unverified_calls']} call(s) played a clip whose label no person has "
+            "confirmed (labels unverified): what the caller 'said' is a recogniser's reading"
+        )
+    return found
 
 
 def _acceptance(args: argparse.Namespace) -> int:
@@ -307,6 +380,8 @@ def _acceptance(args: argparse.Namespace) -> int:
             max_unjudged=args.max_unjudged,
             allow_mixed=args.allow_mixed_scenarios,
             allow_no_manifest=args.allow_no_manifest,
+            require_complete=args.require_complete,
+            allow_held_back=args.allow_held_back,
             title=args.title,
         )
     except acceptance.Refused as error:
@@ -493,6 +568,16 @@ TARGET_HELP = (
 )
 
 
+def _require_something(args: argparse.Namespace, scenarios: list[Any], chains: list[Any]) -> None:
+    """Nothing to run is not a run that passed."""
+    if not scenarios and not chains:
+        raise SystemExit(
+            f"{args.scenarios}: no scenario or chain files"
+            + (f" matching {args.only}" if args.only else "")
+            + "; no call was placed"
+        )
+
+
 def _batch(args: argparse.Namespace) -> int:
     from synthiq_caller.target import exceeds_allowance
 
@@ -505,6 +590,8 @@ def _batch(args: argparse.Namespace) -> int:
             f"{target['name'] if target else ''!r} permits "
             f"(allow_mutating: {target['allow_mutating'] if target else ''})"
         )
+    if not Path(args.scenarios).is_dir():
+        raise SystemExit(f"{args.scenarios}: not a directory of scenarios; no call was placed")
     scenarios = load_scenarios(args.scenarios, target)
     chains = load_chains(args.scenarios, target)
     if args.only:
@@ -512,6 +599,7 @@ def _batch(args: argparse.Namespace) -> int:
         chains = [(f, c) for f, c in chains if any(o in f for o in args.only)]
     hooks = _hooks(args)
     if args.dry_run:
+        _require_something(args, scenarios, chains)
         from synthiq_caller.plan import dry_run
 
         for line in dry_run(
@@ -547,12 +635,17 @@ def _batch(args: argparse.Namespace) -> int:
         from synthiq_caller.phone_batch import environment, open_phone_batch
 
         phone = open_phone_batch(args, environment(args.env_file), out)
+    _require_something(args, scenarios, chains)
     bank = _bank(args)
     batch_id = manifest.open_for(args, out, args.scenarios, scenarios, chains, bank)
 
+    result = BatchResult(out=str(out), rehearsal=rehearsal)
+    status = "interrupted"
+
     async def go() -> BatchResult:
+        nonlocal status
         try:
-            return await run_batch(
+            await run_batch(
                 scenarios,
                 phone.make_leg if phone is not None else (lambda: _build(args)),
                 bank,
@@ -578,16 +671,54 @@ def _batch(args: argparse.Namespace) -> int:
                 make_leg_for=(lambda file: _build_fake(args, file)) if rehearsal else None,
                 rehearsal=rehearsal,
                 batch_id=batch_id,
+                result=result,
             )
+            status = "finished"
+            return result
+        except Exception:
+            status = "failed"
+            raise
         finally:
-            manifest.close_batch(out, batch_id)
+            manifest.close_batch(
+                out,
+                batch_id,
+                status=status,
+                held_back=[
+                    {"file": b.scenario_file, "repeat": b.repeat, "reason": b.reason}
+                    for b in result.blocked
+                ],
+            )
             if phone is not None:
                 await phone.aclose()
 
-    result = asyncio.run(go())
+    stopped_by: list[int] = []
+
+    def on_terminate(signum: int, _frame: Any) -> None:
+        # SIGTERM stops a batch the way Ctrl-C does: the plan shows what never ran.
+        stopped_by.append(signum)
+        raise KeyboardInterrupt
+
+    previous = signal.signal(signal.SIGTERM, on_terminate)
+    try:
+        asyncio.run(go())
+    except KeyboardInterrupt:
+        planned = len(manifest.plan_units(scenarios, chains, args.repeats))
+        print(
+            f"\nINTERRUPTED: {result.ran} call(s) placed, {len(result.blocked)} held back, "
+            f"of {planned} planned. This directory is marked incomplete: a gate, an acceptance "
+            "report or a comparison over it will say so."
+        )
+        return 143 if stopped_by else 130
+    finally:
+        signal.signal(signal.SIGTERM, previous)
     print(f"ran {result.ran}, not run {len(result.blocked)}, chains {result.chains}")
     print()
-    return report(str(out), details=False, fail_under=args.fail_under)
+    code = report(str(out), details=False, fail_under=args.fail_under)
+    if result.ran == 0:
+        # Every call was held back: nothing was tested, whatever the report's numbers say.
+        print("\nNO CALL WAS PLACED: every planned call was held back (see 'not run' above).")
+        return code or 1
+    return code
 
 
 def _phone_arguments(parser: argparse.ArgumentParser) -> None:
@@ -653,6 +784,16 @@ def _reread_reader(args: argparse.Namespace) -> TraceReader | None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Run a command. A file that cannot be read stops it with a message and exit 2."""
+    try:
+        return _main(argv)
+    except completeness.Unreadable as error:
+        print(f"ERROR: {error}")
+        print("Nothing was skipped: fix or remove the file, then run the command again.")
+        return 2
+
+
+def _main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="synthiq-caller")
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -891,6 +1032,23 @@ def main(argv: list[str] | None = None) -> int:
 
     gat = sub.add_parser("gate", help="say whether a batch demonstrates a pass rate")
     gat.add_argument("directory")
+    gat.add_argument(
+        "--require-complete",
+        action="store_true",
+        help="also fail when completeness is unknown (runs made before plans were recorded). "
+        "Without it they are judged on what is there and the line says completeness is unknown",
+    )
+    gat.add_argument(
+        "--allow-mixed-scenarios",
+        action="store_true",
+        help="judge runs made against different versions of one scenario file anyway",
+    )
+    gat.add_argument(
+        "--allow-held-back",
+        action="store_true",
+        help="judge only the calls that ran when the rig held some planned calls back. "
+        "Without it a held-back call means the claim is not met; the output says when this is used",
+    )
     gat.add_argument("--rate", type=float, default=0.95)
     gat.add_argument("--confidence", type=float, default=0.95)
     gat.add_argument(
@@ -926,6 +1084,18 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="report on runs made against different versions of a scenario file; the page "
         "lists the versions and says they are not one test",
+    )
+    acc.add_argument(
+        "--require-complete",
+        action="store_true",
+        help="also refuse runs whose completeness is unknown (made before plans were recorded). "
+        "Without it they are reported with 'completeness unknown' and judged on what is there",
+    )
+    acc.add_argument(
+        "--allow-held-back",
+        action="store_true",
+        help="judge only the calls that ran when the rig held some planned calls back. "
+        "Without it a held-back call means the claim is not met; the output says when this is used",
     )
     acc.add_argument(
         "--allow-no-manifest",
@@ -1052,6 +1222,14 @@ def main(argv: list[str] | None = None) -> int:
         except manifest.MixedScenarios as error:
             print(f"regrade refused: {error}")
             return 2
+        # Every file is read before any is rewritten: a corrupt one stops the command here.
+        before = completeness.check(args.directory)
+        if before.bad:
+            print(
+                "warning: regrading grades the calls that are here; it cannot make a call happen."
+            )
+            for line in before.lines():
+                print(f"  {line}")
         if args.reread or args.reread_all:
             reader = _reread_reader(args)
             if reader is not None:
@@ -1079,25 +1257,70 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "scorecard":
         return _scorecard(args)
     if args.command == "baseline":
-        stored = make_baseline(summarise(args.directory), source=str(args.directory))
+        shape = completeness.check(args.directory)
+        if shape.bad:
+            # A baseline of part of a run would make every later compare look like a regression
+            # or hide one: it is not written.
+            for line in shape.lines():
+                print(line)
+            print("baseline NOT written: the directory is not what was planned.")
+            return 1
+        for line in shape.lines():
+            print(line)
+        stored = make_baseline(
+            summarise(args.directory), source=str(args.directory), completeness=shape.status
+        )
         save_baseline(stored, args.out)
         print(f"baseline of {len(stored.scenarios)} scenario(s), {len(stored.chains)} chain(s)")
         return 0
     if args.command == "compare":
         baseline = load_baseline(args.baseline)
+        if not Path(args.directory).is_dir():
+            print(f"ERROR: {args.directory}: not a directory of runs")
+            return 2
+        if (
+            baseline.completeness == completeness.INCOMPLETE
+            or baseline.completeness == completeness.ALTERED
+        ):
+            print(
+                f"ERROR: {args.baseline}: the baseline was made from a directory that was "
+                f"{baseline.completeness.upper()}; it is not a baseline. Make it again."
+            )
+            return 1
+        shape = completeness.check(args.directory)
         changes = compare(baseline, summarise(args.directory))
+        if baseline.completeness in ("", completeness.UNKNOWN):
+            print(
+                "warning: the baseline's completeness is "
+                + (
+                    "unknown (made from a directory with no plan)"
+                    if baseline.completeness
+                    else "not recorded (made before baselines recorded it)"
+                )
+                + ": it may be made from part of a run"
+            )
         print(render_comparison(baseline, changes))
-        if args.fail_on == "any":
-            return 1 if any(c.regressed for c in changes) else 0
-        if args.fail_on == "beyond-noise":
-            return 1 if any(c.beyond_noise for c in changes) else 0
-        return 0
+        print()
+        for line in shape.lines():
+            print(line)
+        reasons = comparison_failures(changes, args.fail_on, shape)
+        for reason in reasons:
+            print(f"FAIL ({args.fail_on}): {reason}")
+        return 1 if reasons else 0
     if args.command == "clipbank":
         return _clipbank(args)
     if args.command == "acceptance":
         return _acceptance(args)
     if args.command == "gate":
-        return _gate(args.directory, args.rate, args.confidence, args.max_unjudged)
+        return _gate(
+            args.directory,
+            args.rate,
+            args.confidence,
+            args.max_unjudged,
+            allow_mixed=args.allow_mixed_scenarios,
+            require_complete=args.require_complete,
+            allow_held_back=args.allow_held_back,
+        )
 
     # One scenario goes through the same guards as a batch of them.
     scenario = load_scenario(args.scenario)
@@ -1123,7 +1346,14 @@ def main(argv: list[str] | None = None) -> int:
             allow_missing_consent=args.allow_missing_consent,
         )
     )
-    manifest.close_batch(out, batch_id)
+    manifest.close_batch(
+        out,
+        batch_id,
+        held_back=[
+            {"file": b.scenario_file, "repeat": b.repeat, "reason": b.reason}
+            for b in result.blocked
+        ],
+    )
     for held_back in result.blocked:
         print(f"not run: {held_back.reason}")
     return report(str(out))

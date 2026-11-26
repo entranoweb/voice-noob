@@ -80,20 +80,13 @@ class RequestTracingMiddleware(BaseHTTPMiddleware):
             raise
 
     def _get_client_ip(self, request: Request) -> str:
-        """Extract client IP, handling proxies."""
-        # Check X-Forwarded-For header (from load balancers/proxies)
-        forwarded_for = request.headers.get("X-Forwarded-For")
-        if forwarded_for:
-            # Take the first IP (original client)
-            return forwarded_for.split(",")[0].strip()
+        """The client address the server resolved.
 
-        # Check X-Real-IP header
-        real_ip = request.headers.get("X-Real-IP")
-        if real_ip:
-            return real_ip
-
-        # Fall back to direct client IP
+        Not read from X-Forwarded-For here: a header the client can set would
+        let it write any address into the log. When a trusted proxy fronts the
+        app, the server has already put the proxy-reported client in
+        ``request.client`` (see ``app.core.proxy``).
+        """
         if request.client:
             return request.client.host
-
         return "unknown"

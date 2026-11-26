@@ -124,6 +124,61 @@ class _BridgeState:
                 self.tools_idle.set()
 
 
+# What uvicorn closes every websocket with when the worker is told to stop
+# (SIGTERM): "service restart". No carrier ends a call with it.
+_SERVER_RESTART_CLOSE_CODE = 1012
+
+
+def _carrier_disconnect_reason(disconnect: WebSocketDisconnect) -> TerminationReason:
+    """Why a carrier socket went away: the caller, or this server stopping.
+
+    A restart ends the call from our side, so it is not the caller's doing and
+    must not be scored as one. No dedicated reason exists for it, and
+    ``PIPELINE_ERROR`` is the one that says "our side ended it, do not grade the
+    agent on this".
+    """
+    if disconnect.code == _SERVER_RESTART_CLOSE_CODE:
+        return TerminationReason.PIPELINE_ERROR
+    return TerminationReason.CALLER_HANGUP
+
+
+@dataclass
+class _CallRegistration:
+    """The registry write for one call, which a cancelled task cannot orphan.
+
+    The registration is issued by the carrier task. A call that dies within
+    milliseconds of its start frame has that task cancelled while the write is
+    in flight: the key is written (or about to be) and the task never gets to
+    note it, so nothing ever removes it and it stalls shutdown drain and inflates
+    the active count for the whole TTL. The write therefore runs as its own
+    task, shielded from that cancellation, and ``settle`` waits for it so the
+    teardown can remove what it wrote.
+    """
+
+    task: asyncio.Task[bool] | None = None
+
+    async def start(self, **call: Any) -> bool:
+        """Register; whether the registry took the call (``register_call``'s answer)."""
+        self.task = asyncio.create_task(register_call(**call), name="call_registration")
+        return await asyncio.shield(self.task)
+
+    async def settle(self) -> bool:
+        """Wait for the write to land; whether the call is in the registry.
+
+        A second cancellation while waiting is absorbed: this runs in teardown,
+        and giving up here would skip the unregister that follows and leave the
+        key for its whole TTL. The wait is bounded by the registry's own timeout.
+        """
+        if self.task is None:
+            return False
+        while not self.task.done():
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.wait({self.task})
+        if self.task.cancelled() or self.task.exception() is not None:
+            return False
+        return self.task.result()
+
+
 # Error codes the Realtime API raises for a race the call survives: the model was
 # asked to respond while it already was, or the buffer was committed with nothing
 # in it. The session carries on after either. Everything else, including every
@@ -609,7 +664,20 @@ async def _persist_call_artifacts(
     # Read once, before any write: a rollback expires every loaded object, and a
     # lazy load on the expired agent would fail the writes that follow.
     agent_id = agent.id
-    if agent.enable_transcript:
+    store_transcript = agent.enable_transcript
+
+    # A tool cancelled mid-query (the grace period ran out) leaves the session's
+    # connection invalidated, and the session refuses every statement with
+    # PendingRollbackError until it is rolled back. The first write, the
+    # transcript, took that error and the rollback that followed only cleared it
+    # for the writes after, so the transcript was the one thing lost. Whatever
+    # that tool had pending is not committed with the call.
+    try:
+        await db.rollback()
+    except Exception:
+        log.warning("pre_persist_rollback_failed", exc_info=True)
+
+    if store_transcript:
         transcript = realtime_session.get_transcript()
         await _persist_step(
             "transcript",
@@ -720,6 +788,7 @@ async def twilio_media_stream(  # noqa: PLR0912, PLR0915
     call_sid: str = ""
     call_start_time: float = time.time()
     call_registered: bool = False
+    registration = _CallRegistration()
     call_failed: bool = False
 
     try:
@@ -761,14 +830,17 @@ async def twilio_media_stream(  # noqa: PLR0912, PLR0915
             nonlocal call_sid, call_registered
             call_sid = sid
             try:
-                await register_call(
+                registered = await registration.start(
                     call_id=sid,
                     agent_id=agent_id,
                     metadata={"provider": "twilio", "session_id": session_id},
                 )
-                record_call_initiated(agent_id)
-                call_registered = True
-                log.info("call_registered", call_sid=sid)
+                if registered:
+                    record_call_initiated(agent_id)
+                    call_registered = True
+                    log.info("call_registered", call_sid=sid)
+                else:
+                    log.warning("call_registration_refused", call_sid=sid)
             except Exception:
                 log.exception("call_registration_failed", call_sid=sid)
 
@@ -816,6 +888,11 @@ async def twilio_media_stream(  # noqa: PLR0912, PLR0915
     finally:
         # Unregister call and record metrics
         call_duration = time.time() - call_start_time
+        if not call_registered and await registration.settle():
+            # The carrier task was cancelled while registering; the key is there
+            # all the same and is this call's to remove.
+            record_call_initiated(agent_id)
+            call_registered = True
         if call_registered and call_sid:
             try:
                 await unregister_call(call_sid)
@@ -908,9 +985,9 @@ async def _handle_twilio_stream(  # noqa: PLR0915
                     # Mark events indicate playback position
                     log.debug("twilio_mark_event", name=data.get("mark", {}).get("name"))
 
-        except WebSocketDisconnect:
-            log.info("twilio_to_realtime_disconnected")
-            state.end(TerminationReason.CALLER_HANGUP)
+        except WebSocketDisconnect as disconnect:
+            log.info("twilio_to_realtime_disconnected", close_code=disconnect.code)
+            state.end(_carrier_disconnect_reason(disconnect))
         except Exception as e:
             log.exception("twilio_to_realtime_error", error=str(e))
             state.end(TerminationReason.PIPELINE_ERROR)
@@ -1146,6 +1223,7 @@ async def telnyx_media_stream(  # noqa: PLR0912, PLR0915
     call_control_id: str = ""
     call_start_time: float = time.time()
     call_registered: bool = False
+    registration = _CallRegistration()
     call_failed: bool = False
     recorder = AudioTurnRecorder()
     # The recorder times on the monotonic clock and the trace is anchored to the
@@ -1201,14 +1279,17 @@ async def telnyx_media_stream(  # noqa: PLR0912, PLR0915
             nonlocal call_control_id, call_registered
             call_control_id = cid
             try:
-                await register_call(
+                registered = await registration.start(
                     call_id=cid,
                     agent_id=agent_id,
                     metadata={"provider": "telnyx", "session_id": session_id},
                 )
-                record_call_initiated(agent_id)
-                call_registered = True
-                log.info("call_registered", call_control_id=cid)
+                if registered:
+                    record_call_initiated(agent_id)
+                    call_registered = True
+                    log.info("call_registered", call_control_id=cid)
+                else:
+                    log.warning("call_registration_refused", call_control_id=cid)
             except Exception:
                 log.exception("call_registration_failed", call_control_id=cid)
 
@@ -1256,6 +1337,11 @@ async def telnyx_media_stream(  # noqa: PLR0912, PLR0915
     finally:
         # Unregister call and record metrics
         call_duration = time.time() - call_start_time
+        if not call_registered and await registration.settle():
+            # The carrier task was cancelled while registering; the key is there
+            # all the same and is this call's to remove.
+            record_call_initiated(agent_id)
+            call_registered = True
         if call_registered and call_control_id:
             try:
                 await unregister_call(call_control_id)
@@ -1360,9 +1446,9 @@ async def _handle_telnyx_stream(  # noqa: PLR0915
                     state.end(TerminationReason.CALLER_HANGUP)
                     break
 
-        except WebSocketDisconnect:
-            log.info("telnyx_to_realtime_disconnected")
-            state.end(TerminationReason.CALLER_HANGUP)
+        except WebSocketDisconnect as disconnect:
+            log.info("telnyx_to_realtime_disconnected", close_code=disconnect.code)
+            state.end(_carrier_disconnect_reason(disconnect))
         except Exception as e:
             log.exception("telnyx_to_realtime_error", error=str(e))
             state.end(TerminationReason.PIPELINE_ERROR)
