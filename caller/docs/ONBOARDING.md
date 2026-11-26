@@ -1,8 +1,9 @@
 # Onboarding a new target
 
-This guide takes you from nothing to one graded run, without us. It has seven
-steps, and the last one places no call: it uses the fake leg, a scripted
-stand-in for an agent. A run on the fake leg shows that your setup works. It
+This guide takes you from nothing to one graded run, without us, and then past
+it: judging a set of runs, keeping a baseline, sending results to the
+dashboard and erasing a person's recording. Steps 1 to 7 end on the fake leg,
+a scripted stand-in for an agent, and place no call. A run on the fake leg shows that your setup works. It
 shows nothing about any agent, and every result it writes says so.
 
 Placeholders in angle brackets (`<conversation-id>`, `<case-name>`) are for you
@@ -192,7 +193,10 @@ in the bank, and that what they require of the system is stated. Read every line
 naming each scenario. Acceptance runs and the CI gate always apply this check,
 and acceptance refuses a run whose scenario stated no expectations. A capture
 you have not finished is expected to fail it; fill in the expectations, then
-run it again.
+run it again. `--strict` also fails on a scenario whose clip was forgotten
+(`MISSING CLIP`). It does not require `recorded_on` or `retain_until`: those
+are optional, and a clip with no retention date never expires; `validate`
+fails only on a clip already past its date. Fill them in for every real clip.
 
 ## Step 7. Run one lookup-only call
 
@@ -241,6 +245,110 @@ The tones from `init` are not speech; a real call needs a bank of real
 recordings (from `ingest`, listened to and confirmed) or an agreed synthetic
 voice. A real run is only a measure of the agent if its trace was read: a call
 whose trace could not be fetched is `ungraded`, never passed.
+
+## Steps 8 to 12. After the first run
+
+Everything here works on the runs directory from step 7 (`runs`), and on a
+directory from a real leg later. On the fake leg the rate commands refuse, on
+purpose: see each step. Every command that reads a directory first checks it is
+what was planned (`docs/COMPLETENESS.md`); a call that never ran, a missing or
+edited run file, or a call the rig held back is said plainly and is never
+counted as a pass.
+
+**Rates are fractions between 0 and 1.** `--rate 0.95`, `--claim 0.95`,
+`--confidence 0.95`, `--max-unjudged 0.1`. A percentage such as `95` is a usage
+error (exit 2) that names the flag, never a rate of 9500 per cent.
+`batch --fail-under` is the one exception: it takes a percent, as step 7 says.
+
+### Step 8. `gate`: is the claim met?
+
+```
+synthiq-caller gate runs --rate 0.95 --confidence 0.95
+```
+
+It prints the pass rate the calls support, at that confidence, and whether the
+claim is met; exit 0 only when it is. It says how many calls were not judged
+and why. A directory of fake-leg runs is **not met**, always: the line says the
+calls are rehearsals. That refusal is the point, not a fault. A held-back call
+also means not met, unless you pass `--allow-held-back`, which judges only the
+calls that ran and says so. When a call used a clip that was later forgotten
+(step 12), the output counts those calls.
+
+### Step 9. `acceptance`: a page to hand over
+
+```
+synthiq-caller acceptance runs --claim 0.95 --confidence 0.95 --out acceptance.html
+```
+
+It writes the page and its data beside it, with the same rules as `gate`. It is
+refused (exit 2, no page) for runs that include a rehearsal, so it cannot be
+tried on the fake leg either.
+
+### Step 10. `baseline` and `compare`: catch a regression
+
+```
+synthiq-caller baseline runs --out baselines/first.json
+synthiq-caller compare runs --baseline baselines/first.json --fail-on any
+```
+
+`baseline` records the pass counts of a run you trust. Read the diff of the
+file like code: lowering it is how a regression is accepted. It writes nothing
+(exit 1) when the directory is incomplete or altered, when a call was held back
+(unless `--allow-held-back`, which is recorded in the file and warned by every
+`compare`), or when no scenario or chain has a graded call. `compare` exits 1 on
+a drop (`--fail-on any`, or `--fail-on beyond-noise` for a live agent whose
+results vary; `never` only prints), when fewer calls were graded than the
+baseline holds, and when the baseline itself is empty or was made from a
+directory that was not complete. The committed `baselines/smoke.json` is made
+the same way; `docs/CI-GATE.md` has the commands.
+
+### Step 11. `upload`: send the results to the dashboard
+
+```
+synthiq-caller upload runs --bundle-out bundle.json
+```
+
+`--bundle-out` writes what would be sent to a file and sends nothing: do this
+first. To send it, give `--api <server address>` and `--workspace <workspace
+id>` and set the token in the environment (`--token-env <NAME>` names the
+variable; the token is never written or printed). A directory that is not what
+was planned is refused unless `--allow-incomplete`, and the bundle records that
+it was overridden. Results hold what callers said: send them only where you have
+cleared it.
+
+### Step 12. `forget`: erase a person's recording
+
+When someone withdraws consent or asks for erasure, or a clip passes its
+retention date, remove it. Look first, then do it:
+
+```
+synthiq-caller forget <clip-id> --clips clips --scenarios scenarios --results runs --dry-run
+synthiq-caller forget <clip-id> --clips clips --scenarios scenarios --results runs \
+    --operator op_a1b2c3d4e5 --reason erasure_request --request-ref req_a1b2c3d4
+```
+
+Point it at **every** place the clip went: `--clips` for the bank,
+`--scenarios` for each scenarios or chains folder that plays it, `--results`
+for each runs folder. A place you leave out keeps the clip's name and words;
+`forget` warns about folders it can see and did not scan. `--operator` is an
+opaque id beginning `op_`: after the prefix, 8 to 32 lowercase letters and digits
+with at least one of each (such as `op_a1b2c3d4e5`); never a name or a number.
+`--request-ref` is a pointer to the request, held elsewhere: 3 to 80 characters
+with no spaces, and no email address or phone number (such as `req_a1b2c3d4`). Nothing it
+writes holds a name or a transcript. The run is recorded in `removals.jsonl` in
+the bank, written `started` first and `complete` last. If it says INCOMPLETE,
+fix the cause it names and run the same command again: that finishes the job.
+
+If a stored result in `--results` was edited by hand after the rig wrote it (or
+lost its integrity digest), `forget` **refuses**: it changes nothing at all,
+lists each such file and why, and exits 1, because erasing first would destroy
+the evidence of what was edited. Find out who changed the file, then rerun the
+calls or leave that folder out. `--erase-altered` overrides this and is for the
+owner only: it erases anyway, clears every field the rig does not write in those
+files (each is listed, and kept by name in the removal record), and leaves their
+digest alone, so they still read as altered; that run exits 1 as well. Uploaded
+runs, backups and the carrier's own recordings are outside this tool, and it
+lists them. `docs/CLIP-CONSENT-AND-FORGET.md` has the whole rule.
 
 ## What this does not prove
 
