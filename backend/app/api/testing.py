@@ -500,13 +500,13 @@ async def update_scenario(
     if not scenario:
         raise HTTPException(status_code=404, detail="Scenario not found")
 
-    # Reject if built-in scenario
+    # Not yours and does not exist answer alike (404). Built-ins are visible to
+    # everyone, so refusing to change one reveals nothing.
     if scenario.is_built_in:
         raise HTTPException(status_code=403, detail="Cannot modify built-in scenarios")
 
-    # Verify ownership
     if scenario.user_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Not authorized to modify this scenario")
+        raise HTTPException(status_code=404, detail="Scenario not found")
 
     # Validate category if provided
     if request.category is not None:
@@ -571,13 +571,13 @@ async def delete_scenario(
     if not scenario:
         raise HTTPException(status_code=404, detail="Scenario not found")
 
-    # Reject if built-in scenario
+    # Not yours and does not exist answer alike (404). Built-ins are visible to
+    # everyone, so refusing to change one reveals nothing.
     if scenario.is_built_in:
         raise HTTPException(status_code=403, detail="Cannot delete built-in scenarios")
 
-    # Verify ownership
     if scenario.user_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Not authorized to delete this scenario")
+        raise HTTPException(status_code=404, detail="Scenario not found")
 
     await db.delete(scenario)
     await db.commit()

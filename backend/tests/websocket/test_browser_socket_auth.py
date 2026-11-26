@@ -230,6 +230,87 @@ class TestDashboardSocket:
             assert ready["type"] == "session.ready"
         assert _FakeRealtimeSession.opened == 1
 
+    @pytest.mark.asyncio
+    async def test_the_session_is_told_the_agents_tier(self, env: dict[str, Any]) -> None:
+        """Without the tier the session cannot pick the mini model for a mini agent."""
+        async with env["sessions"]() as session:
+            agent = await session.get(Agent, env["agent"].id)
+            assert agent is not None
+            agent.pricing_tier = "premium-mini"
+            await session.commit()
+        async with ASGIWebSocketClient(
+            app,
+            _dashboard_path(env),
+            query_string=_dashboard_query(env, _access_token(env["owner"].id)),
+        ) as ws:
+            assert ws.accepted
+            await ws.receive_json()
+        assert _FakeRealtimeSession.configs[0]["pricing_tier"] == "premium-mini"
+
+    @pytest.mark.asyncio
+    async def test_a_workspace_the_caller_does_not_own_is_refused(
+        self, env: dict[str, Any]
+    ) -> None:
+        """A link row to somebody else's workspace is not a licence to use its key."""
+        async with env["sessions"]() as session:
+            foreign = Workspace(id=uuid.uuid4(), user_id=env["other"].id, name="Theirs")
+            session.add(foreign)
+            await session.commit()
+            session.add(
+                AgentWorkspace(id=uuid.uuid4(), agent_id=env["agent"].id, workspace_id=foreign.id)
+            )
+            await session.commit()
+
+        async with ASGIWebSocketClient(
+            app,
+            _dashboard_path(env),
+            query_string=f"workspace_id={foreign.id}&token={_access_token(env['owner'].id)}",
+        ) as ws:
+            first = await ws.receive_json() if ws.accepted else None
+            assert first is None or first["type"] == "error"
+            assert ws.close_code == 4003 or first is not None
+        assert _FakeRealtimeSession.opened == 0
+
+    @pytest.mark.asyncio
+    async def test_the_default_link_is_the_workspace_the_socket_runs_in(
+        self, env: dict[str, Any]
+    ) -> None:
+        """Two links: only the default one is the agent's workspace, as for /token."""
+        async with env["sessions"]() as session:
+            second = Workspace(id=uuid.uuid4(), user_id=env["owner"].id, name="Second")
+            session.add(second)
+            await session.commit()
+            session.add(
+                AgentWorkspace(
+                    id=uuid.uuid4(),
+                    agent_id=env["agent"].id,
+                    workspace_id=second.id,
+                    is_default=True,
+                )
+            )
+            await session.commit()
+
+        async with ASGIWebSocketClient(
+            app,
+            _dashboard_path(env),
+            query_string=_dashboard_query(env, _access_token(env["owner"].id)),
+        ) as ws:
+            first = await ws.receive_json() if ws.accepted else None
+            assert first is not None
+            assert first["type"] == "error"
+        assert _FakeRealtimeSession.opened == 0
+
+        async with ASGIWebSocketClient(
+            app,
+            _dashboard_path(env),
+            query_string=f"workspace_id={second.id}&token={_access_token(env['owner'].id)}",
+        ) as ws:
+            assert ws.accepted
+            ready = await ws.receive_json()
+            assert ready is not None
+            assert ready["type"] == "session.ready"
+        assert _FakeRealtimeSession.opened == 1
+
 
 def _client() -> AsyncClient:
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://internal:8000")

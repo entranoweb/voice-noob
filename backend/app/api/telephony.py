@@ -25,6 +25,7 @@ from app.api.settings import get_user_api_keys
 from app.core.auth import CurrentUser, user_id_to_uuid
 from app.core.config import settings
 from app.core.limiter import limiter
+from app.core.ownership import parse_uuid
 from app.core.public_url import public_base_url, public_ws_base_url
 from app.core.stream_token import mint_stream_token
 from app.core.webhook_security import verify_telnyx_webhook, verify_twilio_webhook
@@ -814,7 +815,7 @@ async def initiate_call(
     user_uuid = user_id_to_uuid(current_user.id)
     result = await db.execute(
         select(Agent).where(
-            Agent.id == uuid.UUID(call_request.agent_id),
+            Agent.id == parse_uuid(call_request.agent_id, "Agent"),
             Agent.user_id == user_uuid,  # Ensure user owns the agent
         )
     )
@@ -869,7 +870,7 @@ async def initiate_call(
         workspace_id=workspace_uuid,
         provider=provider,
         provider_call_id=call_info.call_id,
-        agent_id=uuid.UUID(call_request.agent_id),
+        agent_id=parse_uuid(call_request.agent_id, "Agent"),
         direction=CallDirection.OUTBOUND.value,
         status=CallStatus.INITIATED.value,
         from_number=call_request.from_number,

@@ -36,6 +36,15 @@ if TYPE_CHECKING:
 _DIALLABLE = re.compile(r"^\+?\d{7,15}$")
 
 
+# Which of an agent's workspace links wins: default first, then oldest, then id
+# for a total order.
+AGENT_WORKSPACE_ORDER = (
+    AgentWorkspace.is_default.desc(),
+    AgentWorkspace.created_at,
+    AgentWorkspace.id,
+)
+
+
 def parse_uuid(value: str | uuid.UUID, what: str) -> uuid.UUID:
     """A UUID from client input, or a 404 for `what` when it is not one."""
     if isinstance(value, uuid.UUID):
@@ -77,11 +86,16 @@ async def owned_agent_workspace_id(db: AsyncSession, agent: Agent, user: User) -
 
     The link table is written by the owner, but a row is only trusted when the
     workspace on the other end belongs to the same user.
+
+    An agent can be linked to several workspaces. The answer is the default link
+    first, then the oldest, then the lowest id, so the same workspace (and so the
+    same API key and bill) is chosen every time.
     """
     result = await db.execute(
         select(AgentWorkspace.workspace_id)
         .join(Workspace, Workspace.id == AgentWorkspace.workspace_id)
         .where(AgentWorkspace.agent_id == agent.id, Workspace.user_id == user.id)
+        .order_by(*AGENT_WORKSPACE_ORDER)
         .limit(1)
     )
     return result.scalar_one_or_none()
