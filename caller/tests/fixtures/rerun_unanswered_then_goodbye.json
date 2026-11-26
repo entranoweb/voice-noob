@@ -10,7 +10,7 @@
    {
     "t": 0.3,
     "kind": "agent",
-    "text": "Hi, this is Sophie from ClinWell. How can I help you today?"
+    "text": "Hi, this is Alex from Example Clinic. How can I help you today?"
    },
    {
     "t": 8.86,
@@ -65,7 +65,7 @@
     "dtmf": "",
     "seconds": 2.12,
     "talk_over": false,
-    "answering": "Hi, this is Sophie from ClinWell. How can I help you today?",
+    "answering": "Hi, this is Alex from Example Clinic. How can I help you today?",
     "heard": [
      "Can you book an appointment for me, Sophie?"
     ],

@@ -8,7 +8,7 @@
 {
 "role": "agent",
 "time_in_call_secs": 1,
-"message": "Hi, this is Sophie from ClinWell. How can I help you today?",
+"message": "Hi, this is Alex from Example Clinic. How can I help you today?",
 "workflow_node_id": "R0"
 },
 {
@@ -506,7 +506,7 @@
 "node_id": "NP_SCOPE",
 "requests": [
 {
-"tool_name": "sophie_v2_check_scope_dkc",
+"tool_name": "example_v2_check_scope_dkc",
 "params_as_json": {
 "reason": "shoulder pain",
 "appointmentType": "MRI appointment",
@@ -516,7 +516,7 @@
 ],
 "results": [
 {
-"tool_name": "sophie_v2_check_scope_dkc",
+"tool_name": "example_v2_check_scope_dkc",
 "result_value": {
 "success": true,
 "scopeStatus": "in_scope"
@@ -716,7 +716,7 @@
 "node_id": "NP_CHECK",
 "requests": [
 {
-"tool_name": "sophie_v2_new_patient_check_dkc",
+"tool_name": "example_v2_new_patient_check_dkc",
 "params_as_json": {
 "fullName": "Elliot Allen",
 "dateOfBirth": "6th July, 1987"
@@ -725,7 +725,7 @@
 ],
 "results": [
 {
-"tool_name": "sophie_v2_new_patient_check_dkc",
+"tool_name": "example_v2_new_patient_check_dkc",
 "result_value": {
 "success": true
 },
@@ -1293,7 +1293,7 @@
 "node_id": "NP_PREP",
 "requests": [
 {
-"tool_name": "sophie_v2_prepare_register_patient_dkc",
+"tool_name": "example_v2_prepare_register_patient_dkc",
 "params_as_json": {
 "fullName": "Elliot Allen",
 "dateOfBirth": "6th July, 1987",
@@ -1307,7 +1307,7 @@
 ],
 "results": [
 {
-"tool_name": "sophie_v2_prepare_register_patient_dkc",
+"tool_name": "example_v2_prepare_register_patient_dkc",
 "result_value": {
 "success": true
 },
@@ -1450,7 +1450,7 @@
 "node_id": "MR",
 "requests": [
 {
-"tool_name": "sophie_v2_register_patient_dkc",
+"tool_name": "example_v2_register_patient_dkc",
 "params_as_json": {
 "proposalToken": "dynamic",
 "conversationHistory": "[omitted]"
@@ -1459,7 +1459,7 @@
 ],
 "results": [
 {
-"tool_name": "sophie_v2_register_patient_dkc",
+"tool_name": "example_v2_register_patient_dkc",
 "result_value": {
 "success": true
 },

@@ -45,6 +45,9 @@ exit code changed meaning.
 
 `compare --fail-on any` and `beyond-noise` also fail when none of the baseline's scenarios is in
 the batch (an empty or wrong directory has no regression in it because it has nothing in it).
+`compare` exits 1 on a baseline in which no scenario or chain has a graded call (for example
+`{"lookup": [0, 0]}`), and prints a warning when the baseline was made with `--allow-held-back`
+(the held-back calls are not in it, so a regression in them is not compared).
 A directory that does not exist exits 2.
 
 ## Other refusals that belong with this
@@ -70,6 +73,11 @@ is not a pass of the plan. `gate` and `acceptance` count held-back calls as "not
 the verdict, and are NOT met while any call was held back. `--allow-held-back` (gate and
 acceptance) judges only the calls that ran and says so in the output and in the report
 (`held_back.allowed`).
+
+`baseline` follows the same rule: it refuses a directory with held-back calls (exit 1, nothing
+written) unless `--allow-held-back`, which records `held_back: {allowed, count}` in the baseline.
+For a directory with no plan, the calls `batch.json` lists as `blocked` count as held back. It
+also refuses a directory where no call was graded.
 
 ## Counts and the baseline
 

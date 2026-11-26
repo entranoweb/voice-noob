@@ -34,7 +34,7 @@ Runs stored before this change have no `outputs`. Fetch them again, placing no
 calls:
 
 ```
-synthiq-caller regrade runs/ --scenarios scenarios/sophie --reread-all --agent - --env-file <file>
+synthiq-caller regrade runs/ --scenarios scenarios/example-receptionist --reread-all --agent - --env-file <file>
 ```
 
 A trace already stored is never replaced by a failed fetch.

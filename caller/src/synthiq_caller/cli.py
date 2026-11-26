@@ -5,13 +5,14 @@
     synthiq-caller report runs/ --fail-under 95
     synthiq-caller preflight --leg phone --public-url https://... --from +44... --to +44... \\
         --allowed-numbers allowed.txt                (places no call)
-    synthiq-caller batch scenarios/sophie --leg phone --public-url https://... \\
+    synthiq-caller batch scenarios/example-receptionist --leg phone --public-url https://... \\
         --from +44... --to +44... --allowed-numbers allowed.txt --clips <dir> --out runs/
-    synthiq-caller batch scenarios/sophie --leg elevenlabs-socket --agent <id> \
+    synthiq-caller batch scenarios/example-receptionist --leg elevenlabs-socket --agent <id> \
         --clips <dir> --repeats 3 --out runs/        (runs lookup-only scenarios)
-    synthiq-caller validate scenarios/sophie --clips <dir> [--check-requires-command "..."]
+    synthiq-caller validate scenarios/example-receptionist --clips <dir> \
+        [--check-requires-command "..."]
     synthiq-caller scorecard runs/a runs/b --out card.html [--previous last.html]
-    synthiq-caller regrade runs/ --scenarios scenarios/sophie   (no calls placed)
+    synthiq-caller regrade runs/ --scenarios scenarios/example-receptionist   (no calls placed)
     synthiq-caller baseline runs/ --out baseline.json
     synthiq-caller compare runs-new/ --baseline baseline.json --fail-on beyond-noise
     synthiq-caller gate runs/ --rate 0.95 --confidence 0.95
@@ -49,6 +50,7 @@ from synthiq_caller.batch import (
     reread_missing_traces,
     run_batch,
 )
+from synthiq_caller.chain import Chain
 from synthiq_caller.clips import ClipBank
 from synthiq_caller.compare import (
     compare,
@@ -67,11 +69,12 @@ from synthiq_caller.readback import CommandReadBack, HttpReadBack, NoReadBack, R
 from synthiq_caller.regions import add_region_argument, api_from_args
 from synthiq_caller.report import fail_under_exit, gate_reading, render, summarise
 from synthiq_caller.reset import CommandReset, HttpReset, NoReset, Reset
-from synthiq_caller.scenario import ScenarioError, load_scenario
+from synthiq_caller.scenario import Scenario, ScenarioError, load_scenario
 from synthiq_caller.stats import describe
 from synthiq_caller.traces.base import TraceReader
 from synthiq_caller.validation import (
     load_problems,
+    missing_clip_problems,
     ungradeable_problems,
     validate_bank,
     validate_directory,
@@ -269,8 +272,16 @@ def validate(args: argparse.Namespace) -> int:
             f"\n{len(strict)} scenario(s) cannot be graded and --strict is on: state their "
             "expectations (expect.*) before they go into a gate or an acceptance run."
         )
+    missing = missing_clip_problems(rows) if args.strict else []
+    for line in missing:
+        print(f"ERROR: {line}")
+    if missing:
+        print(
+            f"\n{len(missing)} scenario(s) name a removed clip and --strict is on: record the "
+            "clip again and edit the step back, or take the scenario out of the set."
+        )
     broken = any(row.problem for row in rows) or any(f.problem for f in findings)
-    return 1 if strict or broken else 0
+    return 1 if strict or missing or broken else 0
 
 
 def _scorecard(args: argparse.Namespace) -> int:
@@ -359,6 +370,12 @@ def _clip_warnings(roots: list[Path]) -> list[str]:
         found.append(
             f"{clips['provenance_unknown_calls']} call(s) played a clip whose manifest does not "
             "say if it is a real recording or a synthetic voice (provenance unknown)"
+        )
+    if clips["clips_removed_calls"]:
+        found.append(
+            f"{clips['clips_removed_counted']} counted call(s) ({clips['clips_removed_calls']} "
+            "in all) played a clip since removed with 'forget'; they stand as graded, and "
+            "cannot be repeated"
         )
     if clips["unverified"]:
         found.append(
@@ -578,6 +595,60 @@ def _require_something(args: argparse.Namespace, scenarios: list[Any], chains: l
         )
 
 
+def _has_graded(scenarios: dict[str, list[int]], chains: dict[str, list[int]]) -> bool:
+    """True when some scenario or chain has at least one graded call ([passed, graded])."""
+    return any(v[1] > 0 for v in (*scenarios.values(), *chains.values()))
+
+
+def _blocked_without_plan(directory: str | Path, shape: completeness.Completeness) -> int:
+    """Calls batch.json says were blocked, for a directory that has no plan to count them from."""
+    if shape.planned:
+        return 0
+    path = Path(directory) / "batch.json"
+    if not path.exists():
+        return 0
+    return len(completeness.read_object(path).get("blocked", []))
+
+
+def _fraction(text: str) -> float:
+    """A rate, claim or confidence: a fraction strictly between 0 and 1 (0.95, not 95)."""
+    try:
+        value = float(text)
+    except ValueError:
+        value = float("nan")
+    if not 0 < value < 1:
+        raise argparse.ArgumentTypeError(
+            f"{text!r} is not a fraction between 0 and 1: write 95% as 0.95"
+        )
+    return value
+
+
+def _share(text: str) -> float:
+    """A share: a fraction from 0 to 1 inclusive."""
+    try:
+        value = float(text)
+    except ValueError:
+        value = float("nan")
+    if not 0 <= value <= 1:
+        raise argparse.ArgumentTypeError(
+            f"{text!r} is not a fraction between 0 and 1: write 10% as 0.1"
+        )
+    return value
+
+
+def _load_set(
+    directory: str, target: dict[str, Any] | None, command: str
+) -> tuple[list[tuple[str, Scenario]], list[tuple[str, Chain]]]:
+    """Scenarios and chains of a directory, or a stop that names each file that does not load."""
+    try:
+        return load_scenarios(directory, target), load_chains(directory, target)
+    except (ScenarioError, ValueError) as error:
+        lines = load_problems(directory, target) or [str(error)]
+        raise SystemExit(
+            f"{command}: a scenario file does not load; nothing was run:\n  " + "\n  ".join(lines)
+        ) from error
+
+
 def _batch(args: argparse.Namespace) -> int:
     from synthiq_caller.target import exceeds_allowance
 
@@ -592,8 +663,7 @@ def _batch(args: argparse.Namespace) -> int:
         )
     if not Path(args.scenarios).is_dir():
         raise SystemExit(f"{args.scenarios}: not a directory of scenarios; no call was placed")
-    scenarios = load_scenarios(args.scenarios, target)
-    chains = load_chains(args.scenarios, target)
+    scenarios, chains = _load_set(args.scenarios, target, "batch")
     if args.only:
         scenarios = [(f, s) for f, s in scenarios if any(o in f for o in args.only)]
         chains = [(f, c) for f, c in chains if any(o in f for o in args.only)]
@@ -1019,6 +1089,12 @@ def _main(argv: list[str] | None = None) -> int:
     base = sub.add_parser("baseline", help="store a batch's pass counts to compare against")
     base.add_argument("directory")
     base.add_argument("--out", required=True)
+    base.add_argument(
+        "--allow-held-back",
+        action="store_true",
+        help="make the baseline of the calls that ran when the rig held some planned calls back; "
+        "it is recorded in the baseline. Without it a held-back call refuses the baseline",
+    )
 
     cmp_ = sub.add_parser("compare", help="set a batch beside a stored baseline")
     cmp_.add_argument("directory")
@@ -1049,11 +1125,11 @@ def _main(argv: list[str] | None = None) -> int:
         help="judge only the calls that ran when the rig held some planned calls back. "
         "Without it a held-back call means the claim is not met; the output says when this is used",
     )
-    gat.add_argument("--rate", type=float, default=0.95)
-    gat.add_argument("--confidence", type=float, default=0.95)
+    gat.add_argument("--rate", type=_fraction, default=0.95, help="a fraction: 0.95, not 95")
+    gat.add_argument("--confidence", type=_fraction, default=0.95)
     gat.add_argument(
         "--max-unjudged",
-        type=float,
+        type=_share,
         default=0.1,
         help="the share of attempted calls that may go unjudged (void, ungraded, "
         "ungradeable, not run) before the gate is refused whatever the numbers say",
@@ -1069,13 +1145,15 @@ def _main(argv: list[str] | None = None) -> int:
         "acceptance", help="one dated page: what was tested, what passed, what it does not show"
     )
     acc.add_argument("directories", nargs="+")
-    acc.add_argument("--claim", type=float, default=0.95, help="the pass rate being claimed")
-    acc.add_argument("--confidence", type=float, default=0.95)
+    acc.add_argument(
+        "--claim", type=_fraction, default=0.95, help="the pass rate claimed, a fraction: 0.95"
+    )
+    acc.add_argument("--confidence", type=_fraction, default=0.95)
     acc.add_argument("--out", required=True, help="the page to write; its data goes beside it")
     acc.add_argument("--title", default="")
     acc.add_argument(
         "--max-unjudged",
-        type=float,
+        type=_share,
         default=0.1,
         help="as for gate: the share of attempted calls that may go unjudged",
     )
@@ -1238,8 +1316,7 @@ def _main(argv: list[str] | None = None) -> int:
                 )
                 print(f"traces fetched again: {fetched}")
         profile = _target(args)
-        scenarios = load_scenarios(args.scenarios, profile)
-        chains = load_chains(args.scenarios, profile)
+        scenarios, chains = _load_set(args.scenarios, profile, "regrade")
         changed = regrade(Path(args.directory), scenarios)
         changed += regrade_chains(Path(args.directory), chains)
         manifest.record_regrade(
@@ -1267,8 +1344,34 @@ def _main(argv: list[str] | None = None) -> int:
             return 1
         for line in shape.lines():
             print(line)
+        held_count = shape.held_back or _blocked_without_plan(args.directory, shape)
+        if held_count and not args.allow_held_back:
+            # A held-back call did not run (COMPLETENESS.md): a baseline of the rest would leave
+            # it out of every later compare, so a regression in it would never be seen.
+            print(
+                f"baseline NOT written: {held_count} call(s) were HELD BACK and did not run"
+                + (f" (of {shape.planned} planned)" if shape.planned else "")
+                + ". Fix what held them back and run the batch again, "
+                "or pass --allow-held-back to make a baseline of the calls that ran (it is "
+                "recorded in the baseline and printed by every compare)."
+            )
+            return 1
+        summary = summarise(args.directory)
+        if not _has_graded(
+            {k: list(v) for k, v in summary.by_scenario.items()},
+            {k: list(v[:2]) for k, v in summary.chains.items()},
+        ):
+            print(
+                "baseline NOT written: no graded call in this directory (every scenario and "
+                "chain has 0 graded calls); a baseline "
+                "with nothing in it would pass every later compare."
+            )
+            return 1
         stored = make_baseline(
-            summarise(args.directory), source=str(args.directory), completeness=shape.status
+            summary,
+            source=str(args.directory),
+            completeness=shape.status,
+            held_back=held_count,
         )
         save_baseline(stored, args.out)
         print(f"baseline of {len(stored.scenarios)} scenario(s), {len(stored.chains)} chain(s)")
@@ -1287,8 +1390,21 @@ def _main(argv: list[str] | None = None) -> int:
                 f"{baseline.completeness.upper()}; it is not a baseline. Make it again."
             )
             return 1
+        if not _has_graded(baseline.scenarios, baseline.chains):
+            print(
+                f"ERROR: {args.baseline}: the baseline has no graded call in any scenario or "
+                "chain, so there is nothing to compare against; it is not a baseline. Make it "
+                "again."
+            )
+            return 1
         shape = completeness.check(args.directory)
         changes = compare(baseline, summarise(args.directory))
+        if baseline.held_back.get("allowed"):
+            print(
+                f"warning: the baseline was made over a batch with "
+                f"{baseline.held_back.get('count')} held-back call(s) (--allow-held-back): those "
+                "calls are not in it, so a regression in them is not compared"
+            )
         if baseline.completeness in ("", completeness.UNKNOWN):
             print(
                 "warning: the baseline's completeness is "

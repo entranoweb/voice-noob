@@ -85,7 +85,7 @@ Recommendation: report three numbers: scenarios passing all repeats, scenarios p
 
 - `batch.py:231-240`: the guard compares the scenario's self-declared `mutates` with the batch allowance. It cannot see what the agent did.
 - Scenario 17 (fee declined) is `none`. If the agent registers the patient anyway, the call is graded failed, but the patient row stays and no cleanup is triggered. Later "new patient" scenarios using that name meet an existing patient.
-- `cli.py:269-275`: the single-scenario `run` command has no mutation guard, no name budget and no empty-trace retry. `synthiq-caller run scenarios/sophie/01-….json` books with no flag.
+- `cli.py:269-275`: the single-scenario `run` command has no mutation guard, no name budget and no empty-trace retry. `synthiq-caller run scenarios/example-receptionist/01-….json` books with no flag.
 
 ---
 
@@ -96,7 +96,7 @@ Recommendation: report three numbers: scenarios passing all repeats, scenarios p
 - `director.py:164-170` matches the agent's line against fixed patterns. `director.py:198-201`: no match is logged as `no_answer_needed` and the caller stays silent.
 - If the agent rewords a question ("Could I take your surname first?"), the rig is silent, the agent re-prompts and gives up, and `grading.py` fails the call on missing tools. The outcome is `failed`, indistinguishable from an agent fault.
 - The target has 60 generated lines and improvised re-ask lines, so wording varies call to call. This will fire.
-- `max_uses: 2` on almost every step (`scenarios/sophie/*`): a third ask of the same question gets silence where a person would answer again.
+- `max_uses: 2` on almost every step (`scenarios/example-receptionist/*`): a third ask of the same question gets silence where a person would answer again.
 - Outside practice: G2/Bluejay §8.2 attributes every failure to one of seven causes; cause 2 "the caller departed from its script" and cause 3 "harness" are **void and re-run**, never charged to the platform. Their threats section also admits their matcher "sees only the agent's latest turn".
 
 Recommendation: add an outcome `void: caller could not answer` when the last unanswered agent line ends in a question and the call then ended without the scenario's end pattern. Exclude it from the rate, report the count, and treat a void rate above a few percent as a rig defect.
