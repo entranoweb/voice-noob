@@ -225,6 +225,8 @@ async def test_twilio_send_reason_is_a_small_speakable_set(
     [
         (422, {"errors": [{"code": "40310", "detail": f"bad {PHONE}"}]}, "invalid_number"),
         (422, {"errors": [{"code": "10001", "detail": f"x {PHONE}"}]}, "upstream_error"),
+        (422, {"errors": [{"code": "40012", "detail": f"bad {PHONE}"}]}, "invalid_number"),
+        (400, {"errors": [{"code": "40008", "detail": f"carrier {PHONE}"}]}, "unavailable"),
         (500, {"errors": []}, "unavailable"),
     ],
 )

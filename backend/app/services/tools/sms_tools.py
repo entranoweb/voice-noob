@@ -18,14 +18,18 @@ from app.services.tools.path_ids import encode_path_id, invalid_id_result
 
 logger = structlog.get_logger()
 
-# Provider error codes that mean "the destination number is wrong or unreachable".
-# Twilio: 21211 invalid 'To' number, 21214 'To' not reachable, 21612 cannot route,
-# 21614 'To' is not a valid mobile number (twilio.com/docs/api/errors).
-# Telnyx: 40310 invalid destination number, 40008 invalid 'to' address (developers.telnyx.com
-# messaging error codes). Not re-checked against the live docs; an unknown code falls through
-# to the generic refusal, never to the provider's text.
-_TWILIO_BAD_NUMBER_CODES = frozenset({"21211", "21214", "21612", "21614"})
-_TELNYX_BAD_NUMBER_CODES = frozenset({"40310", "40008"})
+# Provider error codes, matched on the code only (the provider's text is never passed on).
+# Bad destination number:
+#   Twilio 21211 invalid 'To' number, 21612 cannot route to this number, 21614 'To' is not a
+#   valid mobile number (https://www.twilio.com/docs/api/errors, one page per code).
+#   Telnyx 40310 invalid 'to', 40012 invalid messaging destination number
+#   (https://developers.telnyx.com/docs/messaging/messages/error-codes).
+# Temporary, so "unavailable" and not a number problem:
+#   Telnyx 40008 undeliverable, the carrier did not accept it (documented as temporary).
+# An unknown code falls through to the generic refusal.
+_TWILIO_BAD_NUMBER_CODES = frozenset({"21211", "21612", "21614"})
+_TELNYX_BAD_NUMBER_CODES = frozenset({"40310", "40012"})
+_TELNYX_TEMPORARY_CODES = frozenset({"40008"})
 _BAD_NUMBER_MESSAGE = "That phone number could not be reached. Please check the number."
 
 
@@ -42,16 +46,19 @@ def _provider_codes(response: httpx.Response) -> set[str]:
 
 
 def _send_rejection(
-    provider: str, response: httpx.Response, bad_number_codes: frozenset[str]
+    provider: str,
+    response: httpx.Response,
+    bad_number_codes: frozenset[str],
+    temporary_codes: frozenset[str] = frozenset(),
 ) -> dict[str, Any]:
     """Speakable reason for a refused send: bad number, service down, or refused.
 
     The provider's message can quote the number back, so it is not passed on.
     """
-    if (
-        not is_unavailable_status(response.status_code)
-        and _provider_codes(response) & bad_number_codes
-    ):
+    codes = _provider_codes(response)
+    if codes & temporary_codes:
+        return upstream_failure("text messaging service", 503)
+    if not is_unavailable_status(response.status_code) and codes & bad_number_codes:
         logger.warning(
             "sms_send_rejected",
             provider=provider,
@@ -342,7 +349,9 @@ class TelnyxSMSTools:
             response = await self.client.post("/messages", json=payload)
 
             if response.status_code != HTTPStatus.OK:
-                return _send_rejection("telnyx", response, _TELNYX_BAD_NUMBER_CODES)
+                return _send_rejection(
+                    "telnyx", response, _TELNYX_BAD_NUMBER_CODES, _TELNYX_TEMPORARY_CODES
+                )
 
             data = response.json()["data"]
             return {
