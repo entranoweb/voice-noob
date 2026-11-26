@@ -587,11 +587,12 @@ class TestTerminalCallIsFinal:
 
 
 class TestReplayOutlivesTheRow:
-    def test_twilio_memory_outlives_the_longest_retention_plus_a_day(self) -> None:
-        from app.core.webhook_replay import twilio_ttl_seconds
-        from app.services.data_protection import MAX_RETENTION_DAYS
+    def test_long_ttl_is_retention_plus_a_day_and_falls_back_to_the_global_max(self) -> None:
+        from app.core.webhook_replay import twilio_long_ttl_seconds
 
-        assert twilio_ttl_seconds() >= (MAX_RETENTION_DAYS + 1) * 86400
+        assert twilio_long_ttl_seconds(30) == 31 * 86400
+        assert twilio_long_ttl_seconds(None) == (3650 + 1) * 86400
+        assert twilio_long_ttl_seconds(10**6) == (3650 + 1) * 86400  # clamped
 
     @pytest.mark.asyncio
     async def test_a_replay_after_the_row_is_erased_gets_no_token_and_no_row(
@@ -778,3 +779,102 @@ class TestRedisDuplicatePathWithoutARow:
             second = await client.post(path, content=_form(params), headers=headers)
         assert first.json() == {"status": "received"}
         assert second.json() == {"status": "duplicate"}
+
+
+async def _set_retention(env: dict[str, Any], days: int) -> int:
+    from app.models.privacy_settings import PrivacySettings
+
+    async with env["session_maker"]() as session:
+        agent = await session.get(Agent, uuid.UUID(env["agent_id"]))
+        assert agent is not None
+        existing = (
+            await session.execute(
+                select(PrivacySettings).where(PrivacySettings.user_id == agent.user_id)
+            )
+        ).scalar_one_or_none()
+        if existing is None:
+            session.add(PrivacySettings(user_id=agent.user_id, data_retention_days=days))
+        else:
+            existing.data_retention_days = days
+        await session.commit()
+        return int(agent.user_id)
+
+
+async def _ttls(store: Any) -> list[int]:
+    return sorted([await store.ttl(k) for k in await store.keys("webhook-replay:*")])
+
+
+class TestPerKeyTtl:
+    PATH = "/webhooks/twilio/voice"
+
+    def _voice(self, sid: str) -> dict[str, str]:
+        return {"CallSid": sid, "From": CALLER_NUMBER, "To": AGENT_NUMBER}
+
+    @pytest.mark.asyncio
+    async def test_inbound_key_lives_the_accounts_retention_plus_a_day(
+        self, env: dict[str, Any], webhook_replay_store: Any
+    ) -> None:
+        await _set_retention(env, 30)
+        params = self._voice("CA-ttl1")
+        async with _client() as client:
+            await client.post(
+                self.PATH, content=_form(params), headers=_twilio_headers(self.PATH, params)
+            )
+        (ttl,) = await _ttls(webhook_replay_store)
+        assert 31 * 86400 - 5 <= ttl <= 31 * 86400
+
+    @pytest.mark.asyncio
+    async def test_no_settings_row_uses_the_model_default_of_365_days(
+        self, env: dict[str, Any], webhook_replay_store: Any
+    ) -> None:
+        params = self._voice("CA-ttl2")
+        async with _client() as client:
+            await client.post(
+                self.PATH, content=_form(params), headers=_twilio_headers(self.PATH, params)
+            )
+        (ttl,) = await _ttls(webhook_replay_store)
+        assert 366 * 86400 - 5 <= ttl <= 366 * 86400
+
+    @pytest.mark.asyncio
+    async def test_outbound_answer_key_is_long_and_status_key_is_short(
+        self, env: dict[str, Any], webhook_replay_store: Any
+    ) -> None:
+        await _set_retention(env, 30)
+        await _seed_outbound(env, "CA-ttl3")
+        answer_path = "/webhooks/twilio/answer"
+        query = f"?agent_id={env['agent_id']}"
+        data = BASE + answer_path + query + "CallSidCA-ttl3"
+        digest = hmac.new(TWILIO_TOKEN.encode(), data.encode(), hashlib.sha1).digest()
+        headers = {
+            "content-type": "application/x-www-form-urlencoded",
+            "X-Twilio-Signature": base64.b64encode(digest).decode(),
+        }
+        status = {"CallSid": "CA-ttl3", "CallStatus": "ringing"}
+        async with _client() as client:
+            await client.post(
+                answer_path + query, content=_form({"CallSid": "CA-ttl3"}), headers=headers
+            )
+            await client.post(
+                "/webhooks/twilio/status",
+                content=_form(status),
+                headers=_twilio_headers("/webhooks/twilio/status", status),
+            )
+        short, long = await _ttls(webhook_replay_store)
+        assert short <= settings.TWILIO_WEBHOOK_REPLAY_TTL_SECONDS
+        assert 31 * 86400 - 5 <= long <= 31 * 86400
+
+    @pytest.mark.asyncio
+    async def test_retention_raised_later_older_key_is_shorter_but_the_row_covers_it(
+        self, env: dict[str, Any], webhook_replay_store: Any
+    ) -> None:
+        await _set_retention(env, 30)
+        params = self._voice("CA-ttl4")
+        headers = _twilio_headers(self.PATH, params)
+        async with _client() as client:
+            await client.post(self.PATH, content=_form(params), headers=headers)
+            await _set_retention(env, 365)  # raised: the old key keeps its 31 days
+            await webhook_replay_store.flushall()  # ...and has expired (day 32)
+            replay = await client.post(self.PATH, content=_form(params), headers=headers)
+        # The row still exists (retention is now 365 days), so the row check refuses.
+        assert 'name="token"' not in replay.text
+        assert await _rows(env) == 1

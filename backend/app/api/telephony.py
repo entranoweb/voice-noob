@@ -39,7 +39,7 @@ from app.core.webhook_replay import (
     release_claim_on_error,
     store_answer_document,
     stored_answer_document,
-    twilio_ttl_seconds,
+    twilio_long_ttl_seconds,
     webhook_is_duplicate,
 )
 from app.core.webhook_security import verify_telnyx_webhook, verify_twilio_webhook
@@ -52,6 +52,7 @@ from app.models.campaign import Campaign, CampaignContact, CampaignContactStatus
 # services.telephony.base, which is a different thing from the table.
 from app.models.phone_number import PhoneNumber as PhoneNumberRecord
 from app.models.phone_number import PhoneNumberStatus
+from app.models.privacy_settings import PrivacySettings
 from app.models.workspace import AgentWorkspace
 from app.services.qa import trigger_qa_evaluation
 from app.services.telephony.telnyx_events import parse_telnyx_webhook
@@ -982,6 +983,28 @@ async def _call_already_answered(provider: str, provider_call_id: str, db: Async
     return found is not None
 
 
+# Matches PrivacySettings.data_retention_days default.
+DEFAULT_RETENTION_DAYS = 365
+
+
+async def _replay_ttl_for(agent: Agent | None, db: AsyncSession) -> int:
+    """How long a Twilio inbound/answer replay key must be remembered.
+
+    The call row is what stops a replay while it exists; the key has to cover
+    the time after the row is gone. Rows go when the account's retention sweep
+    (``PrivacySettings.data_retention_days``) or an erasure deletes them, so the
+    key lives that period + 1 day. No settings row: the sweep never runs for the
+    account, rows leave only by erasure, so the model default (365) is used.
+    Owner unresolved: the longest period an account may set.
+    """
+    if agent is None:
+        return twilio_long_ttl_seconds(None)
+    days = await db.scalar(
+        select(PrivacySettings.data_retention_days).where(PrivacySettings.user_id == agent.user_id)
+    )
+    return twilio_long_ttl_seconds(days if days is not None else DEFAULT_RETENTION_DAYS)
+
+
 _TERMINAL_STATUSES = frozenset(
     {
         CallStatus.COMPLETED.value,
@@ -1090,7 +1113,7 @@ async def _claim_outbound_answer(
             await asyncio.sleep(_ROW_RECHECK_DELAY_SECONDS)
 
     logger.warning("outbound_answer_without_call_row", provider=provider, call_id=provider_call_id)
-    claim = await claim_answer_issued(provider, provider_call_id, twilio_ttl_seconds())
+    claim = await claim_answer_issued(request, provider, provider_call_id)
     # Unreachable store: fail open, as everywhere in the replay guard (it logged).
     return claim is not ReplayClaim.DUPLICATE
 
@@ -1115,7 +1138,11 @@ async def twilio_voice_webhook(
     # workspace that owns the agent the number routes to. Looked up before the
     # signature is checked (a read, nothing is written) and then verified.
     agent = await get_agent_by_phone_number(to_number, db)
-    await verify_twilio_webhook(request, await twilio_auth_token_for_agent(agent, db))
+    await verify_twilio_webhook(
+        request,
+        await twilio_auth_token_for_agent(agent, db),
+        replay_ttl_seconds=await _replay_ttl_for(agent, db),
+    )
     if webhook_is_duplicate(request):
         return await _duplicate_answer(request)
 
@@ -1294,7 +1321,11 @@ async def twilio_answer_webhook(
     # The agent named in the path decides whose Twilio account should have
     # signed this.
     owner = await _agent_by_id(agent_id, db)
-    await verify_twilio_webhook(request, await twilio_auth_token_for_agent(owner, db))
+    await verify_twilio_webhook(
+        request,
+        await twilio_auth_token_for_agent(owner, db),
+        replay_ttl_seconds=await _replay_ttl_for(owner, db),
+    )
     if webhook_is_duplicate(request):
         return await _duplicate_answer(request)
 

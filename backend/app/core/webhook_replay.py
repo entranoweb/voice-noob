@@ -72,8 +72,12 @@ _STATE_KEY = "webhook_replay_claim_key"
 _STATE_FRESH = "webhook_replay_fresh"
 _STATE_DUPLICATE = "webhook_duplicate"
 _STATE_COMMITTED = "webhook_replay_committed"
+_STATE_TTL = "webhook_replay_ttl"
 # The answer document is kept for as long as the stream token in it is valid.
 DOCUMENT_TTL_SECONDS = 120
+# Longest retention an account may set (app.services.data_protection.MAX_RETENTION_DAYS;
+# duplicated so this module imports nothing from services).
+MAX_RETENTION_DAYS = 3650
 # Replay-guard Redis calls must not outlast a carrier's own timeout.
 STORE_TIMEOUT_SECONDS = 0.5
 _DOC_POLLS = 5
@@ -113,7 +117,18 @@ def telnyx_ttl_seconds() -> int:
 
 
 def twilio_ttl_seconds() -> int:
+    """Short memory, for status callbacks (transition-only, so safe to forget)."""
     return settings.TWILIO_WEBHOOK_REPLAY_TTL_SECONDS
+
+
+def twilio_long_ttl_seconds(retention_days: int | None) -> int:
+    """Memory for keys that must outlive the call row: retention + one day.
+
+    ``retention_days`` is the account's configured period; ``None`` (the owner
+    could not be resolved) falls back to the longest an account may set.
+    """
+    days = retention_days if retention_days is not None else MAX_RETENTION_DAYS
+    return (max(1, min(days, MAX_RETENTION_DAYS)) + 1) * 86400
 
 
 def answer_issued_key(provider: str, provider_call_id: str) -> str:
@@ -148,7 +163,9 @@ async def claim_webhook(key: str, *, ttl_seconds: int) -> ReplayClaim:
     return ReplayClaim.FRESH if claimed else ReplayClaim.DUPLICATE
 
 
-def record_claim(request: Request, key: str, claim: ReplayClaim) -> None:
+def record_claim(request: Request, key: str, claim: ReplayClaim, ttl_seconds: int = 0) -> None:
+    if ttl_seconds:
+        setattr(request.state, _STATE_TTL, ttl_seconds)
     if claim is ReplayClaim.DUPLICATE:
         setattr(request.state, _STATE_DUPLICATE, True)
         setattr(request.state, _STATE_KEY, key)
@@ -202,12 +219,12 @@ async def stored_answer_document(request: Request) -> str | None:
 
 
 async def claim_answer_issued(
-    provider: str, provider_call_id: str, ttl_seconds: int
+    request: Request, provider: str, provider_call_id: str
 ) -> ReplayClaim:
-    """Row-less answer claim: ``SET NX`` a long-lived key for this call id."""
-    return await claim_webhook(
-        answer_issued_key(provider, provider_call_id), ttl_seconds=ttl_seconds
-    )
+    """Row-less answer claim: ``SET NX`` a long-lived key for this call id, with
+    the same TTL the answer's own replay key got (retention + 1 day)."""
+    ttl = getattr(request.state, _STATE_TTL, None) or twilio_long_ttl_seconds(None)
+    return await claim_webhook(answer_issued_key(provider, provider_call_id), ttl_seconds=ttl)
 
 
 async def answer_already_issued(provider: str, provider_call_id: str) -> bool:

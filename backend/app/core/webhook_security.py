@@ -189,10 +189,15 @@ async def _guard_replay(request: Request, key: str, ttl_seconds: int) -> None:
     claim = await claim_webhook(key, ttl_seconds=ttl_seconds)
     if claim is ReplayClaim.STORE_UNAVAILABLE and settings.WEBHOOK_REPLAY_FAIL_CLOSED:
         raise HTTPException(status_code=503, detail="Webhook replay protection unavailable")
-    record_claim(request, key, claim)
+    record_claim(request, key, claim, ttl_seconds)
 
 
-async def verify_twilio_webhook(request: Request, workspace_auth_token: str | None = None) -> bool:
+async def verify_twilio_webhook(
+    request: Request,
+    workspace_auth_token: str | None = None,
+    *,
+    replay_ttl_seconds: int | None = None,
+) -> bool:
     """Verify Twilio webhook signature from request.
 
     Twilio signs with the auth token of the account the number belongs to. In a
@@ -254,7 +259,7 @@ async def verify_twilio_webhook(request: Request, workspace_auth_token: str | No
             await _guard_replay(
                 request,
                 twilio_replay_key(url, params),
-                twilio_ttl_seconds(),
+                replay_ttl_seconds or twilio_ttl_seconds(),
             )
             return True
 
