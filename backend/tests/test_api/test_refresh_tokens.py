@@ -312,6 +312,44 @@ async def test_a_token_replayed_within_the_window_gets_nothing_and_revokes_nothi
     assert (await _refresh(lc, second["refresh_token"])).status_code == 200, "family still live"
 
 
+async def _race_events(lc: Lifecycle) -> list[AuditEvent]:
+    async with lc.sessions() as session:
+        return list(
+            (
+                await session.execute(
+                    sa.select(AuditEvent).where(AuditEvent.action == "auth.refresh.rotation_race")
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+
+@pytest.mark.asyncio
+async def test_each_replay_in_the_window_leaves_one_audit_row_without_token_values(
+    lifecycle: Lifecycle,
+) -> None:
+    lc = lifecycle
+    first = await lc.login(lc.alice.user.email)
+    second = (await _refresh(lc, first["refresh_token"])).json()
+    assert not await _race_events(lc), "a normal rotation is not a race"
+
+    assert (await _refresh(lc, first["refresh_token"])).status_code == 409
+    events = await _race_events(lc)
+    assert len(events) == 1
+    event = events[0]
+    assert event.success is False
+    assert event.actor_user_id == lc.alice.user.id
+    assert event.target_type == "refresh_token_family"
+    details = event.details or {}
+    assert isinstance(details.get("age_ms"), int)
+    assert first["refresh_token"] not in str(details) + str(event.target_id)
+    assert second["refresh_token"] not in str(details) + str(event.target_id)
+
+    assert (await _refresh(lc, first["refresh_token"])).status_code == 409
+    assert len(await _race_events(lc)) == 2, "one row per replay"
+
+
 @pytest.mark.asyncio
 async def test_presenting_the_old_token_again_and_again_in_the_window_changes_nothing(
     lifecycle: Lifecycle,
@@ -395,3 +433,15 @@ async def test_the_window_does_not_outlive_the_sign_in(lifecycle: Lifecycle) -> 
         await session.commit()
 
     assert (await _refresh(lc, tokens["refresh_token"])).status_code == 401
+
+
+def test_the_rotation_window_is_bounded() -> None:
+    from pydantic import ValidationError
+
+    from app.core.config import Settings
+
+    assert Settings(REFRESH_ROTATION_GRACE_SECONDS=0).REFRESH_ROTATION_GRACE_SECONDS == 0
+    assert Settings(REFRESH_ROTATION_GRACE_SECONDS=30).REFRESH_ROTATION_GRACE_SECONDS == 30
+    for bad in (-1, 31, 3600):
+        with pytest.raises(ValidationError):
+            Settings(REFRESH_ROTATION_GRACE_SECONDS=bad)

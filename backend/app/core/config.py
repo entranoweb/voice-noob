@@ -3,7 +3,7 @@
 import os
 from typing import Any
 
-from pydantic import PostgresDsn, RedisDsn, field_validator
+from pydantic import Field, PostgresDsn, RedisDsn, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # The value SECRET_KEY shipped with. It is public, so anything signed with it is
@@ -133,7 +133,7 @@ class Settings(BaseSettings):
     # taken for two tabs of one browser racing (a browser can hand a second tab
     # the old value for a few milliseconds), not for theft: it gets a 409 with no
     # tokens and the sign-in is left alone. After the window it is a replay.
-    REFRESH_ROTATION_GRACE_SECONDS: int = 5
+    REFRESH_ROTATION_GRACE_SECONDS: int = Field(default=5, ge=0, le=30)
     # How long an emailed password-reset link works.
     PASSWORD_RESET_EXPIRE_MINUTES: int = 30
     # Reset mails one account can be sent per hour. More requests get the same

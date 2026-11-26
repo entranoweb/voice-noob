@@ -9,6 +9,7 @@ import {
   clearSession,
   endSessionOnServer,
   getAccessToken,
+  getRefreshToken,
   refreshSession,
   storeSession,
 } from "@/lib/session";
@@ -104,6 +105,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const fetchUser = async (accessToken: string) => {
     try {
+      let lostRace = false;
       let response = await fetch(`${API_BASE}/api/v1/auth/me`, {
         headers: {
           Authorization: `Bearer ${accessToken}`,
@@ -118,12 +120,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           response = await fetch(`${API_BASE}/api/v1/auth/me`, {
             headers: { Authorization: `Bearer ${renewed}` },
           });
+        } else {
+          // A 401 from /refresh has already emptied storage. A session still
+          // stored means the renewal lost a race (409): that never signs out.
+          lostRace = getRefreshToken() !== null;
         }
       }
 
       if (response.ok) {
         const userData = await response.json();
         setUser(userData);
+      } else if (lostRace) {
+        // Leave the stored session for the next request to renew.
       } else {
         // Token invalid, clear it
         clearSession();

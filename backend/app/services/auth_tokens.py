@@ -194,6 +194,19 @@ async def _retired_token_presented(
             await db.commit()
             raise RefreshRejected
         logger.info("refresh_token_rotation_race", user_id=user_id, family_id=str(family_id))
+        # A thief replaying inside the window looks the same as a stale tab, so
+        # each one leaves a durable row (no token values) to read afterwards.
+        await record_audit(
+            db,
+            AuditAction.REFRESH_ROTATION_RACE,
+            actor_user_id=user_id,
+            target_type="refresh_token_family",
+            target_id=str(family_id),
+            success=False,
+            details={"age_ms": int(age.total_seconds() * 1000)},
+            request=request,
+            commit=True,
+        )
         raise RefreshRecentlyRotated
     await _reuse_detected(db, family_id, user_id, request, "token already used")
     raise RefreshRejected
