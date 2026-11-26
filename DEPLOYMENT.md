@@ -164,6 +164,12 @@ Three things follow that are not settings.
   stream is refused, by design: the log line is
   `stream_token_claim_store_unavailable`, and a replayed token logs as
   `replayed`. All backend instances must share one Redis.
+- **The embed widget's key limiter needs Redis 7.0 or newer.** It counts keys
+  minted per agent and per address with `EXPIRE ... NX`, which older Redis does
+  not have. On an older Redis, or while Redis is unreachable, every embed key
+  request fails closed with 503 (`embed_key_limit_store_unavailable` in the
+  log) and no key is minted. Limits: `EMBED_KEYS_PER_AGENT_PER_HOUR` (30),
+  `EMBED_KEYS_PER_IP_PER_AGENT_PER_HOUR` (10), `EMBED_KEY_TTL_SECONDS` (60).
 - **Twilio webhooks are verified per workspace.** The signature is checked
   against the Twilio auth token of the workspace that owns the number, agent or
   call the webhook is about (Settings > Workspace API Keys), then against the
