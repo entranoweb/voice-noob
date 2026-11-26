@@ -3,9 +3,12 @@
 from collections.abc import Awaitable, Callable
 from http import HTTPStatus
 from typing import Any
+from urllib.parse import urlencode
 
 import httpx
 import structlog
+
+from app.services.tools.path_ids import encode_path_id, invalid_id_result
 
 logger = structlog.get_logger()
 
@@ -316,9 +319,11 @@ class CalendlyTools:
             booking_url = data["resource"]["booking_url"]
 
             # Add prefill parameters for invitee
-            prefill_params = f"?email={invitee_email}"
+            prefill: dict[str, str] = {"email": invitee_email}
             if invitee_name:
-                prefill_params += f"&name={invitee_name}"
+                prefill["name"] = invitee_name
+            separator = "&" if "?" in booking_url else "?"
+            prefill_params = separator + urlencode(prefill)
 
             return {
                 "success": True,
@@ -391,8 +396,11 @@ class CalendlyTools:
 
     async def get_event(self, event_uuid: str) -> dict[str, Any]:
         """Get details of a specific event."""
+        safe_event_uuid = encode_path_id(event_uuid)
+        if safe_event_uuid is None:
+            return invalid_id_result("event_uuid")
         try:
-            response = await self.client.get(f"/scheduled_events/{event_uuid}")
+            response = await self.client.get(f"/scheduled_events/{safe_event_uuid}")
 
             if response.status_code != HTTPStatus.OK:
                 return {
@@ -403,7 +411,9 @@ class CalendlyTools:
             event = response.json()["resource"]
 
             # Get invitees
-            invitees_response = await self.client.get(f"/scheduled_events/{event_uuid}/invitees")
+            invitees_response = await self.client.get(
+                f"/scheduled_events/{safe_event_uuid}/invitees"
+            )
             invitees = []
             if invitees_response.status_code == HTTPStatus.OK:
                 for inv in invitees_response.json().get("collection", []):
@@ -437,13 +447,16 @@ class CalendlyTools:
 
     async def cancel_event(self, event_uuid: str, reason: str | None = None) -> dict[str, Any]:
         """Cancel a scheduled event."""
+        safe_event_uuid = encode_path_id(event_uuid)
+        if safe_event_uuid is None:
+            return invalid_id_result("event_uuid")
         try:
             payload: dict[str, Any] = {}
             if reason:
                 payload["reason"] = reason
 
             response = await self.client.post(
-                f"/scheduled_events/{event_uuid}/cancellation", json=payload
+                f"/scheduled_events/{safe_event_uuid}/cancellation", json=payload
             )
 
             if response.status_code not in (HTTPStatus.OK, HTTPStatus.CREATED):

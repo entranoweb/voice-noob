@@ -823,6 +823,7 @@ async def twilio_media_stream(  # noqa: PLR0912, PLR0915
             "voice": agent.voice or "shimmer",
             "enable_transcript": agent.enable_transcript,
             "initial_greeting": agent.initial_greeting,
+            "pricing_tier": agent.pricing_tier,
         }
 
         # Callback to register call when it starts
@@ -1272,6 +1273,7 @@ async def telnyx_media_stream(  # noqa: PLR0912, PLR0915
             "voice": agent.voice or "shimmer",
             "enable_transcript": agent.enable_transcript,
             "initial_greeting": agent.initial_greeting,
+            "pricing_tier": agent.pricing_tier,
         }
 
         # Callback to register call when it starts

@@ -153,6 +153,9 @@ Names and defaults are from `backend/app/core/config.py`.
 | `CALL_MAX_DURATION_S` | `1800` | Longest a phone call may run, in seconds. Past it the bridge ends the call and records `max_duration`. Replaces a fixed 300 s cap. The model provider's own limit is 60 minutes |
 | `CALL_IDLE_TIMEOUT_S` | `120` | Seconds of no conversation (nobody speaking, no agent audio, no tool running) before the bridge ends the call and records `silence_timeout`. `0` turns it off |
 | `CALL_TOOL_GRACE_S` | `10` | When a call ends while a tool is running, how long the tool may finish before it is cancelled |
+| `SHUTDOWN_DRAIN_TIMEOUT` | `15` | On shutdown, seconds the worker waits for call-registry entries to clear, after the tool grace and the call saves |
+
+On shutdown a worker has 40 s (gunicorn `graceful_timeout`; the container's `stop_grace_period` is 50 s) to spend on, in order, `CALL_TOOL_GRACE_S`, about 5 s of database writes that save each call, and `SHUTDOWN_DRAIN_TIMEOUT`. The app checks this at start: `CALL_TOOL_GRACE_S + 5 + SHUTDOWN_DRAIN_TIMEOUT` must be at most 40, or it refuses to boot naming both variables. With the default drain the largest grace is 20 s. A worker killed mid-save loses the call record without any error, which is why this is refused at boot instead.
 
 Three things follow that are not settings.
 

@@ -7,6 +7,8 @@ from typing import Any
 import httpx
 import structlog
 
+from app.services.tools.path_ids import encode_path_id, invalid_id_result
+
 logger = structlog.get_logger()
 
 ToolHandler = Callable[..., Awaitable[dict[str, Any]]]
@@ -139,8 +141,11 @@ class TwilioSMSTools:
 
     async def get_message_status(self, message_sid: str) -> dict[str, Any]:
         """Get the status of a sent message."""
+        safe_message_sid = encode_path_id(message_sid)
+        if safe_message_sid is None:
+            return invalid_id_result("message_sid")
         try:
-            response = await self.client.get(f"/Messages/{message_sid}.json")
+            response = await self.client.get(f"/Messages/{safe_message_sid}.json")
 
             if response.status_code != HTTPStatus.OK:
                 return {
@@ -311,8 +316,11 @@ class TelnyxSMSTools:
 
     async def get_message_status(self, message_id: str) -> dict[str, Any]:
         """Get the status of a sent message."""
+        safe_message_id = encode_path_id(message_id)
+        if safe_message_id is None:
+            return invalid_id_result("message_id")
         try:
-            response = await self.client.get(f"/messages/{message_id}")
+            response = await self.client.get(f"/messages/{safe_message_id}")
 
             if response.status_code != HTTPStatus.OK:
                 return {
