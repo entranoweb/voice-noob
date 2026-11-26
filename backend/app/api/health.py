@@ -38,6 +38,9 @@ async def health_check() -> dict[str, str]:
     }
 
 
+# These answer without a login. The body carries a fixed message and the exception
+# type; the detail (scrubbed) is in the log only, since a database error string
+# holds the statement and its parameters and a Redis one holds the host.
 @router.get("/health/db")
 async def health_check_db(response: Response, db: AsyncSession = Depends(get_db)) -> dict[str, str]:
     """Database health check endpoint."""
@@ -48,7 +51,7 @@ async def health_check_db(response: Response, db: AsyncSession = Depends(get_db)
     except Exception as e:
         logger.error("Database health check failed: %s", describe_exception(e))  # noqa: TRY400
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
-        return {"status": "unhealthy", "database": str(e)}
+        return {"status": "unhealthy", "database": f"database unavailable ({type(e).__name__})"}
 
 
 @router.get("/health/redis")
@@ -69,7 +72,7 @@ async def health_check_redis(
     except Exception as e:
         logger.error("Redis health check failed: %s", describe_exception(e))  # noqa: TRY400
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
-        return {"status": "unhealthy", "redis": str(e)}
+        return {"status": "unhealthy", "redis": f"redis unavailable ({type(e).__name__})"}
 
 
 @router.get("/health/ready")
@@ -96,7 +99,7 @@ async def readiness_probe(
     except Exception as e:
         logger.warning("Readiness check failed: database: %s", describe_exception(e))
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
-        return {"status": "not_ready", "reason": f"database: {e}"}
+        return {"status": "not_ready", "reason": f"database unavailable ({type(e).__name__})"}
 
     # Check Redis
     try:
@@ -105,7 +108,7 @@ async def readiness_probe(
     except Exception as e:
         logger.warning("Readiness check failed: redis: %s", describe_exception(e))
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
-        return {"status": "not_ready", "reason": f"redis: {e}"}
+        return {"status": "not_ready", "reason": f"redis unavailable ({type(e).__name__})"}
 
     return {"status": "ready"}
 
@@ -153,7 +156,7 @@ async def detailed_health(
         result["services"]["database"] = "healthy"
     except Exception as e:
         logger.warning("Detailed health: database unhealthy: %s", describe_exception(e))
-        result["services"]["database"] = f"unhealthy: {e}"
+        result["services"]["database"] = f"unhealthy: database unavailable ({type(e).__name__})"
         result["status"] = "degraded"
 
     # Check Redis
@@ -163,7 +166,7 @@ async def detailed_health(
         result["services"]["redis"] = "healthy"
     except Exception as e:
         logger.warning("Detailed health: redis unhealthy: %s", describe_exception(e))
-        result["services"]["redis"] = f"unhealthy: {e}"
+        result["services"]["redis"] = f"unhealthy: redis unavailable ({type(e).__name__})"
         result["status"] = "degraded"
 
     # Call registry stats
@@ -176,7 +179,7 @@ async def detailed_health(
             }
         except Exception as e:
             logger.warning("Detailed health: call registry error: %s", describe_exception(e))
-            result["calls"] = {"error": str(e)}
+            result["calls"] = {"error": f"call registry unavailable ({type(e).__name__})"}
 
     if result["status"] != "healthy":
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
