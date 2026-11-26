@@ -339,11 +339,16 @@ writes holds a name or a transcript. The run is recorded in `removals.jsonl` in
 the bank, written `started` first and `complete` last. If it says INCOMPLETE,
 fix the cause it names and run the same command again: that finishes the job.
 
-A stored result that was edited by hand after the rig wrote it is still erased,
-but its integrity digest is left as it was, so it keeps reading as altered; the
-run says so and exits 1. Uploaded runs, backups and the carrier's own
-recordings are outside this tool, and it lists them. `docs/CLIP-CONSENT-AND-FORGET.md`
-has the whole rule.
+If a stored result in `--results` was edited by hand after the rig wrote it (or
+lost its integrity digest), `forget` **refuses**: it changes nothing at all,
+lists each such file and why, and exits 1, because erasing first would destroy
+the evidence of what was edited. Find out who changed the file, then rerun the
+calls or leave that folder out. `--erase-altered` overrides this and is for the
+owner only: it erases anyway, clears every field the rig does not write in those
+files (each is listed, and kept by name in the removal record), and leaves their
+digest alone, so they still read as altered; that run exits 1 as well. Uploaded
+runs, backups and the carrier's own recordings are outside this tool, and it
+lists them. `docs/CLIP-CONSENT-AND-FORGET.md` has the whole rule.
 
 ## What this does not prove
 

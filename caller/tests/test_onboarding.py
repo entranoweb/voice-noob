@@ -389,6 +389,7 @@ def test_the_guide_covers_steps_8_to_12_with_the_real_flags() -> None:
         assert f"### Step {step}." in guide
     for command in ("gate", "acceptance", "baseline", "compare", "upload", "forget"):
         assert re.search(rf"^\s*synthiq-caller {command} ", guide, re.M), command
+    assert "--erase-altered" in guide and "refuses" in guide
     assert "--rate 0.95" in guide and "fractions between 0 and 1" in guide
 
 
