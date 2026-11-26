@@ -8,6 +8,8 @@ from typing import Any
 import httpx
 import structlog
 
+from app.services.tools.path_ids import encode_path_id, invalid_id_result
+
 logger = structlog.get_logger()
 
 ToolHandler = Callable[..., Awaitable[dict[str, Any]]]
@@ -286,10 +288,14 @@ class ShopifyTools:
         """Get detailed order information."""
         try:
             # Handle order number vs ID
-            if order_id.startswith("#"):
+            if isinstance(order_id, str) and order_id.startswith("#"):
                 order_id = order_id[1:]
 
-            response = await self.client.get(f"/orders/{order_id}.json")
+            safe_order_id = encode_path_id(order_id)
+            if safe_order_id is None:
+                return invalid_id_result("order_id")
+
+            response = await self.client.get(f"/orders/{safe_order_id}.json")
 
             if response.status_code != HTTPStatus.OK:
                 # Try searching by name
@@ -299,8 +305,10 @@ class ShopifyTools:
                 if search_response.status_code == HTTPStatus.OK:
                     orders = search_response.json().get("orders", [])
                     if orders:
-                        order_id = str(orders[0]["id"])
-                        response = await self.client.get(f"/orders/{order_id}.json")
+                        found_id = encode_path_id(str(orders[0]["id"]))
+                        if found_id is None:
+                            return invalid_id_result("order_id")
+                        response = await self.client.get(f"/orders/{found_id}.json")
 
             if response.status_code != HTTPStatus.OK:
                 return {
@@ -362,8 +370,11 @@ class ShopifyTools:
 
     async def get_order_tracking(self, order_id: str) -> dict[str, Any]:
         """Get tracking information for an order."""
+        safe_order_id = encode_path_id(order_id)
+        if safe_order_id is None:
+            return invalid_id_result("order_id")
         try:
-            response = await self.client.get(f"/orders/{order_id}/fulfillments.json")
+            response = await self.client.get(f"/orders/{safe_order_id}/fulfillments.json")
 
             if response.status_code != HTTPStatus.OK:
                 return {
@@ -454,8 +465,11 @@ class ShopifyTools:
 
     async def check_inventory(self, product_id: str) -> dict[str, Any]:
         """Check inventory levels for a product."""
+        safe_product_id = encode_path_id(product_id)
+        if safe_product_id is None:
+            return invalid_id_result("product_id")
         try:
-            response = await self.client.get(f"/products/{product_id}.json")
+            response = await self.client.get(f"/products/{safe_product_id}.json")
 
             if response.status_code != HTTPStatus.OK:
                 return {

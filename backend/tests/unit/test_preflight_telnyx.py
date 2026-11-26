@@ -195,3 +195,39 @@ class TestCredentials:
     def test_the_environment_openai_key_is_not_checked(self) -> None:
         """The call reads the workspace key; an env check here would be a lie."""
         assert not [r for r in preflight.check_credentials() if "OPENAI" in r.check]
+
+
+class TestRealtimeModelsAndProxy:
+    def test_the_models_in_use_are_reported(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from app.core.config import settings
+
+        monkeypatch.setattr(settings, "OPENAI_REALTIME_MODEL_PREMIUM", "model-a")
+        monkeypatch.setattr(settings, "OPENAI_REALTIME_MODEL_PREMIUM_MINI", "model-b")
+        monkeypatch.setattr(settings, "OPENAI_REALTIME_INPUT_TRANSCRIPTION_MODEL", "model-c")
+
+        results = preflight.check_realtime_models()
+
+        assert _levels(results) == [Level.PASS, Level.PASS]
+        assert "model-a" in results[0].detail
+        assert "model-b" in results[0].detail
+        assert results[1].detail == "model-c"
+
+    def test_no_transcription_model_is_said_plainly(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from app.core.config import settings
+
+        monkeypatch.setattr(settings, "OPENAI_REALTIME_INPUT_TRANSCRIPTION_MODEL", " ")
+
+        assert "no caller transcript" in preflight.check_realtime_models()[1].detail
+
+    def test_a_public_host_without_trusted_proxies_warns(self) -> None:
+        results = preflight.check_trusted_proxy("https://voice.example.com", None)
+
+        assert _levels(results) == [Level.WARN]
+
+    def test_trusted_proxies_set_passes(self) -> None:
+        results = preflight.check_trusted_proxy("https://voice.example.com", "10.0.1.0/24")
+
+        assert _levels(results) == [Level.PASS]
+
+    def test_a_local_rehearsal_does_not_warn(self) -> None:
+        assert _levels(preflight.check_trusted_proxy("http://127.0.0.1:8000", None)) == [Level.PASS]

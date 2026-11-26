@@ -16,9 +16,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.integrations import get_workspace_integrations
 from app.api.settings import get_user_api_keys
 from app.core.auth import user_id_to_uuid
-from app.core.config import settings
 from app.core.safe_http import assert_public_url
-from app.services.realtime_models import input_transcription
+from app.services.realtime_models import input_transcription, realtime_model_for_tier
 from app.services.tools.registry import ToolRegistry
 
 logger = structlog.get_logger()
@@ -175,6 +174,11 @@ class GPTRealtimeSession:
         self.user_id_uuid = user_id_to_uuid(user_id)  # UUID for UserSettings queries
         self.workspace_id = workspace_id  # For workspace-isolated API key lookup
         self.agent_config = agent_config
+        # Chosen by the agent's pricing tier, as on the browser and embed paths.
+        # A config without a tier gets the premium model, as before.
+        self._realtime_model = realtime_model_for_tier(
+            str(agent_config.get("pricing_tier") or "premium")
+        )
         self.session_id = session_id or str(uuid.uuid4())
         self.connection: Any = None
         self.tool_registry: ToolRegistry | None = None
@@ -233,7 +237,7 @@ class GPTRealtimeSession:
                 api_version="2024-10-01-preview",
             )
             self._azure_deployment_name: str | None = (
-                user_settings.azure_openai_deployment_name or settings.OPENAI_REALTIME_MODEL_PREMIUM
+                user_settings.azure_openai_deployment_name or self._realtime_model
             )
             self.logger.info("using_azure_openai", deployment=self._azure_deployment_name)
         else:
@@ -276,8 +280,8 @@ class GPTRealtimeSession:
             model = self._azure_deployment_name
             self.logger.info("connecting_to_azure_openai_realtime", deployment=model)
         else:
-            # The premium model from settings; see app.core.config.
-            model = settings.OPENAI_REALTIME_MODEL_PREMIUM
+            # The model the agent's pricing tier names; see app.services.realtime_models.
+            model = self._realtime_model
             self.logger.info("connecting_to_openai_realtime", model=model)
 
         try:
