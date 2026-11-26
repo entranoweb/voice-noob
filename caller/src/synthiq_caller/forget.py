@@ -55,6 +55,7 @@ from synthiq_caller import removals
 from synthiq_caller.capture import CAPTURE_FILE, _written_names
 from synthiq_caller.clipid import AUDIO_SUFFIXES, clip_id
 from synthiq_caller.clips import OVERRIDES_FILE
+from synthiq_caller.completeness import ALTERED, verdict
 from synthiq_caller.consent import (
     OPERATOR_PREFIX,
     SPEAKER_PREFIX,
@@ -63,7 +64,7 @@ from synthiq_caller.consent import (
     reference_problem,
 )
 from synthiq_caller.ingest import CLIPS_DIR, SCENARIO_DIR
-from synthiq_caller.jsonio import write_run
+from synthiq_caller.jsonio import write_json, write_run
 from synthiq_caller.manifestcsv import ManifestError, read_rows
 
 MARK = "clips_removed"
@@ -865,6 +866,10 @@ class NotDeleted(Exception):  # noqa: N818 - a plain statement of what was left,
     """A clip's audio that ``forget`` will not delete, and why."""
 
 
+class NotRestamped(Exception):  # noqa: N818 - a plain statement of what was left, not an error class
+    """A result that ``forget`` changed but will not vouch for, and why."""
+
+
 def _outside(path: Path, banks: list[Path]) -> bool:
     here = path.resolve()
     return not any(here.is_relative_to(bank.resolve()) for bank in banks)
@@ -1177,6 +1182,20 @@ def _mark_result(
         for s in todo
     ]
     data[MARK] = sorted(held, key=lambda m: str(m.get("clip")))
+    state = verdict(path, json.loads(path.read_text(encoding="utf-8")))
+    if state == "unstamped":
+        write_json(path, data)  # written before digests existed: nothing to vouch for or lose
+        return
+    if state != "ok":
+        # A digest that does not match, or one that was removed, means the file is not what the
+        # rig wrote. Erasure is a duty, so the values are still blanked, but stamping the file
+        # now would make an edited result read as untouched: leave its digest exactly as it was.
+        write_json(path, data)
+        raise NotRestamped(
+            f"{_label(path)}: the values were blanked but the file was NOT restamped, because "
+            + ("it was edited" if state == ALTERED else "its integrity digest was removed")
+            + " after the rig wrote it; it stays altered for gate, acceptance and compare"
+        )
     write_run(path, data)
 
 
@@ -1230,7 +1249,7 @@ def execute(
         except Exception as error:  # noqa: BLE001 - one file failing must not stop the others
             failed.append(
                 str(error)
-                if isinstance(error, NotDeleted)
+                if isinstance(error, NotDeleted | NotRestamped)
                 else f"{what} {_label(path)}: {type(error).__name__}"
             )
         else:
