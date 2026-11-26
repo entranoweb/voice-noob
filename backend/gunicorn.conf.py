@@ -6,6 +6,8 @@ Run with: gunicorn -c gunicorn.conf.py app.main:app
 import multiprocessing
 import os
 
+from app.core.proxy import SETTING_NAME, trusted_proxy_ips
+
 # Server socket
 bind = os.getenv("GUNICORN_BIND", "0.0.0.0:8000")
 backlog = 2048
@@ -27,6 +29,13 @@ timeout = 120  # Longer timeout for voice WebSocket connections
 # container's stop_grace_period in docker-compose.prod.yml must exceed it.
 graceful_timeout = 40
 keepalive = 5  # Keep connections alive for reuse
+
+# Reverse proxy. Which peers may say who the real client is (X-Forwarded-For),
+# handed by UvicornWorker to uvicorn's ProxyHeadersMiddleware. The limiter and
+# the audit trail read the address that results. Loopback only unless
+# TRUSTED_PROXY_IPS names the proxy; see app/core/proxy.py. gunicorn's own
+# FORWARDED_ALLOW_IPS environment variable is deliberately not read.
+forwarded_allow_ips = trusted_proxy_ips(os.getenv(SETTING_NAME))
 
 # Process naming
 proc_name = "synthiq-voice-api"

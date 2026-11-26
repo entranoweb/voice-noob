@@ -51,6 +51,10 @@ services:
     restart: unless-stopped
     volumes:
       - caller_audio:/app/data/caller-audio
+      # Where scripts/db_backup.py writes dumps when an operator runs it in this
+      # container (DEPLOYMENT.md, "Database backup and restore"). Nothing writes
+      # here on its own. It is the same host as the database: copy dumps off it.
+      - db_backups:/app/data/backups
     environment:
       # Database
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD to a long random value}@postgres:5432/${POSTGRES_DB:-voice_agent}
@@ -136,6 +140,14 @@ services:
       # Where rate-limit counts are kept. Empty: the Redis above, shared by
       # every worker. "memory://" counts per process.
       RATE_LIMIT_STORAGE_URI: ${RATE_LIMIT_STORAGE_URI:-}
+      # Which peers may say who the real client is (X-Forwarded-For). The rate
+      # limiter and the audit trail use the address this yields. Empty: only
+      # loopback is trusted, and behind the reverse proxy every client then
+      # looks like the proxy and shares one rate-limit bucket. Set it to the
+      # proxy's address or network as the backend sees it, e.g. 10.0.1.0/24
+      # (DEPLOYMENT.md, "Client address behind the proxy"). "*" trusts every
+      # peer and lets a client pick its own address: never use it here.
+      TRUSTED_PROXY_IPS: ${TRUSTED_PROXY_IPS:-}
       # Call length: a hard cap, how long a call may go without anyone speaking
       # (0 disables), and how long a running tool may finish after the call ends.
       CALL_MAX_DURATION_S: ${CALL_MAX_DURATION_S:-1800}
@@ -196,6 +208,8 @@ services:
 
 volumes:
   caller_audio:
+    driver: local
+  db_backups:
     driver: local
   postgres_data:
     driver: local
