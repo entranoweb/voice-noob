@@ -18,7 +18,11 @@ from app.core.limits import (
     enforce_caps_on_update,
     enforce_merge_cap_on_update,
 )
-from app.core.ownership import ensure_phone_reference_is_owned, parse_uuid
+from app.core.ownership import (
+    ensure_phone_reference_is_owned,
+    owned_agent_workspace_id,
+    parse_uuid,
+)
 from app.core.public_id import generate_public_id
 from app.core.public_url import frontend_base_url
 from app.db.session import get_db
@@ -364,7 +368,15 @@ async def update_agent(
             detail="Agent not found",
         )
 
-    await ensure_phone_reference_is_owned(db, update_request.phone_number_id, current_user)
+    # Only a changed value is checked: an unchanged one is what the edit page
+    # sends back for a legacy agent, and refusing it would block every edit.
+    if update_request.phone_number_id != agent.phone_number_id:
+        await ensure_phone_reference_is_owned(
+            db,
+            update_request.phone_number_id,
+            current_user,
+            agent_workspace_id=await owned_agent_workspace_id(db, agent, current_user),
+        )
 
     # Apply updates from request
     previous_number = agent.phone_number_id

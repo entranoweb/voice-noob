@@ -79,6 +79,13 @@ class TelnyxService(TelephonyProvider):
             "from": from_number,
             "connection_id": await self._get_connection_id(),
             "texml_url": webhook_url,
+            # Telnyx documents `StatusCallback` / `StatusCallbackMethod` /
+            # `StatusCallbackEvent` on its TeXML initiate-call request. The
+            # URL is the answer URL's twin, so it carries the same record_id
+            # and an early callback finds its call record by it.
+            "status_callback": webhook_url.replace("/answer", "/status"),
+            "status_callback_method": "POST",
+            "status_callback_event": "initiated ringing answered completed",
         }
 
         response = await client.post("/texml/calls", json=payload)

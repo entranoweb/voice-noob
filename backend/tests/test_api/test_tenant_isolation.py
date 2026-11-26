@@ -35,6 +35,7 @@ from app.models.phone_number import PhoneNumber, PhoneNumberStatus
 from app.models.test_scenario import TestScenario as ScenarioRow
 from app.models.user import User
 from app.models.workspace import AgentWorkspace, Workspace
+from app.services.telephony.number_ownership import get_carrier_lookup_factory
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -96,6 +97,14 @@ async def _tenant(session: AsyncSession, name: str) -> Tenant:
     return Tenant(user=user, headers=_bearer(user), workspace=workspace, agent=agent)
 
 
+def _confirming_carrier(provider: str, settings: Any) -> Any:
+    class Lookup:
+        async def holds_number(self, number: str) -> bool:
+            return True
+
+    return Lookup()
+
+
 @pytest_asyncio.fixture
 async def world(test_engine: Any, test_redis: Any) -> AsyncGenerator[World, None]:
     sessions = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
@@ -109,6 +118,10 @@ async def world(test_engine: Any, test_redis: Any) -> AsyncGenerator[World, None
 
     app.dependency_overrides[get_db] = override_get_db
     app.dependency_overrides[get_redis] = override_get_redis
+    # These tests are about whose number it is once registered, not about the
+    # carrier: every lookup confirms. The proof itself is tested in
+    # test_number_ownership.py.
+    app.dependency_overrides[get_carrier_lookup_factory] = lambda: _confirming_carrier
 
     async with sessions() as session:
         alice = await _tenant(session, "alice")
@@ -147,7 +160,7 @@ async def _register_number(world: World, tenant: Tenant, number: str, **extra: A
             provider="twilio",
             provider_id=f"PN{uuid.uuid4().hex}",
             status=PhoneNumberStatus.ACTIVE.value,
-            **extra,
+            **{"workspace_id": tenant.workspace.id, **extra},
         )
         session.add(record)
         await session.commit()
@@ -309,7 +322,9 @@ class TestPhoneNumberAssignment:
 
     @pytest.mark.asyncio
     async def test_a_number_can_be_assigned_to_ones_own_agent(self, world: World) -> None:
-        record = await _register_number(world, world.alice, ALICE_NUMBER)
+        record = await _register_number(
+            world, world.alice, ALICE_NUMBER, workspace_id=world.alice.workspace.id
+        )
 
         response = await world.client.put(
             f"/api/v1/phone-numbers/{record.id}",
@@ -330,7 +345,12 @@ class TestPhoneNumberAssignment:
         response = await world.client.post(
             "/api/v1/phone-numbers",
             headers=world.alice.headers,
-            json={"phone_number": spelling, "provider": "twilio", "provider_id": "PNalice"},
+            json={
+                "phone_number": spelling,
+                "provider": "twilio",
+                "provider_id": "PNalice",
+                "workspace_id": str(world.alice.workspace.id),
+            },
         )
 
         assert response.status_code == 409
@@ -360,7 +380,12 @@ class TestPhoneNumberAssignment:
         response = await world.client.post(
             "/api/v1/phone-numbers",
             headers=world.alice.headers,
-            json={"phone_number": BOB_NUMBER, "provider": "twilio", "provider_id": "PNnew"},
+            json={
+                "phone_number": BOB_NUMBER,
+                "provider": "twilio",
+                "provider_id": "PNnew",
+                "workspace_id": str(world.alice.workspace.id),
+            },
         )
 
         assert response.status_code == 201

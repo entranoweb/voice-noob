@@ -38,9 +38,11 @@ from httpx import ASGITransport, AsyncClient
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.api.telephony_ws import STREAM_WORKSPACE_REJECTED
+from app.core.auth import user_id_to_uuid
 from app.core.config import settings
 from app.core.stream_token import STREAM_TOKEN_REJECTED, mint_stream_token
 from app.db.redis import get_redis
@@ -48,7 +50,9 @@ from app.db.session import get_db
 from app.main import app
 from app.models.agent import Agent
 from app.models.call_record import CallRecord, CallStatus
+from app.models.phone_number import PhoneNumber, PhoneNumberStatus
 from app.models.user import User
+from app.models.workspace import AgentWorkspace, Workspace
 from app.monitoring import call_trace as schema
 from app.services.qa.call_metrics import metrics_for_call
 from tests.websocket.asgi_ws import ASGIWebSocketClient
@@ -116,9 +120,12 @@ class _FakeRealtimeSession:
     # How many sessions were opened. A refused connection must open none: a
     # realtime session is the paid, tool-bearing thing the token protects.
     opened: ClassVar[int] = 0
+    # The workspace each opened session was keyed to: it picks the OpenAI key.
+    workspaces: ClassVar[list[Any]] = []
 
-    def __init__(self, **_: Any) -> None:
+    def __init__(self, **kwargs: Any) -> None:
         type(self).opened += 1
+        type(self).workspaces.append(kwargs.get("workspace_id"))
         self.connection = _FakeRealtimeConnection(list(self.script))
         self.audio_in: list[bytes] = []
         self.tools_called: list[str] = []
@@ -217,6 +224,21 @@ async def inbound_call_env(test_engine: Any, monkeypatch: pytest.MonkeyPatch) ->
         session.add(agent)
         await session.commit()
         await session.refresh(agent)
+        workspace = Workspace(user_id=user.id, name="Main")
+        session.add(workspace)
+        await session.commit()
+        session.add(AgentWorkspace(agent_id=agent.id, workspace_id=workspace.id, is_default=True))
+        session.add(
+            PhoneNumber(
+                user_id=user_id_to_uuid(user.id),
+                workspace_id=workspace.id,
+                phone_number=AGENT_NUMBER,
+                provider="telnyx",
+                provider_id=f"pn-{uuid.uuid4()}",
+                status=PhoneNumberStatus.ACTIVE.value,
+            )
+        )
+        await session.commit()
 
     private_key = Ed25519PrivateKey.generate()
     public_key = base64.b64encode(
@@ -230,6 +252,7 @@ async def inbound_call_env(test_engine: Any, monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr("app.api.telephony_ws.GPTRealtimeSession", _FakeRealtimeSession)
     _FakeRealtimeSession.script = _call_script()
     _FakeRealtimeSession.opened = 0
+    _FakeRealtimeSession.workspaces = []
 
     redis = fakeredis.FakeAsyncRedis(decode_responses=True)
 
@@ -246,6 +269,7 @@ async def inbound_call_env(test_engine: Any, monkeypatch: pytest.MonkeyPatch) ->
     try:
         yield {
             "agent": agent,
+            "workspace_id": workspace.id,
             "session_maker": session_maker,
             "sign": lambda body: _sign(private_key, body),
         }
@@ -856,3 +880,113 @@ async def _run_stream(env: dict[str, Any], query: str) -> None:
         await ws.send_json({"event": "media", "media": {"payload": ULAW_FRAME}})
         await ws.drain(deadline_s=1.0)
         await ws.send_json({"event": "stop"})
+
+
+class TestStreamUsesTheWorkspaceTheWebhookRecorded:
+    """The key and the bill follow the call record, not the agent's first link."""
+
+    async def _second_workspace_holds_the_number(self, env: dict[str, Any]) -> uuid.UUID:
+        """The agent is in W1 (default) and W2; the number is registered in W2."""
+        async with env["session_maker"]() as session:
+            agent = env["agent"]
+            second = Workspace(user_id=agent.user_id, name="Second")
+            session.add(second)
+            await session.commit()
+            session.add(AgentWorkspace(agent_id=agent.id, workspace_id=second.id, is_default=False))
+            number = (await session.execute(select(PhoneNumber))).scalar_one()
+            number.workspace_id = second.id
+            await session.commit()
+            return second.id
+
+    async def _refused(self, env: dict[str, Any], query: str) -> None:
+        async with ASGIWebSocketClient(
+            app,
+            f"/ws/telephony/telnyx/{env['agent'].id}",
+            query_string=query,
+        ) as ws:
+            assert ws.accepted
+            await ws.drain(deadline_s=0.5)
+            assert ws.close_code == STREAM_WORKSPACE_REJECTED
+        assert _FakeRealtimeSession.opened == 0
+
+    @pytest.mark.asyncio
+    async def test_the_numbers_workspace_keys_the_stream(
+        self, inbound_call_env: dict[str, Any]
+    ) -> None:
+        second = await self._second_workspace_holds_the_number(inbound_call_env)
+        assert second != inbound_call_env["workspace_id"]
+        query = await _place_webhook(inbound_call_env)
+
+        await _run_stream(inbound_call_env, query)
+
+        assert _FakeRealtimeSession.workspaces == [second]
+
+    @pytest.mark.asyncio
+    async def test_a_missing_call_record_closes_the_stream(
+        self, inbound_call_env: dict[str, Any]
+    ) -> None:
+        query = await _place_webhook(inbound_call_env)
+        async with inbound_call_env["session_maker"]() as session:
+            await session.execute(delete(CallRecord))
+            await session.commit()
+
+        await self._refused(inbound_call_env, query)
+
+    @pytest.mark.asyncio
+    async def test_a_workspace_the_agent_left_closes_the_stream(
+        self, inbound_call_env: dict[str, Any]
+    ) -> None:
+        second = await self._second_workspace_holds_the_number(inbound_call_env)
+        query = await _place_webhook(inbound_call_env)
+        async with inbound_call_env["session_maker"]() as session:
+            await session.execute(
+                delete(AgentWorkspace).where(AgentWorkspace.workspace_id == second)
+            )
+            await session.commit()
+
+        await self._refused(inbound_call_env, query)
+
+    @pytest.mark.asyncio
+    async def test_the_newest_record_for_a_reused_call_id_decides(
+        self, inbound_call_env: dict[str, Any]
+    ) -> None:
+        """An old row under the same id (a reused id) must not pick the workspace."""
+        second = await self._second_workspace_holds_the_number(inbound_call_env)
+        env = inbound_call_env
+        async with env["session_maker"]() as session:
+            # Older, in the first workspace.
+            session.add(
+                CallRecord(
+                    user_id=user_id_to_uuid(env["agent"].user_id),
+                    workspace_id=env["workspace_id"],
+                    provider="telnyx",
+                    provider_call_id=CALL_SID,
+                    agent_id=env["agent"].id,
+                    direction="inbound",
+                    status="completed",
+                    from_number="+15550100002",
+                    to_number=AGENT_NUMBER,
+                )
+            )
+            await session.commit()
+            # Newer, in the second workspace. Written directly: the answering webhook
+            # refuses an id that already has a row, so only the stream can meet two.
+            session.add(
+                CallRecord(
+                    user_id=user_id_to_uuid(env["agent"].user_id),
+                    workspace_id=second,
+                    provider="telnyx",
+                    provider_call_id=CALL_SID,
+                    agent_id=env["agent"].id,
+                    direction="inbound",
+                    status="ringing",
+                    from_number=CALLER_NUMBER,
+                    to_number=AGENT_NUMBER,
+                )
+            )
+            await session.commit()
+        query = _minted_query(str(env["agent"].id), CALL_SID)
+
+        await _run_stream(env, query)
+
+        assert _FakeRealtimeSession.workspaces == [second]

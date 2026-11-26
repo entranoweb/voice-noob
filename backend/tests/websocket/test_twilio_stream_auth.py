@@ -30,13 +30,17 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.api import telephony_ws
+from app.core.auth import user_id_to_uuid
 from app.core.config import settings
 from app.core.stream_token import STREAM_TOKEN_REJECTED, mint_stream_token
 from app.db.redis import get_redis
 from app.db.session import get_db
 from app.main import app
 from app.models.agent import Agent
+from app.models.call_record import CallRecord
+from app.models.phone_number import PhoneNumber, PhoneNumberStatus
 from app.models.user import User
+from app.models.workspace import AgentWorkspace, Workspace
 from tests.websocket.asgi_ws import ASGIWebSocketClient
 
 AGENT_NUMBER = "+15558886666"
@@ -131,6 +135,21 @@ async def twilio_env(test_engine: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
         session.add(agent)
         await session.commit()
         await session.refresh(agent)
+        workspace = Workspace(user_id=user.id, name="Main")
+        session.add(workspace)
+        await session.commit()
+        session.add(AgentWorkspace(agent_id=agent.id, workspace_id=workspace.id, is_default=True))
+        session.add(
+            PhoneNumber(
+                user_id=user_id_to_uuid(user.id),
+                workspace_id=workspace.id,
+                phone_number=AGENT_NUMBER,
+                provider="twilio",
+                provider_id=f"pn-{uuid.uuid4()}",
+                status=PhoneNumberStatus.ACTIVE.value,
+            )
+        )
+        await session.commit()
 
     monkeypatch.setattr(settings, "TWILIO_AUTH_TOKEN", AUTH_TOKEN)
     monkeypatch.setattr(settings, "PUBLIC_URL", PUBLIC_ORIGIN)
@@ -166,7 +185,12 @@ async def twilio_env(test_engine: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
     app.dependency_overrides[get_db] = override_get_db
     app.dependency_overrides[get_redis] = override_get_redis
     try:
-        yield {"agent": agent, "registered": registered}
+        yield {
+            "agent": agent,
+            "registered": registered,
+            "session_maker": session_maker,
+            "workspace_id": workspace.id,
+        }
     finally:
         app.dependency_overrides.clear()
         await redis.aclose()
@@ -233,6 +257,22 @@ class TestTheAnswerDocument:
     @pytest.mark.asyncio
     async def test_outbound_answer_does_the_same(self, twilio_env: dict[str, Any]) -> None:
         agent_id = str(twilio_env["agent"].id)
+        # `/calls` writes the record the answer is verified against.
+        async with twilio_env["session_maker"]() as session:
+            session.add(
+                CallRecord(
+                    user_id=user_id_to_uuid(twilio_env["agent"].user_id),
+                    workspace_id=twilio_env["workspace_id"],
+                    provider="twilio",
+                    provider_call_id=CALL_SID,
+                    agent_id=twilio_env["agent"].id,
+                    direction="outbound",
+                    status="initiated",
+                    from_number=AGENT_NUMBER,
+                    to_number=CALLER_NUMBER,
+                )
+            )
+            await session.commit()
 
         stream = await _answer_document(
             "/webhooks/twilio/answer",
@@ -394,6 +434,22 @@ class TestATokenAdmitsOneStream:
     async def test_a_replayed_token_is_refused(self, twilio_env: dict[str, Any]) -> None:
         agent_id = str(twilio_env["agent"].id)
         token = mint_stream_token(provider="twilio", agent_id=agent_id, call_id=CALL_SID)
+        # The stream takes its workspace from the row the webhook would have written.
+        async with twilio_env["session_maker"]() as session:
+            session.add(
+                CallRecord(
+                    user_id=user_id_to_uuid(twilio_env["agent"].user_id),
+                    workspace_id=twilio_env["workspace_id"],
+                    provider="twilio",
+                    provider_call_id=CALL_SID,
+                    agent_id=twilio_env["agent"].id,
+                    direction="inbound",
+                    status="ringing",
+                    from_number="+15550100002",
+                    to_number=AGENT_NUMBER,
+                )
+            )
+            await session.commit()
 
         async with ASGIWebSocketClient(app, f"/ws/telephony/twilio/{agent_id}") as ws:
             await ws.send_json(_start(CALL_SID, token))

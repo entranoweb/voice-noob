@@ -6,7 +6,7 @@ from typing import Annotated
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel, Field, StringConstraints
+from pydantic import BaseModel, Field, StringConstraints, field_validator
 from sqlalchemy import desc, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,10 +16,23 @@ from app.core.auth import CurrentUser, user_id_to_uuid
 from app.core.limiter import limiter
 from app.core.limits import NOTES_MAX_CHARS, enforce_caps_on_update
 from app.core.log_redaction import redact_phone
-from app.core.ownership import get_owned_agent, number_variants, parse_uuid
+from app.core.ownership import (
+    agent_is_in_workspace,
+    agents_dialling_number_outside,
+    get_owned_agent,
+    number_variants,
+    parse_uuid,
+)
 from app.db.session import get_db
+from app.models.agent import Agent
 from app.models.phone_number import PhoneNumber, PhoneNumberStatus
 from app.models.workspace import Workspace
+from app.services.telephony.number_ownership import (
+    CarrierLookupFactory,
+    get_carrier_lookup_factory,
+    normalise_number,
+    verify_number_on_workspace_account,
+)
 
 router = APIRouter(prefix="/api/v1/phone-numbers", tags=["phone-numbers"])
 logger = structlog.get_logger()
@@ -118,6 +131,14 @@ class UpdatePhoneNumberRequest(BaseModel):
     assigned_agent_id: str | None = None
     status: str | None = None
     notes: str | None = None
+
+    @field_validator("status")
+    @classmethod
+    def _known_status(cls, value: str | None) -> str | None:
+        if value is not None and value not in {item.value for item in PhoneNumberStatus}:
+            allowed = ", ".join(item.value for item in PhoneNumberStatus)
+            raise ValueError(f"status must be one of: {allowed}")
+        return value
 
 
 # =============================================================================
@@ -292,8 +313,13 @@ async def create_phone_number(
     request: Request,
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
+    lookup_factory: CarrierLookupFactory = Depends(get_carrier_lookup_factory),
 ) -> PhoneNumberResponse:
     """Register a new phone number.
+
+    The number must be on the carrier account whose credentials the workspace
+    holds: it is looked up there first, and refused (422) if it is not, or
+    (503) if the carrier could not be asked. Only then is it registered.
 
     Args:
         create_request: Phone number details
@@ -316,10 +342,22 @@ async def create_phone_number(
             create_request.workspace_id, current_user.id, db
         )
 
+    # Proof first, so someone who does not hold the number learns nothing about
+    # whether another account has registered it (the 409 below).
+    await verify_number_on_workspace_account(
+        db,
+        user_id=user_uuid,
+        workspace_id=workspace_uuid,
+        provider=create_request.provider,
+        number=create_request.phone_number,
+        factory=lookup_factory,
+    )
+
     # One number, one owner. Inbound routing looks a dialled number up across
     # every account, so a second account registering the same number would
     # either take the first one's calls or kill its line.
-    number = create_request.phone_number.strip()
+    # Stored in one spelling (E.164 with the plus), already validated above.
+    number = normalise_number(create_request.phone_number)
     taken = await db.execute(
         select(PhoneNumber.id).where(
             PhoneNumber.phone_number.in_(number_variants(number)),
@@ -377,14 +415,21 @@ async def create_phone_number(
 
 @router.put("/{phone_number_id}", response_model=PhoneNumberResponse)
 @limiter.limit("30/minute")  # Rate limit phone number updates
-async def update_phone_number(  # noqa: PLR0912
+async def update_phone_number(  # noqa: PLR0912, PLR0915
     phone_number_id: str,
     update_request: UpdatePhoneNumberRequest,
     request: Request,
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
+    lookup_factory: CarrierLookupFactory = Depends(get_carrier_lookup_factory),
 ) -> PhoneNumberResponse:
     """Update a phone number.
+
+    Moving a number into a different workspace, or bringing a released one back,
+    or putting one back to active is a number entering a workspace, so it is
+    verified against that workspace's carrier account like a new registration.
+    Assigning it to another agent is not (the number's place in its workspace
+    was proven when it got there), but the agent must be in the same workspace.
 
     Args:
         phone_number_id: Phone number ID
@@ -416,6 +461,55 @@ async def update_phone_number(  # noqa: PLR0912
         phone_number,
         {"notes": Annotated[str, StringConstraints(max_length=NOTES_MAX_CHARS)]},
     )
+    # Where the number will sit after this update, and whether it is entering
+    # that place (a different workspace, or back from released).
+    target_workspace = phone_number.workspace_id
+    if update_request.workspace_id is not None:
+        target_workspace = (
+            await validate_workspace_access(update_request.workspace_id, current_user.id, db)
+            if update_request.workspace_id
+            else None
+        )
+    # A number coming back into service is entering a workspace again: from
+    # released to anything live, or from any other state to active. The account
+    # may have lost it meanwhile.
+    new_status = update_request.status
+    reviving = new_status is not None and (
+        (
+            phone_number.status == PhoneNumberStatus.RELEASED.value
+            and new_status != PhoneNumberStatus.RELEASED.value
+        )
+        or (
+            new_status == PhoneNumberStatus.ACTIVE.value
+            and phone_number.status != PhoneNumberStatus.ACTIVE.value
+        )
+    )
+    moving = target_workspace != phone_number.workspace_id
+    if moving and target_workspace is not None:
+        # An agent in another workspace that dials this number would keep
+        # receiving its calls from there, past the proof the move just asked for.
+        stranded = await agents_dialling_number_outside(
+            db, current_user, phone_number.phone_number, target_workspace
+        )
+        if stranded:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Agent "
+                    + ", ".join(f"'{a.name}'" for a in stranded)
+                    + " is in another workspace and uses this phone number. "
+                    "Clear its phone number before moving the number."
+                ),
+            )
+    if moving or reviving:
+        await verify_number_on_workspace_account(
+            db,
+            user_id=user_uuid,
+            workspace_id=target_workspace,
+            provider=phone_number.provider,
+            number=phone_number.phone_number,
+            factory=lookup_factory,
+        )
 
     # Update fields
     if update_request.friendly_name is not None:
@@ -429,12 +523,37 @@ async def update_phone_number(  # noqa: PLR0912
             phone_number.workspace_id = workspace_uuid
         else:
             phone_number.workspace_id = None
+    if (
+        moving
+        and phone_number.assigned_agent_id is not None
+        and update_request.assigned_agent_id is None
+        and not (
+            target_workspace is not None
+            and await agent_is_in_workspace(db, phone_number.assigned_agent_id, target_workspace)
+        )
+    ):
+        # The assigned agent is not in the number's new workspace: calls must
+        # not keep routing to it. Say so rather than do it silently.
+        log.info(
+            "phone_number_unassigned_on_workspace_move",
+            agent_id=str(phone_number.assigned_agent_id),
+        )
+        update_request.assigned_agent_id = ""
     if update_request.assigned_agent_id is not None:
         previous_agent = phone_number.assigned_agent_id
         if update_request.assigned_agent_id:
             # The agent must be the caller's own: assigning routes this number's
             # calls to it, and the response names it.
             agent = await get_owned_agent(db, update_request.assigned_agent_id, current_user)
+            # Carrier proof is per workspace; an agent of another workspace
+            # would route this number's calls across that boundary.
+            if target_workspace is None or not await agent_is_in_workspace(
+                db, agent.id, target_workspace
+            ):
+                raise HTTPException(
+                    status_code=422,
+                    detail="That agent belongs to a different workspace than this phone number.",
+                )
             phone_number.assigned_agent_id = agent.id
         else:
             phone_number.assigned_agent_id = None
@@ -530,5 +649,20 @@ async def delete_phone_number(
     if not phone_number:
         raise HTTPException(status_code=404, detail="Phone number not found")
 
+    # Agents that name this number in their own field would otherwise keep a
+    # dangling reference; routing ignores it without a record, but clear it.
+    for agent in (
+        (
+            await db.execute(
+                select(Agent).where(
+                    Agent.user_id == current_user.id,
+                    Agent.phone_number_id.in_(number_variants(phone_number.phone_number)),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    ):
+        agent.phone_number_id = None
     await db.delete(phone_number)
     await db.commit()

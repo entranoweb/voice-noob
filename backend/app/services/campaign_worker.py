@@ -20,6 +20,7 @@ from sqlalchemy.orm import selectinload
 from app.api.settings import get_user_api_keys
 from app.core.log_redaction import log_exception, redact_phone
 from app.db.session import AsyncSessionLocal
+from app.models.agent import Agent
 from app.models.campaign import (
     Campaign,
     CampaignContact,
@@ -27,6 +28,7 @@ from app.models.campaign import (
     CampaignStatus,
 )
 from app.models.contact import Contact
+from app.services.telephony.outbound import OutboundRefusedError, place_outbound_call
 from app.services.telephony.telnyx_service import TelnyxService
 from app.services.telephony.twilio_service import TwilioService
 
@@ -109,7 +111,7 @@ class CampaignWorker:
                         campaign_name=campaign.name,
                     )
 
-    async def _process_campaign(  # noqa: PLR0915
+    async def _process_campaign(  # noqa: PLR0912, PLR0915
         self, campaign: Campaign, db: AsyncSession
     ) -> None:
         """Process a single campaign.
@@ -231,7 +233,10 @@ class CampaignWorker:
                     campaign_contact=campaign_contact,
                     contact=contact,
                     telephony_service=telephony_service,
+                    db=db,
                 )
+            except OutboundRefusedError as refused:
+                self._fail_refused_contact(campaign, campaign_contact, refused)
             except Exception:
                 log_exception(
                     log,
@@ -289,6 +294,26 @@ class CampaignWorker:
         current_time = now.time()
         return campaign.calling_hours_start <= current_time <= campaign.calling_hours_end
 
+    def _fail_refused_contact(
+        self,
+        campaign: Campaign,
+        campaign_contact: CampaignContact,
+        refused: OutboundRefusedError,
+    ) -> None:
+        """A gate said no (the agent is not in the campaign's workspace, or the
+        from-number is not registered there). Retrying cannot change that, so
+        the contact fails now; nothing was dialled."""
+        self.logger.warning(
+            "Campaign call refused",
+            campaign_id=str(campaign.id),
+            contact_id=campaign_contact.contact_id,
+            reason=refused.detail,
+        )
+        campaign_contact.attempts += 1
+        campaign_contact.last_call_outcome = f"refused: {refused.detail}"
+        campaign_contact.status = CampaignContactStatus.FAILED.value
+        campaign.contacts_failed += 1
+
     async def _get_telephony_service(
         self, campaign: Campaign, db: AsyncSession
     ) -> TelnyxService | TwilioService | None:
@@ -332,14 +357,20 @@ class CampaignWorker:
         campaign_contact: CampaignContact,
         contact: Contact,
         telephony_service: TelnyxService | TwilioService,
+        db: AsyncSession,
     ) -> None:
         """Initiate an outbound call for a campaign contact.
+
+        Goes through the same helper as `/calls`, so the campaign's workspace
+        and from-number are checked, a call record is written before the dial,
+        and the answer URL names it.
 
         Args:
             campaign: Campaign
             campaign_contact: Campaign contact record
             contact: Contact to call
             telephony_service: Telephony service
+            db: Database session
         """
         log = self.logger.bind(
             campaign_id=str(campaign.id),
@@ -347,23 +378,34 @@ class CampaignWorker:
             phone=redact_phone(contact.phone_number),
         )
 
-        # Build webhook URL for when call is answered
         provider = "telnyx" if isinstance(telephony_service, TelnyxService) else "twilio"
-        webhook_url = (
-            f"{self.base_url}/webhooks/{provider}/answer"
-            f"?agent_id={campaign.agent_id}"
-            f"&campaign_id={campaign.id}"
-            f"&campaign_contact_id={campaign_contact.id}"
-        )
+        agent = (
+            await db.execute(select(Agent).where(Agent.id == campaign.agent_id))
+        ).scalar_one_or_none()
+        if agent is None:
+            raise OutboundRefusedError(404, "Agent not found")
 
-        log.info("Initiating campaign call", webhook_url=webhook_url)
+        def answer_url(record_id: str) -> str:
+            return (
+                f"{self.base_url}/webhooks/{provider}/answer"
+                f"?agent_id={campaign.agent_id}"
+                f"&record_id={record_id}"
+                f"&campaign_id={campaign.id}"
+                f"&campaign_contact_id={campaign_contact.id}"
+            )
 
-        # Initiate the call
-        call_info = await telephony_service.initiate_call(
-            to_number=contact.phone_number,
+        log.info("Initiating campaign call")
+
+        _record, call_info = await place_outbound_call(
+            db,
+            provider=provider,
+            service=telephony_service,
+            agent=agent,
+            user_uuid=campaign.user_id,
+            workspace_id=campaign.workspace_id,
             from_number=campaign.from_phone_number,
-            webhook_url=webhook_url,
-            agent_id=str(campaign.agent_id),
+            to_number=contact.phone_number,
+            answer_url=answer_url,
         )
 
         # Update campaign contact status

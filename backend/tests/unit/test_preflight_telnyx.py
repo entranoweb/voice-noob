@@ -231,3 +231,78 @@ class TestRealtimeModelsAndProxy:
 
     def test_a_local_rehearsal_does_not_warn(self) -> None:
         assert _levels(preflight.check_trusted_proxy("http://127.0.0.1:8000", None)) == [Level.PASS]
+
+
+class _Agent:
+    def __init__(self, name: str, *, active: bool = True) -> None:
+        self.name = name
+        self.id = f"id-{name}"
+        self.is_active = active
+
+
+class TestCheckAgent:
+    """`check_agent` over what `_dialable` reports. No database and no live call."""
+
+    @staticmethod
+    def _with(monkeypatch: pytest.MonkeyPatch, routed: list[Any], notes: list[str]) -> None:
+        async def fake() -> Any:
+            return routed, notes
+
+        monkeypatch.setattr(preflight, "_dialable", fake)
+
+    @pytest.mark.asyncio
+    async def test_a_routed_active_agent_passes_and_names_its_workspace(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._with(monkeypatch, [(_Agent("A"), "+15550100001", "ws-2")], [])
+
+        results = await preflight.check_agent()
+
+        assert _levels(results) == [Level.PASS]
+        assert "ws-2" in results[0].detail
+
+    @pytest.mark.asyncio
+    async def test_a_number_that_routes_nowhere_fails_even_beside_a_good_one(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._with(
+            monkeypatch,
+            [(_Agent("A"), "+15550100001", "ws-1")],
+            ["+15550100002 routes nowhere: number_not_registered"],
+        )
+
+        results = await preflight.check_agent()
+
+        assert Level.FAIL in _levels(results)
+        assert any("routes nowhere" in r.detail for r in results)
+
+    @pytest.mark.asyncio
+    async def test_nothing_dialable_fails(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._with(monkeypatch, [], [])
+
+        results = await preflight.check_agent()
+
+        assert _levels(results) == [Level.FAIL]
+        assert "no agent is reachable" in results[0].detail
+
+    @pytest.mark.asyncio
+    async def test_an_inactive_agent_is_not_dialable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._with(monkeypatch, [(_Agent("A", active=False), "+15550100001", "ws-1")], [])
+
+        results = await preflight.check_agent()
+
+        assert Level.PASS not in _levels(results)
+        assert any("is_active is false" in r.detail for r in results)
+
+    @pytest.mark.asyncio
+    async def test_a_lookup_failure_is_a_failed_check(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def boom() -> Any:
+            raise RuntimeError("db down")
+
+        monkeypatch.setattr(preflight, "_dialable", boom)
+
+        results = await preflight.check_agent()
+
+        assert _levels(results) == [Level.FAIL]

@@ -18,6 +18,7 @@ from app.api.telephony import get_agent_by_phone_number
 from app.core.auth import user_id_to_uuid
 from app.models.agent import Agent
 from app.models.phone_number import PhoneNumber, PhoneNumberStatus
+from app.models.workspace import AgentWorkspace, Workspace
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -40,14 +41,28 @@ async def _agent(session: AsyncSession, owner: Any, **kwargs: Any) -> Agent:
     return agent
 
 
-async def _assign(session: AsyncSession, agent: Agent, owner: Any, *, status: str) -> None:
+async def _workspace_of(session: AsyncSession, agent: Agent, owner: Any) -> uuid.UUID:
+    """Put the agent in a workspace; routing only reaches agents in the number's."""
+    workspace = Workspace(user_id=owner.id, name="Routing workspace")
+    session.add(workspace)
+    await session.commit()
+    session.add(AgentWorkspace(agent_id=agent.id, workspace_id=workspace.id, is_default=True))
+    await session.commit()
+    return workspace.id
+
+
+async def _assign(
+    session: AsyncSession, agent: Agent, owner: Any, *, status: str, assigned: bool = True
+) -> None:
+    workspace_id = await _workspace_of(session, agent, owner)
     session.add(
         PhoneNumber(
             phone_number=NUMBER,
             provider="telnyx",
             provider_id=f"pn-{uuid.uuid4()}",
             user_id=user_id_to_uuid(owner.id),
-            assigned_agent_id=agent.id,
+            workspace_id=workspace_id,
+            assigned_agent_id=agent.id if assigned else None,
             status=status,
         )
     )
@@ -84,9 +99,14 @@ class TestRoutingByAssignment:
     async def test_the_legacy_field_still_works(
         self, test_session: AsyncSession, create_test_user: Any
     ) -> None:
-        """Rows written by direct SQL, before there was an assignment table."""
+        """The agent's own field routes, once the number is registered and active
+        in a workspace the agent is in. Without a record it routes nowhere."""
         owner = await create_test_user()
         agent = await _agent(test_session, owner, phone_number_id=NUMBER)
+        assert await get_agent_by_phone_number(NUMBER, test_session) is None
+        await _assign(
+            test_session, agent, owner, status=PhoneNumberStatus.ACTIVE.value, assigned=False
+        )
 
         found = await get_agent_by_phone_number(NUMBER, test_session)
 
