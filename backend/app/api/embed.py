@@ -52,6 +52,7 @@ from app.core.embed_session import (
     verify_embed_session,
 )
 from app.core.limiter import limiter
+from app.core.ownership import AGENT_WORKSPACE_ORDER
 from app.core.stream_token_use import claim_stream_token
 from app.db.session import get_db
 from app.models.agent import Agent
@@ -318,7 +319,10 @@ async def _get_embed_agent_context(
     log.info("agent_loaded", agent_name=agent.name, tier=agent.pricing_tier)
 
     workspace_result = await db.execute(
-        select(AgentWorkspace).where(AgentWorkspace.agent_id == agent.id).limit(1)
+        select(AgentWorkspace)
+        .where(AgentWorkspace.agent_id == agent.id)
+        .order_by(*AGENT_WORKSPACE_ORDER)
+        .limit(1)
     )
     agent_workspace = workspace_result.scalar_one_or_none()
 
@@ -574,7 +578,10 @@ async def get_embed_ephemeral_token(  # noqa: PLR0915
 
     # Get workspace for API key lookup
     workspace_result = await db.execute(
-        select(AgentWorkspace).where(AgentWorkspace.agent_id == agent.id).limit(1)
+        select(AgentWorkspace)
+        .where(AgentWorkspace.agent_id == agent.id)
+        .order_by(*AGENT_WORKSPACE_ORDER)
+        .limit(1)
     )
     agent_workspace = workspace_result.scalar_one_or_none()
 

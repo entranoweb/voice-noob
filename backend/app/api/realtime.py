@@ -20,7 +20,8 @@ from app.api.integrations import get_workspace_integrations
 from app.api.settings import get_user_api_keys
 from app.core.auth import CurrentUser, user_id_to_uuid
 from app.core.config import settings
-from app.core.ownership import get_owned_agent
+from app.core.limiter import limiter
+from app.core.ownership import get_owned_agent, owned_agent_workspace_id, parse_uuid
 from app.db.session import get_db
 from app.models.agent import Agent
 from app.models.user import User
@@ -38,53 +39,65 @@ router = APIRouter(prefix="/ws", tags=["realtime"])
 webrtc_router = APIRouter(prefix="/api/v1/realtime", tags=["realtime-webrtc"])
 logger = structlog.get_logger()
 
+# Per client address, like the rest of the API. Each token or session starts a
+# billed model session on the workspace's key, and a dashboard test needs one
+# or two a minute at most.
+REALTIME_TOKEN_LIMIT = "20/minute"
+REALTIME_SESSION_LIMIT = "20/minute"
+
 
 async def get_openai_api_key_for_workspace(
     user_uuid: uuid.UUID,
-    workspace_uuid: uuid.UUID | None,
+    workspace_uuid: uuid.UUID,
     db: AsyncSession,
     log: structlog.BoundLogger,
 ) -> str:
-    """Get OpenAI API key for a workspace - strictly isolated, no fallback.
+    """The OpenAI key stored for exactly this workspace - no fallback of any kind.
 
-    Args:
-        user_uuid: User UUID
-        workspace_uuid: Workspace UUID (required for workspace-scoped operations)
-        db: Database session
-        log: Logger instance
-
-    Returns:
-        OpenAI API key
+    Neither the user-level key nor the platform ``OPENAI_API_KEY`` stands in for
+    a missing workspace key: that would bill the platform (or another workspace)
+    for a tenant who never added one. The telephony bridge behaves the same way.
 
     Raises:
-        HTTPException: If no API key is configured for the workspace
+        HTTPException: 400 if no API key is stored for the workspace
     """
     user_settings = await get_user_api_keys(user_uuid, db, workspace_id=workspace_uuid)
     if user_settings and user_settings.openai_api_key:
-        if workspace_uuid:
-            log.info("using_workspace_openai_key", workspace_id=str(workspace_uuid))
-        else:
-            log.info("using_user_level_openai_key")
+        log.info("using_workspace_openai_key", workspace_id=str(workspace_uuid))
         return user_settings.openai_api_key
 
-    # If workspace is explicitly specified but has no API key, fail - no fallback
-    # This ensures billing isolation between workspaces
-    if workspace_uuid:
-        log.warning("workspace_missing_openai_key", workspace_id=str(workspace_uuid))
-        raise HTTPException(
-            status_code=400,
-            detail="OpenAI API key not configured for this workspace. Please add it in Settings > Workspace API Keys.",
-        )
-
-    # Only fall back to global platform key when no workspace is specified (admin use)
-    if settings.OPENAI_API_KEY:
-        log.info("using_global_openai_key")
-        return settings.OPENAI_API_KEY
-
+    log.warning("workspace_missing_openai_key", workspace_id=str(workspace_uuid))
     raise HTTPException(
         status_code=400,
-        detail="OpenAI API key not configured. Please add it in Settings.",
+        detail="OpenAI API key not configured for this workspace. Please add it in Settings > Workspace API Keys.",
     )
+
+
+async def resolve_agent_workspace(
+    db: AsyncSession,
+    agent: Agent,
+    current_user: User,
+    workspace_id: str | None,
+) -> uuid.UUID:
+    """The workspace an owned agent runs in, which is where its key comes from.
+
+    The client may name the workspace, but only to confirm it: naming any
+    workspace other than the agent's own is a 404, so a request cannot pick
+    which workspace's key is used. An agent in no workspace has no key to use.
+    """
+    requested = parse_uuid(workspace_id, "Workspace") if workspace_id else None
+    agent_workspace = await owned_agent_workspace_id(db, agent, current_user)
+    if requested is not None and requested != agent_workspace:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    if agent_workspace is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "This agent is not in a workspace, so there is no OpenAI key to use. "
+                "Add it to a workspace and set the key in Settings > Workspace API Keys."
+            ),
+        )
+    return agent_workspace
 
 
 def get_realtime_model_for_tier(pricing_tier: str) -> str:
@@ -211,8 +224,6 @@ async def realtime_websocket(  # noqa: PLR0911, PLR0915
 
     try:
         # Load agent configuration with workspace verification
-        from app.models.workspace import AgentWorkspace
-
         result = await db.execute(select(Agent).where(Agent.id == agent_uuid))
         agent = result.scalar_one_or_none()
 
@@ -247,14 +258,10 @@ async def realtime_websocket(  # noqa: PLR0911, PLR0915
             await websocket.close()
             return
 
-        # Verify agent is associated with the specified workspace (authorization check)
-        workspace_check = await db.execute(
-            select(AgentWorkspace).where(
-                AgentWorkspace.agent_id == agent_uuid,
-                AgentWorkspace.workspace_id == workspace_uuid,
-            )
-        )
-        if not workspace_check.scalar_one_or_none():
+        # The key is the agent's own workspace's, the same one /token and
+        # /session use. The client may name the workspace only to confirm it.
+        agent_workspace_id = await owned_agent_workspace_id(db, agent, user)
+        if agent_workspace_id != workspace_uuid:
             client_logger.warning(
                 "unauthorized_workspace_access",
                 agent_id=agent_id,
@@ -283,6 +290,8 @@ async def realtime_websocket(  # noqa: PLR0911, PLR0915
             "enabled_tool_ids": agent.enabled_tool_ids,
             "language": agent.language,
             "voice": agent.voice or "shimmer",
+            # The session picks its model from the tier (premium-mini is not premium).
+            "pricing_tier": agent.pricing_tier,
         }
 
         # Initialize GPT Realtime session with internal tools
@@ -291,7 +300,7 @@ async def realtime_websocket(  # noqa: PLR0911, PLR0915
             user_id=user_id_int,
             agent_config=agent_config,
             session_id=session_id,
-            workspace_id=uuid.UUID(workspace_id),
+            workspace_id=workspace_uuid,
         ) as realtime_session:
             # Send ready signal to client
             await websocket.send_json(
@@ -440,10 +449,11 @@ async def _bridge_audio_streams(
 
 
 @webrtc_router.post("/session/{agent_id}")
+@limiter.limit(REALTIME_SESSION_LIMIT)
 async def create_webrtc_session(
+    request: Request,
     agent_id: str,
     workspace_id: str,
-    request: Request,
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> Response:
@@ -503,8 +513,8 @@ async def create_webrtc_session(
         tools_count=len(agent.enabled_tools),
     )
 
-    # Get OpenAI API key (user_uuid for UserSettings lookup)
-    workspace_uuid = uuid.UUID(workspace_id)
+    # The key is the agent's own workspace's (user_uuid for UserSettings lookup)
+    workspace_uuid = await resolve_agent_workspace(db, agent, current_user, workspace_id)
     api_key = await get_openai_api_key_for_workspace(user_uuid, workspace_uuid, db, session_logger)
 
     # Get integration credentials for the workspace
@@ -600,7 +610,9 @@ async def create_webrtc_session(
 
 
 @webrtc_router.get("/token/{agent_id}")
+@limiter.limit(REALTIME_TOKEN_LIMIT)
 async def get_ephemeral_token(
+    request: Request,
     agent_id: str,
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
@@ -615,7 +627,8 @@ async def get_ephemeral_token(
         agent_id: Agent UUID
         current_user: Authenticated user
         db: Database session
-        workspace_id: Optional workspace UUID (falls back to user-level API key)
+        workspace_id: Optional; if given it must be the agent's own workspace (404 otherwise).
+            The OpenAI key is that workspace's, with no user-level or platform fallback.
 
     Returns:
         Ephemeral token response with client_secret value and session config
@@ -645,8 +658,8 @@ async def get_ephemeral_token(
     # Determine which model to use based on tier
     realtime_model = get_realtime_model_for_tier(agent.pricing_tier)
 
-    # Get OpenAI API key (user_uuid for UserSettings lookup)
-    workspace_uuid = uuid.UUID(workspace_id) if workspace_id else None
+    # The key is the agent's own workspace's (user_uuid for UserSettings lookup)
+    workspace_uuid = await resolve_agent_workspace(db, agent, current_user, workspace_id)
     api_key = await get_openai_api_key_for_workspace(user_uuid, workspace_uuid, db, token_logger)
 
     # Minimal GA session for the key; the page configures the rest over the data channel.
@@ -683,9 +696,7 @@ async def get_ephemeral_token(
         token_logger.info("ephemeral_token_created")
 
         # Get integration credentials for the workspace
-        integrations: dict[str, dict[str, Any]] = {}
-        if workspace_uuid:
-            integrations = await get_workspace_integrations(user_uuid, workspace_uuid, db)
+        integrations = await get_workspace_integrations(user_uuid, workspace_uuid, db)
 
         # Build tool definitions for the agent
         tool_registry = ToolRegistry(
@@ -803,7 +814,7 @@ async def save_transcript(
     call_record = CallRecord(
         user_id=user_uuid,
         workspace_id=agent_workspace_id,
-        agent_id=uuid.UUID(agent_id),
+        agent_id=agent.id,
         provider="test",
         provider_call_id=request.session_id,
         direction="outbound",
