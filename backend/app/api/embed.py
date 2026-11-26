@@ -54,7 +54,9 @@ from app.core.embed_session import (
     verify_embed_session,
 )
 from app.core.limiter import limiter
+from app.core.log_redaction import log_exception
 from app.core.ownership import AGENT_WORKSPACE_ORDER
+from app.core.safe_errors import tool_failure
 from app.core.stream_token_use import claim_stream_token
 from app.db.session import get_db
 from app.models.agent import Agent
@@ -720,7 +722,9 @@ async def get_embed_ephemeral_token(  # noqa: PLR0915
     except httpx.RequestError as e:
         await release_embed_key(decision)
         log.exception("openai_token_request_error", error=str(e))
-        raise HTTPException(status_code=500, detail=f"Failed to connect to OpenAI: {e!s}") from e
+        raise HTTPException(
+            status_code=500, detail="Failed to connect to the voice provider"
+        ) from e
 
     if not response.is_success:
         await release_embed_key(decision)
@@ -886,8 +890,8 @@ async def execute_embed_tool_call(
         log.info("tool_executed", success=result.get("success"))
         return result
     except Exception as e:
-        log.exception("tool_execution_error", error=str(e))
-        return {"success": False, "error": str(e)}
+        log_exception(log, "tool_execution_error", e)
+        return tool_failure(e, "tool")
     finally:
         await tool_registry.close()
 

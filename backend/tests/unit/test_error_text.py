@@ -10,8 +10,7 @@ neither the placeholder phone, the SQL, nor the key, must keep
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
 import pytest
@@ -23,6 +22,9 @@ from app.services.tools.crm_tools import CRMTools
 from app.services.tools.gohighlevel_tools import GHL_BASE_URL, GoHighLevelTools
 from app.services.tools.shopify_tools import ShopifyTools
 from app.services.tools.sms_tools import TelnyxSMSTools, TwilioSMSTools
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 PHONE = "+15550100042"
 KEY = "sk-placeholder-key-0000"
@@ -129,7 +131,8 @@ def test_tool_failure_is_fixed_per_class_and_keeps_success_false() -> None:
     for result in (timeout, down, other):
         assert result["success"] is False
         assert "booking system" in result["error"]
-        assert PHONE not in repr(result) and KEY not in repr(result)
+        assert PHONE not in repr(result)
+        assert KEY not in repr(result)
 
 
 def test_public_error_is_message_plus_type_only() -> None:

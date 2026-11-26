@@ -23,6 +23,7 @@ from app.core.config import settings
 from app.core.limiter import limiter
 from app.core.log_redaction import redact_arguments
 from app.core.ownership import get_owned_agent, owned_agent_workspace_id, parse_uuid
+from app.core.safe_errors import public_error
 from app.db.session import get_db
 from app.models.agent import Agent
 from app.models.user import User
@@ -331,7 +332,7 @@ async def realtime_websocket(  # noqa: PLR0911, PLR0915
             await websocket.send_json(
                 {
                     "type": "error",
-                    "error": str(e),
+                    "error": public_error(e, "The session hit an error"),
                 }
             )
     finally:
@@ -601,7 +602,7 @@ async def create_webrtc_session(
                 )
                 raise HTTPException(
                     status_code=response.status_code,
-                    detail=f"OpenAI API error: {response.text}",
+                    detail="The voice provider returned an error",
                 )
 
             sdp_answer = response.text
@@ -611,7 +612,9 @@ async def create_webrtc_session(
 
     except httpx.RequestError as e:
         session_logger.exception("openai_request_error", error=str(e))
-        raise HTTPException(status_code=500, detail=f"Failed to connect to OpenAI: {e!s}") from e
+        raise HTTPException(
+            status_code=500, detail=public_error(e, "Failed to connect to the voice provider")
+        ) from e
 
 
 @webrtc_router.get("/token/{agent_id}")
@@ -692,7 +695,7 @@ async def get_ephemeral_token(
             )
             raise HTTPException(
                 status_code=response.status_code,
-                detail=f"OpenAI API error: {response.text}",
+                detail="The voice provider returned an error",
             )
 
         try:
@@ -746,7 +749,9 @@ async def get_ephemeral_token(
 
     except httpx.RequestError as e:
         token_logger.exception("openai_token_request_error", error=str(e))
-        raise HTTPException(status_code=500, detail=f"Failed to connect to OpenAI: {e!s}") from e
+        raise HTTPException(
+            status_code=500, detail=public_error(e, "Failed to connect to the voice provider")
+        ) from e
 
 
 # =============================================================================

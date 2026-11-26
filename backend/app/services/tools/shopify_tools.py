@@ -9,6 +9,7 @@ import httpx
 import structlog
 
 from app.core.log_redaction import log_exception
+from app.core.safe_errors import UPSTREAM_ERROR, tool_failure
 from app.services.tools.path_ids import encode_path_id, invalid_id_result
 
 logger = structlog.get_logger()
@@ -259,7 +260,8 @@ class ShopifyTools:
             if response.status_code != HTTPStatus.OK:
                 return {
                     "success": False,
-                    "error": f"Failed to search orders: {response.text}",
+                    "error": "Failed to search orders",
+                    "error_code": UPSTREAM_ERROR,
                 }
 
             data = response.json()
@@ -283,7 +285,7 @@ class ShopifyTools:
 
         except Exception as e:
             log_exception(logger, "shopify_search_orders_error", e)
-            return {"success": False, "error": str(e)}
+            return tool_failure(e, "store system")
 
     async def get_order(self, order_id: str) -> dict[str, Any]:
         """Get detailed order information."""
@@ -314,7 +316,8 @@ class ShopifyTools:
             if response.status_code != HTTPStatus.OK:
                 return {
                     "success": False,
-                    "error": f"Order not found: {response.text}",
+                    "error": "Order not found",
+                    "error_code": UPSTREAM_ERROR,
                 }
 
             order = response.json()["order"]
@@ -367,7 +370,7 @@ class ShopifyTools:
 
         except Exception as e:
             log_exception(logger, "shopify_get_order_error", e)
-            return {"success": False, "error": str(e)}
+            return tool_failure(e, "store system")
 
     async def get_order_tracking(self, order_id: str) -> dict[str, Any]:
         """Get tracking information for an order."""
@@ -380,7 +383,8 @@ class ShopifyTools:
             if response.status_code != HTTPStatus.OK:
                 return {
                     "success": False,
-                    "error": f"Failed to get tracking: {response.text}",
+                    "error": "Failed to get tracking",
+                    "error_code": UPSTREAM_ERROR,
                 }
 
             data = response.json()
@@ -410,7 +414,7 @@ class ShopifyTools:
 
         except Exception as e:
             log_exception(logger, "shopify_get_order_tracking_error", e)
-            return {"success": False, "error": str(e)}
+            return tool_failure(e, "store system")
 
     async def search_products(self, query: str, limit: int = 10) -> dict[str, Any]:
         """Search for products."""
@@ -426,7 +430,8 @@ class ShopifyTools:
             if response.status_code != HTTPStatus.OK:
                 return {
                     "success": False,
-                    "error": f"Failed to search products: {response.text}",
+                    "error": "Failed to search products",
+                    "error_code": UPSTREAM_ERROR,
                 }
 
             data = response.json()
@@ -462,7 +467,7 @@ class ShopifyTools:
 
         except Exception as e:
             log_exception(logger, "shopify_search_products_error", e)
-            return {"success": False, "error": str(e)}
+            return tool_failure(e, "store system")
 
     async def check_inventory(self, product_id: str) -> dict[str, Any]:
         """Check inventory levels for a product."""
@@ -475,7 +480,8 @@ class ShopifyTools:
             if response.status_code != HTTPStatus.OK:
                 return {
                     "success": False,
-                    "error": f"Product not found: {response.text}",
+                    "error": "Product not found",
+                    "error_code": UPSTREAM_ERROR,
                 }
 
             product = response.json()["product"]
@@ -506,7 +512,7 @@ class ShopifyTools:
 
         except Exception as e:
             log_exception(logger, "shopify_check_inventory_error", e)
-            return {"success": False, "error": str(e)}
+            return tool_failure(e, "store system")
 
     async def search_customers(self, query: str, limit: int = 10) -> dict[str, Any]:
         """Search for customers."""
@@ -522,7 +528,8 @@ class ShopifyTools:
             if response.status_code != HTTPStatus.OK:
                 return {
                     "success": False,
-                    "error": f"Failed to search customers: {response.text}",
+                    "error": "Failed to search customers",
+                    "error_code": UPSTREAM_ERROR,
                 }
 
             data = response.json()
@@ -543,7 +550,7 @@ class ShopifyTools:
 
         except Exception as e:
             log_exception(logger, "shopify_search_customers_error", e)
-            return {"success": False, "error": str(e)}
+            return tool_failure(e, "store system")
 
     async def get_customer_orders(self, customer_id: str, limit: int = 10) -> dict[str, Any]:
         """Get order history for a customer."""
@@ -560,7 +567,8 @@ class ShopifyTools:
             if response.status_code != HTTPStatus.OK:
                 return {
                     "success": False,
-                    "error": f"Failed to get customer orders: {response.text}",
+                    "error": "Failed to get customer orders",
+                    "error_code": UPSTREAM_ERROR,
                 }
 
             data = response.json()
@@ -586,7 +594,7 @@ class ShopifyTools:
 
         except Exception as e:
             log_exception(logger, "shopify_get_customer_orders_error", e)
-            return {"success": False, "error": str(e)}
+            return tool_failure(e, "store system")
 
     async def execute_tool(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         """Execute a Shopify tool by name."""

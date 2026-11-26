@@ -1270,7 +1270,9 @@ class TestRealtimeTokenErrorText:
         import httpx
 
         async def refuse(*_: Any, **__: Any) -> Any:
-            raise httpx.ConnectError("cannot reach https://api.example.test/?key=sk-placeholder-0000")
+            raise httpx.ConnectError(
+                "cannot reach https://api.example.test/?key=sk-placeholder-0000"
+            )
 
         monkeypatch.setattr("app.api.realtime.post_client_secret", refuse)
         await _store_key(world, world.alice, WORKSPACE_KEY, workspace_id=world.alice.workspace.id)

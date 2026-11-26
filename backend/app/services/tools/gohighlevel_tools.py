@@ -19,6 +19,7 @@ import httpx
 import structlog
 
 from app.core.log_redaction import describe_text, log_exception
+from app.core.safe_errors import tool_failure, upstream_failure
 from app.services.tools.path_ids import encode_path_id, invalid_id_result
 
 # Type alias for tool handler functions
@@ -341,7 +342,7 @@ class GoHighLevelTools:
 
         except Exception as e:
             log_exception(self.logger, "ghl_search_contact_error", e, query=describe_text(query))
-            return {"success": False, "error": str(e)}
+            return tool_failure(e, "CRM")
 
     async def ghl_get_contact(self, contact_id: str) -> dict[str, Any]:
         """Get full contact details.
@@ -383,7 +384,7 @@ class GoHighLevelTools:
 
         except Exception as e:
             log_exception(self.logger, "ghl_get_contact_error", e, contact_id=contact_id)
-            return {"success": False, "error": str(e)}
+            return tool_failure(e, "CRM")
 
     async def ghl_create_contact(
         self,
@@ -433,7 +434,7 @@ class GoHighLevelTools:
                     status_code=response.status_code,
                     response=describe_text(response.text),
                 )
-                return {"success": False, "error": f"Failed to create contact: {response.text}"}
+                return upstream_failure("CRM")
 
             data = response.json()
             contact = data.get("contact", {})
@@ -446,7 +447,7 @@ class GoHighLevelTools:
 
         except Exception as e:
             log_exception(self.logger, "ghl_create_contact_error", e)
-            return {"success": False, "error": str(e)}
+            return tool_failure(e, "CRM")
 
     async def ghl_update_contact(
         self,
@@ -494,7 +495,7 @@ class GoHighLevelTools:
             response = await client.put(f"/contacts/{safe_contact_id}", json=payload)
 
             if response.status_code != HTTPStatus.OK:
-                return {"success": False, "error": f"Failed to update contact: {response.text}"}
+                return upstream_failure("CRM")
 
             return {
                 "success": True,
@@ -504,7 +505,7 @@ class GoHighLevelTools:
 
         except Exception as e:
             log_exception(self.logger, "ghl_update_contact_error", e, contact_id=contact_id)
-            return {"success": False, "error": str(e)}
+            return tool_failure(e, "CRM")
 
     async def ghl_add_contact_tags(self, contact_id: str, tags: list[str]) -> dict[str, Any]:
         """Add tags to a contact.
@@ -528,7 +529,7 @@ class GoHighLevelTools:
             )
 
             if response.status_code != HTTPStatus.OK:
-                return {"success": False, "error": f"Failed to add tags: {response.text}"}
+                return upstream_failure("CRM")
 
             return {
                 "success": True,
@@ -539,7 +540,7 @@ class GoHighLevelTools:
 
         except Exception as e:
             log_exception(self.logger, "ghl_add_contact_tags_error", e, contact_id=contact_id)
-            return {"success": False, "error": str(e)}
+            return tool_failure(e, "CRM")
 
     async def ghl_get_calendars(self) -> dict[str, Any]:
         """Get list of available calendars.
@@ -577,7 +578,7 @@ class GoHighLevelTools:
 
         except Exception as e:
             log_exception(self.logger, "ghl_get_calendars_error", e)
-            return {"success": False, "error": str(e)}
+            return tool_failure(e, "CRM")
 
     async def ghl_get_calendar_slots(
         self,
@@ -648,7 +649,7 @@ class GoHighLevelTools:
 
         except Exception as e:
             log_exception(self.logger, "ghl_get_calendar_slots_error", e, calendar_id=calendar_id)
-            return {"success": False, "error": str(e)}
+            return tool_failure(e, "CRM")
 
     async def ghl_book_appointment(
         self,
@@ -696,7 +697,7 @@ class GoHighLevelTools:
                     status_code=response.status_code,
                     response=describe_text(response.text),
                 )
-                return {"success": False, "error": f"Failed to book appointment: {response.text}"}
+                return upstream_failure("CRM")
 
             data = response.json()
             event = data.get("event", data)
@@ -711,7 +712,7 @@ class GoHighLevelTools:
 
         except Exception as e:
             log_exception(self.logger, "ghl_book_appointment_error", e)
-            return {"success": False, "error": str(e)}
+            return tool_failure(e, "CRM")
 
     async def ghl_get_appointments(self, contact_id: str) -> dict[str, Any]:
         """Get appointments for a contact.
@@ -755,7 +756,7 @@ class GoHighLevelTools:
 
         except Exception as e:
             log_exception(self.logger, "ghl_get_appointments_error", e, contact_id=contact_id)
-            return {"success": False, "error": str(e)}
+            return tool_failure(e, "CRM")
 
     async def ghl_cancel_appointment(self, event_id: str) -> dict[str, Any]:
         """Cancel an appointment.
@@ -784,7 +785,7 @@ class GoHighLevelTools:
 
         except Exception as e:
             log_exception(self.logger, "ghl_cancel_appointment_error", e, event_id=event_id)
-            return {"success": False, "error": str(e)}
+            return tool_failure(e, "CRM")
 
     async def ghl_get_pipelines(self) -> dict[str, Any]:
         """Get list of sales pipelines.
@@ -824,7 +825,7 @@ class GoHighLevelTools:
 
         except Exception as e:
             log_exception(self.logger, "ghl_get_pipelines_error", e)
-            return {"success": False, "error": str(e)}
+            return tool_failure(e, "CRM")
 
     async def ghl_create_opportunity(
         self,
@@ -863,7 +864,7 @@ class GoHighLevelTools:
             response = await client.post("/opportunities/", json=payload)
 
             if response.status_code not in (HTTPStatus.OK, HTTPStatus.CREATED):
-                return {"success": False, "error": f"Failed to create opportunity: {response.text}"}
+                return upstream_failure("CRM")
 
             data = response.json()
             opp = data.get("opportunity", data)
@@ -878,7 +879,7 @@ class GoHighLevelTools:
 
         except Exception as e:
             log_exception(self.logger, "ghl_create_opportunity_error", e)
-            return {"success": False, "error": str(e)}
+            return tool_failure(e, "CRM")
 
     async def execute_tool(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         """Execute a GoHighLevel tool by name.

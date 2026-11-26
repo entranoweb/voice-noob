@@ -8,6 +8,7 @@ import httpx
 import structlog
 
 from app.core.log_redaction import log_exception
+from app.core.safe_errors import UPSTREAM_ERROR, tool_failure
 from app.services.tools.path_ids import encode_path_id, invalid_id_result
 
 logger = structlog.get_logger()
@@ -120,10 +121,13 @@ class TwilioSMSTools:
             )
 
             if response.status_code != HTTPStatus.CREATED:
-                error_data = response.json()
+                # The provider's message can quote the number back; it stays out
+                # of the result the model may read aloud.
+                logger.warning("twilio_send_sms_rejected", status_code=response.status_code)
                 return {
                     "success": False,
-                    "error": error_data.get("message", response.text),
+                    "error": "The text message could not be sent.",
+                    "error_code": UPSTREAM_ERROR,
                 }
 
             data = response.json()
@@ -138,7 +142,7 @@ class TwilioSMSTools:
 
         except Exception as e:
             log_exception(logger, "twilio_send_sms_error", e)
-            return {"success": False, "error": str(e)}
+            return tool_failure(e, "text messaging service")
 
     async def get_message_status(self, message_sid: str) -> dict[str, Any]:
         """Get the status of a sent message."""
@@ -151,7 +155,8 @@ class TwilioSMSTools:
             if response.status_code != HTTPStatus.OK:
                 return {
                     "success": False,
-                    "error": f"Message not found: {response.text}",
+                    "error": "Message not found",
+                    "error_code": UPSTREAM_ERROR,
                 }
 
             data = response.json()
@@ -168,7 +173,7 @@ class TwilioSMSTools:
 
         except Exception as e:
             log_exception(logger, "twilio_get_message_status_error", e)
-            return {"success": False, "error": str(e)}
+            return tool_failure(e, "text messaging service")
 
     async def execute_tool(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         """Execute a Twilio SMS tool by name."""
@@ -293,12 +298,11 @@ class TelnyxSMSTools:
             response = await self.client.post("/messages", json=payload)
 
             if response.status_code != HTTPStatus.OK:
-                error_data = response.json()
-                errors = error_data.get("errors", [])
-                error_msg = errors[0].get("detail") if errors else response.text
+                logger.warning("telnyx_send_sms_rejected", status_code=response.status_code)
                 return {
                     "success": False,
-                    "error": error_msg,
+                    "error": "The text message could not be sent.",
+                    "error_code": UPSTREAM_ERROR,
                 }
 
             data = response.json()["data"]
@@ -313,7 +317,7 @@ class TelnyxSMSTools:
 
         except Exception as e:
             log_exception(logger, "telnyx_send_sms_error", e)
-            return {"success": False, "error": str(e)}
+            return tool_failure(e, "text messaging service")
 
     async def get_message_status(self, message_id: str) -> dict[str, Any]:
         """Get the status of a sent message."""
@@ -326,7 +330,8 @@ class TelnyxSMSTools:
             if response.status_code != HTTPStatus.OK:
                 return {
                     "success": False,
-                    "error": f"Message not found: {response.text}",
+                    "error": "Message not found",
+                    "error_code": UPSTREAM_ERROR,
                 }
 
             data = response.json()["data"]
@@ -344,7 +349,7 @@ class TelnyxSMSTools:
 
         except Exception as e:
             log_exception(logger, "telnyx_get_message_status_error", e)
-            return {"success": False, "error": str(e)}
+            return tool_failure(e, "text messaging service")
 
     async def execute_tool(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         """Execute a Telnyx SMS tool by name."""

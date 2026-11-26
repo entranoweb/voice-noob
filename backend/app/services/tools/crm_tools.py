@@ -11,6 +11,7 @@ from sqlalchemy.orm import selectinload
 
 from app.core.cache import cache_invalidate
 from app.core.log_redaction import describe_text, log_exception
+from app.core.safe_errors import tool_failure
 from app.models.appointment import Appointment
 from app.models.contact import Contact
 
@@ -282,7 +283,7 @@ class CRMTools:
 
         except Exception as e:
             log_exception(self.logger, "search_customer_failed", e, query=describe_text(query))
-            return {"success": False, "error": str(e)}
+            return tool_failure(e, "customer records system")
 
     async def create_contact(
         self,
@@ -336,7 +337,7 @@ class CRMTools:
 
         except Exception as e:
             log_exception(self.logger, "create_contact_failed", e)
-            return {"success": False, "error": str(e)}
+            return tool_failure(e, "customer records system")
 
     async def check_availability(
         self,
@@ -399,7 +400,7 @@ class CRMTools:
 
         except Exception as e:
             log_exception(self.logger, "check_availability_failed", e)
-            return {"success": False, "error": str(e)}
+            return tool_failure(e, "customer records system")
 
     async def book_appointment(
         self,
@@ -508,7 +509,7 @@ class CRMTools:
 
         except Exception as e:
             log_exception(self.logger, "book_appointment_failed", e)
-            return {"success": False, "error": str(e)}
+            return tool_failure(e, "customer records system")
 
     async def list_appointments(
         self,
@@ -582,7 +583,7 @@ class CRMTools:
 
         except Exception as e:
             log_exception(self.logger, "list_appointments_failed", e)
-            return {"success": False, "error": str(e)}
+            return tool_failure(e, "customer records system")
 
     async def cancel_appointment(
         self, appointment_id: int, reason: str | None = None
@@ -633,7 +634,7 @@ class CRMTools:
 
         except Exception as e:
             log_exception(self.logger, "cancel_appointment_failed", e)
-            return {"success": False, "error": str(e)}
+            return tool_failure(e, "customer records system")
 
     async def reschedule_appointment(
         self, appointment_id: int, new_scheduled_at: str
@@ -683,7 +684,7 @@ class CRMTools:
 
         except Exception as e:
             log_exception(self.logger, "reschedule_appointment_failed", e)
-            return {"success": False, "error": str(e)}
+            return tool_failure(e, "customer records system")
 
     async def execute_tool(  # noqa: PLR0911
         self, tool_name: str, arguments: dict[str, Any]

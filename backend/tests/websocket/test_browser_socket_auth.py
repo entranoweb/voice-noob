@@ -454,7 +454,6 @@ class TestEmbedToolCall:
         assert response.status_code == 200, response.text
         assert response.json()["success"] is False
 
-
     @pytest.mark.asyncio
     async def test_a_tool_failure_does_not_hand_the_visitor_the_exception_text(
         self, env: dict[str, Any], monkeypatch: pytest.MonkeyPatch
