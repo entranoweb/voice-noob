@@ -10,6 +10,7 @@ from redis.asyncio.retry import Retry
 from redis.backoff import ExponentialBackoff
 
 from app.core.config import settings
+from app.core.log_redaction import describe_exception
 
 if TYPE_CHECKING:
     from redis.asyncio import Redis
@@ -59,8 +60,8 @@ async def get_redis() -> "Redis":
                 await redis_client.ping()
                 logger.info("Redis connection pool initialized successfully")
 
-            except Exception:
-                logger.exception("Failed to initialize Redis connection")
+            except Exception as exc:
+                logger.error("Failed to initialize Redis connection: %s", describe_exception(exc))  # noqa: TRY400
                 raise
 
     return redis_client
@@ -74,8 +75,8 @@ async def close_redis() -> None:
         try:
             await redis_client.close()
             logger.info("Redis client closed")
-        except Exception:
-            logger.exception("Error closing Redis client")
+        except Exception as exc:
+            logger.error("Error closing Redis client: %s", describe_exception(exc))  # noqa: TRY400
         finally:
             redis_client = None
 
@@ -83,7 +84,7 @@ async def close_redis() -> None:
         try:
             await redis_pool.disconnect()
             logger.info("Redis connection pool closed")
-        except Exception:
-            logger.exception("Error closing Redis pool")
+        except Exception as exc:
+            logger.error("Error closing Redis pool: %s", describe_exception(exc))  # noqa: TRY400
         finally:
             redis_pool = None

@@ -6,6 +6,7 @@ from collections.abc import AsyncGenerator
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.core.config import settings
+from app.core.log_redaction import describe_exception
 
 logger = logging.getLogger(__name__)
 
@@ -38,9 +39,10 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
         try:
             yield session
             await session.commit()
-        except Exception:
+        except Exception as exc:
             await session.rollback()
-            logger.exception("Database session error")
+            # A traceback would carry the statement's bound parameters.
+            logger.error("Database session error: %s", describe_exception(exc))  # noqa: TRY400
             raise
         finally:
             await session.close()

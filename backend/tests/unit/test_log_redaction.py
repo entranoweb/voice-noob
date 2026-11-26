@@ -186,3 +186,53 @@ def test_processor_scrubs_event_error_and_rendered_exception() -> None:
     assert "+15550100042" not in repr({k: v for k, v in out.items() if k != "count"})
     assert "Pat Example" not in text
     assert out["count"] == 15550100042  # non-strings are left alone
+
+
+# --- review round 4 -------------------------------------------------------
+
+
+def test_scrub_text_is_linear_on_hostile_input() -> None:
+    import time
+
+    for hostile in ("a" * 1_000_000, "1 " * 500_000, "x." * 500_000, "+1" + " " * 1_000_000):
+        started = time.perf_counter()
+        scrub_text(hostile)
+        assert time.perf_counter() - started < 0.5, hostile[:6]
+
+
+def test_scrub_text_truncates_with_a_marker() -> None:
+    assert scrub_text("a" * 20_000).endswith("[truncated]")
+
+
+def test_processor_survives_cycles_and_hostile_objects() -> None:
+    cycle: dict[str, object] = {}
+    cycle["self"] = cycle
+
+    class Hostile:
+        def __str__(self) -> str:
+            raise RuntimeError("no")
+
+    out = redact_event_dict(None, "error", {"event": "x", "cycle": cycle, "obj": Hostile()})
+    assert out["event"] == "x"
+    assert "[unloggable]" in repr(out["cycle"])
+    assert out["obj"] == "[unloggable]"
+
+
+def test_processor_converts_non_primitives_to_scrubbed_text() -> None:
+    out = redact_event_dict(
+        None,
+        "error",
+        {
+            "raw": b"call +15550100042",
+            "tags": {"+15550100042"},
+            "err": ValueError("mail pat.example@example.invalid"),
+            "db": _db_error(),
+            "n": 3,
+        },
+    )
+    text = repr(out)
+    assert "15550100042" not in text
+    assert "pat.example" not in text
+    assert "private note" not in text
+    assert out["db"] == "DBAPIError"
+    assert out["n"] == 3

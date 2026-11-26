@@ -10,7 +10,7 @@ by a processor would not be visible here, which is the point.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Self
 
 import httpx
 import pytest
@@ -355,3 +355,71 @@ def test_redaction_processor_runs_before_the_renderer_in_both_pipelines() -> Non
         getattr(p, "__name__", type(p).__name__) for p in structlog.get_config()["processors"]
     ]
     assert app_names.index("ExceptionRenderer") < app_names.index("redact_event_dict")
+
+
+@pytest.mark.asyncio
+async def test_get_db_integrity_error_prints_no_parameters(
+    capfd: pytest.CaptureFixture[str], caplog: pytest.LogCaptureFixture
+) -> None:
+    """A stdlib logger runs for every request with a database error."""
+    from sqlalchemy.exc import IntegrityError
+
+    from app.db import session as db_session
+
+    params = {"first_name": "Pat Example", "notes": "she said hello", "phone": SECRET_NUMBER}
+    error = IntegrityError("INSERT INTO contacts (...)", params, Exception("duplicate key"))
+
+    class FakeSession:
+        async def __aenter__(self) -> Self:
+            return self
+
+        async def __aexit__(self, *_a: object) -> None:
+            return None
+
+        async def rollback(self) -> None:
+            return None
+
+        async def commit(self) -> None:
+            raise error
+
+        async def close(self) -> None:
+            return None
+
+    caplog.set_level(logging.DEBUG)
+    original = db_session.AsyncSessionLocal
+    db_session.AsyncSessionLocal = FakeSession  # type: ignore[assignment]
+    try:
+        gen = db_session.get_db()
+        await gen.__anext__()
+        with pytest.raises(IntegrityError):
+            await gen.__anext__()
+    finally:
+        db_session.AsyncSessionLocal = original
+
+    streams = capfd.readouterr()
+    seen = streams.out + streams.err + caplog.text
+    assert "Database session error" in seen, "the failure logged nothing, so this proves nothing"
+    for secret in ("Pat Example", "she said hello", SECRET_NUMBER, "[parameters:"):
+        assert secret not in seen
+
+
+def _raise(message: str) -> None:
+    raise RuntimeError(message)
+
+
+def test_stdlib_records_are_scrubbed_whoever_logs_them(caplog: pytest.LogCaptureFixture) -> None:
+    """The bridge: a library logger that never heard of log_redaction."""
+    caplog.set_level(logging.DEBUG)
+    lib = logging.getLogger("some.third.party.library")
+    try:
+        _raise(f"failed for {SECRET_EMAIL} {SECRET_NUMBER}")
+    except RuntimeError:
+        lib.exception("request to %s failed", SECRET_EMAIL)
+    lib.warning("callback for %s", SECRET_NUMBER)
+
+    text = caplog.text + " ".join(r.getMessage() for r in caplog.records)
+    assert "failed" in text
+    assert SECRET_EMAIL not in text
+    assert "pat.example" not in text
+    assert SECRET_NUMBER not in text
+    assert SECRET_NUMBER.lstrip("+") not in text
