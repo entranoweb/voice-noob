@@ -166,3 +166,49 @@ class TestPhoneBridgeModel:
         await _call_twilio(twilio_env, connected_models)
 
         assert connected_models == [expected]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tier", "expected", "deployment"),
+    [
+        ("premium-mini", MINI, None),
+        ("premium", PREMIUM, None),
+        ("premium-mini", "my-saved-deployment", "my-saved-deployment"),
+    ],
+)
+async def test_azure_uses_the_tier_model_only_when_no_deployment_is_saved(
+    tier: str,
+    expected: str,
+    deployment: str | None,
+    connected_models: list[str],
+    test_engine: Any,
+    inbound_call_env: dict[str, Any],  # noqa: F811
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Azure fallback follows the tier; a saved deployment name still wins."""
+
+    async def azure_keys(*_: Any, **__: Any) -> Any:
+        return SimpleNamespace(
+            openai_provider="azure",
+            azure_openai_endpoint="https://azure.example.com",
+            azure_openai_api_key="fake",
+            azure_openai_deployment_name=deployment,
+        )
+
+    async def public_url(_: str) -> None:
+        return None
+
+    fake_client = SimpleNamespace(
+        realtime=SimpleNamespace(
+            connect=lambda *, model, **_: (connected_models.append(model), _RefusingConnect())[1]
+        )
+    )
+    monkeypatch.setattr(gpt_realtime, "get_user_api_keys", azure_keys)
+    monkeypatch.setattr(gpt_realtime, "assert_public_url", public_url)
+    monkeypatch.setattr(gpt_realtime, "AsyncAzureOpenAI", lambda **_: fake_client)
+
+    await _set_tier(test_engine, inbound_call_env, tier)
+    await _call_telnyx(inbound_call_env, connected_models)
+
+    assert connected_models == [expected]
