@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.audit import AuditAction, record_audit
 from app.core.auth import CurrentUser, user_id_to_uuid
 from app.core.limiter import limiter
-from app.core.ownership import get_owned_agent, number_variants
+from app.core.ownership import get_owned_agent, number_variants, parse_uuid
 from app.db.session import get_db
 from app.models.phone_number import PhoneNumber, PhoneNumberStatus
 from app.models.workspace import Workspace
@@ -36,7 +36,7 @@ async def validate_workspace_access(workspace_id: str, user_id: int, db: AsyncSe
     Raises:
         HTTPException: If workspace not found or user doesn't have access
     """
-    workspace_uuid = uuid.UUID(workspace_id)
+    workspace_uuid = parse_uuid(workspace_id, "Workspace")
 
     # Check if user owns the workspace
     workspace_result = await db.execute(
@@ -48,7 +48,7 @@ async def validate_workspace_access(workspace_id: str, user_id: int, db: AsyncSe
     workspace = workspace_result.scalar_one_or_none()
 
     if not workspace:
-        raise HTTPException(status_code=403, detail="You don't have access to this workspace")
+        raise HTTPException(status_code=404, detail="Workspace not found")
 
     return workspace_uuid
 
@@ -153,14 +153,16 @@ async def list_phone_numbers(
 
     # Apply filters
     if workspace_id:
-        query = query.where(PhoneNumber.workspace_id == uuid.UUID(workspace_id))
+        query = query.where(PhoneNumber.workspace_id == parse_uuid(workspace_id, "Workspace"))
     if status:
         query = query.where(PhoneNumber.status == status)
 
     # Get total count
     count_query = select(PhoneNumber.id).where(PhoneNumber.user_id == user_uuid)
     if workspace_id:
-        count_query = count_query.where(PhoneNumber.workspace_id == uuid.UUID(workspace_id))
+        count_query = count_query.where(
+            PhoneNumber.workspace_id == parse_uuid(workspace_id, "Workspace")
+        )
     if status:
         count_query = count_query.where(PhoneNumber.status == status)
 
@@ -242,7 +244,7 @@ async def get_phone_number(
     user_uuid = user_id_to_uuid(current_user.id)
     result = await db.execute(
         select(PhoneNumber).where(
-            PhoneNumber.id == uuid.UUID(phone_number_id),
+            PhoneNumber.id == parse_uuid(phone_number_id, "Phone number"),
             PhoneNumber.user_id == user_uuid,
         )
     )
@@ -397,7 +399,7 @@ async def update_phone_number(  # noqa: PLR0912
     user_uuid = user_id_to_uuid(current_user.id)
     result = await db.execute(
         select(PhoneNumber).where(
-            PhoneNumber.id == uuid.UUID(phone_number_id),
+            PhoneNumber.id == parse_uuid(phone_number_id, "Phone number"),
             PhoneNumber.user_id == user_uuid,
         )
     )
@@ -510,7 +512,7 @@ async def delete_phone_number(
     user_uuid = user_id_to_uuid(current_user.id)
     result = await db.execute(
         select(PhoneNumber).where(
-            PhoneNumber.id == uuid.UUID(phone_number_id),
+            PhoneNumber.id == parse_uuid(phone_number_id, "Phone number"),
             PhoneNumber.user_id == user_uuid,
         )
     )

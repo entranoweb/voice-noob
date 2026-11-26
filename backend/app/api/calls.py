@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.auth import CurrentUser, user_id_to_uuid
+from app.core.ownership import parse_uuid
 from app.db.session import get_db
 from app.models.call_record import CallRecord
 from app.services.qa.call_metrics import metrics_for_call
@@ -140,9 +141,9 @@ async def list_calls(
 
     # Apply filters
     if agent_id:
-        query = query.where(CallRecord.agent_id == uuid.UUID(agent_id))
+        query = query.where(CallRecord.agent_id == parse_uuid(agent_id, "Agent"))
     if workspace_id:
-        query = query.where(CallRecord.workspace_id == uuid.UUID(workspace_id))
+        query = query.where(CallRecord.workspace_id == parse_uuid(workspace_id, "Workspace"))
     if direction:
         query = query.where(CallRecord.direction == direction)
     if status:
@@ -151,9 +152,11 @@ async def list_calls(
     # Get total count
     count_query = select(CallRecord.id).where(CallRecord.user_id == user_uuid)
     if agent_id:
-        count_query = count_query.where(CallRecord.agent_id == uuid.UUID(agent_id))
+        count_query = count_query.where(CallRecord.agent_id == parse_uuid(agent_id, "Agent"))
     if workspace_id:
-        count_query = count_query.where(CallRecord.workspace_id == uuid.UUID(workspace_id))
+        count_query = count_query.where(
+            CallRecord.workspace_id == parse_uuid(workspace_id, "Workspace")
+        )
     if direction:
         count_query = count_query.where(CallRecord.direction == direction)
     if status:
@@ -286,7 +289,7 @@ async def get_call(
     user_uuid = user_id_to_uuid(current_user.id)
     result = await db.execute(
         select(CallRecord).where(
-            CallRecord.id == uuid.UUID(call_id),
+            CallRecord.id == parse_uuid(call_id, "Call record"),
             CallRecord.user_id == user_uuid,
         )
     )
@@ -409,7 +412,7 @@ async def get_agent_call_stats(
     # Get all calls for this agent
     result = await db.execute(
         select(CallRecord).where(
-            CallRecord.agent_id == uuid.UUID(agent_id),
+            CallRecord.agent_id == parse_uuid(agent_id, "Agent"),
             CallRecord.user_id == user_uuid,
         )
     )

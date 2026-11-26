@@ -1,6 +1,5 @@
 """API endpoints for managing voice agents."""
 
-import uuid
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -12,7 +11,7 @@ from app.core.audit import AuditAction, record_audit
 from app.core.auth import CurrentUser
 from app.core.config import settings
 from app.core.limiter import limiter
-from app.core.ownership import ensure_phone_reference_is_owned
+from app.core.ownership import ensure_phone_reference_is_owned, parse_uuid
 from app.core.public_id import generate_public_id
 from app.core.public_url import frontend_base_url
 from app.db.session import get_db
@@ -252,7 +251,7 @@ async def get_agent(
     """
     result = await db.execute(
         select(Agent).where(
-            Agent.id == uuid.UUID(agent_id),
+            Agent.id == parse_uuid(agent_id, "Agent"),
             Agent.user_id == current_user.id,
         )
     )
@@ -288,7 +287,7 @@ async def delete_agent(
     """
     result = await db.execute(
         select(Agent).where(
-            Agent.id == uuid.UUID(agent_id),
+            Agent.id == parse_uuid(agent_id, "Agent"),
             Agent.user_id == current_user.id,
         )
     )
@@ -338,7 +337,7 @@ async def update_agent(
     """
     result = await db.execute(
         select(Agent).where(
-            Agent.id == uuid.UUID(agent_id),
+            Agent.id == parse_uuid(agent_id, "Agent"),
             Agent.user_id == current_user.id,
         )
     )
@@ -560,7 +559,7 @@ async def get_embed_settings(
     """
     result = await db.execute(
         select(Agent).where(
-            Agent.id == uuid.UUID(agent_id),
+            Agent.id == parse_uuid(agent_id, "Agent"),
             Agent.user_id == current_user.id,
         )
     )
@@ -632,7 +631,7 @@ async def update_embed_settings(
     """
     result = await db.execute(
         select(Agent).where(
-            Agent.id == uuid.UUID(agent_id),
+            Agent.id == parse_uuid(agent_id, "Agent"),
             Agent.user_id == current_user.id,
         )
     )
@@ -703,7 +702,7 @@ async def regenerate_public_id(
     """
     result = await db.execute(
         select(Agent).where(
-            Agent.id == uuid.UUID(agent_id),
+            Agent.id == parse_uuid(agent_id, "Agent"),
             Agent.user_id == current_user.id,
         )
     )

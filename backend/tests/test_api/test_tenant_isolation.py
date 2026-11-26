@@ -32,6 +32,7 @@ from app.models.appointment import Appointment
 from app.models.audit_event import AuditEvent
 from app.models.contact import Contact
 from app.models.phone_number import PhoneNumber, PhoneNumberStatus
+from app.models.test_scenario import TestScenario as ScenarioRow
 from app.models.user import User
 from app.models.workspace import AgentWorkspace, Workspace
 
@@ -756,3 +757,156 @@ class TestAzureEndpointSetting:
         )
 
         assert response.status_code == 422
+
+
+# A malformed id is the caller's mistake (4xx, never a 500), and an id that is
+# someone else's answers exactly like one that does not exist.
+_UNKNOWN = "00000000-0000-4000-8000-000000000000"
+_NOT_A_UUID = "not-a-uuid"
+
+
+def _by_id_requests(world: World, other: dict[str, str]) -> list[tuple[str, str, str, Any]]:
+    """(label, method, url template with {}, json body) for every route under test."""
+    ws = "workspace_id={}"
+    return [
+        ("call", "GET", "/api/v1/calls/{}", None),
+        ("call-metrics", "GET", "/api/v1/calls/{}/metrics", None),
+        ("agent-call-stats", "GET", "/api/v1/calls/agent/{}/stats", None),
+        ("calls-agent-filter", "GET", "/api/v1/calls?agent_id={}", None),
+        ("calls-workspace-filter", "GET", "/api/v1/calls?" + ws, None),
+        ("agent", "GET", "/api/v1/agents/{}", None),
+        ("phone-number", "GET", "/api/v1/phone-numbers/{}", None),
+        ("phone-number-update", "PUT", "/api/v1/phone-numbers/{}", {"friendly_name": "x"}),
+        ("phone-number-delete", "DELETE", "/api/v1/phone-numbers/{}", None),
+        ("phone-numbers-workspace-filter", "GET", "/api/v1/phone-numbers?" + ws, None),
+        ("qa-settings-get", "GET", "/api/v1/qa/workspace/{}/settings", None),
+        (
+            "qa-settings-put",
+            "PUT",
+            "/api/v1/qa/workspace/{}/settings",
+            {"auto_evaluate": False},
+        ),
+        ("scenario-update", "PUT", "/api/v1/testing/scenarios/{}", {"name": "renamed"}),
+        ("scenario-delete", "DELETE", "/api/v1/testing/scenarios/{}", None),
+    ]
+
+
+class TestBadIdsAreNotServerErrors:
+    @pytest.mark.asyncio
+    async def test_a_malformed_id_is_a_client_error_on_every_by_id_route(
+        self, world: World
+    ) -> None:
+        for label, method, url, body in _by_id_requests(world, world.alice.headers):
+            response = await world.client.request(
+                method, url.format(_NOT_A_UUID), headers=world.alice.headers, json=body
+            )
+            assert 400 <= response.status_code < 500, (label, response.status_code)
+
+    @pytest.mark.asyncio
+    async def test_a_malformed_agent_id_in_an_outbound_call_is_a_client_error(
+        self, world: World
+    ) -> None:
+        response = await world.client.post(
+            f"/api/v1/telephony/calls?workspace_id={world.alice.workspace.id}",
+            headers=world.alice.headers,
+            json={"to_number": "+442079460010", "from_number": ALICE_NUMBER, "agent_id": "x"},
+        )
+
+        assert 400 <= response.status_code < 500
+
+
+class TestNotYoursLooksLikeNotThere:
+    """Another customer's id and an id nobody has give the same status and body."""
+
+    @pytest.mark.asyncio
+    async def test_phone_number_routes(self, world: World) -> None:
+        bobs = await _register_number(world, world.bob, BOB_NUMBER)
+        for method, body in (
+            ("GET", None),
+            ("PUT", {"friendly_name": "x"}),
+            ("DELETE", None),
+        ):
+            theirs = await world.client.request(
+                method, f"/api/v1/phone-numbers/{bobs.id}", headers=world.alice.headers, json=body
+            )
+            nobodys = await world.client.request(
+                method, f"/api/v1/phone-numbers/{_UNKNOWN}", headers=world.alice.headers, json=body
+            )
+            assert theirs.status_code == nobodys.status_code == 404, method
+            assert theirs.json() == nobodys.json(), method
+
+    @pytest.mark.asyncio
+    async def test_a_phone_number_cannot_be_registered_into_another_customers_workspace(
+        self, world: World
+    ) -> None:
+        responses = []
+        for workspace_id in (str(world.bob.workspace.id), _UNKNOWN):
+            responses.append(
+                await world.client.post(
+                    "/api/v1/phone-numbers",
+                    headers=world.alice.headers,
+                    json={
+                        "phone_number": ALICE_NUMBER,
+                        "provider": "twilio",
+                        "provider_id": "PN-test",
+                        "workspace_id": workspace_id,
+                    },
+                )
+            )
+
+        assert responses[0].status_code == responses[1].status_code == 404
+        assert responses[0].json() == responses[1].json()
+
+    @pytest.mark.asyncio
+    async def test_qa_workspace_settings(self, world: World) -> None:
+        for method, body in (("GET", None), ("PUT", {"auto_evaluate": False})):
+            theirs = await world.client.request(
+                method,
+                f"/api/v1/qa/workspace/{world.bob.workspace.id}/settings",
+                headers=world.alice.headers,
+                json=body,
+            )
+            nobodys = await world.client.request(
+                method,
+                f"/api/v1/qa/workspace/{_UNKNOWN}/settings",
+                headers=world.alice.headers,
+                json=body,
+            )
+            assert theirs.status_code == nobodys.status_code == 404, method
+            assert theirs.json() == nobodys.json(), method
+
+    @pytest.mark.asyncio
+    async def test_testing_scenarios(self, world: World) -> None:
+        async with world.sessions() as session:
+            scenario = ScenarioRow(
+                user_id=world.bob.user.id,
+                name="bob's scenario",
+                description="d",
+                category="greeting",
+                difficulty="easy",
+                caller_persona={"name": "c"},
+                conversation_flow=[],
+                expected_behaviors=[],
+                success_criteria={},
+                is_active=True,
+                is_built_in=False,
+            )
+            session.add(scenario)
+            await session.commit()
+            await session.refresh(scenario)
+
+        for method, body in (("PUT", {"name": "renamed"}), ("DELETE", None)):
+            theirs = await world.client.request(
+                method,
+                f"/api/v1/testing/scenarios/{scenario.id}",
+                headers=world.alice.headers,
+                json=body,
+            )
+            nobodys = await world.client.request(
+                method,
+                f"/api/v1/testing/scenarios/{_UNKNOWN}",
+                headers=world.alice.headers,
+                json=body,
+            )
+            assert theirs.status_code == nobodys.status_code == 404, method
+            assert theirs.json() == nobodys.json(), method
