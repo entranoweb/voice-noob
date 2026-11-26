@@ -189,6 +189,53 @@ class TestProductionComposeFile:
         ):
             assert Settings.model_fields[name].default == field, name
 
+    # Settings a deployment plausibly sets, which the compose file must pass on:
+    # it passes a fixed list, so one it does not name never reaches the app.
+    # Each default in the compose file must equal the app's own.
+    OPERATIONAL_SETTINGS = (
+        "OPENAI_REALTIME_MODEL_PREMIUM",
+        "OPENAI_REALTIME_MODEL_PREMIUM_MINI",
+        "OPENAI_REALTIME_INPUT_TRANSCRIPTION_MODEL",
+        "SHUTDOWN_DRAIN_TIMEOUT",
+        "RATE_LIMIT_PER_MINUTE",
+        "CALL_MAX_DURATION_S",
+        "CALL_IDLE_TIMEOUT_S",
+        "CALL_TOOL_GRACE_S",
+    )
+
+    @pytest.mark.parametrize("name", OPERATIONAL_SETTINGS)
+    def test_every_operational_setting_reaches_the_backend(
+        self, compose: dict[str, Any], name: str
+    ) -> None:
+        backend = compose["services"]["backend"]["environment"]
+
+        assert name in backend, f"{name} is not passed to the backend container"
+        value = backend[name]
+        assert value.startswith("${" + name + ":-"), value
+        assert ":?" not in value
+        default = value.removeprefix("${" + name + ":-").removesuffix("}")
+        app_default = Settings.model_fields[name].default
+        expected = f"{app_default:g}" if isinstance(app_default, float) else str(app_default)
+        assert default == expected
+
+    def test_every_name_in_the_compose_env_is_a_setting_or_a_known_extra(
+        self, compose: dict[str, Any]
+    ) -> None:
+        """A typo in the compose file passes a variable nothing reads."""
+        extras = {"REDIS_PASSWORD", "POSTGRES_HOST", "REDIS_HOST", "TRUSTED_PROXY_IPS"}
+        backend = compose["services"]["backend"]["environment"]
+
+        unknown = [n for n in backend if n not in Settings.model_fields and n not in extras]
+        assert unknown == []
+
+    def test_the_stop_grace_period_outlasts_gunicorns_graceful_timeout(
+        self, compose: dict[str, Any]
+    ) -> None:
+        from app.core.config import GUNICORN_GRACEFUL_TIMEOUT_S
+
+        grace = int(str(compose["services"]["backend"]["stop_grace_period"]).removesuffix("s"))
+        assert grace > GUNICORN_GRACEFUL_TIMEOUT_S
+
     def test_the_backend_image_does_not_run_as_root(self) -> None:
         lines = (REPO / "backend" / "Dockerfile").read_text(encoding="utf-8").splitlines()
         users = [line.split()[1] for line in lines if line.startswith("USER ")]
@@ -520,3 +567,34 @@ class TestDevelopmentSetupEnvironment:
         )
 
         assert is_shipped_admin_password(shipped)
+
+
+class TestShutdownBudget:
+    """Tool grace + saves + drain must fit in gunicorn's graceful timeout."""
+
+    def test_the_defaults_fit(self) -> None:
+        from app.core.config import GUNICORN_GRACEFUL_TIMEOUT_S, SHUTDOWN_SAVE_MARGIN_S
+
+        s = Settings()
+        assert (
+            s.CALL_TOOL_GRACE_S + SHUTDOWN_SAVE_MARGIN_S + s.SHUTDOWN_DRAIN_TIMEOUT
+            <= GUNICORN_GRACEFUL_TIMEOUT_S
+        )
+
+    def test_a_grace_that_would_get_the_worker_killed_is_refused_by_name(self) -> None:
+        with pytest.raises(ValueError, match="CALL_TOOL_GRACE_S"):
+            Settings(CALL_TOOL_GRACE_S=25.0)
+
+    def test_a_drain_that_would_get_the_worker_killed_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="SHUTDOWN_DRAIN_TIMEOUT"):
+            Settings(SHUTDOWN_DRAIN_TIMEOUT=40)
+
+    def test_the_largest_pair_that_fits_is_accepted(self) -> None:
+        Settings(CALL_TOOL_GRACE_S=20.0, SHUTDOWN_DRAIN_TIMEOUT=15)
+
+    def test_gunicorn_takes_its_graceful_timeout_from_the_same_constant(self) -> None:
+        from app.core.config import GUNICORN_GRACEFUL_TIMEOUT_S
+
+        text = (REPO / "backend" / "gunicorn.conf.py").read_text(encoding="utf-8")
+        assert "graceful_timeout = GUNICORN_GRACEFUL_TIMEOUT_S" in text
+        assert GUNICORN_GRACEFUL_TIMEOUT_S == 40

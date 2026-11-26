@@ -153,6 +153,20 @@ services:
       CALL_MAX_DURATION_S: ${CALL_MAX_DURATION_S:-1800}
       CALL_IDLE_TIMEOUT_S: ${CALL_IDLE_TIMEOUT_S:-120}
       CALL_TOOL_GRACE_S: ${CALL_TOOL_GRACE_S:-10}
+      # How long a running tool may finish after the call ends is bounded by
+      # the worker's shutdown budget: CALL_TOOL_GRACE_S + SHUTDOWN_DRAIN_TIMEOUT
+      # + 5 s must be at most 40 s or the app refuses to start.
+      SHUTDOWN_DRAIN_TIMEOUT: ${SHUTDOWN_DRAIN_TIMEOUT:-15}
+      # The Realtime models a pricing tier opens, and the model that transcribes
+      # the caller (empty: no caller transcript). Names are the OpenAI model ids.
+      OPENAI_REALTIME_MODEL_PREMIUM: ${OPENAI_REALTIME_MODEL_PREMIUM:-gpt-realtime-2.1}
+      OPENAI_REALTIME_MODEL_PREMIUM_MINI: ${OPENAI_REALTIME_MODEL_PREMIUM_MINI:-gpt-realtime-2.1-mini}
+      OPENAI_REALTIME_INPUT_TRANSCRIPTION_MODEL: ${OPENAI_REALTIME_INPUT_TRANSCRIPTION_MODEL:-gpt-transcribe}
+      # Requests per minute per client before the limiter answers 429.
+      RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-60}
+      # Optional error reporting. Empty DSN: off.
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-production}
       DEBUG: ${DEBUG:-false}
       # Optional. A trace carries transcripts, so cleartext to a non-loopback
       # host is refused.
