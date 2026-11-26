@@ -20,7 +20,7 @@ on:
 
 jobs:
   sync-main:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.USE_SELF_HOSTED == 'true' && fromJSON('["self-hosted", "linux", "x64"]') || 'ubuntu-latest' }}
     permissions:
       contents: write
       pull-requests: write
@@ -142,7 +142,7 @@ jobs:
       always() && 
       (github.event.inputs.sync_dev_branch == 'true' || github.event_name == 'schedule') &&
       needs.sync-main.outputs.upstream_commits != '0'
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.USE_SELF_HOSTED == 'true' && fromJSON('["self-hosted", "linux", "x64"]') || 'ubuntu-latest' }}
     permissions:
       contents: write
       pull-requests: write
