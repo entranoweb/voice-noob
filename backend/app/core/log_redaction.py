@@ -1,0 +1,91 @@
+"""Redaction helpers for log output.
+
+Logs outlive the call they describe and are read by people and vendors who
+were never meant to see a caller's number, an email address, what was said, or
+what a tool was asked to do. Nothing in ``app`` should put those values in a
+log record; use these helpers instead so the rule lives in one place.
+
+Ids (agent, call, record, user) are not personal data and are logged as is.
+"""
+
+from __future__ import annotations
+
+import re
+from collections.abc import Mapping
+from typing import Any
+
+_VISIBLE_TAIL = 2
+_PHONE_IN_TEXT = re.compile(r"\+?\d[\d\s().\-]{5,}\d")
+_EMAIL_IN_TEXT = re.compile(r"[\w.+\-]+@([\w\-]+(?:\.[\w\-]+)+)")
+
+
+def redact_phone(value: object) -> str | None:
+    """Mask every digit of a phone number except the last two.
+
+    ``+15550100042`` becomes ``+*********42``. Separators and a leading ``+``
+    are kept so the shape of the value is still visible. ``None`` stays
+    ``None``; a value with two digits or fewer is masked entirely.
+    """
+    if value is None:
+        return None
+    text = str(value)
+    total = sum(ch.isdigit() for ch in text)
+    keep_from = total - _VISIBLE_TAIL if total > _VISIBLE_TAIL else total
+    seen = 0
+    out: list[str] = []
+    for ch in text:
+        if ch.isdigit():
+            out.append(ch if seen >= keep_from else "*")
+            seen += 1
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+def redact_email(value: object) -> str | None:
+    """Drop the local part of an email address and keep the domain."""
+    if value is None:
+        return None
+    text = str(value)
+    if "@" not in text:
+        return "***"
+    return "***@" + text.rsplit("@", 1)[1]
+
+
+def describe_value(value: object) -> str:
+    """Describe a value by type and size only, never by content."""
+    if value is None:
+        return "None"
+    if isinstance(value, bool):
+        return "bool"
+    if isinstance(value, (str, bytes, list, tuple, set, dict)):
+        return f"{type(value).__name__}(len={len(value)})"
+    return type(value).__name__
+
+
+def describe_text(value: object) -> str:
+    """Log free text (a transcript, a message body) as its length only."""
+    return describe_value(value if value is None else str(value))
+
+
+def redact_arguments(arguments: object) -> dict[str, str]:
+    """Summarise tool arguments as ``{key: type(len=n)}``. Values never appear."""
+    if isinstance(arguments, Mapping):
+        return {str(key): describe_value(val) for key, val in arguments.items()}
+    return {"<arguments>": describe_value(arguments)}
+
+
+def redact_mapping(values: Mapping[str, Any]) -> dict[str, str]:
+    """Same shape as ``redact_arguments``, for query strings and payloads."""
+    return redact_arguments(values)
+
+
+def scrub_text(text: object) -> str:
+    """Mask phone numbers and email addresses found inside free text.
+
+    For strings that cannot be dropped (an upstream error body, an exception
+    message) but may echo what was sent. This is a safety net, not a licence
+    to log caller text: transcripts and tool values should not reach it.
+    """
+    out = _EMAIL_IN_TEXT.sub(lambda m: "***@" + m.group(1), str(text))
+    return _PHONE_IN_TEXT.sub(lambda m: redact_phone(m.group(0)) or "", out)

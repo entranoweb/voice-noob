@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.settings import get_user_api_keys
+from app.core.log_redaction import redact_phone
 from app.db.session import AsyncSessionLocal
 from app.models.campaign import (
     Campaign,
@@ -233,7 +234,7 @@ class CampaignWorker:
                 log.exception(
                     "Failed to initiate call",
                     contact_id=contact.id,
-                    phone=contact.phone_number,
+                    phone=redact_phone(contact.phone_number),
                 )
                 campaign_contact.attempts += 1
                 campaign_contact.last_call_outcome = "initiation_failed"
@@ -339,7 +340,7 @@ class CampaignWorker:
         log = self.logger.bind(
             campaign_id=str(campaign.id),
             contact_id=contact.id,
-            phone=contact.phone_number,
+            phone=redact_phone(contact.phone_number),
         )
 
         # Build webhook URL for when call is answered

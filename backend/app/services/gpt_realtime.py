@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.integrations import get_workspace_integrations
 from app.api.settings import get_user_api_keys
 from app.core.auth import user_id_to_uuid
+from app.core.log_redaction import describe_value, redact_arguments
 from app.core.safe_http import assert_public_url
 from app.services.realtime_models import input_transcription, realtime_model_for_tier
 from app.services.tools.registry import ToolRegistry
@@ -438,7 +439,7 @@ class GPTRealtimeSession:
         self.logger.info(
             "handling_tool_call",
             tool_name=tool_name,
-            arguments=arguments,
+            arguments=redact_arguments(arguments),
         )
 
         # The model is asked to pick from the tools it was offered, but what it
@@ -523,7 +524,7 @@ class GPTRealtimeSession:
                 "function_call_json_parse_error",
                 call_id=call_id,
                 tool_name=name,
-                raw_arguments=str(event.arguments)[:200],
+                raw_arguments=describe_value(event.arguments),
                 error=str(e),
             )
             # Return error to GPT so it can retry

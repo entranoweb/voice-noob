@@ -6,6 +6,8 @@ from typing import Any, TypeVar
 import httpx
 import structlog
 
+from app.core.log_redaction import scrub_text
+
 logger = structlog.get_logger()
 
 T = TypeVar("T")
@@ -157,7 +159,7 @@ class BaseExternalService:
                         "External service client error",
                         service=self.base_url,
                         status_code=e.response.status_code,
-                        detail=e.response.text[:200],
+                        detail=scrub_text(e.response.text[:200]),
                     )
                     raise ExternalServiceError(f"Client error: {e.response.status_code}") from e
 

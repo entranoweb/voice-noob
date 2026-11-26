@@ -4,6 +4,7 @@ import httpx
 import structlog
 import telnyx
 
+from app.core.log_redaction import redact_phone
 from app.services.telephony.base import (
     CallDirection,
     CallInfo,
@@ -64,8 +65,8 @@ class TelnyxService(TelephonyProvider):
         """
         self.logger.info(
             "initiating_call",
-            to=to_number,
-            from_=from_number,
+            to=redact_phone(to_number),
+            from_=redact_phone(from_number),
             webhook_url=webhook_url,
             agent_id=agent_id,
         )
@@ -122,8 +123,8 @@ class TelnyxService(TelephonyProvider):
         """
         self.logger.info(
             "initiating_call_via_call_control",
-            to=to_number,
-            from_=from_number,
+            to=redact_phone(to_number),
+            from_=redact_phone(from_number),
             connection_id=connection_id,
         )
 
@@ -333,7 +334,7 @@ class TelnyxService(TelephonyProvider):
         Returns:
             Purchased PhoneNumber object
         """
-        self.logger.info("purchasing_phone_number", phone_number=phone_number)
+        self.logger.info("purchasing_phone_number", phone_number=redact_phone(phone_number))
 
         client = await self._get_http_client()
 

@@ -4,6 +4,7 @@ import structlog
 from twilio.rest import Client
 from twilio.twiml.voice_response import Connect, VoiceResponse
 
+from app.core.log_redaction import redact_phone
 from app.services.telephony.base import (
     CallDirection,
     CallInfo,
@@ -50,8 +51,8 @@ class TwilioService(TelephonyProvider):
         """
         self.logger.info(
             "initiating_call",
-            to=to_number,
-            from_=from_number,
+            to=redact_phone(to_number),
+            from_=redact_phone(from_number),
             webhook_url=webhook_url,
             agent_id=agent_id,
         )
@@ -190,7 +191,7 @@ class TwilioService(TelephonyProvider):
         Returns:
             Purchased PhoneNumber object
         """
-        self.logger.info("purchasing_phone_number", phone_number=phone_number)
+        self.logger.info("purchasing_phone_number", phone_number=redact_phone(phone_number))
 
         number = self.client.incoming_phone_numbers.create(phone_number=phone_number)
 

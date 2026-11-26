@@ -18,6 +18,7 @@ from typing import Any
 import httpx
 import structlog
 
+from app.core.log_redaction import describe_text, scrub_text
 from app.services.tools.path_ids import encode_path_id, invalid_id_result
 
 # Type alias for tool handler functions
@@ -304,7 +305,7 @@ class GoHighLevelTools:
                 self.logger.warning(
                     "ghl_search_contact_failed",
                     status_code=response.status_code,
-                    response=response.text,
+                    response=describe_text(response.text),
                 )
                 return {"success": False, "error": f"API error: {response.status_code}"}
 
@@ -339,7 +340,9 @@ class GoHighLevelTools:
             }
 
         except Exception as e:
-            self.logger.exception("ghl_search_contact_error", query=query, error=str(e))
+            self.logger.exception(
+                "ghl_search_contact_error", query=describe_text(query), error=scrub_text(e)
+            )
             return {"success": False, "error": str(e)}
 
     async def ghl_get_contact(self, contact_id: str) -> dict[str, Any]:
@@ -430,7 +433,7 @@ class GoHighLevelTools:
                 self.logger.warning(
                     "ghl_create_contact_failed",
                     status_code=response.status_code,
-                    response=response.text,
+                    response=describe_text(response.text),
                 )
                 return {"success": False, "error": f"Failed to create contact: {response.text}"}
 
@@ -695,7 +698,7 @@ class GoHighLevelTools:
                 self.logger.warning(
                     "ghl_book_appointment_failed",
                     status_code=response.status_code,
-                    response=response.text,
+                    response=describe_text(response.text),
                 )
                 return {"success": False, "error": f"Failed to book appointment: {response.text}"}
 

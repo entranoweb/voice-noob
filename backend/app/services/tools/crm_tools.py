@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.cache import cache_invalidate
+from app.core.log_redaction import describe_text, scrub_text
 from app.models.appointment import Appointment
 from app.models.contact import Contact
 
@@ -280,7 +281,9 @@ class CRMTools:
             }
 
         except Exception as e:
-            self.logger.exception("search_customer_failed", query=query, error=str(e))
+            self.logger.exception(
+                "search_customer_failed", query=describe_text(query), error=scrub_text(e)
+            )
             return {"success": False, "error": str(e)}
 
     async def create_contact(

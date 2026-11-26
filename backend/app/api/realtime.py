@@ -20,6 +20,7 @@ from app.api.integrations import get_workspace_integrations
 from app.api.settings import get_user_api_keys
 from app.core.auth import CurrentUser, user_id_to_uuid
 from app.core.config import settings
+from app.core.log_redaction import redact_arguments
 from app.core.ownership import get_owned_agent
 from app.db.session import get_db
 from app.models.agent import Agent
@@ -367,7 +368,11 @@ async def _bridge_audio_streams(
                         # JSON event - with error handling for malformed JSON
                         try:
                             data = json.loads(message["text"])
-                            logger.info("client_event", event_type=data.get("type"), data=data)
+                            logger.info(
+                                "client_event",
+                                event_type=data.get("type"),
+                                fields=redact_arguments(data),
+                            )
                         except json.JSONDecodeError as e:
                             logger.warning("invalid_json_from_client", error=str(e))
                             continue  # Skip malformed message

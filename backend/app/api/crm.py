@@ -14,6 +14,7 @@ from sqlalchemy.orm import undefer
 from app.core.auth import CurrentUser
 from app.core.cache import cache_get, cache_invalidate, cache_set
 from app.core.limiter import limiter
+from app.core.log_redaction import redact_phone
 from app.db.session import get_db
 from app.models.appointment import Appointment
 from app.models.call_interaction import CallInteraction
@@ -483,7 +484,7 @@ async def create_contact(
             "Created contact: id=%d, user_id=%d, phone=%s, workspace_id=%s",
             contact.id,
             contact.user_id,
-            contact.phone_number,
+            redact_phone(contact.phone_number),
             contact.workspace_id,
         )
 
@@ -520,7 +521,7 @@ async def create_contact(
         logger.warning(
             "Integrity constraint violation creating contact: user_id=%d, phone=%s",
             user_id,
-            contact_data.phone_number,
+            redact_phone(contact_data.phone_number),
         )
         # Check if it's a duplicate phone or email
         error_msg = str(e.orig) if hasattr(e, "orig") else str(e)
@@ -540,7 +541,9 @@ async def create_contact(
         ) from e
     except DBAPIError as e:
         await db.rollback()
-        logger.exception("Database error creating contact: phone=%s", contact_data.phone_number)
+        logger.exception(
+            "Database error creating contact: phone=%s", redact_phone(contact_data.phone_number)
+        )
         raise HTTPException(
             status_code=503,
             detail="Database temporarily unavailable. Please try again later.",
@@ -550,7 +553,7 @@ async def create_contact(
         logger.exception(
             "Unexpected error creating contact: user_id=%d, phone=%s",
             user_id,
-            contact_data.phone_number,
+            redact_phone(contact_data.phone_number),
         )
         raise HTTPException(
             status_code=500,
