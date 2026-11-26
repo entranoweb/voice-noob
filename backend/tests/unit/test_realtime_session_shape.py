@@ -22,6 +22,7 @@ from openai.types.realtime.realtime_session_create_request import (
     RealtimeSessionCreateRequest,
 )
 
+from app.core.config import settings
 from app.services.gpt_realtime import GPTRealtimeSession, _assert_ga_session
 
 MULAW = {"type": "audio/pcmu"}
@@ -122,3 +123,20 @@ class TestConfiguredSession:
         await session._configure_session()
 
         assert "temperature" not in sent
+
+    @pytest.mark.asyncio
+    async def test_caller_transcription_comes_from_settings(
+        self,
+        session: GPTRealtimeSession,
+        sent: dict[str, Any],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(settings, "OPENAI_REALTIME_INPUT_TRANSCRIPTION_MODEL", "configured-x")
+        await session._configure_session()
+        assert sent["audio"]["input"]["transcription"] == {"model": "configured-x"}
+
+        sent.clear()
+        monkeypatch.setattr(settings, "OPENAI_REALTIME_INPUT_TRANSCRIPTION_MODEL", "")
+        await session._configure_session()
+        assert "transcription" not in sent["audio"]["input"]
+        RealtimeSessionCreateRequest.model_validate(sent)

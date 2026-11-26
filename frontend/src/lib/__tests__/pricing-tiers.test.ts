@@ -52,14 +52,14 @@ describe("PRICING_TIERS", () => {
   it("has correct configuration for premium tier", () => {
     const premiumTier = PRICING_TIERS.find((t) => t.id === "premium");
     expect(premiumTier?.config.llmProvider).toBe("openai-realtime");
-    expect(premiumTier?.config.llmModel).toBe("gpt-realtime-2025-08-28");
+    expect(premiumTier?.config.llmModel).toBe("gpt-realtime-2.1");
   });
 
   it("has correct configuration for premium-mini tier", () => {
     const premiumMiniTier = PRICING_TIERS.find((t) => t.id === "premium-mini");
     expect(premiumMiniTier).toBeDefined();
     expect(premiumMiniTier?.config.llmProvider).toBe("openai-realtime");
-    expect(premiumMiniTier?.config.llmModel).toBe("gpt-4o-mini-realtime");
+    expect(premiumMiniTier?.config.llmModel).toBe("gpt-realtime-2.1-mini");
   });
 
   it("has performance metrics for all tiers", () => {

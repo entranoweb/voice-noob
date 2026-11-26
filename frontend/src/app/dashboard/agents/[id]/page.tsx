@@ -55,6 +55,7 @@ import {
 import { api } from "@/lib/api";
 import { getLanguagesForTier } from "@/lib/languages";
 import { AVAILABLE_INTEGRATIONS } from "@/lib/integrations";
+import { REALTIME_MODEL_PREMIUM } from "@/lib/pricing-tiers";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 
 import {
@@ -331,7 +332,7 @@ export default function EditAgentPage({ params }: EditAgentPageProps) {
       sttProvider: "deepgram",
       deepgramModel: "nova-3",
       llmProvider: "openai-realtime",
-      llmModel: "gpt-realtime-2025-08-28",
+      llmModel: REALTIME_MODEL_PREMIUM,
       systemPrompt: "",
       initialGreeting: "",
       temperature: 0.7,
@@ -368,7 +369,7 @@ export default function EditAgentPage({ params }: EditAgentPageProps) {
         sttProvider: "deepgram",
         deepgramModel: "nova-3",
         llmProvider: agent.pricing_tier === "premium" ? "openai-realtime" : "openai",
-        llmModel: agent.pricing_tier === "premium" ? "gpt-realtime-2025-08-28" : "gpt-4o",
+        llmModel: agent.pricing_tier === "premium" ? REALTIME_MODEL_PREMIUM : "gpt-4o",
         voice: agent.voice ?? "marin",
         systemPrompt: agent.system_prompt,
         initialGreeting: agent.initial_greeting ?? "",
@@ -463,7 +464,7 @@ export default function EditAgentPage({ params }: EditAgentPageProps) {
     previousProvider.current = llmProvider;
 
     const defaultModels: Record<string, string> = {
-      "openai-realtime": "gpt-realtime-2025-08-28",
+      "openai-realtime": REALTIME_MODEL_PREMIUM,
       openai: "gpt-4o",
       anthropic: "claude-sonnet-4-5",
       google: "gemini-2.5-flash",
@@ -1121,8 +1122,8 @@ export default function EditAgentPage({ params }: EditAgentPageProps) {
                             </FormControl>
                             <SelectContent>
                               {llmProvider === "openai-realtime" && (
-                                <SelectItem value="gpt-realtime-2025-08-28">
-                                  gpt-realtime (Latest - Best Voice)
+                                <SelectItem value={REALTIME_MODEL_PREMIUM}>
+                                  {REALTIME_MODEL_PREMIUM} (Latest - Best Voice)
                                 </SelectItem>
                               )}
                               {llmProvider === "openai" && (
