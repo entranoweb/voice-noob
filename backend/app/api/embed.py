@@ -33,6 +33,7 @@ from fastapi import (
     WebSocketDisconnect,
 )
 from pydantic import BaseModel
+from slowapi.util import get_remote_address
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -551,8 +552,12 @@ async def get_embed_ephemeral_token(  # noqa: PLR0915
       several sessions inside that window; that is not enforceable here.
     - One key per embed session: a request presenting a live session token is
       refused, so a session cannot ask again for itself.
-    - A per-agent hourly ceiling on keys minted (``EMBED_KEYS_PER_AGENT_PER_HOUR``),
-      429 with Retry-After, counted in Redis; 503 if Redis is down.
+    - Per-address and per-agent hourly ceilings on keys minted (``EMBED_KEYS_PER_AGENT_PER_HOUR``),
+      (``EMBED_KEYS_PER_IP_PER_AGENT_PER_HOUR`` and
+      ``EMBED_KEYS_PER_AGENT_PER_HOUR``): 429 with Retry-After, counted in Redis;
+      503 if Redis is down.
+    - A client that omits the session header is limited only by the key's
+      expiry and those two hourly caps.
     """
     import httpx
 
@@ -680,7 +685,7 @@ async def get_embed_ephemeral_token(  # noqa: PLR0915
     )
 
     # Everything that could refuse the request has run; this is the spend.
-    decision = await reserve_embed_key(str(agent.id))
+    decision = await reserve_embed_key(str(agent.id), get_remote_address(request))
     if not decision.allowed:
         if decision.store_unavailable:
             raise HTTPException(
@@ -688,12 +693,13 @@ async def get_embed_ephemeral_token(  # noqa: PLR0915
                 detail="Voice sessions are temporarily unavailable. Try again shortly.",
                 headers={"Retry-After": str(decision.retry_after)},
             )
-        log.warning("embed_key_hourly_limit_reached", limit=decision.limit)
+        log.warning("embed_key_hourly_limit_reached", limit=decision.limit, scope=decision.scope)
+        who = "from your address " if decision.scope == "ip" else ""
         raise HTTPException(
             status_code=429,
             detail=(
                 f"This agent has reached its limit of {decision.limit} new voice "
-                "sessions per hour. Try again later."
+                f"sessions {who}per hour. Try again later."
             ),
             headers={"Retry-After": str(decision.retry_after)},
         )
@@ -708,12 +714,12 @@ async def get_embed_ephemeral_token(  # noqa: PLR0915
             expires_after_seconds=settings.EMBED_KEY_TTL_SECONDS,
         )
     except httpx.RequestError as e:
-        await release_embed_key(str(agent.id))
+        await release_embed_key(decision)
         log.exception("openai_token_request_error", error=str(e))
         raise HTTPException(status_code=500, detail=f"Failed to connect to OpenAI: {e!s}") from e
 
     if not response.is_success:
-        await release_embed_key(str(agent.id))
+        await release_embed_key(decision)
         log.error(
             "openai_token_error",
             status_code=response.status_code,
@@ -726,7 +732,7 @@ async def get_embed_ephemeral_token(  # noqa: PLR0915
     try:
         key = parse_client_secret(response)
     except ClientSecretError as e:
-        await release_embed_key(str(agent.id))
+        await release_embed_key(decision)
         log.exception("openai_token_unusable", error=str(e))
         raise HTTPException(
             status_code=502, detail="The voice provider returned no session key"

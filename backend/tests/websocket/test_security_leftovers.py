@@ -493,3 +493,57 @@ class TestTheWidgetKeyIsShortLivedAndCapped:
         assert response.status_code == 503
         assert int(response.headers["retry-after"]) > 0
         assert _FakeOpenAI.requests == []
+
+    @pytest.mark.asyncio
+    async def test_one_address_cannot_use_up_the_agents_hour(
+        self, env: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(settings, "EMBED_KEYS_PER_AGENT_PER_HOUR", 10)
+        monkeypatch.setattr(settings, "EMBED_KEYS_PER_IP_PER_AGENT_PER_HOUR", 2)
+        agent = env["owner"]["agent"]
+        for _ in range(2):
+            assert (await self._token(agent)).status_code == 200
+
+        refused = await self._token(agent)
+
+        assert refused.status_code == 429
+        assert "2" in refused.json()["detail"]
+        assert "your address" in refused.json()["detail"]
+        assert int(refused.headers["retry-after"]) > 0
+        assert len(_FakeOpenAI.requests) == 2
+
+
+class TestEmbedKeyCounters:
+    """The counters themselves, against a store, at the edges."""
+
+    @pytest.mark.asyncio
+    async def test_every_counter_has_a_ttl_the_moment_it_exists(
+        self, embed_key_limit_store: Any
+    ) -> None:
+        from app.core.embed_key_limit import reserve_embed_key
+
+        decision = await reserve_embed_key("agent-1", "203.0.113.7")
+
+        assert decision.allowed
+        assert len(decision.keys) == 2
+        for key in decision.keys:
+            assert await embed_key_limit_store.ttl(key) > 0
+
+    @pytest.mark.asyncio
+    async def test_a_refund_after_the_hour_turns_hits_the_counter_it_took(
+        self, embed_key_limit_store: Any
+    ) -> None:
+        from app.core.embed_key_limit import release_embed_key, reserve_embed_key
+
+        before_boundary = 3600 * 100 - 1.0
+        decision = await reserve_embed_key("agent-1", "203.0.113.7", now=before_boundary)
+        # The next hour's counter already exists (another visitor took one).
+        next_hour = await reserve_embed_key("agent-1", "198.51.100.9", now=before_boundary + 2)
+
+        await release_embed_key(decision)
+
+        for key in decision.keys:
+            assert await embed_key_limit_store.get(key) == "0"
+        # Untouched: not decremented below what its own mint made it.
+        agent_next = next_hour.keys[1]
+        assert await embed_key_limit_store.get(agent_next) == "1"
