@@ -10,6 +10,7 @@ import * as z from "zod";
 import Link from "next/link";
 import { createAgent, type CreateAgentRequest } from "@/lib/api/agents";
 import { AVAILABLE_INTEGRATIONS } from "@/lib/integrations";
+import { REALTIME_MODEL_PREMIUM } from "@/lib/pricing-tiers";
 import { getLanguagesForTier, getFallbackLanguage } from "@/lib/languages";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -116,7 +117,7 @@ const defaultValues: Partial<AgentFormValues> = {
   sttProvider: "deepgram",
   deepgramModel: "nova-3",
   llmProvider: "openai-realtime",
-  llmModel: "gpt-realtime",
+  llmModel: REALTIME_MODEL_PREMIUM,
   temperature: 0.7,
   maxTokens: 2000,
   telephonyProvider: "telnyx",
@@ -510,8 +511,8 @@ export default function NewAgentPage() {
                             </SelectTrigger>
                           </FormControl>
                           <SelectContent>
-                            <SelectItem value="gpt-realtime">
-                              gpt-realtime (Best for Voice - Nov 2025)
+                            <SelectItem value={REALTIME_MODEL_PREMIUM}>
+                              {REALTIME_MODEL_PREMIUM} (Best for Voice)
                             </SelectItem>
                             <SelectItem value="gpt-4o">
                               GPT-4o (Multimodal - 232ms latency)
@@ -534,7 +535,8 @@ export default function NewAgentPage() {
                           </SelectContent>
                         </Select>
                         <FormDescription>
-                          gpt-realtime: Voice | Claude Sonnet 4.5: Agents/Coding | Haiku 4.5: Budget
+                          {REALTIME_MODEL_PREMIUM}: Voice | Claude Sonnet 4.5: Agents/Coding | Haiku
+                          4.5: Budget
                         </FormDescription>
                         <FormMessage />
                       </FormItem>

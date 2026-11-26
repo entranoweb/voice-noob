@@ -61,8 +61,10 @@ from synthiq_caller.compare import (
 from synthiq_caller.director import RunRecord
 from synthiq_caller.jsonio import utf8_console
 from synthiq_caller.leg import Leg
+from synthiq_caller.manifestcsv import ManifestError
 from synthiq_caller.prereq import CommandChecker, HttpChecker, PrereqChecker
 from synthiq_caller.readback import CommandReadBack, HttpReadBack, NoReadBack, ReadBack
+from synthiq_caller.regions import add_region_argument, api_from_args
 from synthiq_caller.report import fail_under_exit, gate_reading, render, summarise
 from synthiq_caller.reset import CommandReset, HttpReset, NoReset, Reset
 from synthiq_caller.scenario import ScenarioError, load_scenario
@@ -107,7 +109,9 @@ def _trace_reader(args: argparse.Namespace) -> TraceReader:
         return VapiTraceReader(_secret("VAPI_API_KEY", args.env_file))
     from synthiq_caller.traces.elevenlabs import ElevenLabsTraceReader
 
-    return ElevenLabsTraceReader(_secret("ELEVENLABS_API_KEY", args.env_file))
+    return ElevenLabsTraceReader(
+        _secret("ELEVENLABS_API_KEY", args.env_file), api=api_from_args(args)
+    )
 
 
 LEGS = ["elevenlabs-socket", "phone", "fake"]
@@ -135,6 +139,7 @@ def _build(args: argparse.Namespace) -> tuple[Leg, TraceReader | None]:
         leg = ElevenLabsSocketLeg(
             key,
             args.agent,
+            api=api_from_args(args),
             keypad_as_message=getattr(args, "keypad_as_message", False),
             audio_dir=str(Path(out) / "audio")
             if out and not getattr(args, "no_audio", False)
@@ -412,11 +417,14 @@ def _checker(args: argparse.Namespace) -> PrereqChecker | None:
 
 
 def _bank(args: argparse.Namespace) -> ClipBank:
-    return ClipBank(
-        args.clips,
-        extra=tuple(getattr(args, "clips_extra", None) or ()),
-        allow_missing_consent=bool(getattr(args, "allow_missing_consent", False)),
-    )
+    try:
+        return ClipBank(
+            args.clips,
+            extra=tuple(getattr(args, "clips_extra", None) or ()),
+            allow_missing_consent=bool(getattr(args, "allow_missing_consent", False)),
+        )
+    except ManifestError as error:
+        raise SystemExit(f"clips: {error}") from error
 
 
 def _named_secret(env_name: str, env_file: str | None) -> str:
@@ -768,9 +776,10 @@ def _reread_reader(args: argparse.Namespace) -> TraceReader | None:
 
     key = _secret("ELEVENLABS_API_KEY", args.env_file)
     agent = "" if args.agent == "-" else args.agent
-    finder = ElevenLabsNumberTimeFinder(key, agent_id=agent, window_s=args.trace_window)
+    api = api_from_args(args)
+    finder = ElevenLabsNumberTimeFinder(key, agent_id=agent, window_s=args.trace_window, api=api)
     return LookupTraceReader(
-        finder, ElevenLabsTraceReader(key), calls_in(Path(args.directory)), find_wait_s=0.0
+        finder, ElevenLabsTraceReader(key, api=api), calls_in(Path(args.directory)), find_wait_s=0.0
     )
 
 
@@ -796,6 +805,7 @@ def _main(argv: list[str] | None = None) -> int:
     run.add_argument("--repeats", type=int, default=1)
     run.add_argument("--out", required=True)
     run.add_argument("--env-file", default=None)
+    add_region_argument(run)
     run.add_argument("--no-trace", action="store_true", help="do not read the agent's trace")
     run.add_argument("--no-audio", action="store_true", help="keep no per-side WAV files")
     run.add_argument("--trace", choices=TRACES, default="elevenlabs", help="where the trace is")
@@ -893,6 +903,7 @@ def _main(argv: list[str] | None = None) -> int:
     )
     bat.add_argument("--out", required=True)
     bat.add_argument("--env-file", default=None)
+    add_region_argument(bat)
     bat.add_argument("--no-trace", action="store_true")
     bat.add_argument("--trace", choices=TRACES, default="elevenlabs", help="where the trace is")
     bat.add_argument(
@@ -997,6 +1008,7 @@ def _main(argv: list[str] | None = None) -> int:
     reg.add_argument("--agent", default="-")
     reg.add_argument("--trace", choices=TRACES, default="elevenlabs", help="where the trace is")
     reg.add_argument("--env-file", default=None)
+    add_region_argument(reg)
     reg.add_argument(
         "--allow-mixed-scenarios",
         action="store_true",

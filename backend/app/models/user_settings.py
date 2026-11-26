@@ -61,7 +61,9 @@ class UserSettings(Base):
         comment="Azure OpenAI API key",
     )
     azure_openai_deployment_name: Mapped[str | None] = mapped_column(
-        String(255), nullable=True, comment="Azure OpenAI deployment name (e.g., gpt-realtime)"
+        String(255),
+        nullable=True,
+        comment="Azure OpenAI deployment name (the name you gave the realtime deployment)",
     )
     openai_provider: Mapped[str] = mapped_column(
         String(20), nullable=False, default="openai", comment="OpenAI provider: 'openai' or 'azure'"

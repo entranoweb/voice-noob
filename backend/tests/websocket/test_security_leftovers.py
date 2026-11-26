@@ -42,7 +42,7 @@ CUSTOMER = "https://shop.example.com"
 SYSTEM_PROMPT = "You are the receptionist. SECRET-HOUSE-RULE: never quote prices below list."
 OWNER_NUMBER = "+15559990001"
 OTHER_NUMBER = "+15559990002"
-OPENAI_SESSIONS_URL = "https://api.openai.com/v1/realtime/sessions"
+OPENAI_SECRETS_URL = "https://api.openai.com/v1/realtime/client_secrets"
 
 
 def _keypair() -> tuple[Ed25519PrivateKey, str]:
@@ -84,8 +84,10 @@ class _FakeOpenAI:
         type(self).requests.append({"url": url, "json": json})
         if type(self).refuse:
             # A provider error that quotes the request back, as validation errors do.
-            return httpx.Response(400, json={"error": {"message": str(json["instructions"])}})
-        return httpx.Response(200, json={"client_secret": {"value": "ek_test", "expires_at": 0}})
+            return httpx.Response(
+                400, json={"error": {"message": str(json["session"]["instructions"])}}
+            )
+        return httpx.Response(200, json={"value": "ek_test", "expires_at": 0})
 
 
 async def _tenant(
@@ -213,10 +215,12 @@ class TestTheTokenEndpointKeepsTheInstructions:
 
         assert len(_FakeOpenAI.requests) == 1
         sent = _FakeOpenAI.requests[0]
-        assert sent["url"] == OPENAI_SESSIONS_URL
-        assert "SECRET-HOUSE-RULE" in sent["json"]["instructions"]
-        assert sent["json"]["voice"] == "shimmer"
-        assert sent["json"]["turn_detection"]["type"] == "server_vad"
+        assert sent["url"] == OPENAI_SECRETS_URL
+        session = sent["json"]["session"]
+        assert session["type"] == "realtime"
+        assert "SECRET-HOUSE-RULE" in session["instructions"]
+        assert session["audio"]["output"]["voice"] == "shimmer"
+        assert session["audio"]["input"]["turn_detection"]["type"] == "server_vad"
 
     @pytest.mark.asyncio
     async def test_a_provider_error_does_not_carry_them_out_either(
@@ -233,7 +237,7 @@ class TestTheTokenEndpointKeepsTheInstructions:
     async def test_the_page_still_gets_what_it_shows_and_needs(self, env: dict[str, Any]) -> None:
         body = (await self._token(env)).json()
 
-        assert body["client_secret"]["value"] == "ek_test"
+        assert body["value"] == "ek_test"
         assert body["agent"]["name"] == "Front Desk"
         assert body["agent"]["voice"] == "shimmer"
         assert "initial_greeting" in body["agent"]

@@ -24,7 +24,9 @@ interface ToolDefinition {
 }
 
 interface TokenResponse {
-  client_secret: { value: string };
+  // GA `POST /v1/realtime/client_secrets` returns the short-lived key as `value`.
+  value: string;
+  expires_at?: number | null;
   agent: {
     name: string;
     voice: string;
@@ -446,7 +448,8 @@ export default function EmbedPage() {
       }
 
       const tokenData: TokenResponse = await tokenRes.json();
-      const ephemeralKey = tokenData.client_secret.value;
+      const ephemeralKey = tokenData.value;
+      if (!ephemeralKey) throw new Error("No session key received");
       sessionTokenRef.current = tokenData.session_token ?? "";
 
       // Check if cancelled before WebRTC setup
@@ -500,14 +503,15 @@ export default function EmbedPage() {
         return;
       }
 
-      // Connect to OpenAI Realtime API with required header
+      // GA: the SDP offer goes to /v1/realtime/calls with the ephemeral key as the
+      // bearer token. The model is part of the session the key was minted for, so
+      // there is no query string and no beta header.
       const response = await fetch("https://api.openai.com/v1/realtime/calls", {
         method: "POST",
         body: offer.sdp,
         headers: {
           "Content-Type": "application/sdp",
           Authorization: `Bearer ${ephemeralKey}`,
-          "OpenAI-Beta": "realtime=v1",
         },
         signal: abortController.signal,
       });
@@ -535,9 +539,6 @@ export default function EmbedPage() {
 
       await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
 
-      // Store tools for later reference
-      const agentTools = tokenData.tools ?? [];
-
       // Handle data channel events
       dataChannel.onopen = () => {
         // Check if cancelled before sending session config
@@ -545,33 +546,11 @@ export default function EmbedPage() {
         setStatus("connected");
         setAgentState("listening");
 
-        // The agent's instructions are not here: the backend gave them to the
-        // model provider when it minted this session, and never sends them to
-        // the page. An update without them leaves them as minted.
-        const sessionConfig: Record<string, unknown> = {
-          voice: tokenData.agent.voice,
-          input_audio_transcription: {
-            model: "whisper-1",
-          },
-          turn_detection: {
-            type: "server_vad",
-            threshold: 0.5,
-            prefix_padding_ms: 300,
-            silence_duration_ms: 200,
-          },
-        };
-
-        // Add tools if available
-        if (agentTools.length > 0) {
-          sessionConfig.tools = agentTools;
-          sessionConfig.tool_choice = "auto";
-        }
-
-        const sessionUpdate = {
-          type: "session.update",
-          session: sessionConfig,
-        };
-        dataChannel.send(JSON.stringify(sessionUpdate));
+        // Nothing to configure here: the backend minted this key for a complete
+        // GA session (instructions, voice, tools, transcription and turn
+        // detection), and none of it is sent from the page. A beta-shaped
+        // `session.update` with top-level voice or turn_detection is rejected
+        // by the GA API.
 
         // Only trigger initial greeting if one is configured
         // Without this, the agent waits for the user to speak first
@@ -664,9 +643,9 @@ export default function EmbedPage() {
             setAgentState("listening");
           } else if (data.type === "input_audio_buffer.speech_stopped") {
             setAgentState("thinking");
-          } else if (data.type === "response.audio.delta") {
+          } else if (data.type === "response.output_audio.delta") {
             setAgentState("speaking");
-          } else if (data.type === "response.audio.done") {
+          } else if (data.type === "response.output_audio.done") {
             setAgentState("listening");
           } else if (data.type === "response.done") {
             setAgentState("listening");
@@ -689,13 +668,13 @@ export default function EmbedPage() {
             if (userText?.trim()) {
               transcriptRef.current.push({ role: "user", content: userText.trim() });
             }
-          } else if (data.type === "response.audio_transcript.delta") {
+          } else if (data.type === "response.output_audio_transcript.delta") {
             // Assistant speech transcript delta
             const delta = data.delta as string;
             if (delta) {
               currentAssistantTextRef.current += delta;
             }
-          } else if (data.type === "response.audio_transcript.done") {
+          } else if (data.type === "response.output_audio_transcript.done") {
             // Assistant speech transcript complete - flush to transcript
             if (currentAssistantTextRef.current.trim()) {
               transcriptRef.current.push({

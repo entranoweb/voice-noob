@@ -35,7 +35,6 @@ copy of its file is put back.
 
 from __future__ import annotations
 
-import csv
 import json
 import subprocess
 import wave
@@ -47,6 +46,7 @@ from typing import Any
 from synthiq_caller import consent as consent_rules
 from synthiq_caller.clipid import clip_id
 from synthiq_caller.consent import UNKNOWN, Consent
+from synthiq_caller.manifestcsv import read_rows
 from synthiq_caller.removals import read_removed
 
 OVERRIDES_FILE = "overrides.json"
@@ -181,21 +181,20 @@ class ClipBank:
     def _read_manifest(self, folder: Path) -> None:
         manifest = folder / "manifest.csv"
         if manifest.exists():
-            with manifest.open(encoding="utf-8", newline="") as handle:
-                for row in csv.DictReader(handle):
-                    info = ClipInfo(
-                        clip=clip_id(row.get("clip") or ""),
-                        call=row.get("call", ""),
-                        category=row.get("category", ""),
-                        secs=float(row.get("secs") or 0),
-                        said=row.get("said", ""),
-                        question=row.get("question", ""),
-                        checked_by_human=bool((row.get("checked_by_human") or "").strip()),
-                        review=(row.get("review") or "").strip(),
-                        consent=Consent.from_row(row),
-                        folder=str(folder),
-                    )
-                    self._info[info.clip] = info
+            for row in read_rows(manifest)[1]:
+                info = ClipInfo(
+                    clip=clip_id(row.get("clip") or ""),
+                    call=row.get("call", ""),
+                    category=row.get("category", ""),
+                    secs=float(row.get("secs") or 0),
+                    said=row.get("said", ""),
+                    question=row.get("question", ""),
+                    checked_by_human=bool((row.get("checked_by_human") or "").strip()),
+                    review=(row.get("review") or "").strip(),
+                    consent=Consent.from_row(row),
+                    folder=str(folder),
+                )
+                self._info[info.clip] = info
         self.overrides = load_overrides(self.directory)
         # What ``forget`` removed, from every directory: a clip removed from any is gone.
         self.removed = read_removed(self.directories)

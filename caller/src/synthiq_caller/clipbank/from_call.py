@@ -8,11 +8,11 @@ the persona facts, the expectations and the ``mutates`` level.
 
 from __future__ import annotations
 
-import csv
 from pathlib import Path
 from typing import Any
 
 from synthiq_caller.clips import load_overrides
+from synthiq_caller.manifestcsv import read_rows
 
 # The agent line each kind of answer responds to. Specific confirmations come
 # first so a read-back that mentions a date of birth is not taken for the
@@ -46,8 +46,7 @@ _ORDER = list(WHEN)
 
 
 def read_manifest(bank: Path) -> list[dict[str, str]]:
-    with (bank / "manifest.csv").open(encoding="utf-8", newline="") as handle:
-        return list(csv.DictReader(handle))
+    return read_rows(bank / "manifest.csv")[1]
 
 
 def scenario_from_call(

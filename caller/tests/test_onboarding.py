@@ -245,8 +245,9 @@ def test_doctor_never_prints_the_key_and_says_whether_it_is_set(
     assert "is set (value not shown)" in shown.out
 
     monkeypatch.delenv("ELEVENLABS_API_KEY")
-    assert cli.main(["doctor"]) == 1
-    assert "is not set" in capsys.readouterr().out
+    assert cli.main(["doctor", "--live"]) == 1  # a missing key stops a live leg only
+    out = capsys.readouterr().out
+    assert "is not set" in out and "live leg: NOT READY" in out
 
 
 def test_doctor_checks_the_region_and_names_a_bad_one(no_network: None) -> None:

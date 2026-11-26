@@ -125,7 +125,7 @@ const API_KEY_PROVIDERS: ApiKeyProvider[] = [
       {
         name: "azure_openai_deployment_name",
         label: "Deployment Name",
-        placeholder: "gpt-realtime",
+        placeholder: "Your realtime deployment name",
         settingsKey: "azure_openai_deployment_name_set",
       },
     ],

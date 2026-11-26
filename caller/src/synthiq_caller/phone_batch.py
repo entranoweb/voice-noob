@@ -32,6 +32,7 @@ from synthiq_caller.leg import Leg
 from synthiq_caller.legs.twilio_media import PhoneConfig, PhoneExchange, TwilioMediaLeg
 from synthiq_caller.numbers import ALLOWED_ENV, allowed_numbers, is_allowed, is_e164
 from synthiq_caller.phone_server import PHONE_TURNS, build_transcriber, check_public_url
+from synthiq_caller.regions import api_from_args
 from synthiq_caller.traces.base import TraceReader
 from synthiq_caller.traces.lookup import ConversationFinder, LookupTraceReader, PhoneCall
 from synthiq_caller.transcribe import Transcriber
@@ -152,13 +153,16 @@ def open_phone_batch(args: argparse.Namespace, env: Mapping[str, str], out: Path
         from synthiq_caller.traces.elevenlabs import ElevenLabsTraceReader
         from synthiq_caller.traces.lookup import ElevenLabsNumberTimeFinder
 
+        api = api_from_args(args, env)
+
         finder = ElevenLabsNumberTimeFinder(
             key,
             agent_id=args.agent,
             window_s=args.trace_window,
             match_caller_number=not args.trace_ignore_caller_number,
+            api=api,
         )
-        inner = ElevenLabsTraceReader(key)
+        inner = ElevenLabsTraceReader(key, api=api)
 
     rest = TwilioRest(credentials)
     exchange = PhoneExchange(args.host, args.port)

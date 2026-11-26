@@ -110,7 +110,7 @@ SMS is Twilio here, not Telnyx, so no messaging skill is installed.
 
 ## Tech Stack
 
-**Voice & AI**: OpenAI Realtime (`gpt-realtime-2025-08-28`), speech-to-speech.
+**Voice & AI**: OpenAI Realtime (`gpt-realtime-2.1`, `gpt-realtime-2.1-mini` for premium-mini; names live only in `OPENAI_REALTIME_MODEL_*` in `backend/app/core/config.py`), speech-to-speech.
 One engine — `telephony_ws.py` writes `engine="openai_realtime"` as a literal.
 No cascaded STT/LLM/TTS pipeline exists; Deepgram and ElevenLabs are declared
 dependencies whose clients are never constructed. Pipecat was removed in
