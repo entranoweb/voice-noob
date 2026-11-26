@@ -429,6 +429,28 @@ class TestTelnyx:
         assert stored == "carrier-sid-early"
 
     @pytest.mark.asyncio
+    async def test_an_answer_with_no_call_id_on_a_pending_record_is_refused(
+        self, env: dict[str, Any]
+    ) -> None:
+        """No carrier id anywhere: `pending:<id>` must never reach the stream URL."""
+        record = await _seed_call(env, provider="telnyx", call_id=f"pending:{uuid.uuid4()}")
+        body = self._voice_body("")
+        path = f"/webhooks/telnyx/answer?agent_id={env['agent'].id}&record_id={record.id}"
+
+        with structlog.testing.capture_logs() as logs:
+            response = await self._post(path, body, env["keys"]["w2"])
+
+        assert response.status_code == 403
+        assert "pending:" not in response.text
+        assert any(e["event"] == "telnyx_answer_without_call_id_on_pending_record" for e in logs)
+        async with env["sessions"]() as session:
+            row = (
+                await session.execute(select(CallRecord).where(CallRecord.id == record.id))
+            ).scalar_one()
+        assert row.answered_at is None
+        assert row.provider_call_id.startswith("pending:")
+
+    @pytest.mark.asyncio
     async def test_an_answer_does_not_replace_an_id_that_is_already_stored(
         self, env: dict[str, Any]
     ) -> None:
@@ -577,6 +599,38 @@ class TestTwilio:
         assert response.status_code == 503
         assert any(entry["event"] == "status_callback_no_record" for entry in logs)
         assert await _status_of(env, "CA6") == CallStatus.INITIATED.value
+
+    @pytest.mark.asyncio
+    async def test_retries_for_an_erased_call_warn_once_then_log_at_info(
+        self, env: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Still 503 each time (the carrier's bounded retry); the log is not noisy."""
+        levels: list[str] = []
+
+        class _Recorder:
+            def warning(self, event: str, **_: Any) -> None:
+                levels.append(f"warning:{event}")
+
+            def info(self, event: str, **_: Any) -> None:
+                levels.append(f"info:{event}")
+
+        monkeypatch.setattr(telephony, "logger", _Recorder())
+        telephony._NO_RECORD_SEEN.clear()
+        params = {"CallSid": "CAerased", "CallStatus": "completed"}
+        query = f"agent_id={env['agent'].id}&record_id={uuid.uuid4()}"
+
+        responses = [
+            await self._post("/webhooks/twilio/status", params, TOKENS["w2"], query)
+            for _ in range(3)
+        ]
+
+        assert [r.status_code for r in responses] == [503, 503, 503]
+        seen = [lv for lv in levels if lv.endswith("status_callback_no_record")]
+        assert seen == [
+            "warning:status_callback_no_record",
+            "info:status_callback_no_record",
+            "info:status_callback_no_record",
+        ]
 
     @pytest.mark.asyncio
     async def test_an_early_status_callback_finds_its_record_by_record_id(
@@ -919,7 +973,6 @@ class TestOutboundAnswerClaimMatchesTheRecord:
         assert first == (True, None)
         assert second[0] is False
         assert second[1] is not None
-        assert second[1] is not telephony._NO_ROW
 
     @pytest.mark.asyncio
     async def test_the_lost_answer_age_finds_a_pending_row_by_record_id(
@@ -930,5 +983,6 @@ class TestOutboundAnswerClaimMatchesTheRecord:
             by_id = await telephony._lost_answer_age("twilio", "CAx", session, record.id)
             without = await telephony._lost_answer_age("twilio", "CAx", session)
 
-        assert by_id is not telephony._NO_ROW
-        assert without is telephony._NO_ROW
+        assert by_id is not None
+        assert by_id < 60
+        assert without == float("inf")

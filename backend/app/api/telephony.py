@@ -8,7 +8,6 @@ This module provides:
 - WebSocket endpoint for telephony media streaming
 """
 
-import asyncio
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
@@ -34,10 +33,7 @@ from app.core.stream_token import mint_stream_token
 from app.core.webhook_replay import (
     DOCUMENT_TTL_SECONDS,
     EMPTY_DOCUMENT,
-    ReplayClaim,
-    answer_already_issued,
     claim_age_seconds,
-    claim_answer_issued,
     mark_committed,
     release_claim_on_error,
     store_answer_document,
@@ -57,6 +53,7 @@ from app.models.privacy_settings import PrivacySettings
 from app.services.qa import trigger_qa_evaluation
 from app.services.telephony.number_routing import resolve_number_route
 from app.services.telephony.outbound import (
+    PENDING_PREFIX,
     OutboundRefusedError,
     adopt_provider_call_id,
     place_outbound_call,
@@ -246,6 +243,10 @@ async def _named_call_record(
     )
 
 
+_NO_RECORD_SEEN: set[tuple[str, str]] = set()
+_NO_RECORD_SEEN_MAX = 1024
+
+
 def _refuse_status_without_record(provider: str, call_id: str, what: str) -> NoReturn:
     """A status callback for a call with no record is neither accepted nor dropped.
 
@@ -255,7 +256,15 @@ def _refuse_status_without_record(provider: str, call_id: str, what: str) -> NoR
     because there is no workspace whose key could be checked, and the global
     key alone is not enough to accept a report about a call nobody recorded.
     """
-    logger.warning(
+    # A callback for an erased call is retried by the carrier a bounded number of
+    # times: warn on the first sighting of a call, info after that.
+    key = (provider, call_id[-6:])
+    first = key not in _NO_RECORD_SEEN
+    if first:
+        if len(_NO_RECORD_SEEN) >= _NO_RECORD_SEEN_MAX:
+            _NO_RECORD_SEEN.clear()
+        _NO_RECORD_SEEN.add(key)
+    (logger.warning if first else logger.info)(
         "status_callback_no_record",
         provider=provider,
         call_id_suffix=call_id[-6:],
@@ -1125,9 +1134,6 @@ async def _finish_call(
     return True
 
 
-_NO_ROW: Any = object()
-
-
 def _same_call(provider: str, provider_call_id: str, record_id: uuid.UUID | None) -> Any:
     """Which row an answer is about: the carrier's id for the call, or the record
     id the answer URL carried. A row written before the dial holds ``pending:``
@@ -1140,10 +1146,9 @@ def _same_call(provider: str, provider_call_id: str, record_id: uuid.UUID | None
 
 async def _lost_answer_age(
     provider: str, provider_call_id: str, db: AsyncSession, record_id: uuid.UUID | None = None
-) -> Any:
-    """For an outbound row that exists but cannot be claimed: seconds since it
-    was answered, a large number if it has ended, or ``_NO_ROW`` if there is
-    no row."""
+) -> float | None:
+    """For an outbound row that cannot be claimed: seconds since it was answered
+    (or created), infinity if it has ended or the row is gone."""
     row = (
         await db.execute(
             select(CallRecord.answered_at, CallRecord.ended_at, CallRecord.created_at).where(
@@ -1152,15 +1157,11 @@ async def _lost_answer_age(
         )
     ).first()
     if row is None:
-        return _NO_ROW
+        return float("inf")
     answered_at, ended_at, created_at = row
     if ended_at is not None:
         return float("inf")
     return _age_seconds(answered_at or created_at)
-
-
-_ROW_RECHECKS = 3
-_ROW_RECHECK_DELAY_SECONDS = 0.2
 
 
 async def _claim_outbound_answer(
@@ -1172,48 +1173,31 @@ async def _claim_outbound_answer(
 ) -> tuple[bool, float | None]:
     """Win the one-shot right to mint a stream token for an outbound call.
 
-    The dial API writes the row (``answered_at`` NULL) *after* the carrier has
-    been asked to dial; the answer webhook claims it with a single
-    ``UPDATE ... WHERE answered_at IS NULL AND ended_at IS NULL RETURNING``.
-    Exactly one concurrent answer gets a row back: permanent, independent of
-    Redis, serialised by the database. Status callbacks never set ``answered_at``
-    on an outbound call, so one that arrives first cannot make a legitimate
-    answer lose.
-
-    No row yet: the answer can beat the dial API's commit, so look again a few
-    times. Still nothing: claim the call id in Redis with ``SET NX`` and the long
-    replay TTL (and log it), and the row path refuses a call that key already
-    covers, so the answer cannot be claimed twice by either route.
+    The call record is written before the dial and the caller has already
+    resolved it, so the claim is a single
+    ``UPDATE ... WHERE answered_at IS NULL AND ended_at IS NULL RETURNING`` on it,
+    found by the carrier's call id or by the record id (a row still holding
+    ``pending:``). Exactly one concurrent answer gets a row back: permanent,
+    independent of Redis, serialised by the database. Status callbacks never set
+    ``answered_at`` on an outbound call, so one that arrives first cannot make a
+    legitimate answer lose. An answer with no record never reaches here (403).
     """
-    if await answer_already_issued(provider, provider_call_id):
-        return False, None
-
-    for attempt in range(_ROW_RECHECKS + 1):
-        claimed = await db.scalar(
-            update(CallRecord)
-            .where(
-                _same_call(provider, provider_call_id, record_id),
-                CallRecord.direction == CallDirection.OUTBOUND.value,
-                CallRecord.answered_at.is_(None),
-                CallRecord.ended_at.is_(None),
-            )
-            .values(answered_at=datetime.now(UTC))
-            .returning(CallRecord.id)
+    claimed = await db.scalar(
+        update(CallRecord)
+        .where(
+            _same_call(provider, provider_call_id, record_id),
+            CallRecord.direction == CallDirection.OUTBOUND.value,
+            CallRecord.answered_at.is_(None),
+            CallRecord.ended_at.is_(None),
         )
-        if claimed is not None:
-            await db.commit()
-            mark_committed(request)
-            return True, None
-        lost_age = await _lost_answer_age(provider, provider_call_id, db, record_id)
-        if lost_age is not _NO_ROW:
-            return False, lost_age
-        if attempt < _ROW_RECHECKS:
-            await asyncio.sleep(_ROW_RECHECK_DELAY_SECONDS)
-
-    logger.warning("outbound_answer_without_call_row", provider=provider, call_id=provider_call_id)
-    claim = await claim_answer_issued(request, provider, provider_call_id)
-    # Unreachable store: fail open, as everywhere in the replay guard (it logged).
-    return claim is not ReplayClaim.DUPLICATE, None
+        .values(answered_at=datetime.now(UTC))
+        .returning(CallRecord.id)
+    )
+    if claimed is not None:
+        await db.commit()
+        mark_committed(request)
+        return True, None
+    return False, await _lost_answer_age(provider, provider_call_id, db, record_id)
 
 
 @webhook_router.post(
@@ -1600,6 +1584,11 @@ async def telnyx_answer_webhook(
         call_control_id=event.call_id,
         wire_format=event.wire_format.value,
     )
+    if not event.call_id and call_record.provider_call_id.startswith(PENDING_PREFIX):
+        # The record holds no carrier id yet and the answer brought none: a stream
+        # admitted against `pending:<id>` would connect and stay silent.
+        log.warning("telnyx_answer_without_call_id_on_pending_record")
+        raise HTTPException(status_code=403, detail="Unknown call")
     won, lost_age = await _claim_outbound_answer(
         request, "telnyx", event.call_id, db, record_id=call_record.id
     )
