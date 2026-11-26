@@ -163,10 +163,10 @@
   "expect": {
     "tools": [
       {
-        "name": "sophie_v2_register_patient"
+        "name": "example_v2_register_patient"
       },
       {
-        "name": "sophie_v2_book"
+        "name": "example_v2_book"
       }
     ],
     "fields": [
@@ -175,7 +175,7 @@
       "postcode"
     ],
     "booking": {
-      "tool": "sophie_v2_book",
+      "tool": "example_v2_book",
       "type": "consultation",
       "start_keys": [
         "bookedDisplayTime"
@@ -187,25 +187,25 @@
     ]
   },
   "tool_outcomes": {
-    "sophie_v2_verify_identity": {
+    "example_v2_verify_identity": {
       "path": "verified",
       "success": [
         "true"
       ]
     },
-    "sophie_v2_book": {
+    "example_v2_book": {
       "path": "bookOutcome",
       "success": [
         "BOOKED"
       ]
     },
-    "sophie_v2_reschedule_appointment": {
+    "example_v2_reschedule_appointment": {
       "path": "rescheduleOutcome",
       "success": [
         "RESCHEDULED"
       ]
     },
-    "sophie_v2_register_patient": {
+    "example_v2_register_patient": {
       "path": "newPatientRegistered",
       "success": [
         "true"

@@ -64,7 +64,7 @@ Of the 12 that work, 5 are the caller over a direct connection, 6 are dependency
 | 19 | Release gating from a batch | "Still lack" | **Absent.** `batch` exits 0 whatever the pass rate | `cli.py:189,119` | Exit code from a threshold |
 | 20 | Accent and noise personas | "Still lack" | **Absent** | search | later |
 | 21 | Independent lookup of the stored record | Not built | **Absent on main** (in flight) | `docs/ROADMAP-2027.md:310-313` | #25 |
-| 22 | Next clip chosen from what the agent said | Built | **Works** (pattern match on the agent's words) | `caller/scenarios/sophie/03-consultation-single-slot-yes.json:17-131` | none |
+| 22 | Next clip chosen from what the agent said | Built | **Works** (pattern match on the agent's words) | `caller/scenarios/example-receptionist/03-consultation-single-slot-yes.json:17-131` | none |
 | 23 | Hazard-log evidence export | Not built | **Absent** | search | later |
 | 24 | Batch runner, N by k, Wilson intervals | 30-day item | **Works** for lookup-only scenarios | `caller/README.md:137-165` | Mutating scenarios (being run now) |
 | 25 | Security hygiene: stream token, fail-closed webhooks, call-back host | 30-day item | **Tests only** | pull requests #18, #23 state no browser or carrier run | A rehearsal on a deployment |
@@ -235,9 +235,9 @@ Severity: **A** blocks a second customer · **B** costs us support time · **C**
 
 **F14. Nobody but us can set the caller up against their own agent.** CONFIRMED, except where marked.
 - A clip bank needs recordings plus word-level transcripts with speaker ids (`caller/src/synthiq_caller/clipbank/build.py:7`; `caller/README.md:221-223`). Nothing in the package downloads recordings from a platform or transcribes them; on 24 November that was done with scripts that are not in the repository.
-- A scenario is a list of patterns on the agent's exact wording, written by hand per agent (`caller/scenarios/sophie/03-consultation-single-slot-yes.json:17-131`). There is no scenario reference page (`caller/docs/` holds the phone guide only).
+- A scenario is a list of patterns on the agent's exact wording, written by hand per agent (`caller/scenarios/example-receptionist/03-consultation-single-slot-yes.json:17-131`). There is no scenario reference page (`caller/docs/` holds the phone guide only).
 - The ElevenLabs address is fixed to the US default; the constructors accept another but no command-line option passes one (`caller/src/synthiq_caller/legs/elevenlabs_socket.py:31,42`; `traces/elevenlabs.py:23,139`; `cli.py:196-234`). An account on EU residency cannot be tested without editing code. Cekura offers the region as a setting (source in F1).
-- The only shipped scenario set is one client's, inside the product package (`caller/scenarios/sophie/`).
+- The only shipped scenario set is one client's, inside the product package (`caller/scenarios/example-receptionist/`).
 - The package is not published or containerised; it is installed from the repository with `uv` (PLAUSIBLE as a pilot obstacle; fine for us).
 
 ### C. Hygiene

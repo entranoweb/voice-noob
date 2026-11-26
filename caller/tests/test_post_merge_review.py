@@ -68,7 +68,7 @@ def scenario(**extra: Any) -> Scenario:
                 "phone": "07700900123",
             }
         },
-        # The order the Sophie scenarios list them in: phone, postcode, date of birth.
+        # The order the example scenarios list them in: phone, postcode, date of birth.
         "steps": [
             {"when": "how can i help", "clips": ["opener.wav"]},
             {"when": "mobile|phone number", "clips": ["phone.wav"], "field": "phone"},
@@ -236,8 +236,8 @@ def test_the_booked_day_is_read_from_the_booking_not_from_a_later_lookup() -> No
     assert unnamed.outcome == "ungradeable" and "expect.booking.tool" in unnamed.reason
 
 
-def test_every_sophie_scenario_that_writes_an_appointment_names_the_tool_that_writes_it() -> None:
-    directory = Path(__file__).parent.parent / "scenarios" / "sophie"
+def test_every_example_scenario_that_writes_an_appointment_names_the_tool_that_writes_it() -> None:
+    directory = Path(__file__).parent.parent / "scenarios" / "example-receptionist"
     for path in sorted(directory.glob("*.json")):
         loaded = parse_scenario(json.loads(path.read_text(encoding="utf-8")))
         if loaded.expect.booking.stated():

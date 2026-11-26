@@ -16,7 +16,7 @@ live in a profile, one JSON file per target:
   "timezone": "Europe/London",
   "naive_times": "UTC",
   "identity_budget": 2,
-  "fixture_faults": {"sophie_v2_register_patient": ["DUPLICATE_FOUND"]},
+  "fixture_faults": {"example_v2_register_patient": ["DUPLICATE_FOUND"]},
   "bookings": {
     "01-consultation-self-pay-shoulder": {"time_from": "16:30", "time_to": "16:30"}
   }
@@ -28,7 +28,7 @@ live in a profile, one JSON file per target:
 - Run with `--target <file>` on `batch`, `validate` and `regrade`.
 - A scenario whose parts the profile does not give is **held back** ("the target profile
   does not give ..."). It is never run with a weaker check.
-- `scenarios/sophie/targets/original-clinic.json` holds the times the recordings were
+- `scenarios/example-receptionist/targets/original-clinic.json` holds the times the recordings were
   made against. `test-clinic.json` is there to be filled in; until it is, the booking
   scenarios do not run against the test clinic.
 - `naive_times` is the zone the target writes a start time in when it gives no offset.

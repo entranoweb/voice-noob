@@ -148,7 +148,9 @@ def test_the_profile_caps_what_a_batch_may_change_and_never_switches_it_on() -> 
 
 
 def test_the_example_profile_and_queries_in_the_repository_are_valid() -> None:
-    target = load_target(CALLER / "scenarios" / "sophie" / "targets" / "wired-target.example.json")
+    target = load_target(
+        CALLER / "scenarios" / "example-receptionist" / "targets" / "wired-target.example.json"
+    )
     assert "{call_ref}" in command_of(target, "after_call")[0]
     text = json.dumps(target)
     # Placeholders only: the example names no real host, id or person.

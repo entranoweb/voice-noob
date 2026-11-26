@@ -10,7 +10,7 @@ Repository: `entranoweb/voice-noob` (product name: Synthiq Voice). `main` is gre
 - **Works end to end:** the test caller over a direct audio connection to an ElevenLabs agent. It plays recorded answers, reacts to what the agent says, and grades from the agent's tool results.
 - **Built, never run live:** the phone leg, reset, read-back, call chains, baseline comparison, Retell and Vapi adapters.
 - **Not built:** anything a customer sees. The dashboard does not know the caller exists.
-- **First proof:** a client's voice receptionist ("Sophie"), measured at 45% of test calls handled (20 of 44), target 95%. A separate developer is fixing the agent. This repository only measures it.
+- **First proof:** a client's voice receptionist, measured at 45% of test calls handled (20 of 44), target 95%. A separate developer is fixing the agent. This repository only measures it.
 - **Live runs so far:** 19 calls against the test agent over the direct connection. None over a phone line. The 7 booking calls reached no booking: four causes were the rig's or the fixture's, one was the agent mishearing.
 
 Read before starting: the five audits in `docs/audits/2026-11-25/` (call path, security and tenancy, rig validity, product readiness, testing-product plan) and `docs/ROADMAP-2027.md`.

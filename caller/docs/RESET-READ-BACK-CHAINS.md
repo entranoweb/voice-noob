@@ -147,7 +147,7 @@ None of this has been run against a live system; it is tested with fakes only.
   more than the profile permits stops before anything is loaded or run.
 - What the command line gives wins: `--reset`, `--read-back`, `--before-call` and
   `--after-call` each replace the profile's.
-- `scenarios/sophie/targets/wired-target.example.json` is a filled-out example with
+- `scenarios/example-receptionist/targets/wired-target.example.json` is a filled-out example with
   placeholders. Keep a real copy outside the repository if it names anything real.
 
 ### A chain's appointments in the profile
