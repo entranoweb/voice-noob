@@ -946,6 +946,25 @@ async def hangup_call(
 # =============================================================================
 
 
+async def _call_already_answered(provider: str, provider_call_id: str, db: AsyncSession) -> bool:
+    """Whether an inbound call with this carrier id already has a row.
+
+    A permanent, database-backed replay check for the inbound answering
+    webhooks: unlike the Redis replay memory it does not expire and does not
+    depend on Redis. A second answer for the same call would otherwise insert a
+    second row and mint a second stream token. Uses
+    ``ix_call_records_provider_call_id`` (non-unique).
+    """
+    if not provider_call_id:
+        return False
+    found = await db.scalar(
+        select(CallRecord.id)
+        .where(CallRecord.provider == provider, CallRecord.provider_call_id == provider_call_id)
+        .limit(1)
+    )
+    return found is not None
+
+
 @webhook_router.post(
     "/twilio/voice", dependencies=[Depends(release_claim_on_error)], response_class=HTMLResponse
 )
@@ -992,6 +1011,10 @@ async def twilio_voice_webhook(
 </Response>""",
             media_type="application/xml",
         )
+
+    if await _call_already_answered("twilio", call_sid, db):
+        log.warning("answer_webhook_for_existing_call", call_sid=call_sid)
+        return Response(content=EMPTY_DOCUMENT, media_type="application/xml")
 
     # Get workspace for the agent
     agent_workspace_id = await get_agent_workspace_id(agent.id, db)
@@ -1215,6 +1238,10 @@ async def telnyx_voice_webhook(
 </Response>""",
             media_type="application/xml",
         )
+
+    if await _call_already_answered("telnyx", event.call_id, db):
+        log.warning("answer_webhook_for_existing_call", call_control_id=event.call_id)
+        return Response(content=EMPTY_DOCUMENT, media_type="application/xml")
 
     # Get workspace for the agent
     agent_workspace_id = await get_agent_workspace_id(agent.id, db)

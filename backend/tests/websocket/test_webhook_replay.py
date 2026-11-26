@@ -304,3 +304,46 @@ def test_the_xml_helper_is_parseable() -> None:
     from app.core.webhook_replay import EMPTY_DOCUMENT
 
     assert ET.fromstring(EMPTY_DOCUMENT).tag == "Response"  # noqa: S314
+
+
+class TestExistingCallRowIsPermanent:
+    """The Redis memory expires and can be down; the row does not and is not."""
+
+    @pytest.mark.asyncio
+    async def test_telnyx_answer_with_no_redis_key_but_a_row_is_a_noop(
+        self, env: dict[str, Any], webhook_replay_store: Any
+    ) -> None:
+        body = _telnyx_body("v3:call-expired")
+        async with _client() as client:
+            first = await client.post(
+                "/webhooks/telnyx/voice", content=body, headers=_telnyx_headers(env, body)
+            )
+            await webhook_replay_store.flushall()  # the key has expired
+            second = await client.post(
+                "/webhooks/telnyx/voice", content=body, headers=_telnyx_headers(env, body)
+            )
+        assert "token=" in first.text
+        assert second.status_code == 200
+        assert "token=" not in second.text
+        assert await _rows(env) == 1
+
+    @pytest.mark.asyncio
+    async def test_twilio_answer_with_no_redis_key_but_a_row_is_a_noop(
+        self, env: dict[str, Any], webhook_replay_store: Any
+    ) -> None:
+        path = "/webhooks/twilio/voice"
+        params = {
+            "CallSid": "CA77",
+            "From": CALLER_NUMBER,
+            "To": AGENT_NUMBER,
+            "CallStatus": "ringing",
+        }
+        headers = _twilio_headers(path, params)
+        async with _client() as client:
+            first = await client.post(path, content=_form(params), headers=headers)
+            await webhook_replay_store.flushall()
+            second = await client.post(path, content=_form(params), headers=headers)
+        assert 'name="token"' in first.text
+        assert second.status_code == 200
+        assert 'name="token"' not in second.text
+        assert await _rows(env) == 1
