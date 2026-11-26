@@ -16,11 +16,14 @@ from app.core.limits import (
     MAX_JSON_BODY_BYTES,
     MAX_TURNS,
     NOTES_MAX_CHARS,
+    PROMPT_MAX_CHARS,
     TRANSCRIPT_MAX_CHARS,
     TURN_TEXT_MAX_CHARS,
 )
 from app.models.agent import Agent
 from app.models.call_record import CallRecord
+from app.models.contact import Contact
+from app.models.workspace import Workspace
 from app.services.caller_results import MAX_CALL_PAYLOAD_BYTES
 from tests.test_api.test_caller_runs import _bundle, _call, _post
 
@@ -28,7 +31,6 @@ if TYPE_CHECKING:
     from httpx import AsyncClient
 
     from app.models.user import User
-    from app.models.workspace import Workspace
 
 pytestmark = pytest.mark.asyncio
 
@@ -216,6 +218,197 @@ class TestScenarioAndCheck:
         )
         assert response.status_code == 422
         assert f"at most {DESCRIPTION_MAX_CHARS} characters" in _detail(response)
+
+
+class TestResavingAValueAlreadyOverTheCap:
+    """A row saved before a cap existed keeps saving; a changed value is capped.
+
+    The stored value is written straight to the database, as it would be if it
+    pre-dates the cap, and is never cut.
+    """
+
+    @pytest.mark.parametrize(
+        ("field", "cap"),
+        [
+            ("system_prompt", PROMPT_MAX_CHARS),
+            ("description", DESCRIPTION_MAX_CHARS),
+            ("initial_greeting", TURN_TEXT_MAX_CHARS),
+        ],
+    )
+    async def test_an_agent_text_field_sent_back_unchanged_is_accepted_and_kept(
+        self,
+        authenticated_test_client: tuple[AsyncClient, User],
+        test_session: Any,
+        field: str,
+        cap: int,
+    ) -> None:
+        client, user = authenticated_test_client
+        agent = await _agent(user, test_session)
+        stored = "s" * (cap + 500)
+        setattr(agent, field, stored)
+        await test_session.commit()
+
+        same = await client.put(f"/api/v1/agents/{agent.id}", json={field: stored})
+        assert same.status_code == 200, same.text
+
+        await test_session.refresh(agent)
+        assert getattr(agent, field) == stored  # never cut
+
+    @pytest.mark.parametrize(
+        ("field", "cap"),
+        [
+            ("system_prompt", PROMPT_MAX_CHARS),
+            ("description", DESCRIPTION_MAX_CHARS),
+            ("initial_greeting", TURN_TEXT_MAX_CHARS),
+        ],
+    )
+    async def test_changing_it_to_another_oversized_value_is_refused(
+        self,
+        authenticated_test_client: tuple[AsyncClient, User],
+        test_session: Any,
+        field: str,
+        cap: int,
+    ) -> None:
+        client, user = authenticated_test_client
+        agent = await _agent(user, test_session)
+        stored = "s" * (cap + 500)
+        setattr(agent, field, stored)
+        await test_session.commit()
+
+        changed = await client.put(f"/api/v1/agents/{agent.id}", json={field: "t" * (cap + 500)})
+
+        assert changed.status_code == 422
+        assert f"at most {cap} characters" in _detail(changed)
+        await test_session.refresh(agent)
+        assert getattr(agent, field) == stored
+
+    async def test_a_value_at_the_cap_is_still_accepted_as_a_change(
+        self,
+        authenticated_test_client: tuple[AsyncClient, User],
+        test_session: Any,
+    ) -> None:
+        client, user = authenticated_test_client
+        agent = await _agent(user, test_session)
+        response = await client.put(
+            f"/api/v1/agents/{agent.id}", json={"system_prompt": "p" * PROMPT_MAX_CHARS}
+        )
+        assert response.status_code == 200, response.text
+
+    async def test_embed_settings_sent_back_unchanged_are_accepted_a_bigger_one_is_not(
+        self,
+        authenticated_test_client: tuple[AsyncClient, User],
+        test_session: Any,
+    ) -> None:
+        client, user = authenticated_test_client
+        agent = await _agent(user, test_session)
+        stored = {"note": "e" * (JSON_MAX_CHARS + 500)}
+        agent.embed_settings = stored
+        await test_session.commit()
+
+        same = await client.patch(
+            f"/api/v1/agents/{agent.id}/embed", json={"embed_settings": stored}
+        )
+        assert same.status_code == 200, same.text
+
+        bigger = await client.patch(
+            f"/api/v1/agents/{agent.id}/embed",
+            json={"embed_settings": {"note": "f" * (JSON_MAX_CHARS + 900)}},
+        )
+        assert bigger.status_code == 422
+        await test_session.refresh(agent)
+        assert agent.embed_settings == stored
+
+    async def test_workspace_settings_sent_back_unchanged_are_accepted(
+        self,
+        authenticated_test_client: tuple[AsyncClient, User],
+        test_session: Any,
+        test_workspace: Workspace,
+    ) -> None:
+        client, _ = authenticated_test_client
+        stored = {"note": "w" * (JSON_MAX_CHARS + 500)}
+        workspace = await test_session.get(Workspace, test_workspace.id)
+        assert workspace is not None
+        workspace.settings = stored
+        await test_session.commit()
+
+        same = await client.put(
+            f"/api/v1/workspaces/{test_workspace.id}", json={"settings": stored}
+        )
+        assert same.status_code == 200, same.text
+
+        changed = await client.put(
+            f"/api/v1/workspaces/{test_workspace.id}",
+            json={"settings": {"note": "x" * (JSON_MAX_CHARS + 500)}},
+        )
+        assert changed.status_code == 422
+        await test_session.refresh(workspace)
+        assert workspace.settings == stored
+
+    async def test_contact_notes_sent_back_unchanged_are_accepted(
+        self,
+        authenticated_test_client: tuple[AsyncClient, User],
+        test_session: Any,
+    ) -> None:
+        client, user = authenticated_test_client
+        stored = "n" * (NOTES_MAX_CHARS + 300)
+        contact = Contact(
+            user_id=user.id, first_name="Jo", phone_number="+15550002222", notes=stored
+        )
+        test_session.add(contact)
+        await test_session.commit()
+        await test_session.refresh(contact)
+
+        # The request model strips and re-checks nothing about length on its own.
+        same = await client.put(f"/api/v1/crm/contacts/{contact.id}", json={"notes": stored})
+        assert same.status_code == 200, same.text
+
+        changed = await client.put(
+            f"/api/v1/crm/contacts/{contact.id}", json={"notes": "m" * (NOTES_MAX_CHARS + 300)}
+        )
+        assert changed.status_code == 422
+        assert f"at most {NOTES_MAX_CHARS} characters" in _detail(changed)
+
+
+class TestCancelAppendsToNotesNearTheCap:
+    """The cancel tool appends a reason to notes. It is not a request field, so it
+    is not capped: it must neither fail nor cut what is stored."""
+
+    async def test_cancelling_with_notes_at_the_cap_keeps_them_whole(
+        self,
+        authenticated_test_client: tuple[AsyncClient, User],
+        test_session: Any,
+    ) -> None:
+        from datetime import UTC, datetime
+
+        from app.models.appointment import Appointment
+        from app.services.tools.crm_tools import CRMTools
+
+        _, user = authenticated_test_client
+        contact = Contact(user_id=user.id, first_name="Jo", phone_number="+15550003333")
+        test_session.add(contact)
+        await test_session.commit()
+        await test_session.refresh(contact)
+        notes = "n" * NOTES_MAX_CHARS
+        appointment = Appointment(
+            contact_id=contact.id,
+            scheduled_at=datetime(2030, 1, 1, 10, 0, tzinfo=UTC),
+            status="scheduled",
+            notes=notes,
+        )
+        test_session.add(appointment)
+        await test_session.commit()
+        await test_session.refresh(appointment)
+
+        result = await CRMTools(test_session, user.id).cancel_appointment(
+            appointment.id, reason="r" * 500
+        )
+
+        assert result["success"] is True, result
+        await test_session.refresh(appointment, ["notes"])
+        assert appointment.notes is not None
+        assert appointment.notes.startswith(notes)
+        assert appointment.notes.endswith("Cancellation reason: " + "r" * 500)
+        assert len(appointment.notes) > NOTES_MAX_CHARS
 
 
 class TestCallerUpload:

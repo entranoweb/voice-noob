@@ -2,10 +2,11 @@
 
 import uuid
 from datetime import datetime
+from typing import Annotated
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StringConstraints
 from sqlalchemy import desc, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.audit import AuditAction, record_audit
 from app.core.auth import CurrentUser, user_id_to_uuid
 from app.core.limiter import limiter
-from app.core.limits import NOTES_MAX_CHARS
+from app.core.limits import NOTES_MAX_CHARS, enforce_caps_on_update
 from app.core.ownership import get_owned_agent, number_variants, parse_uuid
 from app.db.session import get_db
 from app.models.phone_number import PhoneNumber, PhoneNumberStatus
@@ -115,7 +116,7 @@ class UpdatePhoneNumberRequest(BaseModel):
     workspace_id: str | None = None
     assigned_agent_id: str | None = None
     status: str | None = None
-    notes: str | None = Field(default=None, max_length=NOTES_MAX_CHARS)
+    notes: str | None = None
 
 
 # =============================================================================
@@ -408,6 +409,12 @@ async def update_phone_number(  # noqa: PLR0912
 
     if not phone_number:
         raise HTTPException(status_code=404, detail="Phone number not found")
+
+    enforce_caps_on_update(
+        {"notes": update_request.notes},
+        phone_number,
+        {"notes": Annotated[str, StringConstraints(max_length=NOTES_MAX_CHARS)]},
+    )
 
     # Update fields
     if update_request.friendly_name is not None:

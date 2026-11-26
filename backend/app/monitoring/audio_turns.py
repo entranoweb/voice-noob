@@ -67,7 +67,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.core.limits import TRANSCRIPT_MAX_CHARS, truncation_marker
+from app.core.limits import MARKER_RESERVE, TRANSCRIPT_MAX_CHARS, truncation_marker
 from app.monitoring.call_trace import Speaker, ToolOutcome
 
 # G.711 (both µ-law and A-law) is one byte per sample. The sample rate is the
@@ -94,6 +94,9 @@ class _Turn:
     audio_bytes: int = 0
     interrupted: bool = False
     barge_in: bool = False
+    # Some of this turn's words were left out to stay within the transcript cap.
+    # Its text is then incomplete, which is not the same as the turn being empty.
+    text_truncated: bool = False
     # Set while the turn is still producing audio, so a caller speech-start can
     # tell "talked over the agent" from "spoke after the agent finished".
     speaking: bool = True
@@ -354,6 +357,10 @@ class AudioTurnRecorder:
             # side's text onto the other.
             record["text_intended"] = turn.text_intended
             record["text_transcribed"] = turn.text_transcribed
+            if turn.text_truncated:
+                # Marks the turn as incomplete so nothing reads a blank or short
+                # text as "the speaker said nothing" or as what was said.
+                record["text_truncated"] = True
             if turn is self._last_cut_turn:
                 # Where text stopped being kept, and how much was left out in all.
                 key = "text_intended" if turn.speaker is Speaker.AGENT else "text_transcribed"
@@ -382,12 +389,14 @@ class AudioTurnRecorder:
         The turn that first lost text is remembered, so the stored turns say
         where the cut happened.
         """
-        room = max(TRANSCRIPT_MAX_CHARS - self._text_chars, 0)
+        # Room is kept back for the marker, so the stored text with it is within the cap.
+        room = max(TRANSCRIPT_MAX_CHARS - MARKER_RESERVE - self._text_chars, 0)
         kept = text[:room]
         self._text_chars += len(kept)
         if len(kept) < len(text):
             self._text_omitted += len(text) - len(kept)
             self._last_cut_turn = turn
+            turn.text_truncated = True
         return kept
 
     # -- internals --------------------------------------------------------

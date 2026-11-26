@@ -23,6 +23,7 @@ from app.core.limits import (
     TURN_TEXT_MAX_CHARS,
     BoundedDict,
     BoundedDictList,
+    enforce_caps_on_update,
 )
 from app.db.session import AsyncSessionLocal, get_db
 from app.models.agent import Agent
@@ -260,23 +261,41 @@ class TestScenarioCreate(BaseModel):
 
 
 class TestScenarioUpdate(BaseModel):
-    """Update test scenario request."""
+    """Update test scenario request.
+
+    The size caps are not on these fields. A scenario saved before the caps existed
+    may hold more, and sending it back as it is must keep working, so
+    ``update_scenario`` holds only a changed value to ``UPDATE_SCENARIO_CAPS``.
+    """
 
     name: str | None = Field(None, max_length=200)
-    description: str | None = Field(default=None, max_length=DESCRIPTION_MAX_CHARS)
+    description: str | None = None
     category: str | None = None
     difficulty: str | None = None
-    caller_persona: BoundedDict | None = None
-    conversation_flow: BoundedDictList | None = Field(default=None, max_length=MAX_TURNS)
-    expected_behaviors: (
-        list[Annotated[str, StringConstraints(max_length=DESCRIPTION_MAX_CHARS)]] | None
-    ) = Field(default=None, max_length=MAX_LIST_ITEMS)
-    expected_tool_calls: BoundedDictList | None = Field(default=None, max_length=MAX_LIST_ITEMS)
-    success_criteria: BoundedDict | None = None
+    caller_persona: dict[str, Any] | None = None
+    conversation_flow: list[dict[str, Any]] | None = None
+    expected_behaviors: list[str] | None = None
+    expected_tool_calls: list[dict[str, Any]] | None = None
+    success_criteria: dict[str, Any] | None = None
     is_active: bool | None = None
-    tags: list[Annotated[str, StringConstraints(max_length=SHORT_TEXT_MAX_CHARS)]] | None = Field(
-        default=None, max_length=MAX_LIST_ITEMS
-    )
+    tags: list[str] | None = None
+
+
+UPDATE_SCENARIO_CAPS: dict[str, Any] = {
+    "description": Annotated[str, StringConstraints(max_length=DESCRIPTION_MAX_CHARS)],
+    "caller_persona": BoundedDict,
+    "conversation_flow": Annotated[BoundedDictList, Field(max_length=MAX_TURNS)],
+    "expected_behaviors": Annotated[
+        list[Annotated[str, StringConstraints(max_length=DESCRIPTION_MAX_CHARS)]],
+        Field(max_length=MAX_LIST_ITEMS),
+    ],
+    "expected_tool_calls": Annotated[BoundedDictList, Field(max_length=MAX_LIST_ITEMS)],
+    "success_criteria": BoundedDict,
+    "tags": Annotated[
+        list[Annotated[str, StringConstraints(max_length=SHORT_TEXT_MAX_CHARS)]],
+        Field(max_length=MAX_LIST_ITEMS),
+    ],
+}
 
 
 class DuplicateScenarioResponse(BaseModel):
@@ -546,6 +565,10 @@ async def update_scenario(
                 status_code=400,
                 detail=f"Invalid difficulty: {request.difficulty}. Must be one of: {', '.join(valid_difficulties)}",
             )
+
+    enforce_caps_on_update(
+        request.model_dump(include=set(UPDATE_SCENARIO_CAPS)), scenario, UPDATE_SCENARIO_CAPS
+    )
 
     # Apply partial updates (only non-None fields)
     update_fields = request.model_dump(exclude_unset=True)

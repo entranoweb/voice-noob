@@ -3,9 +3,10 @@
 import logging
 import re
 import uuid
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from pydantic import BaseModel, EmailStr, Field, StringConstraints, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,7 +15,11 @@ from sqlalchemy.orm import undefer
 from app.core.auth import CurrentUser
 from app.core.cache import cache_get, cache_invalidate, cache_set
 from app.core.limiter import limiter
-from app.core.limits import DESCRIPTION_MAX_CHARS, NOTES_MAX_CHARS, SHORT_TEXT_MAX_CHARS
+from app.core.limits import (
+    NOTES_MAX_CHARS,
+    SHORT_TEXT_MAX_CHARS,
+    enforce_caps_on_update,
+)
 from app.db.session import get_db
 from app.models.appointment import Appointment
 from app.models.call_interaction import CallInteraction
@@ -165,7 +170,7 @@ class ContactCreate(BaseModel):
     phone_number: str
     company_name: str | None = None
     status: str = "new"
-    tags: str | None = Field(default=None, max_length=DESCRIPTION_MAX_CHARS)
+    tags: str | None = Field(default=None, max_length=MAX_TAGS_LENGTH)
     notes: str | None = Field(default=None, max_length=NOTES_MAX_CHARS)
     workspace_id: str | None = None
 
@@ -568,8 +573,8 @@ class ContactUpdate(BaseModel):
     phone_number: str | None = None
     company_name: str | None = None
     status: str | None = None
-    tags: str | None = Field(default=None, max_length=DESCRIPTION_MAX_CHARS)
-    notes: str | None = Field(default=None, max_length=NOTES_MAX_CHARS)
+    tags: str | None = None
+    notes: str | None = None
     workspace_id: str | None = None
 
     @field_validator("workspace_id")
@@ -663,8 +668,6 @@ class ContactUpdate(BaseModel):
         """Validate notes length."""
         if v is not None:
             v = v.strip()
-            if len(v) > MAX_NOTES_LENGTH:
-                raise ValueError(f"notes cannot exceed {MAX_NOTES_LENGTH} characters")
             if not v:
                 return None
         return v
@@ -705,6 +708,12 @@ async def update_contact(
     if not contact:
         logger.error("Contact not found or unauthorized for update: %d", contact_id)
         raise HTTPException(status_code=404, detail="Contact not found")
+
+    enforce_caps_on_update(
+        {"notes": contact_data.notes},
+        contact,
+        {"notes": Annotated[str, StringConstraints(max_length=MAX_NOTES_LENGTH)]},
+    )
 
     # Update only provided fields, handling workspace_id specially
     update_data = contact_data.model_dump(exclude_unset=True, exclude={"workspace_id"})
@@ -972,8 +981,8 @@ class AppointmentUpdate(BaseModel):
     scheduled_at: str | None = None
     duration_minutes: int | None = None
     status: str | None = None
-    service_type: str | None = Field(default=None, max_length=SHORT_TEXT_MAX_CHARS)
-    notes: str | None = Field(default=None, max_length=NOTES_MAX_CHARS)
+    service_type: str | None = None
+    notes: str | None = None
 
     @field_validator("scheduled_at")
     @classmethod
@@ -1284,6 +1293,15 @@ async def update_appointment(
 
     if not appointment:
         raise HTTPException(status_code=404, detail="Appointment not found")
+
+    enforce_caps_on_update(
+        {"notes": appointment_data.notes, "service_type": appointment_data.service_type},
+        appointment,
+        {
+            "notes": Annotated[str, StringConstraints(max_length=NOTES_MAX_CHARS)],
+            "service_type": Annotated[str, StringConstraints(max_length=SHORT_TEXT_MAX_CHARS)],
+        },
+    )
 
     # Update fields
     update_data = appointment_data.model_dump(exclude_unset=True)

@@ -57,6 +57,16 @@ GUNICORN_GRACEFUL_TIMEOUT_S = 40
 SHUTDOWN_SAVE_MARGIN_S = 5
 
 
+# The longest stored call transcript the deployment may configure. A transcript
+# arrives in one JSON body, capped at 2 MiB (``MAX_JSON_BODY_BYTES``); 400,000
+# characters at 4 bytes each in UTF-8 is 1.6 MB, which still fits. A higher value
+# would let a legitimate transcript be refused by the body cap, so start-up
+# refuses it rather than clamping it quietly.
+TRANSCRIPT_MAX_CHARS_CEILING = 400_000
+# Below this the cap would cut ordinary calls (a 30-minute call is about 54,000).
+TRANSCRIPT_MAX_CHARS_FLOOR = 10_000
+
+
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
 
@@ -73,6 +83,22 @@ class Settings(BaseSettings):
 
     # Application
     APP_NAME: str = "Synthiq Voice API"
+
+    # Most characters of one call's transcript that are stored; text past it is
+    # cut with a marker and the call carries on. See app/core/limits.py.
+    TRANSCRIPT_MAX_CHARS: int = 200_000
+
+    @field_validator("TRANSCRIPT_MAX_CHARS")
+    @classmethod
+    def _transcript_cap_within_bounds(cls, value: int) -> int:
+        if not TRANSCRIPT_MAX_CHARS_FLOOR <= value <= TRANSCRIPT_MAX_CHARS_CEILING:
+            raise ValueError(
+                f"TRANSCRIPT_MAX_CHARS must be between {TRANSCRIPT_MAX_CHARS_FLOOR} and "
+                f"{TRANSCRIPT_MAX_CHARS_CEILING} (got {value}); a larger transcript would not "
+                "fit the 2 MiB request body cap"
+            )
+        return value
+
     APP_VERSION: str = "0.1.0"
     DEBUG: bool = False
     API_V1_PREFIX: str = "/api/v1"

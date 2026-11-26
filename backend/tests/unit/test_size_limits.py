@@ -17,16 +17,25 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 from app.core import limits
+from app.core.config import TRANSCRIPT_MAX_CHARS_CEILING, Settings
 from app.core.limits import (
     JSON_MAX_CHARS,
+    MARKER_RESERVE,
+    MAX_JSON_BODY_BYTES,
     TRANSCRIPT_MAX_CHARS,
     BoundedDict,
+    OverCapError,
+    enforce_merge_cap_on_update,
     truncate_with_marker,
     truncation_marker,
 )
 from app.middleware.body_limit import BodySizeLimitMiddleware
 from app.monitoring.audio_turns import AudioTurnRecorder
+from app.monitoring.call_trace import Speaker
 from app.services.gpt_realtime import GPTRealtimeSession
+from app.services.qa.metrics.base import MetricContext, TurnData
+from app.services.qa.metrics.context import turns_from_conversation
+from app.services.qa.metrics.experience.transcription_accuracy import TranscriptionAccuracy
 
 if TYPE_CHECKING:
     from starlette.requests import Request
@@ -42,26 +51,30 @@ def _session() -> GPTRealtimeSession:
 
 class TestTruncate:
     def test_text_at_the_limit_is_unchanged(self) -> None:
-        text = "x" * 50
-        assert truncate_with_marker(text, 50) == text
+        text = "x" * 500
+        assert truncate_with_marker(text, 500) == text
 
-    def test_text_over_the_limit_says_how_much_was_dropped(self) -> None:
-        result = truncate_with_marker("x" * 60, 50)
-        assert result == "x" * 50 + "\n" + truncation_marker(10)
-        assert result.endswith("[truncated: 10 characters omitted]")
+    def test_text_over_the_limit_is_cut_so_the_whole_fits_the_limit(self) -> None:
+        result = truncate_with_marker("x" * 600, 500)
+        kept = 500 - MARKER_RESERVE
+        assert result == "x" * kept + "\n" + truncation_marker(600 - kept)
+        assert len(result) <= 500
+
+    def test_cutting_twice_changes_nothing(self) -> None:
+        once = truncate_with_marker("x" * 100_000, 5_000)
+        assert truncate_with_marker(once, 5_000) == once
 
 
 class TestBridgeTranscript:
-    def test_a_transcript_at_the_cap_is_kept_whole_and_unmarked(self) -> None:
+    def test_a_transcript_at_the_budget_is_kept_whole_and_unmarked(self) -> None:
         session = _session()
-        session.add_user_transcript("u" * (TRANSCRIPT_MAX_CHARS // 2))
-        session.add_assistant_transcript("a" * (TRANSCRIPT_MAX_CHARS // 2))
+        # One line "[User]: ..." filling the whole budget, label included.
+        session.add_user_transcript("u" * (TRANSCRIPT_MAX_CHARS - MARKER_RESERVE - len("[User]: ")))
 
         text = session.get_transcript()
 
         assert "truncated" not in text
-        assert text.count("u") == TRANSCRIPT_MAX_CHARS // 2
-        assert text.count("a") >= TRANSCRIPT_MAX_CHARS // 2
+        assert len(text) == TRANSCRIPT_MAX_CHARS - MARKER_RESERVE
 
     def test_a_transcript_over_the_cap_is_stored_cut_with_a_marker(self) -> None:
         session = _session()
@@ -70,10 +83,41 @@ class TestBridgeTranscript:
         session.add_user_transcript("later words")
 
         text = session.get_transcript()
+        kept = sum(len(entry["content"]) for entry in session.get_transcript_entries())
 
-        assert text.endswith(truncation_marker(1234 + len("later words")))
-        assert "u" * TRANSCRIPT_MAX_CHARS in text
+        assert len(text) <= TRANSCRIPT_MAX_CHARS
+        assert text.endswith(truncation_marker(TRANSCRIPT_MAX_CHARS + 1234 + 11 - kept))
         assert "a" * 1234 not in text
+
+    def test_many_turns_over_the_cap_get_one_accurate_marker_and_no_second_cut(self) -> None:
+        """Sixty caller turns of 2,000, sixty agent turns of 2,500 and thirty of 4,000.
+
+        That is 390,000 characters of content, with the labels more. The stored text
+        is cut once, at an entry, with one marker whose count is the content left out,
+        and the write-time rule finds nothing more to cut.
+        """
+        session = _session()
+        total = 0
+        for _ in range(60):
+            session.add_user_transcript("u" * 2000)
+            session.add_assistant_transcript("a" * 2500)
+            total += 4500
+        for _ in range(30):
+            session.add_assistant_transcript("b" * 4000)
+            total += 4000
+
+        text = session.get_transcript()
+        kept = sum(len(entry["content"]) for entry in session.get_transcript_entries())
+
+        assert total == 390_000
+        assert len(text) <= TRANSCRIPT_MAX_CHARS
+        assert text.count("[truncated:") == 1
+        assert text.endswith(truncation_marker(total - kept))
+        # What the call record stores (telephony_ws applies this) is this text, untouched.
+        assert truncate_with_marker(text, TRANSCRIPT_MAX_CHARS) == text
+        # Cut between entries: every line before the marker starts with its label.
+        body = text.rsplit("\n\n", 1)[0]
+        assert all(part.startswith(("[User]: ", "[Assistant]: ")) for part in body.split("\n\n"))
 
     def test_streamed_assistant_text_over_the_cap_is_counted_not_kept(self) -> None:
         session = _session()
@@ -82,25 +126,44 @@ class TestBridgeTranscript:
         session.flush_assistant_text()
 
         text = session.get_transcript()
+        kept = sum(len(entry["content"]) for entry in session.get_transcript_entries())
 
-        assert text.endswith(truncation_marker(5 * 1000))
+        assert len(text) <= TRANSCRIPT_MAX_CHARS
+        assert text.endswith(truncation_marker((TRANSCRIPT_MAX_CHARS // 1000 + 5) * 1000 - kept))
         # Memory is bounded too: nothing is held past the cap while a turn streams.
         assert len(session._current_assistant_text) == 0
 
 
 class TestRecorderText:
-    def test_turn_text_over_the_cap_is_cut_and_the_last_turn_says_so(self) -> None:
+    def _long_call(self) -> list[dict[str, Any]]:
         recorder = AudioTurnRecorder()
         recorder.caller_speech_started(at=0.0)
         recorder.caller_speech_stopped(at=1.0)
         recorder.caller_transcript("c" * TRANSCRIPT_MAX_CHARS, at=1.5)
         recorder.agent_transcript_delta("a" * 700, at=2.0)
+        recorder.caller_speech_started(at=3.0)
+        recorder.caller_speech_stopped(at=4.0)
+        recorder.caller_transcript("later words", at=4.5)
+        return recorder.conversation()
 
-        turns = recorder.conversation()
+    def test_turn_text_over_the_cap_is_cut_with_the_marker_inside_the_cap(self) -> None:
+        turns = self._long_call()
+        stored = sum(
+            len(turn[key] or "") for turn in turns for key in ("text_intended", "text_transcribed")
+        )
+        assert stored <= TRANSCRIPT_MAX_CHARS
+        assert "[truncated:" in (turns[-1]["text_transcribed"] or "")
 
-        assert turns[0]["text_transcribed"] == "c" * TRANSCRIPT_MAX_CHARS
-        assert turns[1]["text_intended"] == "\n" + truncation_marker(700)
-        assert recorder.turn_count() == 2
+    def test_a_turn_that_lost_words_is_flagged_not_left_blank(self) -> None:
+        turns = self._long_call()
+        assert [turn.get("text_truncated", False) for turn in turns] == [True, True, True]
+
+    def test_a_turn_inside_the_cap_is_not_flagged(self) -> None:
+        recorder = AudioTurnRecorder()
+        recorder.caller_speech_started(at=0.0)
+        recorder.caller_speech_stopped(at=1.0)
+        recorder.caller_transcript("hello", at=1.5)
+        assert "text_truncated" not in recorder.conversation()[0]
 
 
 class TestBoundedDict:
@@ -175,3 +238,93 @@ def test_the_limits_are_generous_for_a_thirty_minute_call() -> None:
     worst_case_thirty_minutes = 2 * 1500 * 30
     assert worst_case_thirty_minutes == 90_000
     assert 2 * worst_case_thirty_minutes <= limits.TRANSCRIPT_MAX_CHARS
+
+
+class TestTranscriptCapSetting:
+    def test_the_default_is_200_000(self) -> None:
+        assert Settings(_env_file=None).TRANSCRIPT_MAX_CHARS == 200_000
+
+    def test_a_value_inside_the_bounds_is_taken(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("TRANSCRIPT_MAX_CHARS", "250000")
+        assert Settings(_env_file=None).TRANSCRIPT_MAX_CHARS == 250_000
+
+    @pytest.mark.parametrize("value", [str(TRANSCRIPT_MAX_CHARS_CEILING + 1), "5000", "0", "-1"])
+    def test_a_value_outside_the_bounds_stops_start_up_with_a_clear_error(
+        self, monkeypatch: pytest.MonkeyPatch, value: str
+    ) -> None:
+        monkeypatch.setenv("TRANSCRIPT_MAX_CHARS", value)
+        with pytest.raises(ValidationError, match="TRANSCRIPT_MAX_CHARS must be between"):
+            Settings(_env_file=None)
+
+    def test_the_ceiling_still_fits_the_body_cap(self) -> None:
+        # Four bytes a character is the worst case for UTF-8, ignoring escaping.
+        assert TRANSCRIPT_MAX_CHARS_CEILING * 4 < MAX_JSON_BODY_BYTES
+
+
+class TestMergeCapOnUpdate:
+    def test_what_is_stored_sent_back_passes_even_over_the_cap(self) -> None:
+        stored = {"k": "v" * (JSON_MAX_CHARS + 10)}
+        enforce_merge_cap_on_update("settings", dict(stored), stored)
+
+    def test_a_changed_oversized_entry_is_refused(self) -> None:
+        stored = {"k": "v" * (JSON_MAX_CHARS + 10)}
+        with pytest.raises(OverCapError):
+            enforce_merge_cap_on_update("settings", {"k": "w" * (JSON_MAX_CHARS + 10)}, stored)
+
+    def test_a_small_change_to_a_small_object_passes(self) -> None:
+        enforce_merge_cap_on_update("settings", {"a": "2"}, {"a": "1", "b": "x"})
+
+    def test_a_small_change_that_shrinks_an_oversized_object_passes(self) -> None:
+        stored = {"big": "v" * (JSON_MAX_CHARS + 10), "a": "1"}
+        enforce_merge_cap_on_update("settings", {"big": "short"}, stored)
+
+    def test_the_merged_object_may_not_grow_past_the_cap(self) -> None:
+        stored = {"a": "v" * (JSON_MAX_CHARS - 20)}
+        with pytest.raises(OverCapError):
+            enforce_merge_cap_on_update("settings", {"b": "x" * 100}, stored)
+
+
+class TestTruncatedTurnsAreVoidForTheGrader:
+    def test_a_turn_whose_words_were_cut_is_not_graded_as_a_mishearing(self) -> None:
+        cut = TurnData(
+            index=0,
+            speaker=Speaker.CALLER,
+            text_intended="book me for tuesday at ten",
+            text_transcribed="book me",
+            text_truncated=True,
+        )
+        clean = TurnData(
+            index=1,
+            speaker=Speaker.CALLER,
+            text_intended="thank you",
+            text_transcribed="thank you",
+        )
+        score = TranscriptionAccuracy().compute(
+            MetricContext(run_id="r", turns=(cut, clean), has_audio=True)
+        )
+        assert score.value == 0.0
+        assert score.detail["turns_compared"] == 1
+        assert score.detail["turns_void_truncated"] == 1
+
+    def test_a_run_whose_every_turn_was_cut_is_not_measurable(self) -> None:
+        cut = TurnData(
+            index=0,
+            speaker=Speaker.CALLER,
+            text_intended="book me for tuesday",
+            text_transcribed="book",
+            text_truncated=True,
+        )
+        score = TranscriptionAccuracy().compute(
+            MetricContext(run_id="r", turns=(cut,), has_audio=True)
+        )
+        assert score.value is None
+        assert score.detail["turns_void_truncated"] == 1
+
+    def test_the_flag_survives_from_the_recorder_to_the_metric_turn(self) -> None:
+        turns = turns_from_conversation(
+            [
+                {"speaker": "caller", "text_transcribed": "x", "text_truncated": True},
+                {"speaker": "agent", "text_intended": "y"},
+            ]
+        )
+        assert [turn.text_truncated for turn in turns] == [True, False]

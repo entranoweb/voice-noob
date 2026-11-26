@@ -13,7 +13,7 @@ from sqlalchemy.orm import selectinload
 
 from app.core.auth import CurrentUser
 from app.core.limiter import limiter
-from app.core.limits import BoundedDict
+from app.core.limits import BoundedDict, enforce_caps_on_update
 from app.db.session import get_db
 from app.models.agent import Agent
 from app.models.contact import Contact
@@ -97,7 +97,7 @@ class WorkspaceUpdate(BaseModel):
 
     name: str | None = None
     description: str | None = None
-    settings: BoundedDict | None = None
+    settings: dict[str, Any] | None = None
     is_default: bool | None = None
     # Days the audio of this workspace's caller calls is kept (the retention job
     # deletes it after). Omit to leave it unchanged.
@@ -347,6 +347,11 @@ async def update_workspace(
 
     if not workspace:
         raise HTTPException(status_code=404, detail="Workspace not found")
+
+    # A changed settings object is held to the cap; one sent back as stored is not.
+    enforce_caps_on_update(
+        {"settings": workspace_data.settings}, workspace, {"settings": BoundedDict}
+    )
 
     # Update fields
     update_data = workspace_data.model_dump(exclude_unset=True)

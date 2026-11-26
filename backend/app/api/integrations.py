@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import AuditAction, record_audit
 from app.core.auth import CurrentUser, user_id_to_uuid
-from app.core.limits import BoundedDict
+from app.core.limits import BoundedDict, enforce_merge_cap_on_update
 from app.db.session import get_db
 from app.models.user_integration import UserIntegration
 from app.models.workspace import Workspace
@@ -49,10 +49,10 @@ class ConnectIntegrationRequest(BaseModel):
 class UpdateIntegrationRequest(BaseModel):
     """Request to update integration credentials."""
 
-    credentials: BoundedDict | None = Field(
+    credentials: dict[str, Any] | None = Field(
         None, description="Updated credentials (partial update supported)"
     )
-    metadata: BoundedDict | None = Field(None, description="Updated metadata")
+    metadata: dict[str, Any] | None = Field(None, description="Updated metadata")
     is_active: bool | None = Field(None, description="Enable/disable integration")
 
 
@@ -351,6 +351,11 @@ async def update_integration(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Integration '{integration_id}' not connected",
         )
+
+    # Only what the request changes is held to the cap, and the merged value may
+    # not grow past it: a row stored before the cap keeps saving.
+    enforce_merge_cap_on_update("credentials", request.credentials, integration.credentials)
+    enforce_merge_cap_on_update("metadata", request.metadata, integration.integration_metadata)
 
     # Update fields
     if request.credentials is not None:

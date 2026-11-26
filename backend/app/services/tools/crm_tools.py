@@ -7,7 +7,7 @@ from typing import Any
 import structlog
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import selectinload, undefer
 
 from app.core.cache import cache_invalidate
 from app.models.appointment import Appointment
@@ -597,7 +597,12 @@ class CRMTools:
         """
         try:
             # Verify appointment belongs to user's workspace/contact
-            base_stmt = select(Appointment).join(Contact).where(Appointment.id == appointment_id)
+            base_stmt = (
+                select(Appointment)
+                .options(undefer(Appointment.notes))  # deferred, and read below
+                .join(Contact)
+                .where(Appointment.id == appointment_id)
+            )
 
             if self.workspace_id:
                 stmt = base_stmt.where(Contact.workspace_id == self.workspace_id)
