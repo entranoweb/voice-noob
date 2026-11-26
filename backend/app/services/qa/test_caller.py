@@ -12,6 +12,7 @@ import anthropic
 import structlog
 
 from app.core.config import settings
+from app.core.safe_errors import public_error
 from app.models.agent import Agent
 from app.models.test_scenario import TestScenario
 from app.services.qa.resilience import (
@@ -204,10 +205,10 @@ class AITestCaller:
                 completion_reason="error",
                 conversation=self.conversation,
                 behaviors_observed=[],
-                issues_found=[str(e)],
+                issues_found=[public_error(e, "The scenario failed to run")],
                 duration_ms=duration_ms,
                 turn_count=self.turn_count,
-                notes=f"Error during execution: {e}",
+                notes=f"Error during execution ({type(e).__name__})",
             )
 
     def _get_initial_message(self) -> str | None:

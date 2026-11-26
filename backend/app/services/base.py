@@ -7,6 +7,7 @@ import httpx
 import structlog
 
 from app.core.log_redaction import log_exception, scrub_text
+from app.core.safe_errors import public_error
 
 logger = structlog.get_logger()
 
@@ -190,7 +191,7 @@ class BaseExternalService:
                 if attempt < self.max_retries - 1:
                     await asyncio.sleep(self.backoff_factor**attempt)
                     continue
-                raise ExternalServiceError(f"Unexpected error: {e!s}") from e
+                raise ExternalServiceError(public_error(e, "Unexpected error")) from e
 
         # Should never reach here due to raises above, but just in case
         raise ExternalServiceError("Max retries exceeded") from last_exception

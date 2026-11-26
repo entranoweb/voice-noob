@@ -8,9 +8,70 @@ import httpx
 import structlog
 
 from app.core.log_redaction import log_exception
+from app.core.safe_errors import (
+    INVALID_NUMBER,
+    is_unavailable_status,
+    tool_failure,
+    upstream_failure,
+)
 from app.services.tools.path_ids import encode_path_id, invalid_id_result
 
 logger = structlog.get_logger()
+
+# Provider error codes, matched on the code only (the provider's text is never passed on).
+# Bad destination number:
+#   Twilio 21211 invalid 'To' number, 21612 cannot route to this number, 21614 'To' is not a
+#   valid mobile number (https://www.twilio.com/docs/api/errors, one page per code).
+#   Telnyx 40310 invalid 'to', 40012 invalid messaging destination number
+#   (https://developers.telnyx.com/docs/messaging/messages/error-codes).
+# Temporary, so "unavailable" and not a number problem:
+#   Telnyx 40008 undeliverable, the carrier did not accept it (documented as temporary).
+# An unknown code falls through to the generic refusal.
+_TWILIO_BAD_NUMBER_CODES = frozenset({"21211", "21612", "21614"})
+_TELNYX_BAD_NUMBER_CODES = frozenset({"40310", "40012"})
+_TELNYX_TEMPORARY_CODES = frozenset({"40008"})
+_BAD_NUMBER_MESSAGE = "That phone number could not be reached. Please check the number."
+
+
+def _provider_codes(response: httpx.Response) -> set[str]:
+    """Error codes from a provider reply, without keeping any of its text."""
+    try:
+        body = response.json()
+    except ValueError:
+        return set()
+    if not isinstance(body, dict):
+        return set()
+    entries = [body, *(e for e in body.get("errors", []) if isinstance(e, dict))]
+    return {str(e["code"]) for e in entries if e.get("code") is not None}
+
+
+def _send_rejection(
+    provider: str,
+    response: httpx.Response,
+    bad_number_codes: frozenset[str],
+    temporary_codes: frozenset[str] = frozenset(),
+) -> dict[str, Any]:
+    """Speakable reason for a refused send: bad number, service down, or refused.
+
+    The provider's message can quote the number back, so it is not passed on.
+    """
+    codes = _provider_codes(response)
+    if codes & temporary_codes:
+        return upstream_failure("text messaging service", 503)
+    if not is_unavailable_status(response.status_code) and codes & bad_number_codes:
+        logger.warning(
+            "sms_send_rejected",
+            provider=provider,
+            status_code=response.status_code,
+            reason="number",
+        )
+        return {"success": False, "error": _BAD_NUMBER_MESSAGE, "error_code": INVALID_NUMBER}
+    return upstream_failure(
+        "text messaging service",
+        response.status_code,
+        message="The text message could not be sent.",
+    )
+
 
 ToolHandler = Callable[..., Awaitable[dict[str, Any]]]
 
@@ -120,11 +181,7 @@ class TwilioSMSTools:
             )
 
             if response.status_code != HTTPStatus.CREATED:
-                error_data = response.json()
-                return {
-                    "success": False,
-                    "error": error_data.get("message", response.text),
-                }
+                return _send_rejection("twilio", response, _TWILIO_BAD_NUMBER_CODES)
 
             data = response.json()
             return {
@@ -138,7 +195,7 @@ class TwilioSMSTools:
 
         except Exception as e:
             log_exception(logger, "twilio_send_sms_error", e)
-            return {"success": False, "error": str(e)}
+            return tool_failure(e, "text messaging service")
 
     async def get_message_status(self, message_sid: str) -> dict[str, Any]:
         """Get the status of a sent message."""
@@ -149,10 +206,9 @@ class TwilioSMSTools:
             response = await self.client.get(f"/Messages/{safe_message_sid}.json")
 
             if response.status_code != HTTPStatus.OK:
-                return {
-                    "success": False,
-                    "error": f"Message not found: {response.text}",
-                }
+                return upstream_failure(
+                    "text messaging service", response.status_code, not_found="Message not found"
+                )
 
             data = response.json()
             return {
@@ -168,7 +224,7 @@ class TwilioSMSTools:
 
         except Exception as e:
             log_exception(logger, "twilio_get_message_status_error", e)
-            return {"success": False, "error": str(e)}
+            return tool_failure(e, "text messaging service")
 
     async def execute_tool(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         """Execute a Twilio SMS tool by name."""
@@ -293,13 +349,9 @@ class TelnyxSMSTools:
             response = await self.client.post("/messages", json=payload)
 
             if response.status_code != HTTPStatus.OK:
-                error_data = response.json()
-                errors = error_data.get("errors", [])
-                error_msg = errors[0].get("detail") if errors else response.text
-                return {
-                    "success": False,
-                    "error": error_msg,
-                }
+                return _send_rejection(
+                    "telnyx", response, _TELNYX_BAD_NUMBER_CODES, _TELNYX_TEMPORARY_CODES
+                )
 
             data = response.json()["data"]
             return {
@@ -313,7 +365,7 @@ class TelnyxSMSTools:
 
         except Exception as e:
             log_exception(logger, "telnyx_send_sms_error", e)
-            return {"success": False, "error": str(e)}
+            return tool_failure(e, "text messaging service")
 
     async def get_message_status(self, message_id: str) -> dict[str, Any]:
         """Get the status of a sent message."""
@@ -324,10 +376,9 @@ class TelnyxSMSTools:
             response = await self.client.get(f"/messages/{safe_message_id}")
 
             if response.status_code != HTTPStatus.OK:
-                return {
-                    "success": False,
-                    "error": f"Message not found: {response.text}",
-                }
+                return upstream_failure(
+                    "text messaging service", response.status_code, not_found="Message not found"
+                )
 
             data = response.json()["data"]
             to_info = data.get("to", [{}])[0] if data.get("to") else {}
@@ -344,7 +395,7 @@ class TelnyxSMSTools:
 
         except Exception as e:
             log_exception(logger, "telnyx_get_message_status_error", e)
-            return {"success": False, "error": str(e)}
+            return tool_failure(e, "text messaging service")
 
     async def execute_tool(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         """Execute a Telnyx SMS tool by name."""
