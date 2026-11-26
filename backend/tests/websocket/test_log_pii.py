@@ -214,3 +214,144 @@ async def test_telephony_exception_logs_no_traceback_message() -> None:
 
     assert released is False
     _assert_clean(records)
+
+
+# --- review round 3: database errors, middleware, cache, realtime errors -----
+
+_DB_SECRET = "Pat Example private note"
+
+
+def _database_error() -> Exception:
+    from sqlalchemy.exc import DBAPIError
+
+    return DBAPIError(
+        "INSERT INTO call_records (transcript) VALUES ($1)",
+        (_DB_SECRET,),
+        Exception("connection was closed"),
+    )
+
+
+@pytest.mark.asyncio
+async def test_persist_step_database_error_logs_no_bound_parameters() -> None:
+    from unittest.mock import AsyncMock
+
+    from app.api import telephony_ws
+
+    async def write() -> None:
+        raise _database_error()
+
+    db = AsyncMock()
+    with capture_logs() as records:
+        await telephony_ws._persist_step("transcript", write, db, structlog.get_logger())
+
+    text = _everything(records)
+    assert records, "the failure logged nothing, so this test proves nothing"
+    assert _DB_SECRET not in text
+    assert "INSERT INTO" not in text
+    assert any(r.get("error_type") == "DBAPIError" for r in records)
+
+
+@pytest.mark.asyncio
+async def test_request_failed_log_has_no_raw_message_or_traceback() -> None:
+    from fastapi import FastAPI
+
+    from app.middleware import request_tracing
+    from app.middleware.request_tracing import RequestTracingMiddleware
+
+    request_tracing.logger = structlog.get_logger()
+    failing = FastAPI()
+    failing.add_middleware(RequestTracingMiddleware)
+
+    @failing.get("/boom")
+    async def boom() -> None:
+        raise RuntimeError(f"lookup failed for {SECRET_EMAIL} {SECRET_NUMBER}")
+
+    with capture_logs() as records:
+        async with AsyncClient(
+            transport=ASGITransport(app=failing, raise_app_exceptions=False),
+            base_url="https://voice.example.com",
+        ) as client:
+            await client.get("/boom")
+
+    failed = [r for r in records if r["event"] == "request_failed"]
+    assert failed, "request_failed was not logged"
+    text = _everything(failed)
+    assert SECRET_EMAIL not in text
+    assert SECRET_NUMBER not in text
+    assert not any(r.get("exc_info") for r in failed)
+
+
+@pytest.mark.asyncio
+async def test_cache_error_logs_no_key_number_or_traceback(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    from app.core import cache
+
+    class Broken:
+        async def get(self, _key: str) -> None:
+            raise ConnectionError(f"redis down for {SECRET_NUMBER}")
+
+    async def get_redis() -> Broken:
+        return Broken()
+
+    monkeypatch.setattr(cache.redis_module, "get_redis", get_redis)
+    caplog.set_level(logging.DEBUG, logger="app")
+
+    assert await cache.cache_get(f"contact:{SECRET_NUMBER}") is None
+
+    records = [r for r in caplog.records if r.name.startswith("app")]
+    text = " ".join(r.getMessage() for r in records)
+    assert "redis down" in text, "the failure logged nothing, so this test proves nothing"
+    assert SECRET_NUMBER not in text
+    assert SECRET_NUMBER.lstrip("+") not in text
+    assert all(r.exc_info is None for r in records)
+
+
+@pytest.mark.asyncio
+async def test_realtime_error_event_logs_scrubbed_message(
+    test_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    session = GPTRealtimeSession(test_session, 1, {})
+    event = SimpleNamespace(
+        type="error",
+        error=SimpleNamespace(
+            type="invalid_request_error",
+            code="bad_value",
+            message=f"cannot read {SECRET_EMAIL} or {SECRET_NUMBER}",
+        ),
+    )
+
+    class Connection:
+        def __aiter__(self) -> Any:
+            return self._iter()
+
+        async def _iter(self) -> Any:
+            yield event
+
+    session.connection = Connection()
+    with capture_logs() as records:
+        await session.process_realtime_events()
+
+    errors = [r for r in records if r["event"] == "realtime_api_error"]
+    assert errors, "the error event was not logged"
+    text = _everything(errors)
+    assert SECRET_EMAIL not in text
+    assert SECRET_NUMBER not in text
+    assert errors[0]["error_code"] == "bad_value"
+
+
+def test_redaction_processor_runs_before_the_renderer_in_both_pipelines() -> None:
+    """Neither the application's pipeline nor the audit logger may bypass it."""
+    from app.core import audit
+    from app.core.log_redaction import redact_event_dict
+
+    for processors in (structlog.get_config()["processors"], audit._audit_logger._processors):
+        names = [getattr(p, "__name__", type(p).__name__) for p in processors]
+        assert redact_event_dict in processors
+        assert names.index("redact_event_dict") < names.index("JSONRenderer")
+    app_names = [
+        getattr(p, "__name__", type(p).__name__) for p in structlog.get_config()["processors"]
+    ]
+    assert app_names.index("ExceptionRenderer") < app_names.index("redact_event_dict")

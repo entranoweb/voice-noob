@@ -489,7 +489,13 @@ class GPTRealtimeSession:
 
                     # Handle errors
                     elif event_type == "error":
-                        self.logger.error("realtime_api_error", error=event.error)
+                        err = event.error
+                        self.logger.error(
+                            "realtime_api_error",
+                            error_type=getattr(err, "type", None),
+                            error_code=getattr(err, "code", None),
+                            error=scrub_text(getattr(err, "message", "")),
+                        )
 
                 except Exception as e:
                     log_exception(self.logger, "event_processing_error", e)

@@ -676,7 +676,7 @@ async def _persist_call_artifacts(
     try:
         await db.rollback()
     except Exception:
-        log.warning("pre_persist_rollback_failed", exc_info=True)
+        log_exception(log, "pre_persist_rollback_failed")
 
     if store_transcript:
         transcript = realtime_session.get_transcript()

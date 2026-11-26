@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 import structlog
 
 from app.core.config import settings
+from app.core.log_redaction import log_exception
 from app.db.redis import get_redis
 
 if TYPE_CHECKING:
@@ -92,7 +93,7 @@ async def register_call(
         return True
 
     except Exception:
-        logger.exception("call_register_failed", call_id=call_id)
+        log_exception(logger, "call_register_failed", call_id=call_id)
         return False
 
 
@@ -123,7 +124,7 @@ async def unregister_call(call_id: str) -> bool:
         return True
 
     except Exception:
-        logger.exception("call_unregister_failed", call_id=call_id)
+        log_exception(logger, "call_unregister_failed", call_id=call_id)
         return False
 
 
@@ -161,7 +162,7 @@ async def get_active_calls() -> list[CallInfo]:
         return calls
 
     except Exception:
-        logger.exception("get_active_calls_failed")
+        log_exception(logger, "get_active_calls_failed")
         return []
 
 
@@ -185,7 +186,7 @@ async def get_call_count() -> int:
         return count
 
     except Exception:
-        logger.exception("get_call_count_failed")
+        log_exception(logger, "get_call_count_failed")
         return 0
 
 
@@ -213,7 +214,7 @@ async def set_shutting_down(shutting_down: bool = True) -> None:
             logger.info("shutdown_flag_cleared")
 
     except Exception:
-        logger.exception("shutdown_flag_update_failed")
+        log_exception(logger, "shutdown_flag_update_failed")
 
 
 def is_shutting_down() -> bool:

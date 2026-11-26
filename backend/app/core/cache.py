@@ -7,6 +7,8 @@ from collections.abc import Awaitable, Callable
 from functools import wraps
 from typing import Any, ParamSpec, TypeVar
 
+from app.core.log_redaction import describe_exception, scrub_text
+
 # Import the module rather than the function: a bound reference is fixed at
 # import time, so patching app.db.redis.get_redis (as the test fixtures do)
 # would never reach this module and the cache would hit a real Redis.
@@ -63,8 +65,10 @@ async def cache_get(key: str) -> Any | None:
         logger.debug("Cache miss: %s", key)
         return None
 
-    except Exception:
-        logger.exception("Error getting from cache key '%s'", key)
+    except Exception as e:
+        logger.error(  # noqa: TRY400 - a traceback would carry the message
+            "Error getting from cache key '%s': %s", scrub_text(key), describe_exception(e)
+        )
         return None
 
 
@@ -86,8 +90,8 @@ async def cache_set(key: str, value: Any, ttl: int = 300) -> bool:
         logger.debug("Cache set: %s (TTL: %ss)", key, ttl)
         return True
 
-    except Exception:
-        logger.exception("Error setting cache key '%s'", key)
+    except Exception as e:
+        logger.error("Error setting cache key '%s': %s", scrub_text(key), describe_exception(e))  # noqa: TRY400
         return False
 
 
@@ -106,8 +110,8 @@ async def cache_delete(key: str) -> bool:
         logger.debug("Cache deleted: %s", key)
         return True
 
-    except Exception:
-        logger.exception("Error deleting cache key '%s'", key)
+    except Exception as e:
+        logger.error("Error deleting cache key '%s': %s", scrub_text(key), describe_exception(e))  # noqa: TRY400
         return False
 
 
@@ -135,8 +139,10 @@ async def cache_invalidate(pattern: str) -> int:
 
         return 0
 
-    except Exception:
-        logger.exception("Error invalidating cache pattern '%s'", pattern)
+    except Exception as e:
+        logger.error(  # noqa: TRY400 - the message can echo the key
+            "Error invalidating cache pattern '%s': %s", scrub_text(pattern), describe_exception(e)
+        )
         return 0
 
 
@@ -209,6 +215,6 @@ async def cache_stats() -> dict[str, Any]:
             ),
         }
 
-    except Exception:
-        logger.exception("Error getting cache stats")
+    except Exception as e:
+        logger.error("Error getting cache stats: %s", describe_exception(e))  # noqa: TRY400
         return {}

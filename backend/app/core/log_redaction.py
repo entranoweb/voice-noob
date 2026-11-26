@@ -17,6 +17,17 @@ from typing import Any
 
 _VISIBLE_TAIL = 2
 _PHONE_IN_TEXT = re.compile(r"\+?\d[\d\s().\-]{5,}\d")
+# Digit runs that are not phone numbers and must survive masking: UUIDs, ISO
+# dates and times, and IPv4 addresses.
+_KEEP_IN_TEXT = re.compile(
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+    r"|\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?"
+    r"|\d{1,3}(?:\.\d{1,3}){3}(?![\d.])"
+)
+_TEXT_OR_KEEP = re.compile(f"(?P<keep>{_KEEP_IN_TEXT.pattern})|(?P<phone>{_PHONE_IN_TEXT.pattern})")
+# SQLAlchemy and DBAPI messages append the statement and its bound parameters.
+_SQL_TAIL = re.compile(r"\s*\[(?:SQL|parameters):.*", re.DOTALL)
+_DB_MODULES = ("sqlalchemy", "asyncpg", "psycopg", "aiosqlite", "sqlite3")
 _EMAIL_IN_TEXT = re.compile(r"[\w.+\-]+@([\w\-]+(?:\.[\w\-]+)+)")
 
 
@@ -87,9 +98,45 @@ def scrub_text(text: object) -> str:
     For strings that cannot be dropped (an upstream error body, an exception
     message) but may echo what was sent. This is a safety net, not a licence
     to log caller text: transcripts and tool values should not reach it.
+    Everything from ``[SQL:`` or ``[parameters:`` on is dropped, since that is
+    where a database error carries the bound values. UUIDs, ISO timestamps and
+    IPv4 addresses are left alone.
     """
-    out = _EMAIL_IN_TEXT.sub(lambda m: "***@" + m.group(1), str(text))
-    return _PHONE_IN_TEXT.sub(lambda m: redact_phone(m.group(0)) or "", out)
+    out = _SQL_TAIL.sub(" [sql removed]", str(text))
+    out = _EMAIL_IN_TEXT.sub(lambda m: "***@" + m.group(1), out)
+    return _TEXT_OR_KEEP.sub(lambda m: m.group("keep") or redact_phone(m.group("phone")) or "", out)
+
+
+def _is_database_error(exc: BaseException) -> bool:
+    """True for SQLAlchemy and DB driver errors, whose text carries bound values."""
+    return any((cls.__module__ or "").split(".")[0] in _DB_MODULES for cls in type(exc).__mro__)
+
+
+def describe_exception(exc: BaseException) -> str:
+    """``ExcType: message`` safe to log: masked, and type only for database errors."""
+    name = type(exc).__name__
+    if _is_database_error(exc):
+        return name
+    return f"{name}: {scrub_text(exc)}"
+
+
+def redact_event_dict(_logger: Any, _method: str, event_dict: Any) -> Any:
+    """structlog processor: scrub every string in the record.
+
+    Backstop for call sites that were missed. Put it after ``format_exc_info``
+    so the rendered ``exception`` text is covered, and before the renderer.
+    """
+    return {key: _scrub_value(val) for key, val in event_dict.items()}
+
+
+def _scrub_value(value: Any) -> Any:
+    if isinstance(value, str):
+        return scrub_text(value)
+    if isinstance(value, Mapping):
+        return {key: _scrub_value(val) for key, val in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_scrub_value(val) for val in value]
+    return value
 
 
 def log_exception(log: Any, event: str, exc: BaseException | None = None, **fields: Any) -> None:
@@ -100,7 +147,8 @@ def log_exception(log: Any, event: str, exc: BaseException | None = None, **fiel
     errors put request URLs, response bodies and the numbers and emails in
     them in that message, and a call site cannot redact text that a renderer
     adds later. So this logs at error level *without* ``exc_info``: the
-    exception type, the message through :func:`scrub_text`, and the file, line
+    exception type, the message through :func:`scrub_text` (omitted for database errors, whose
+    message carries the bound SQL parameters), and the file, line
     and function where it was raised, which is what the traceback was for.
 
     Call it from inside ``except``; ``exc`` defaults to the exception being
@@ -117,4 +165,5 @@ def log_exception(log: Any, event: str, exc: BaseException | None = None, **fiel
     if tb is not None:
         code = tb.tb_frame.f_code
         where = f"{code.co_filename.rsplit('/', 1)[-1]}:{tb.tb_lineno} in {code.co_name}"
-    log.error(event, error_type=type(exc).__name__, error=scrub_text(exc), where=where, **fields)
+    message = None if _is_database_error(exc) else scrub_text(exc)
+    log.error(event, error_type=type(exc).__name__, error=message, where=where, **fields)
