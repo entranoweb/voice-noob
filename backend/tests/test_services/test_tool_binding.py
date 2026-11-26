@@ -133,7 +133,10 @@ class TestBoundToolsExecute:
         record = await _bound(registry).execute("book_appointment", {})
 
         assert record["outcome"] == ToolOutcome.ERROR
-        assert "connection reset" in record["error"]
+        # The exception text is for the log: the result may be read to a caller.
+        assert "connection reset" not in record["error"]
+        assert record["result"]["error_code"] == "internal_error"
+        assert record["result"]["success"] is False
 
     async def test_missing_required_arguments_are_invalid_not_errors(self) -> None:
         """A malformed call is a model failure; running it anyway would turn it
