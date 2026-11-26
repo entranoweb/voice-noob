@@ -26,7 +26,7 @@ from app.core.auth import CurrentUser, user_id_to_uuid
 from app.core.config import settings
 from app.core.limiter import limiter
 from app.core.log_redaction import redact_phone
-from app.core.ownership import parse_uuid
+from app.core.ownership import agent_is_in_workspace, number_variants, parse_uuid
 from app.core.public_url import public_base_url, public_ws_base_url
 from app.core.stream_token import mint_stream_token
 from app.core.webhook_security import verify_telnyx_webhook, verify_twilio_webhook
@@ -37,7 +37,8 @@ from app.models.campaign import Campaign, CampaignContact, CampaignContactStatus
 
 # Aliased: `PhoneNumber` in this module already means the provider DTO from
 # services.telephony.base, which is a different thing from the table.
-from app.models.workspace import AgentWorkspace
+from app.models.phone_number import PhoneNumber as PhoneNumberRecord
+from app.models.phone_number import PhoneNumberStatus
 from app.services.qa import trigger_qa_evaluation
 from app.services.telephony.number_routing import resolve_number_route
 from app.services.telephony.telnyx_events import parse_telnyx_webhook
@@ -138,25 +139,6 @@ async def get_twilio_service(
     )
 
 
-async def twilio_auth_token_for_agent(agent: Agent | None, db: AsyncSession) -> str | None:
-    """The Twilio auth token of the workspace that owns ``agent``, if it has one.
-
-    This is what a Twilio webhook about that agent's number or call is verified
-    against. The agent is always found from the webhook's target (the number it
-    was sent to, the agent id in its path, the call record it reports on), never
-    from the account the request says it comes from.
-    """
-    if agent is None:
-        return None
-    workspace_id = await get_agent_workspace_id(agent.id, db)
-    if workspace_id is None:
-        return None
-    user_settings = await get_user_api_keys(
-        user_id_to_uuid(agent.user_id), db, workspace_id=workspace_id
-    )
-    return (user_settings.twilio_auth_token or None) if user_settings else None
-
-
 async def twilio_auth_token_for_workspace(
     agent: Agent | None, workspace_id: uuid.UUID | None, db: AsyncSession
 ) -> str | None:
@@ -181,22 +163,75 @@ async def telnyx_public_key_for_workspace(
     return (user_settings.telnyx_public_key or None) if user_settings else None
 
 
-async def telnyx_public_key_for_agent(agent: Agent | None, db: AsyncSession) -> str | None:
-    """The Telnyx public key of the workspace that owns ``agent``, if it has one.
+async def _call_record_for(
+    db: AsyncSession,
+    provider: str,
+    provider_call_id: str,
+    *,
+    record_id: str | None = None,
+    agent_id: str | None = None,
+) -> CallRecord | None:
+    """The call record a webhook reports on, found by provider and call id.
 
-    What a Telnyx webhook about that agent's number or call is verified against.
-    As with Twilio, the agent comes from the webhook's target, never from what
-    the request says about its sender.
+    The record is what the answering webhook wrote, so its workspace is the one
+    whose credentials sign everything else about the call. Newest first if the
+    carrier ever reuses an id. `record_id` (put in the answer URL by `/calls`)
+    is the fallback for an outbound call whose carrier-side id is not the one
+    stored; it has to belong to the same provider and the named agent.
     """
-    if agent is None:
+    if provider_call_id:
+        found = (
+            (
+                await db.execute(
+                    select(CallRecord)
+                    .where(
+                        CallRecord.provider == provider,
+                        CallRecord.provider_call_id == provider_call_id,
+                    )
+                    .order_by(CallRecord.created_at.desc())
+                    .limit(1)
+                )
+            )
+            .scalars()
+            .first()
+        )
+        if found is not None:
+            return found
+    if record_id and agent_id:
+        try:
+            record_uuid, agent_uuid = uuid.UUID(record_id), uuid.UUID(agent_id)
+        except ValueError:
+            return None
+        return (
+            (
+                await db.execute(
+                    select(CallRecord).where(
+                        CallRecord.id == record_uuid,
+                        CallRecord.provider == provider,
+                        CallRecord.agent_id == agent_uuid,
+                    )
+                )
+            )
+            .scalars()
+            .first()
+        )
+    return None
+
+
+async def twilio_auth_token_for_call(record: CallRecord | None, db: AsyncSession) -> str | None:
+    """The Twilio token of the workspace the call record says the call is in."""
+    if record is None:
         return None
-    workspace_id = await get_agent_workspace_id(agent.id, db)
-    if workspace_id is None:
+    owner = await _agent_by_id(record.agent_id, db)
+    return await twilio_auth_token_for_workspace(owner, record.workspace_id, db)
+
+
+async def telnyx_public_key_for_call(record: CallRecord | None, db: AsyncSession) -> str | None:
+    """The Telnyx public key of the workspace the call record says the call is in."""
+    if record is None:
         return None
-    user_settings = await get_user_api_keys(
-        user_id_to_uuid(agent.user_id), db, workspace_id=workspace_id
-    )
-    return (user_settings.telnyx_public_key or None) if user_settings else None
+    owner = await _agent_by_id(record.agent_id, db)
+    return await telnyx_public_key_for_workspace(owner, record.workspace_id, db)
 
 
 async def _agent_by_id(agent_id: str | uuid.UUID | None, db: AsyncSession) -> Agent | None:
@@ -239,23 +274,6 @@ async def get_agent_by_phone_number(phone_number: str, db: AsyncSession) -> Agen
     Anything else reaches nobody.
     """
     return (await resolve_number_route(phone_number, db)).agent
-
-
-async def get_agent_workspace_id(agent_id: uuid.UUID, db: AsyncSession) -> uuid.UUID | None:
-    """Get the workspace ID for an agent.
-
-    Args:
-        agent_id: Agent UUID
-        db: Database session
-
-    Returns:
-        Workspace UUID if agent belongs to a workspace, None otherwise
-    """
-    result = await db.execute(
-        select(AgentWorkspace.workspace_id).where(AgentWorkspace.agent_id == agent_id).limit(1)
-    )
-    row = result.scalar_one_or_none()
-    return row
 
 
 def build_telnyx_stream_url(
@@ -314,7 +332,9 @@ def build_twilio_stream_url(request: Request, agent_id: str | None) -> str:
     return f"{public_ws_base_url(request)}/ws/telephony/twilio/{agent_id}"
 
 
-def build_answer_webhook_url(request: Request, provider: str, agent_id: str) -> str:
+def build_answer_webhook_url(
+    request: Request, provider: str, agent_id: str, record_id: str | None = None
+) -> str:
     """The URL a carrier fetches when an outbound call is answered.
 
     The carrier calls this from outside, so it needs the public host exactly
@@ -322,9 +342,16 @@ def build_answer_webhook_url(request: Request, provider: str, agent_id: str) -> 
     address the app is bound to whenever a proxy sat in front, and an
     outbound call was answered into nothing.
     """
-    return (
+    url = (
         f"{public_base_url(request)}/webhooks/{provider}/answer?agent_id={quote(agent_id, safe='')}"
     )
+    if record_id:
+        # Names the call record `/calls` wrote, so the answer webhook can find
+        # it even where the carrier's own id for the call differs from the one
+        # stored. It is a lookup key only: the request is still verified with
+        # that record's workspace key, so naming another record gets nothing.
+        url += f"&record_id={quote(record_id, safe='')}"
+    return url
 
 
 async def update_campaign_contact_from_call(
@@ -765,17 +792,13 @@ async def initiate_call(
     result = await db.execute(
         select(Agent).where(
             Agent.id == parse_uuid(call_request.agent_id, "Agent"),
-            Agent.user_id == user_uuid,  # Ensure user owns the agent
+            Agent.user_id == current_user.id,  # Ensure user owns the agent (an int column)
         )
     )
     agent = result.scalar_one_or_none()
 
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
-
-    # Determine provider from agent's phone number configuration
-    # Default to Telnyx if not specified
-    provider = "telnyx"
 
     # Try Telnyx first
     telnyx_service = await get_telnyx_service(current_user.id, db, workspace_id=workspace_uuid)
@@ -787,13 +810,44 @@ async def initiate_call(
             detail="No telephony provider configured. Please add Twilio or Telnyx credentials in Settings.",
         )
 
+    provider = "telnyx" if telnyx_service else "twilio"
+
+    # The workspace comes from the query string, so it is proven before any
+    # carrier call (which costs money): the agent must be in it, and the number
+    # the call is placed from must be a live, active number registered in it on
+    # this carrier (that registration is what proved the account holds it).
+    if not await agent_is_in_workspace(db, agent.id, workspace_uuid):
+        raise HTTPException(status_code=403, detail="Agent is not in this workspace")
+    from_record = (
+        (
+            await db.execute(
+                select(PhoneNumberRecord).where(
+                    PhoneNumberRecord.phone_number.in_(number_variants(call_request.from_number)),
+                    PhoneNumberRecord.status == PhoneNumberStatus.ACTIVE.value,
+                    PhoneNumberRecord.workspace_id == workspace_uuid,
+                    PhoneNumberRecord.user_id == user_uuid,
+                    PhoneNumberRecord.provider == provider,
+                )
+            )
+        )
+        .scalars()
+        .first()
+    )
+    if from_record is None:
+        raise HTTPException(
+            status_code=422,
+            detail="from_number is not an active number registered in this workspace",
+        )
+
+    # The call record gets its id now, so the answer URL can name it.
+    record_id = uuid.uuid4()
+
     # The carrier fetches this from outside when the call is answered.
     webhook_url = build_answer_webhook_url(
-        request, "telnyx" if telnyx_service else "twilio", call_request.agent_id
+        request, provider, call_request.agent_id, record_id=str(record_id)
     )
 
     if telnyx_service:
-        provider = "telnyx"
         call_info = await telnyx_service.initiate_call(
             to_number=call_request.to_number,
             from_number=call_request.from_number,
@@ -801,7 +855,6 @@ async def initiate_call(
             agent_id=call_request.agent_id,
         )
     elif twilio_service:
-        provider = "twilio"
         call_info = await twilio_service.initiate_call(
             to_number=call_request.to_number,
             from_number=call_request.from_number,
@@ -815,6 +868,7 @@ async def initiate_call(
 
     # Create call record for outbound call (workspace_uuid already available from query param)
     call_record = CallRecord(
+        id=record_id,
         user_id=user_id_to_uuid(current_user.id),
         workspace_id=workspace_uuid,
         provider=provider,
@@ -911,7 +965,7 @@ async def twilio_voice_webhook(
     # The number decides whose Twilio account should have signed this: the
     # workspace that owns the agent the number routes to. Looked up before the
     # signature is checked (a read, nothing is written) and then verified.
-    route = await resolve_number_route(to_number, db)
+    route = await resolve_number_route(to_number, db, provider="twilio")
     agent = route.agent
     await verify_twilio_webhook(
         request, await twilio_auth_token_for_workspace(agent, route.workspace_id, db)
@@ -994,10 +1048,8 @@ async def twilio_status_callback(
     """
     # Find the call record first: the call it reports on decides whose Twilio
     # account should have signed this. Nothing is changed until that is verified.
-    result = await db.execute(select(CallRecord).where(CallRecord.provider_call_id == call_sid))
-    call_record = result.scalar_one_or_none()
-    owner = await _agent_by_id(call_record.agent_id, db) if call_record else None
-    await verify_twilio_webhook(request, await twilio_auth_token_for_agent(owner, db))
+    call_record = await _call_record_for(db, "twilio", call_sid)
+    await verify_twilio_webhook(request, await twilio_auth_token_for_call(call_record, db))
 
     log = logger.bind(
         webhook="twilio_status",
@@ -1062,15 +1114,17 @@ async def twilio_answer_webhook(
     Called when an outbound call is answered by the recipient.
     Returns TwiML to connect to our WebSocket.
     """
-    # The agent named in the path decides whose Twilio account should have
-    # signed this.
-    owner = await _agent_by_id(agent_id, db)
-    await verify_twilio_webhook(request, await twilio_auth_token_for_agent(owner, db))
-
     # Twilio posts the CallSid with the answer request; the stream's start
-    # frame announces the same one, and the token is bound to it.
+    # frame announces the same one, and the token is bound to it. The call
+    # record `/calls` wrote for that CallSid decides whose Twilio account
+    # should have signed this: its workspace, never an arbitrary pick among the
+    # agent's. A record for another agent is no record.
     form = await request.form()
     call_sid = str(form.get("CallSid", ""))
+    call_record = await _call_record_for(db, "twilio", call_sid)
+    if call_record is not None and str(call_record.agent_id) != agent_id:
+        call_record = None
+    await verify_twilio_webhook(request, await twilio_auth_token_for_call(call_record, db))
 
     log = logger.bind(webhook="twilio_answer", agent_id=agent_id, call_sid=call_sid)
     log.info("twilio_outbound_answered")
@@ -1108,7 +1162,7 @@ async def telnyx_voice_webhook(
     # number decides whose Telnyx account should have signed it. Nothing is
     # logged, stored or answered from it until the signature has been checked.
     event = await parse_telnyx_webhook(request)
-    route = await resolve_number_route(event.to_number, db)
+    route = await resolve_number_route(event.to_number, db, provider="telnyx")
     agent = route.agent
     await verify_telnyx_webhook(
         request, await telnyx_public_key_for_workspace(agent, route.workspace_id, db)
@@ -1173,6 +1227,7 @@ async def telnyx_voice_webhook(
 async def telnyx_answer_webhook(
     request: Request,
     agent_id: str = Query(default=""),
+    record_id: str = Query(default=""),
     db: AsyncSession = Depends(get_db),
 ) -> Response:
     """Handle Telnyx outbound call connection.
@@ -1180,12 +1235,17 @@ async def telnyx_answer_webhook(
     Called when an outbound call is answered by the recipient.
     Returns TeXML to connect to our WebSocket.
     """
-    # The agent named in the path decides whose Telnyx account should have
-    # signed this.
-    owner = await _agent_by_id(agent_id, db)
-    await verify_telnyx_webhook(request, await telnyx_public_key_for_agent(owner, db))
-
+    # The call record `/calls` wrote decides whose Telnyx account should have
+    # signed this: its workspace, never an arbitrary pick among the agent's. The
+    # carrier's id for the call is matched first; the record id carried in the
+    # answer URL covers an id that is not the one stored.
     event = await parse_telnyx_webhook(request)
+    call_record = await _call_record_for(
+        db, "telnyx", event.call_id, record_id=record_id, agent_id=agent_id
+    )
+    if call_record is not None and str(call_record.agent_id) != agent_id:
+        call_record = None
+    await verify_telnyx_webhook(request, await telnyx_public_key_for_call(call_record, db))
 
     log = logger.bind(
         webhook="telnyx_answer",
@@ -1195,8 +1255,10 @@ async def telnyx_answer_webhook(
     )
     log.info("telnyx_outbound_answered")
 
+    # The stream is admitted against the id the call record is stored under.
+    stream_call_id = call_record.provider_call_id if call_record else event.call_id
     stream_url = build_telnyx_stream_url(
-        request, agent_id, call_id=event.call_id, direction="outbound"
+        request, agent_id, call_id=stream_call_id, direction="outbound"
     )
 
     telnyx_service = TelnyxService("")
@@ -1218,12 +1280,8 @@ async def telnyx_status_callback(
     # Find the call record first: the call it reports on decides whose Telnyx
     # account should have signed this. Nothing is changed until that is verified.
     event = await parse_telnyx_webhook(request)
-    result = await db.execute(
-        select(CallRecord).where(CallRecord.provider_call_id == event.call_id)
-    )
-    call_record = result.scalar_one_or_none()
-    owner = await _agent_by_id(call_record.agent_id, db) if call_record else None
-    await verify_telnyx_webhook(request, await telnyx_public_key_for_agent(owner, db))
+    call_record = await _call_record_for(db, "telnyx", event.call_id)
+    await verify_telnyx_webhook(request, await telnyx_public_key_for_call(call_record, db))
 
     log = logger.bind(
         webhook="telnyx_status",

@@ -198,6 +198,7 @@ async def _dialable() -> tuple[list[tuple[Any, str, Any]], list[str]]:
     """
     from sqlalchemy import select
 
+    from app.core.log_redaction import redact_phone
     from app.db.session import AsyncSessionLocal
     from app.models.agent import Agent
     from app.models.phone_number import PhoneNumber, PhoneNumberStatus
@@ -232,7 +233,7 @@ async def _dialable() -> tuple[list[tuple[Any, str, Any]], list[str]]:
             if decision.agent is not None:
                 routed.append((decision.agent, number, decision.workspace_id))
             else:
-                notes.append(f"{number} routes nowhere: {decision.reason}")
+                notes.append(f"{redact_phone(number)} routes nowhere: {decision.reason}")
     return routed, notes
 
 
@@ -254,11 +255,15 @@ async def check_agent() -> list[Result]:
         )
         return results
 
+    from app.core.log_redaction import redact_phone
+
     reachable = 0
-    for agent, number, workspace_id in dialable:
+    for agent, raw_number, workspace_id in dialable:
+        # Shown masked: this output is pasted into tickets and chat.
+        number = redact_phone(raw_number) or ""
         source = f"workspace {workspace_id}"
         label = f"{agent.name} ({agent.id})"
-        if not E164.match(number or ""):
+        if not E164.match(raw_number or ""):
             results.append(
                 fail("agent", f"{label}: {number!r} is not E.164 (+15551234567), via {source}")
             )

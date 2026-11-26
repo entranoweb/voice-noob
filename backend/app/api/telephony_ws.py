@@ -564,11 +564,14 @@ async def call_workspace_id(
     """
     record = (
         await db.execute(
-            select(CallRecord.workspace_id).where(
+            select(CallRecord.workspace_id)
+            .where(
                 CallRecord.provider == provider,
                 CallRecord.provider_call_id == provider_call_id,
                 CallRecord.agent_id == agent_id,
             )
+            .order_by(CallRecord.created_at.desc())
+            .limit(1)
         )
     ).first()
     if record is None:

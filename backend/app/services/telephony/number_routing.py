@@ -9,7 +9,8 @@ and only when, all of these hold:
 2. Its status is `active`. Pending and suspended numbers route nowhere.
 3. It has a `workspace_id`. The workspace is what the carrier proof was made
    against and whose credentials sign the webhook.
-4. The agent is the user's own and has an `agent_workspaces` row for THAT
+4. If the caller names the carrier the webhook came from, the record is on it.
+5. The agent is the user's own and has an `agent_workspaces` row for THAT
    workspace.
 
 Precedence among agents that pass (4): the record's `assigned_agent_id` first,
@@ -73,9 +74,14 @@ async def _in_workspace(db: AsyncSession, agent_id: uuid.UUID, workspace_id: uui
 
 
 async def resolve_number_route(  # noqa: PLR0911 - one early exit per reason
-    phone_number: str, db: AsyncSession
+    phone_number: str, db: AsyncSession, *, provider: str | None = None
 ) -> RouteDecision:
-    """Apply the rule in the module docstring to one dialled number."""
+    """Apply the rule in the module docstring to one dialled number.
+
+    A webhook passes the carrier it came from: a number proven on one carrier
+    must not route a call announced by the other, whose key would then be
+    checked against a workspace that holds no account there.
+    """
     candidates = _candidates(phone_number)
     records = list(
         (
@@ -94,6 +100,8 @@ async def resolve_number_route(  # noqa: PLR0911 - one early exit per reason
     if len(records) > 1:
         return _refuse("number_held_by_several_records")
     record = records[0]
+    if provider is not None and record.provider != provider:
+        return _refuse("number_is_on_another_carrier")
     if record.status != PhoneNumberStatus.ACTIVE.value:
         return _refuse("number_not_active")
     if record.workspace_id is None:

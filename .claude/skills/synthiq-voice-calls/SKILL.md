@@ -73,7 +73,11 @@ Among agents that pass 4: `assigned_agent_id` first, then agents naming the
 number in `phone_number_id`, oldest first. Anything else routes nowhere and logs
 `inbound_number_routes_nowhere` with a reason, never the number. The webhook
 verifies the signature with the key of the number's workspace, not the agent's
-first workspace. An agent in no workspace, a number with no record (legacy
+first workspace; the call record it writes carries that workspace, and the
+answer and status webhooks and the media stream all read it from that record
+(by provider and call id), closing the stream with 4403 if it is missing. An
+outbound call's `/calls` request must name a workspace the agent is in and an
+active number registered there. An agent in no workspace, a number with no record (legacy
 rows), or a workspace deleted from under a number therefore silently stop
 routing; `scripts/report_unverified_numbers.py` lists who.
 

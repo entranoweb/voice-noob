@@ -257,6 +257,22 @@ class TestTheAnswerDocument:
     @pytest.mark.asyncio
     async def test_outbound_answer_does_the_same(self, twilio_env: dict[str, Any]) -> None:
         agent_id = str(twilio_env["agent"].id)
+        # `/calls` writes the record the answer is verified against.
+        async with twilio_env["session_maker"]() as session:
+            session.add(
+                CallRecord(
+                    user_id=user_id_to_uuid(twilio_env["agent"].user_id),
+                    workspace_id=twilio_env["workspace_id"],
+                    provider="twilio",
+                    provider_call_id=CALL_SID,
+                    agent_id=twilio_env["agent"].id,
+                    direction="outbound",
+                    status="initiated",
+                    from_number=AGENT_NUMBER,
+                    to_number=CALLER_NUMBER,
+                )
+            )
+            await session.commit()
 
         stream = await _answer_document(
             "/webhooks/twilio/answer",

@@ -945,3 +945,32 @@ class TestStreamUsesTheWorkspaceTheWebhookRecorded:
             await session.commit()
 
         await self._refused(inbound_call_env, query)
+
+    @pytest.mark.asyncio
+    async def test_the_newest_record_for_a_reused_call_id_decides(
+        self, inbound_call_env: dict[str, Any]
+    ) -> None:
+        """An old row under the same id (a reused id) must not pick the workspace."""
+        second = await self._second_workspace_holds_the_number(inbound_call_env)
+        env = inbound_call_env
+        async with env["session_maker"]() as session:
+            # Older, in the first workspace.
+            session.add(
+                CallRecord(
+                    user_id=user_id_to_uuid(env["agent"].user_id),
+                    workspace_id=env["workspace_id"],
+                    provider="telnyx",
+                    provider_call_id=CALL_SID,
+                    agent_id=env["agent"].id,
+                    direction="inbound",
+                    status="completed",
+                    from_number="+15550100002",
+                    to_number=AGENT_NUMBER,
+                )
+            )
+            await session.commit()
+        query = await _place_webhook(env)  # the newer row, in the second workspace
+
+        await _run_stream(env, query)
+
+        assert _FakeRealtimeSession.workspaces == [second]

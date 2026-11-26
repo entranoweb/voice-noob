@@ -367,6 +367,22 @@ class TestTelnyxIsVerifiedPerWorkspace:
         self, env: dict[str, Any]
     ) -> None:
         agent_id = env["owner"]["agent"].id
+        owner = env["owner"]
+        async with env["sessions"]() as session:
+            session.add(
+                CallRecord(
+                    user_id=user_id_to_uuid(owner["user"].id),
+                    workspace_id=owner["workspace"].id,
+                    provider="telnyx",
+                    provider_call_id="v3:outbound",
+                    agent_id=agent_id,
+                    direction=CallDirection.OUTBOUND.value,
+                    status=CallStatus.INITIATED.value,
+                    from_number=OWNER_NUMBER,
+                    to_number="+15551230000",
+                )
+            )
+            await session.commit()
         body = _inbound(OWNER_NUMBER, "v3:outbound")
         path = f"/webhooks/telnyx/answer?agent_id={agent_id}"
 
