@@ -189,6 +189,9 @@ class QAStatusResponse(BaseModel):
 # =============================================================================
 
 
+EVALUATION_MODEL_MAX_CHARS = 100  # a model id; the longest in use is under 40
+
+
 class WorkspaceQASettings(BaseModel):
     """Workspace-specific QA settings."""
 
@@ -205,7 +208,7 @@ class WorkspaceQASettingsUpdate(BaseModel):
     qa_enabled: bool | None = None
     auto_evaluate: bool | None = None
     pass_threshold: int | None = None
-    evaluation_model: str | None = None
+    evaluation_model: str | None = Field(default=None, max_length=EVALUATION_MODEL_MAX_CHARS)
     inherit_global: bool | None = None
 
 

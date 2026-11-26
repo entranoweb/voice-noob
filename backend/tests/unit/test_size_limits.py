@@ -248,12 +248,17 @@ class TestTranscriptCapSetting:
         monkeypatch.setenv("TRANSCRIPT_MAX_CHARS", "250000")
         assert Settings(_env_file=None).TRANSCRIPT_MAX_CHARS == 250_000
 
-    @pytest.mark.parametrize("value", [str(TRANSCRIPT_MAX_CHARS_CEILING + 1), "5000", "0", "-1"])
-    def test_a_value_outside_the_bounds_stops_start_up_with_a_clear_error(
+    @pytest.mark.parametrize("value", ["5000", "0", "-1"])
+    def test_a_value_below_the_floor_says_so(
         self, monkeypatch: pytest.MonkeyPatch, value: str
     ) -> None:
         monkeypatch.setenv("TRANSCRIPT_MAX_CHARS", value)
-        with pytest.raises(ValidationError, match="TRANSCRIPT_MAX_CHARS must be between"):
+        with pytest.raises(ValidationError, match="TRANSCRIPT_MAX_CHARS must be at least 10000"):
+            Settings(_env_file=None)
+
+    def test_a_value_above_the_ceiling_says_so(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("TRANSCRIPT_MAX_CHARS", str(TRANSCRIPT_MAX_CHARS_CEILING + 1))
+        with pytest.raises(ValidationError, match="TRANSCRIPT_MAX_CHARS must be at most 400000"):
             Settings(_env_file=None)
 
     def test_the_ceiling_still_fits_the_body_cap(self) -> None:
@@ -328,3 +333,21 @@ class TestTruncatedTurnsAreVoidForTheGrader:
             ]
         )
         assert [turn.text_truncated for turn in turns] == [True, False]
+
+
+class TestTheCapIsLoggedOncePerSession:
+    def test_many_cut_entries_log_one_warning(self) -> None:
+        from unittest.mock import MagicMock
+
+        session = _session()
+        session.logger = MagicMock()
+        session.add_user_transcript("u" * TRANSCRIPT_MAX_CHARS)
+        for _ in range(50):
+            session.add_assistant_transcript("a" * 100)
+
+        warnings = [
+            c
+            for c in session.logger.warning.call_args_list
+            if c.args[0] == "transcript_cap_reached"
+        ]
+        assert len(warnings) == 1

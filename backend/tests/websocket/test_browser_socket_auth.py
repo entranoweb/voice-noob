@@ -17,6 +17,7 @@ because that is the cost an attacker was able to impose.
 
 from __future__ import annotations
 
+import json
 import time
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -37,7 +38,12 @@ from app.core.embed_session import (
     EMBED_SESSION_REJECTED,
     mint_embed_session,
 )
-from app.core.limits import TRANSCRIPT_MAX_CHARS
+from app.core.limits import (
+    MARKER_RESERVE,
+    MAX_JSON_BODY_BYTES,
+    TRANSCRIPT_MAX_CHARS,
+    truncation_marker,
+)
 from app.db.session import get_db
 from app.main import app
 from app.models.agent import Agent
@@ -503,15 +509,74 @@ class TestEmbedTranscriptLimit:
             )
 
     @pytest.mark.asyncio
-    async def test_a_transcript_over_the_limit_is_refused_and_nothing_is_written(
+    async def test_a_transcript_over_the_limit_is_stored_cut_with_one_marker(
         self, env: dict[str, Any]
     ) -> None:
-        response = await self._post(env, "x" * (TRANSCRIPT_MAX_CHARS + 1))
+        over = TRANSCRIPT_MAX_CHARS + 1_000
 
-        assert response.status_code == 422
-        assert f"at most {TRANSCRIPT_MAX_CHARS} characters" in str(response.json()["detail"])
+        response = await self._post(env, "x" * over)
+
+        assert response.status_code == 200, response.text
         async with env["sessions"]() as session:
-            assert (await session.execute(select(CallRecord))).scalars().all() == []
+            record = (await session.execute(select(CallRecord))).scalar_one()
+        kept = TRANSCRIPT_MAX_CHARS - MARKER_RESERVE
+        assert record.transcript == "x" * kept + "\n" + truncation_marker(over - kept)
+
+    @pytest.mark.asyncio
+    async def test_an_emoji_heavy_transcript_at_the_limit_fits_the_body_through_the_client_encoder(
+        self, env: dict[str, Any]
+    ) -> None:
+        """200,000 four-byte characters, encoded the way a browser's JSON.stringify
+        does (UTF-8, unescaped): 800 KB, well inside 2 MiB, and stored whole."""
+        transcript = "\U0001f600" * TRANSCRIPT_MAX_CHARS
+        body = json.dumps(
+            {"session_id": "s", "transcript": transcript, "duration_seconds": 5},
+            ensure_ascii=False,
+        ).encode()
+        assert len(body) < MAX_JSON_BODY_BYTES
+
+        minted = mint_embed_session(agent_id=str(env["agent"].id), site="shop.example.com")
+        async with _client() as client:
+            response = await client.post(
+                f"/api/public/embed/{env['agent'].public_id}/transcript",
+                headers={
+                    "Origin": CUSTOMER,
+                    "X-Embed-Session": minted.token,
+                    "Content-Type": "application/json",
+                },
+                content=body,
+            )
+
+        assert response.status_code == 200, response.text
+        async with env["sessions"]() as session:
+            record = (await session.execute(select(CallRecord))).scalar_one()
+        assert record.transcript == transcript
+
+    @pytest.mark.asyncio
+    async def test_a_python_client_that_escapes_every_emoji_is_refused_413_not_stored(
+        self, env: dict[str, Any]
+    ) -> None:
+        """json.dumps() escapes an astral character as 12 bytes, so a transcript of
+        200,000 of them is 2.4 MB. The body cap refuses it; the browser clients
+        never produce that encoding."""
+        body = json.dumps(
+            {"session_id": "s", "transcript": "\U0001f600" * TRANSCRIPT_MAX_CHARS}
+        ).encode()
+        assert len(body) > MAX_JSON_BODY_BYTES
+
+        minted = mint_embed_session(agent_id=str(env["agent"].id), site="shop.example.com")
+        async with _client() as client:
+            response = await client.post(
+                f"/api/public/embed/{env['agent'].public_id}/transcript",
+                headers={
+                    "Origin": CUSTOMER,
+                    "X-Embed-Session": minted.token,
+                    "Content-Type": "application/json",
+                },
+                content=body,
+            )
+
+        assert response.status_code == 413
 
     @pytest.mark.asyncio
     async def test_a_transcript_at_the_limit_is_stored_whole(self, env: dict[str, Any]) -> None:

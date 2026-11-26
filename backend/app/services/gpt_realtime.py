@@ -202,6 +202,7 @@ class GPTRealtimeSession:
         # A long call is cut, never failed.
         self._transcript_chars: int = 0
         self._transcript_omitted: int = 0
+        self._transcript_cap_logged = False
         # Initial greeting (triggered after event loop starts to avoid race condition)
         self._pending_initial_greeting: str | None = None
         self._greeting_triggered: bool = False
@@ -672,7 +673,8 @@ class GPTRealtimeSession:
         if kept:
             self._transcript_entries.append(TranscriptEntry(role=role, content=kept))
             self._transcript_chars += overhead + len(kept)
-        if len(kept) < len(text):
+        if len(kept) < len(text) and not self._transcript_cap_logged:
+            self._transcript_cap_logged = True  # once a session, not once an entry
             self.logger.warning(
                 "transcript_cap_reached", cap=TRANSCRIPT_MAX_CHARS, omitted=self._transcript_omitted
             )

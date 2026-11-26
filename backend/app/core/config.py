@@ -91,11 +91,15 @@ class Settings(BaseSettings):
     @field_validator("TRANSCRIPT_MAX_CHARS")
     @classmethod
     def _transcript_cap_within_bounds(cls, value: int) -> int:
-        if not TRANSCRIPT_MAX_CHARS_FLOOR <= value <= TRANSCRIPT_MAX_CHARS_CEILING:
+        if value < TRANSCRIPT_MAX_CHARS_FLOOR:
             raise ValueError(
-                f"TRANSCRIPT_MAX_CHARS must be between {TRANSCRIPT_MAX_CHARS_FLOOR} and "
-                f"{TRANSCRIPT_MAX_CHARS_CEILING} (got {value}); a larger transcript would not "
-                "fit the 2 MiB request body cap"
+                f"TRANSCRIPT_MAX_CHARS must be at least {TRANSCRIPT_MAX_CHARS_FLOOR} (got {value}); "
+                "a smaller cap would cut ordinary calls (a 30-minute call is about 54,000)"
+            )
+        if value > TRANSCRIPT_MAX_CHARS_CEILING:
+            raise ValueError(
+                f"TRANSCRIPT_MAX_CHARS must be at most {TRANSCRIPT_MAX_CHARS_CEILING} (got {value}); "
+                "a larger transcript would not fit the 2 MiB request body cap"
             )
         return value
 

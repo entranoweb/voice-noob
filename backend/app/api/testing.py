@@ -660,6 +660,17 @@ async def duplicate_scenario(
     if not scenario:
         raise HTTPException(status_code=404, detail="Scenario not found")
 
+    # A copy is a create: a scenario saved before the caps existed is refused here,
+    # naming the field, rather than copied over the limit.
+    enforce_caps_on_update(
+        {
+            "name": f"{scenario.name} (Copy)",
+            **{field: getattr(scenario, field) for field in UPDATE_SCENARIO_CAPS},
+        },
+        object(),
+        {**UPDATE_SCENARIO_CAPS, "name": Annotated[str, StringConstraints(max_length=200)]},
+    )
+
     # Create a duplicate with a new name
     new_scenario = TestScenario(
         user_id=current_user.id,

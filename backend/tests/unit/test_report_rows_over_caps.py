@@ -49,3 +49,8 @@ async def test_it_lists_only_rows_over_a_cap_by_id_without_content(
     assert str(within.id) not in text
     assert secret not in text
     assert "agents.system_prompt (cap 50000): 1 over" in text
+
+
+def test_every_capped_free_text_field_is_in_the_report() -> None:
+    labels = {label for label, *_ in report.FIELDS}
+    assert {"phone_numbers.notes", "contacts.notes", "agents.system_prompt"} <= labels

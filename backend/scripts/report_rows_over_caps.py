@@ -28,6 +28,7 @@ from app.models.agent import Agent
 from app.models.appointment import Appointment
 from app.models.campaign import Campaign, CampaignContact
 from app.models.contact import Contact
+from app.models.phone_number import PhoneNumber
 from app.models.test_scenario import TestScenario
 from app.models.user_integration import UserIntegration
 from app.models.workspace import Workspace
@@ -50,6 +51,7 @@ FIELDS: list[tuple[str, Any, str, int, bool]] = [
         True,
     ),
     ("contacts.notes", Contact, "notes", limits.NOTES_MAX_CHARS, False),
+    ("phone_numbers.notes", PhoneNumber, "notes", limits.NOTES_MAX_CHARS, False),
     ("appointments.notes", Appointment, "notes", limits.NOTES_MAX_CHARS, False),
     ("campaigns.description", Campaign, "description", limits.DESCRIPTION_MAX_CHARS, False),
     (

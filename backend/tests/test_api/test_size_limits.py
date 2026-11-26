@@ -9,16 +9,19 @@ import uuid
 from typing import TYPE_CHECKING, Any
 
 import pytest
+from sqlalchemy import select
 
 from app.core.limits import (
     DESCRIPTION_MAX_CHARS,
     JSON_MAX_CHARS,
+    MARKER_RESERVE,
     MAX_JSON_BODY_BYTES,
     MAX_TURNS,
     NOTES_MAX_CHARS,
     PROMPT_MAX_CHARS,
     TRANSCRIPT_MAX_CHARS,
     TURN_TEXT_MAX_CHARS,
+    truncation_marker,
 )
 from app.models.agent import Agent
 from app.models.call_record import CallRecord
@@ -56,19 +59,24 @@ async def _agent(user: User, session: Any) -> Agent:
 
 
 class TestRealtimeTranscript:
-    async def test_a_transcript_over_the_limit_is_refused(
+    async def test_a_transcript_over_the_limit_is_stored_cut_with_one_marker(
         self, authenticated_test_client: tuple[AsyncClient, User], test_session: Any
     ) -> None:
         client, user = authenticated_test_client
         agent = await _agent(user, test_session)
+        over = TRANSCRIPT_MAX_CHARS + 5_000
 
         response = await client.post(
             f"/api/v1/realtime/transcript/{agent.id}",
-            json={"session_id": "s", "transcript": "x" * (TRANSCRIPT_MAX_CHARS + 1)},
+            json={"session_id": "s", "transcript": "x" * over},
         )
 
-        assert response.status_code == 422
-        assert f"at most {TRANSCRIPT_MAX_CHARS} characters" in _detail(response)
+        assert response.status_code == 200, response.text
+        await test_session.rollback()
+        record = (await test_session.execute(select(CallRecord))).scalar_one()
+        kept = TRANSCRIPT_MAX_CHARS - MARKER_RESERVE
+        assert record.transcript == "x" * kept + "\n" + truncation_marker(over - kept)
+        assert len(record.transcript) <= TRANSCRIPT_MAX_CHARS
 
     async def test_a_transcript_at_the_limit_is_stored_whole(
         self,
@@ -86,8 +94,6 @@ class TestRealtimeTranscript:
 
         assert response.status_code == 200, response.text
         await test_session.rollback()
-        from sqlalchemy import select
-
         record = (await test_session.execute(select(CallRecord))).scalar_one()
         assert record.transcript == transcript
 
@@ -409,6 +415,203 @@ class TestCancelAppendsToNotesNearTheCap:
         assert appointment.notes.startswith(notes)
         assert appointment.notes.endswith("Cancellation reason: " + "r" * 500)
         assert len(appointment.notes) > NOTES_MAX_CHARS
+
+
+class TestCrmToolsRefuseOverCapArguments:
+    """A live call can send any length. Over the column or cap, the tool says so
+    in words the agent can speak and writes nothing."""
+
+    async def _tools(self, user: Any, session: Any) -> Any:
+        from app.services.tools.crm_tools import CRMTools
+
+        return CRMTools(session, user.id)
+
+    async def test_booking_with_notes_over_the_cap_saves_nothing(
+        self, authenticated_test_client: tuple[AsyncClient, User], test_session: Any
+    ) -> None:
+        from app.models.appointment import Appointment
+
+        _, user = authenticated_test_client
+        test_session.add(Contact(user_id=user.id, first_name="Jo", phone_number="+15550004444"))
+        await test_session.commit()
+        tools = await self._tools(user, test_session)
+
+        result = await tools.book_appointment(
+            "+15550004444", "2030-01-01T10:00:00+00:00", notes="n" * (NOTES_MAX_CHARS + 1)
+        )
+
+        assert result["success"] is False
+        assert "too long" in result["error"]
+        assert "nothing was saved" in result["error"]
+        assert (await test_session.execute(select(Appointment))).scalars().all() == []
+
+    async def test_booking_with_a_service_type_over_its_column_saves_nothing(
+        self, authenticated_test_client: tuple[AsyncClient, User], test_session: Any
+    ) -> None:
+        _, user = authenticated_test_client
+        test_session.add(Contact(user_id=user.id, first_name="Jo", phone_number="+15550004445"))
+        await test_session.commit()
+        tools = await self._tools(user, test_session)
+
+        result = await tools.book_appointment(
+            "+15550004445", "2030-01-01T10:00:00+00:00", service_type="s" * 101
+        )
+
+        assert result["success"] is False
+        assert "service type" in result["error"]
+
+    @pytest.mark.parametrize(
+        ("field", "size"),
+        [("first_name", 101), ("last_name", 101), ("email", 256), ("company_name", 256)],
+    )
+    async def test_creating_a_contact_with_a_field_over_its_column_saves_nothing(
+        self,
+        authenticated_test_client: tuple[AsyncClient, User],
+        test_session: Any,
+        field: str,
+        size: int,
+    ) -> None:
+        _, user = authenticated_test_client
+        tools = await self._tools(user, test_session)
+        args: dict[str, Any] = {"first_name": "Jo", "phone_number": "+15550004446"}
+        args[field] = "a" * size
+
+        result = await tools.create_contact(**args)
+
+        assert result["success"] is False
+        assert "nothing was saved" in result["error"]
+        assert (await test_session.execute(select(Contact))).scalars().all() == []
+
+    async def test_a_value_exactly_at_its_column_is_saved(
+        self, authenticated_test_client: tuple[AsyncClient, User], test_session: Any
+    ) -> None:
+        _, user = authenticated_test_client
+        tools = await self._tools(user, test_session)
+
+        result = await tools.create_contact(
+            first_name="a" * 100, phone_number="+15550004447", email="e" * 255
+        )
+
+        assert result["success"] is True, result
+
+    async def _appointment(self, user: Any, session: Any, notes: str | None) -> Any:
+        from datetime import UTC, datetime
+
+        from app.models.appointment import Appointment
+
+        contact = Contact(user_id=user.id, first_name="Jo", phone_number="+15550005555")
+        session.add(contact)
+        await session.commit()
+        await session.refresh(contact)
+        appointment = Appointment(
+            contact_id=contact.id,
+            scheduled_at=datetime(2030, 1, 1, 10, 0, tzinfo=UTC),
+            status="scheduled",
+            notes=notes,
+        )
+        session.add(appointment)
+        await session.commit()
+        await session.refresh(appointment)
+        return appointment
+
+    async def test_a_cancel_reason_over_its_cap_changes_nothing(
+        self, authenticated_test_client: tuple[AsyncClient, User], test_session: Any
+    ) -> None:
+        _, user = authenticated_test_client
+        appointment = await self._appointment(user, test_session, "keep me")
+        tools = await self._tools(user, test_session)
+
+        result = await tools.cancel_appointment(appointment.id, reason="r" * 501)
+
+        assert result["success"] is False
+        assert "nothing was saved" in result["error"]
+        await test_session.refresh(appointment, ["status", "notes"])
+        assert appointment.status == "scheduled"
+        assert appointment.notes == "keep me"
+
+    async def test_cancelling_twice_reports_the_state_and_appends_nothing_more(
+        self, authenticated_test_client: tuple[AsyncClient, User], test_session: Any
+    ) -> None:
+        _, user = authenticated_test_client
+        appointment = await self._appointment(user, test_session, None)
+        tools = await self._tools(user, test_session)
+
+        first = await tools.cancel_appointment(appointment.id, reason="moved")
+        second = await tools.cancel_appointment(appointment.id, reason="moved again")
+
+        assert first["success"] is True
+        assert second["success"] is True
+        assert "already cancelled" in second["message"]
+        await test_session.refresh(appointment, ["notes"])
+        assert appointment.notes == "Cancellation reason: moved"
+
+
+class TestQaEvaluationModelIsBounded:
+    async def test_a_model_name_over_the_cap_is_refused(
+        self, authenticated_test_client: tuple[AsyncClient, User]
+    ) -> None:
+        client, _ = authenticated_test_client
+        response = await client.put(
+            f"/api/v1/qa/workspace/{uuid.uuid4()}/settings",
+            json={"evaluation_model": "m" * 101},
+        )
+        assert response.status_code == 422
+        assert "at most 100 characters" in _detail(response)
+
+
+class TestDuplicatingAnOverCapScenario:
+    async def test_a_scenario_over_a_cap_is_refused_naming_the_field(
+        self, authenticated_test_client: tuple[AsyncClient, User], test_session: Any
+    ) -> None:
+        from app.models.test_scenario import TestScenario
+
+        _, user = authenticated_test_client
+        client, _ = authenticated_test_client
+        scenario = TestScenario(
+            user_id=user.id,
+            name="Old",
+            description="d" * (DESCRIPTION_MAX_CHARS + 10),
+            category="greeting",
+            difficulty="medium",
+            caller_persona={},
+            conversation_flow=[],
+            expected_behaviors=[],
+            success_criteria={},
+        )
+        test_session.add(scenario)
+        await test_session.commit()
+        await test_session.refresh(scenario)
+
+        response = await client.post(f"/api/v1/testing/scenarios/{scenario.id}/duplicate")
+
+        assert response.status_code == 422, response.text
+        assert "description" in _detail(response)
+        count = (await test_session.execute(select(TestScenario))).scalars().all()
+        assert len(count) == 1
+
+    async def test_a_scenario_within_the_caps_is_copied(
+        self, authenticated_test_client: tuple[AsyncClient, User], test_session: Any
+    ) -> None:
+        from app.models.test_scenario import TestScenario
+
+        client, user = authenticated_test_client
+        scenario = TestScenario(
+            user_id=user.id,
+            name="Fine",
+            category="greeting",
+            difficulty="medium",
+            caller_persona={},
+            conversation_flow=[],
+            expected_behaviors=[],
+            success_criteria={},
+        )
+        test_session.add(scenario)
+        await test_session.commit()
+        await test_session.refresh(scenario)
+
+        response = await client.post(f"/api/v1/testing/scenarios/{scenario.id}/duplicate")
+
+        assert response.status_code == 200, response.text
 
 
 class TestCallerUpload:
