@@ -192,6 +192,22 @@ def stream_token_claim_store(monkeypatch: pytest.MonkeyPatch) -> Any:
 
 
 @pytest.fixture(autouse=True)
+def embed_key_limit_store(monkeypatch: pytest.MonkeyPatch) -> Any:
+    """Give every test its own in-memory counter for the per-agent embed key limit.
+
+    ``app.core.embed_key_limit`` fails closed without Redis, so tests that mint
+    a widget key would otherwise need a real Redis and would share counts.
+    """
+    store = fakeredis.FakeAsyncRedis(decode_responses=True)
+
+    async def _store() -> Any:
+        return store
+
+    monkeypatch.setattr("app.core.embed_key_limit._store", _store)
+    return store
+
+
+@pytest.fixture(autouse=True)
 def webhook_replay_store(monkeypatch: pytest.MonkeyPatch) -> Any:
     """Own in-memory replay memory per test, so no test needs a live Redis and
     no accepted webhook leaks into the next test."""
