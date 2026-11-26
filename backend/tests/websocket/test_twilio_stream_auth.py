@@ -37,6 +37,7 @@ from app.db.redis import get_redis
 from app.db.session import get_db
 from app.main import app
 from app.models.agent import Agent
+from app.models.call_record import CallRecord
 from app.models.phone_number import PhoneNumber, PhoneNumberStatus
 from app.models.user import User
 from app.models.workspace import AgentWorkspace, Workspace
@@ -184,7 +185,12 @@ async def twilio_env(test_engine: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
     app.dependency_overrides[get_db] = override_get_db
     app.dependency_overrides[get_redis] = override_get_redis
     try:
-        yield {"agent": agent, "registered": registered}
+        yield {
+            "agent": agent,
+            "registered": registered,
+            "session_maker": session_maker,
+            "workspace_id": workspace.id,
+        }
     finally:
         app.dependency_overrides.clear()
         await redis.aclose()
@@ -412,6 +418,22 @@ class TestATokenAdmitsOneStream:
     async def test_a_replayed_token_is_refused(self, twilio_env: dict[str, Any]) -> None:
         agent_id = str(twilio_env["agent"].id)
         token = mint_stream_token(provider="twilio", agent_id=agent_id, call_id=CALL_SID)
+        # The stream takes its workspace from the row the webhook would have written.
+        async with twilio_env["session_maker"]() as session:
+            session.add(
+                CallRecord(
+                    user_id=user_id_to_uuid(twilio_env["agent"].user_id),
+                    workspace_id=twilio_env["workspace_id"],
+                    provider="twilio",
+                    provider_call_id=CALL_SID,
+                    agent_id=twilio_env["agent"].id,
+                    direction="inbound",
+                    status="ringing",
+                    from_number="+15550100002",
+                    to_number=AGENT_NUMBER,
+                )
+            )
+            await session.commit()
 
         async with ASGIWebSocketClient(app, f"/ws/telephony/twilio/{agent_id}") as ws:
             await ws.send_json(_start(CALL_SID, token))

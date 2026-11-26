@@ -184,7 +184,7 @@ async def check_redis() -> list[Result]:
     return [ok("redis", f"reachable, version {version} (7.0+ needed)")]
 
 
-async def _dialable() -> tuple[list[tuple[Any, str, str]], list[str]]:
+async def _dialable() -> tuple[list[tuple[Any, str, Any]], list[str]]:
     """What routes, and what names a number but does not, decided as the webhook does.
 
     The webhook uses `resolve_number_route` (app.services.telephony.number_routing):
@@ -194,7 +194,7 @@ async def _dialable() -> tuple[list[tuple[Any, str, str]], list[str]]:
     drifted by knowing only one of the two columns; a second copy of the rule
     would drift the same way.
 
-    Returns (routed as (agent, number, source), notes on what does not route).
+    Returns (routed as (agent, number, workspace id the call is keyed to), notes on what does not route).
     """
     from sqlalchemy import select
 
@@ -203,7 +203,7 @@ async def _dialable() -> tuple[list[tuple[Any, str, str]], list[str]]:
     from app.models.phone_number import PhoneNumber, PhoneNumberStatus
     from app.services.telephony.number_routing import resolve_number_route
 
-    routed: list[tuple[Any, str, str]] = []
+    routed: list[tuple[Any, str, Any]] = []
     notes: list[str] = []
     async with AsyncSessionLocal() as session:
         numbers: dict[str, str] = {}
@@ -230,7 +230,7 @@ async def _dialable() -> tuple[list[tuple[Any, str, str]], list[str]]:
         for number in numbers.values():
             decision = await resolve_number_route(number, session)
             if decision.agent is not None:
-                routed.append((decision.agent, number, f"workspace {decision.workspace_id}"))
+                routed.append((decision.agent, number, decision.workspace_id))
             else:
                 notes.append(f"{number} routes nowhere: {decision.reason}")
     return routed, notes
@@ -255,7 +255,8 @@ async def check_agent() -> list[Result]:
         return results
 
     reachable = 0
-    for agent, number, source in dialable:
+    for agent, number, workspace_id in dialable:
+        source = f"workspace {workspace_id}"
         label = f"{agent.name} ({agent.id})"
         if not E164.match(number or ""):
             results.append(
@@ -283,20 +284,18 @@ async def check_agent_openai_key() -> list[Result]:
     exists not to give.
     """
     from app.api.settings import get_user_api_keys
-    from app.api.telephony import get_agent_workspace_id
     from app.core.auth import user_id_to_uuid
     from app.db.session import AsyncSessionLocal
 
     try:
-        dialable = [(a, n) for a, n, _ in await _dialable() if a.is_active]
+        dialable = [(a, w) for a, _n, w in await _dialable() if a.is_active]
         if not dialable:
             return []
 
         results: list[Result] = []
         async with AsyncSessionLocal() as session:
-            for agent, _number in dialable:
+            for agent, workspace_id in dialable:
                 label = f"{agent.name} ({agent.id})"
-                workspace_id = await get_agent_workspace_id(agent.id, session)
                 user_settings = await get_user_api_keys(
                     user_id_to_uuid(agent.user_id), session, workspace_id=workspace_id
                 )

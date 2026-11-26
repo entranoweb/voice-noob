@@ -540,13 +540,54 @@ def _response_was_cancelled(event: Any) -> bool:
     return getattr(response, "status", None) == "cancelled"
 
 
-async def get_agent_workspace_id(agent_id: uuid.UUID, db: AsyncSession) -> uuid.UUID | None:
-    """Get workspace ID for an agent."""
-    result = await db.execute(
-        select(AgentWorkspace.workspace_id).where(AgentWorkspace.agent_id == agent_id).limit(1)
-    )
-    row = result.scalar_one_or_none()
-    return row
+# Close code for a stream whose call has no usable workspace: the call record
+# the webhook wrote is missing, has no workspace, or names one the agent is no
+# longer in. 4403 sits beside the token refusal (4401) and the agent refusals
+# (4003/4004) and, like them, is outside what Telnyx retries on.
+STREAM_WORKSPACE_REJECTED = 4403
+
+
+async def call_workspace_id(
+    db: AsyncSession, *, provider: str, provider_call_id: str, agent_id: uuid.UUID, log: Any
+) -> uuid.UUID | None:
+    """The workspace the answering webhook put this call in, or None.
+
+    The webhook verified the carrier's signature with the key of the number's
+    workspace and wrote that workspace on the call record. The stream must use
+    the same one (its OpenAI key and its bills), so it is read from that row,
+    looked up by the call identifier the stream token is bound to. It is never
+    taken from the agent's own workspace links, which can hold several.
+
+    None (and a logged reason, never the number) when the row is missing, has no
+    workspace, or the agent is no longer linked to that workspace.
+    """
+    record = (
+        await db.execute(
+            select(CallRecord.workspace_id).where(
+                CallRecord.provider == provider,
+                CallRecord.provider_call_id == provider_call_id,
+                CallRecord.agent_id == agent_id,
+            )
+        )
+    ).first()
+    if record is None:
+        log.warning("stream_workspace_rejected", reason="no_call_record")
+        return None
+    workspace_id = record[0]
+    if workspace_id is None:
+        log.warning("stream_workspace_rejected", reason="call_record_has_no_workspace")
+        return None
+    linked = (
+        await db.execute(
+            select(AgentWorkspace.agent_id).where(
+                AgentWorkspace.agent_id == agent_id, AgentWorkspace.workspace_id == workspace_id
+            )
+        )
+    ).first()
+    if linked is None:
+        log.warning("stream_workspace_rejected", reason="agent_not_in_call_workspace")
+        return None
+    return uuid.UUID(str(workspace_id))
 
 
 async def save_turns_to_call_record(
@@ -811,8 +852,17 @@ async def twilio_media_stream(  # noqa: PLR0912, PLR0915
         # agent.user_id is now directly the integer user ID
         user_id_int = agent.user_id
 
-        # Get workspace for the agent
-        workspace_id = await get_agent_workspace_id(agent.id, db)
+        # The workspace the answering webhook put this call in (see call_workspace_id).
+        workspace_id = await call_workspace_id(
+            db,
+            provider="twilio",
+            provider_call_id=str(start_frame.get("start", {}).get("callSid", "")),
+            agent_id=agent.id,
+            log=log,
+        )
+        if workspace_id is None:
+            await websocket.close(code=STREAM_WORKSPACE_REJECTED, reason="Call workspace mismatch")
+            return
 
         # Build agent config
         agent_config = {
@@ -1261,8 +1311,17 @@ async def telnyx_media_stream(  # noqa: PLR0912, PLR0915
         # agent.user_id is now directly the integer user ID
         user_id_int = agent.user_id
 
-        # Get workspace for the agent
-        workspace_id = await get_agent_workspace_id(agent.id, db)
+        # The workspace the answering webhook put this call in (see call_workspace_id).
+        workspace_id = await call_workspace_id(
+            db,
+            provider="telnyx",
+            provider_call_id=webhook_call_id,
+            agent_id=agent.id,
+            log=log,
+        )
+        if workspace_id is None:
+            await websocket.close(code=STREAM_WORKSPACE_REJECTED, reason="Call workspace mismatch")
+            return
 
         # Build agent config
         agent_config = {
