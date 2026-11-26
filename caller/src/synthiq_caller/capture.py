@@ -32,6 +32,7 @@ from typing import Any
 import httpx
 
 from synthiq_caller.jsonio import to_text, write_json
+from synthiq_caller.regions import DEFAULT_REGION, UnknownRegion, api_for, region_setting
 from synthiq_caller.traces.elevenlabs import API, ElevenLabsTraceReader, parse_conversation
 
 CAPTURE_FILE = "capture.json"
@@ -238,13 +239,17 @@ def run(args: argparse.Namespace) -> int:
         return 2
     key = os.environ.get(args.key_env, "")
     out = Path(args.out)
-    if args.region:
-        from synthiq_caller.onboarding import REGIONS
-
-        if args.api not in (API, REGIONS[args.region]):
-            print(f"capture: --region {args.region} and --api name different addresses; give one")
+    region = region_setting(args.region)
+    if args.region or region != DEFAULT_REGION:
+        try:
+            address = api_for(region)
+        except UnknownRegion as error:
+            print(f"capture: {error}")
             return 2
-        args.api = REGIONS[args.region]
+        if args.api not in (API, address):
+            print(f"capture: --region {region} and --api name different addresses; give one")
+            return 2
+        args.api = address
     try:
         document = capture(
             args.conversation, out, key, api=args.api, force=args.force, wait_s=args.wait
@@ -276,8 +281,8 @@ def register(sub: Any) -> None:
     parser.add_argument(
         "--region",
         default="",
-        choices=["", "global", "us", "eu", "in", "sg"],
-        help="the account's region, instead of --api (`doctor --region` lists the addresses)",
+        help="the account's region, instead of --api (`doctor --region` lists the addresses); "
+        "default: $ELEVENLABS_REGION, else global",
     )
     parser.add_argument("--key-env", default=DEFAULT_KEY_ENV, help="variable holding the API key")
     parser.add_argument(

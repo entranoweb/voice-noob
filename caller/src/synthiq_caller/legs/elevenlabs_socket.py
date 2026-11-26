@@ -38,8 +38,9 @@ import websockets
 from synthiq_caller.leg import AgentAudio, AgentText, Closed, Heard, Interrupted, LegEvent
 from synthiq_caller.mulaw import lin2ulaw, ulaw2lin
 from synthiq_caller.recording import CallRecorder
+from synthiq_caller.regions import GLOBAL_API
 
-API = "https://api.elevenlabs.io/v1"
+API = GLOBAL_API
 
 
 def _rate(fmt: str) -> int:

@@ -47,6 +47,7 @@ from synthiq_caller.clipbank.build import (
 )
 from synthiq_caller.clipbank.segments import ClipPlan, label
 from synthiq_caller.jsonio import write_json
+from synthiq_caller.manifestcsv import read_rows
 
 CLIPS_DIR = "clips"
 SCENARIO_DIR = "scenarios"
@@ -177,7 +178,10 @@ def skeleton(
 
 def _write_manifest(path: Path, rows: list[dict[str, str]]) -> None:
     with path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=[*MANIFEST_COLUMNS, *EXTRA_COLUMNS])
+        # Each column once: ``MANIFEST_COLUMNS`` already holds the consent columns, and a
+        # second copy of one is a copy a person can fill in while the reader uses the other.
+        names = list(dict.fromkeys([*MANIFEST_COLUMNS, *EXTRA_COLUMNS]))
+        writer = csv.DictWriter(handle, fieldnames=names)
         writer.writeheader()
         for row in rows:
             writer.writerow(
@@ -320,8 +324,7 @@ def _cut_with_stt(
         shutil.copy(audio, work / f"{call}{audio.suffix}")
         shutil.copy(stt, work / f"{call}.stt.json")
         build(work, clips, pad_s=pad_s)
-    with (clips / "manifest.csv").open(encoding="utf-8", newline="") as handle:
-        return list(csv.DictReader(handle))
+    return read_rows(clips / "manifest.csv")[1]
 
 
 def _align_to_turns(

@@ -24,9 +24,10 @@ from typing import Any
 
 import httpx
 
+from synthiq_caller.regions import GLOBAL_API
 from synthiq_caller.traces.base import ToolCall, Trace
 
-API = "https://api.elevenlabs.io/v1"
+API = GLOBAL_API
 
 # Housekeeping the platform does for itself; not the agent's own tool use.
 _PLATFORM_TOOLS = {"transfer_to_agent", "progress_workflow"}
