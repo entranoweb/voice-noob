@@ -43,16 +43,14 @@ async def _verify_workspace_ownership(
         The workspace if ownership verified
 
     Raises:
-        HTTPException: If workspace not found or not owned by user
+        HTTPException: 404 if the workspace is missing or not owned by user
     """
     result = await db.execute(select(Workspace).where(Workspace.id == workspace_id))
     workspace = result.scalar_one_or_none()
 
-    if not workspace:
+    # Not yours and does not exist answer alike (404): a 403 would confirm the id is real.
+    if not workspace or workspace.user_id != user_id:
         raise HTTPException(status_code=404, detail="Workspace not found")
-
-    if workspace.user_id != user_id:
-        raise HTTPException(status_code=403, detail="Not authorized to access this workspace")
 
     return workspace
 

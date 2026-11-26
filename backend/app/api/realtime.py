@@ -300,7 +300,7 @@ async def realtime_websocket(  # noqa: PLR0911, PLR0915
             user_id=user_id_int,
             agent_config=agent_config,
             session_id=session_id,
-            workspace_id=uuid.UUID(workspace_id),
+            workspace_id=workspace_uuid,
         ) as realtime_session:
             # Send ready signal to client
             await websocket.send_json(
@@ -814,7 +814,7 @@ async def save_transcript(
     call_record = CallRecord(
         user_id=user_uuid,
         workspace_id=agent_workspace_id,
-        agent_id=uuid.UUID(agent_id),
+        agent_id=agent.id,
         provider="test",
         provider_call_id=request.session_id,
         direction="outbound",
