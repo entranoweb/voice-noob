@@ -28,6 +28,7 @@ from app.core.limiter import limiter
 from app.core.ownership import parse_uuid
 from app.core.public_url import public_base_url, public_ws_base_url
 from app.core.stream_token import mint_stream_token
+from app.core.webhook_replay import EMPTY_DOCUMENT, release_claim_on_error, webhook_is_duplicate
 from app.core.webhook_security import verify_telnyx_webhook, verify_twilio_webhook
 from app.db.session import get_db
 from app.models.agent import Agent
@@ -945,7 +946,9 @@ async def hangup_call(
 # =============================================================================
 
 
-@webhook_router.post("/twilio/voice", response_class=HTMLResponse)
+@webhook_router.post(
+    "/twilio/voice", dependencies=[Depends(release_claim_on_error)], response_class=HTMLResponse
+)
 async def twilio_voice_webhook(
     request: Request,
     db: AsyncSession = Depends(get_db),
@@ -964,6 +967,8 @@ async def twilio_voice_webhook(
     # signature is checked (a read, nothing is written) and then verified.
     agent = await get_agent_by_phone_number(to_number, db)
     await verify_twilio_webhook(request, await twilio_auth_token_for_agent(agent, db))
+    if webhook_is_duplicate(request):
+        return Response(content=EMPTY_DOCUMENT, media_type="application/xml")
 
     log = logger.bind(
         webhook="twilio_voice",
@@ -1025,7 +1030,7 @@ async def twilio_voice_webhook(
     return Response(content=twiml, media_type="application/xml")
 
 
-@webhook_router.post("/twilio/status")
+@webhook_router.post("/twilio/status", dependencies=[Depends(release_claim_on_error)])
 async def twilio_status_callback(
     request: Request,
     background_tasks: BackgroundTasks,
@@ -1046,6 +1051,8 @@ async def twilio_status_callback(
     call_record = result.scalar_one_or_none()
     owner = await _agent_by_id(call_record.agent_id, db) if call_record else None
     await verify_twilio_webhook(request, await twilio_auth_token_for_agent(owner, db))
+    if webhook_is_duplicate(request):
+        return {"status": "duplicate"}
 
     log = logger.bind(
         webhook="twilio_status",
@@ -1068,7 +1075,26 @@ async def twilio_status_callback(
             "canceled": CallStatus.CANCELED.value,
         }
 
-        call_record.status = status_map.get(call_status, call_status)
+        new_status = status_map.get(call_status, call_status)
+        terminal = {
+            CallStatus.COMPLETED.value,
+            CallStatus.BUSY.value,
+            CallStatus.FAILED.value,
+            CallStatus.NO_ANSWER.value,
+            CallStatus.CANCELED.value,
+        }
+        if call_record.status in terminal and new_status not in terminal:
+            # Bound to the call's state: a signed callback that arrives after the
+            # call ended (reordered, or a captured one replayed under a different
+            # key) cannot reopen it.
+            log.warning(
+                "twilio_status_after_terminal_ignored",
+                recorded=call_record.status,
+                received=call_status,
+            )
+            return {"status": "ignored"}
+
+        call_record.status = new_status
 
         # Update timestamps based on status
         if call_status == "in-progress" and not call_record.answered_at:
@@ -1099,7 +1125,9 @@ async def twilio_status_callback(
     return {"status": "received"}
 
 
-@webhook_router.post("/twilio/answer", response_class=HTMLResponse)
+@webhook_router.post(
+    "/twilio/answer", dependencies=[Depends(release_claim_on_error)], response_class=HTMLResponse
+)
 async def twilio_answer_webhook(
     request: Request,
     agent_id: str = Query(default=""),
@@ -1114,6 +1142,8 @@ async def twilio_answer_webhook(
     # signed this.
     owner = await _agent_by_id(agent_id, db)
     await verify_twilio_webhook(request, await twilio_auth_token_for_agent(owner, db))
+    if webhook_is_duplicate(request):
+        return Response(content=EMPTY_DOCUMENT, media_type="application/xml")
 
     # Twilio posts the CallSid with the answer request; the stream's start
     # frame announces the same one, and the token is bound to it.
@@ -1137,7 +1167,9 @@ async def twilio_answer_webhook(
 # =============================================================================
 
 
-@webhook_router.post("/telnyx/voice", response_class=HTMLResponse)
+@webhook_router.post(
+    "/telnyx/voice", dependencies=[Depends(release_claim_on_error)], response_class=HTMLResponse
+)
 async def telnyx_voice_webhook(
     request: Request,
     db: AsyncSession = Depends(get_db),
@@ -1158,6 +1190,8 @@ async def telnyx_voice_webhook(
     event = await parse_telnyx_webhook(request)
     agent = await get_agent_by_phone_number(event.to_number, db)
     await verify_telnyx_webhook(request, await telnyx_public_key_for_agent(agent, db))
+    if webhook_is_duplicate(request):
+        return Response(content=EMPTY_DOCUMENT, media_type="application/xml")
 
     log = logger.bind(
         webhook="telnyx_voice",
@@ -1214,7 +1248,9 @@ async def telnyx_voice_webhook(
     return Response(content=texml, media_type="application/xml")
 
 
-@webhook_router.post("/telnyx/answer", response_class=HTMLResponse)
+@webhook_router.post(
+    "/telnyx/answer", dependencies=[Depends(release_claim_on_error)], response_class=HTMLResponse
+)
 async def telnyx_answer_webhook(
     request: Request,
     agent_id: str = Query(default=""),
@@ -1229,6 +1265,8 @@ async def telnyx_answer_webhook(
     # signed this.
     owner = await _agent_by_id(agent_id, db)
     await verify_telnyx_webhook(request, await telnyx_public_key_for_agent(owner, db))
+    if webhook_is_duplicate(request):
+        return Response(content=EMPTY_DOCUMENT, media_type="application/xml")
 
     event = await parse_telnyx_webhook(request)
 
@@ -1250,7 +1288,7 @@ async def telnyx_answer_webhook(
     return Response(content=texml, media_type="application/xml")
 
 
-@webhook_router.post("/telnyx/status")
+@webhook_router.post("/telnyx/status", dependencies=[Depends(release_claim_on_error)])
 async def telnyx_status_callback(
     request: Request,
     background_tasks: BackgroundTasks,
@@ -1269,6 +1307,8 @@ async def telnyx_status_callback(
     call_record = result.scalar_one_or_none()
     owner = await _agent_by_id(call_record.agent_id, db) if call_record else None
     await verify_telnyx_webhook(request, await telnyx_public_key_for_agent(owner, db))
+    if webhook_is_duplicate(request):
+        return {"status": "duplicate"}
 
     log = logger.bind(
         webhook="telnyx_status",

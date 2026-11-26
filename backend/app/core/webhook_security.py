@@ -20,6 +20,15 @@ from fastapi import HTTPException, Request
 
 from app.core.config import settings
 from app.core.public_url import public_request_url
+from app.core.webhook_replay import (
+    ReplayClaim,
+    claim_webhook,
+    record_claim,
+    telnyx_replay_key,
+    telnyx_ttl_seconds,
+    twilio_replay_key,
+    twilio_ttl_seconds,
+)
 
 logger = structlog.get_logger()
 
@@ -167,6 +176,19 @@ async def get_twilio_webhook_params(request: Request) -> dict[str, str]:
     return {key: str(value) for key, value in form_data.items()}
 
 
+async def _guard_replay(request: Request, key: str, ttl_seconds: int) -> None:
+    """Remember a verified webhook; flag a repeat on ``request.state``.
+
+    A duplicate is not refused here: the endpoint answers it with HTTP 200 and a
+    no-op (see ``app.core.webhook_replay``). Only an unreachable store with
+    ``WEBHOOK_REPLAY_FAIL_CLOSED`` set refuses, with 503.
+    """
+    claim = await claim_webhook(key, ttl_seconds=ttl_seconds)
+    if claim is ReplayClaim.STORE_UNAVAILABLE and settings.WEBHOOK_REPLAY_FAIL_CLOSED:
+        raise HTTPException(status_code=503, detail="Webhook replay protection unavailable")
+    record_claim(request, key, claim)
+
+
 async def verify_twilio_webhook(request: Request, workspace_auth_token: str | None = None) -> bool:
     """Verify Twilio webhook signature from request.
 
@@ -226,6 +248,11 @@ async def verify_twilio_webhook(request: Request, workspace_auth_token: str | No
     for source, auth_token in candidates:
         if validate_twilio_signature(signature, url, params, auth_token):
             logger.debug("twilio_signature_verified", credential=source)
+            await _guard_replay(
+                request,
+                twilio_replay_key(signature, url, params),
+                twilio_ttl_seconds(),
+            )
             return True
 
     logger.warning("invalid_twilio_signature", url=url, tried=[source for source, _ in candidates])
@@ -292,6 +319,11 @@ async def verify_telnyx_webhook(request: Request, workspace_public_key: str | No
     for source, public_key in candidates:
         if validate_telnyx_signature(signature, timestamp, body, public_key):
             logger.debug("telnyx_signature_verified", credential=source)
+            await _guard_replay(
+                request,
+                telnyx_replay_key(signature, timestamp),
+                telnyx_ttl_seconds(),
+            )
             return True
 
     logger.warning("invalid_telnyx_signature", tried=[source for source, _ in candidates])

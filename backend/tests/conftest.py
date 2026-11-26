@@ -191,6 +191,19 @@ def stream_token_claim_store(monkeypatch: pytest.MonkeyPatch) -> Any:
     return store
 
 
+@pytest.fixture(autouse=True)
+def webhook_replay_store(monkeypatch: pytest.MonkeyPatch) -> Any:
+    """Own in-memory replay memory per test, so no test needs a live Redis and
+    no accepted webhook leaks into the next test."""
+    store = fakeredis.FakeAsyncRedis(decode_responses=True)
+
+    async def _store() -> Any:
+        return store
+
+    monkeypatch.setattr("app.core.webhook_replay._store", _store)
+    return store
+
+
 @pytest_asyncio.fixture
 async def test_redis() -> Any:
     """Create fake async Redis client for testing.

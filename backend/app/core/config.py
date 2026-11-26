@@ -153,6 +153,12 @@ class Settings(BaseSettings):
     # replayed for ever, and the reply to an inbound one carries a fresh token
     # that admits the sender to the agent. Telnyx recommends five minutes.
     TELNYX_WEBHOOK_MAX_AGE_SECONDS: int = 300
+    # Twilio signatures carry no timestamp, so replay memory is the only bound:
+    # how long an accepted request is remembered.
+    TWILIO_WEBHOOK_REPLAY_TTL_SECONDS: int = 86400
+    # Redis unreachable: accept signed webhooks anyway (False, default) or refuse
+    # them with 503 (True). See app/core/webhook_replay.py.
+    WEBHOOK_REPLAY_FAIL_CLOSED: bool = False
     # Host names this server may call even though they resolve to a private
     # address (app.core.safe_http). Empty by default. For an operator's own
     # private endpoint only; never a value a customer supplies.
