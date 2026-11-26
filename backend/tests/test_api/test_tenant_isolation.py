@@ -769,11 +769,20 @@ class _FakeOpenAI:
 
     def __init__(self) -> None:
         self.keys: list[str] = []
+        self.expiries: list[int | None] = []
 
-    async def __call__(self, api_key: str, session: dict[str, Any], **_: Any) -> Any:
+    async def __call__(
+        self,
+        api_key: str,
+        session: dict[str, Any],
+        *,
+        expires_after_seconds: int | None = None,
+        **_: Any,
+    ) -> Any:
         import httpx
 
         self.keys.append(api_key)
+        self.expiries.append(expires_after_seconds)
         return httpx.Response(200, json={"value": "ek_fake", "expires_at": 1})
 
 
@@ -846,6 +855,20 @@ class TestRealtimeTokenKeyScope:
         assert response.status_code == 200
         assert response.json()["value"] == "ek_fake"
         assert fake_openai.keys == [WORKSPACE_KEY]
+
+    @pytest.mark.asyncio
+    async def test_the_dashboard_key_is_short_lived_not_the_ten_minute_default(
+        self, world: World, fake_openai: _FakeOpenAI
+    ) -> None:
+        await _store_key(world, world.alice, WORKSPACE_KEY, workspace_id=world.alice.workspace.id)
+
+        response = await world.client.get(
+            f"/api/v1/realtime/token/{world.alice.agent.id}", headers=world.alice.headers
+        )
+
+        assert response.status_code == 200
+        # Pinned: the signed-in dashboard is 300 s, the public embed widget 60 s.
+        assert fake_openai.expiries == [300]
 
     @pytest.mark.asyncio
     async def test_another_customers_agent_is_404_and_mints_nothing(
