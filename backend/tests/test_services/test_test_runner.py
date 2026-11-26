@@ -485,7 +485,8 @@ class TestRunScenario:
             )
 
             assert test_run.status == TestRunStatus.ERROR.value
-            assert test_run.error_message == "API Error"
+            assert test_run.error_message == "The test run failed (Exception)"
+            assert "API Error" not in test_run.error_message
             assert test_run.completed_at is not None
 
 
