@@ -37,7 +37,7 @@ A booking tool that answers "success" says only that something was booked.
 
 ```json
 "expect": {
-  "tools": [{"name": "sophie_v2_book"}],
+  "tools": [{"name": "example_v2_book"}],
   "booking": {
     "weekdays": ["wednesday"],
     "time_from": "10:00", "time_to": "10:00",
@@ -60,9 +60,9 @@ A tool can answer at the transport level and still have refused: an identity che
 
 ```json
 "tool_outcomes": {
-  "sophie_v2_verify_identity": {"path": "verified", "success": ["true"]},
-  "sophie_v2_book": {"path": "bookOutcome", "success": ["BOOKED"]},
-  "sophie_v2_register_patient": {"path": "newPatientRegistered", "success": ["true"]}
+  "example_v2_verify_identity": {"path": "verified", "success": ["true"]},
+  "example_v2_book": {"path": "bookOutcome", "success": ["BOOKED"]},
+  "example_v2_register_patient": {"path": "newPatientRegistered", "success": ["true"]}
 }
 ```
 

@@ -1,10 +1,10 @@
 {
-  "name": "New caller Ben Bromley when Ben Bradley is on file",
+  "name": "Symptom-first opener from an existing patient",
   "mutates": "none",
-  "requires": "A patient named Ben Bradley exists and no Ben Bromley does.",
+  "requires": "A patient named Mark Marshall exists.",
   "persona": {
     "facts": {
-      "name": "ben bromley"
+      "name": "mark marshall"
     }
   },
   "max_seconds": 360,
@@ -13,17 +13,17 @@
     {
       "when": "how can i help",
       "clips": [
-        "2026-11-23T100704Z_x54y_01_opener"
+        "2026-11-24T101247Z_nv9n_01_opener"
       ],
-      "intended": "Can you book an appointment for me?",
+      "intended": "Sophie, I'm having knee pain. Can you help me?",
       "max_uses": 2
     },
     {
       "when": "full name|your name|registered under",
       "clips": [
-        "2026-11-23T100704Z_x54y_02_name"
+        "2026-11-24T101247Z_nv9n_02_name"
       ],
-      "intended": "Ben Bromley.",
+      "intended": "Uh, my name is Mark Marshall.",
       "max_uses": 2,
       "field": "name"
     }
@@ -33,42 +33,40 @@
       {
         "name_contains": "identify",
         "outputs": {
-          "status": "not_found"
+          "status": "unique"
         }
-      },
-      {
-        "called": false,
-        "name": "sophie_v2_verify_identity"
       }
     ],
-    "fields": [],
+    "fields": [
+      "name"
+    ],
     "agent_says": [
-      "been to (see us|the clinic) before"
+      "date of birth"
     ],
     "agent_never_says": [
-      "i've got you"
+      "different name"
     ]
   },
   "tool_outcomes": {
-    "sophie_v2_verify_identity": {
+    "example_v2_verify_identity": {
       "path": "verified",
       "success": [
         "true"
       ]
     },
-    "sophie_v2_book": {
+    "example_v2_book": {
       "path": "bookOutcome",
       "success": [
         "BOOKED"
       ]
     },
-    "sophie_v2_reschedule_appointment": {
+    "example_v2_reschedule_appointment": {
       "path": "rescheduleOutcome",
       "success": [
         "RESCHEDULED"
       ]
     },
-    "sophie_v2_register_patient": {
+    "example_v2_register_patient": {
       "path": "newPatientRegistered",
       "success": [
         "true"

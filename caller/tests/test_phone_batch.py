@@ -88,7 +88,9 @@ class StoredDate:
 
     async def read(self, call_ref: str) -> Trace:
         self.asked.append(call_ref)
-        call = ToolCall("sophie_v2_new_patient_check", {"dateOfBirth": self.stored}, {}, True, "NP")
+        call = ToolCall(
+            "example_v2_new_patient_check", {"dateOfBirth": self.stored}, {}, True, "NP"
+        )
         return Trace(call_ref=call_ref, tool_calls=[call], step_path=["I1", "NP_CHECK"])
 
 

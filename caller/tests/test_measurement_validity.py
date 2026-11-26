@@ -25,7 +25,7 @@ from synthiq_caller.traces.retell import RetellTraceReader
 from synthiq_caller.turns import AgentTurnTracker, TurnSettings
 
 FAST = TurnSettings(hangover_s=0.2, audio_start_wait_s=0.6, min_speech_s=0.06)
-SOPHIE = Path(__file__).parent.parent / "scenarios" / "sophie"
+EXAMPLE_SET = Path(__file__).parent.parent / "scenarios" / "example-receptionist"
 END = "caller hung up: scenario end"
 
 
@@ -164,8 +164,8 @@ def test_every_shipped_scenario_that_writes_an_appointment_says_what_it_should_b
     from synthiq_caller.target import load_target
 
     # The times belong to the clinic, so they come from its profile.
-    original = load_target(SOPHIE / "targets" / "original-clinic.json")
-    for file, loaded in load_scenarios(SOPHIE, original):
+    original = load_target(EXAMPLE_SET / "targets" / "original-clinic.json")
+    for file, loaded in load_scenarios(EXAMPLE_SET, original):
         if loaded.mutates in ("books", "moves"):
             assert loaded.expect.booking.stated() and not loaded.missing_target, file
         assert loaded.tool_outcomes, file
@@ -602,7 +602,7 @@ async def test_a_second_bank_supplies_a_synthetic_clip_and_every_result_says_so(
 
 
 def test_the_booking_scenarios_answer_which_doctor_with_the_stand_in() -> None:
-    for file, loaded in load_scenarios(SOPHIE):
+    for file, loaded in load_scenarios(EXAMPLE_SET):
         if file[:2] in ("01", "02", "03", "04", "05", "06", "07"):
             step = next(
                 s for s in loaded.steps if s.when.search("Which doctor would you like to see?")
