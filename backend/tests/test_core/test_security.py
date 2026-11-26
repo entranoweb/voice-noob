@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 import jwt
 import pytest
 from fastapi import HTTPException
-from fastapi.security import HTTPAuthorizationCredentials
+from fastapi.security import HTTPAuthorizationCredentials, SecurityScopes
 
 from app.api.auth import create_access_token, get_password_hash, verify_password
 from app.core.auth import get_current_user
@@ -313,7 +313,7 @@ class TestTokenRejection:
         credentials = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
         with pytest.raises(HTTPException) as raised:
             # A rejected token never reaches the database, so none is supplied.
-            await get_current_user(credentials, None)  # type: ignore[arg-type]
+            await get_current_user(SecurityScopes(), credentials, None)  # type: ignore[arg-type]
         assert raised.value.headers == {"WWW-Authenticate": "Bearer"}
         return raised.value.status_code
 
@@ -321,7 +321,7 @@ class TestTokenRejection:
         token = create_access_token(42)
         payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
         assert payload["sub"] == "42"
-        assert set(payload) == {"sub", "exp"}
+        assert set(payload) == {"sub", "exp", "ver"}
         assert jwt.get_unverified_header(token)["alg"] == "HS256"
 
     async def test_expired_token_is_401(self) -> None:

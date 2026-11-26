@@ -69,7 +69,17 @@ class AuditAction:
     # Authentication
     LOGIN_SUCCESS = "auth.login.success"
     LOGIN_FAILED = "auth.login.failed"
+    LOGOUT = "auth.logout"
     REGISTER = "auth.register"
+    PASSWORD_RESET_REQUESTED = "auth.password_reset.requested"
+    PASSWORD_RESET_COMPLETED = "auth.password_reset.completed"
+    REFRESH_REUSE_DETECTED = "auth.refresh.reuse_detected"
+    REFRESH_ROTATION_RACE = "auth.refresh.rotation_race"
+    API_TOKEN_CREATE = "auth.api_token.create"
+    API_TOKEN_REVOKE = "auth.api_token.revoke"
+
+    # A workspace made by the system, not by a person
+    WORKSPACE_BOOTSTRAP = "workspace.bootstrap"
 
     # Provider credentials
     CREDENTIAL_UPDATE = "credential.update"

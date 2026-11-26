@@ -7,7 +7,7 @@ import jwt
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordRequestForm
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,7 +16,17 @@ from app.core.auth import CurrentUser, SuperUser
 from app.core.config import settings
 from app.core.limiter import limiter
 from app.db.session import get_db
+from app.models.refresh_token import RefreshToken
 from app.models.user import User
+from app.services.auth_tokens import (
+    RefreshRecentlyRotated,
+    RefreshRejected,
+    hash_token,
+    issue_refresh_token,
+    revoke_family,
+    revoke_user_sessions,
+    rotate_refresh_token,
+)
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 logger = structlog.get_logger()
@@ -46,6 +56,20 @@ class TokenResponse(BaseModel):
 
     access_token: str
     token_type: str = "bearer"
+    # Trade it at POST /auth/refresh for a new pair. Each one works once.
+    refresh_token: str | None = None
+
+
+class RefreshRequest(BaseModel):
+    """A refresh token, for refresh and logout."""
+
+    refresh_token: str = Field(max_length=256)
+
+
+class AuthConfigResponse(BaseModel):
+    """What the sign-in pages need to know before anybody is signed in."""
+
+    signup_open: bool
 
 
 class UserResponse(BaseModel):
@@ -91,12 +115,19 @@ def get_password_hash(password: str) -> str:
     return bcrypt.hashpw(_password_bytes(password), bcrypt.gensalt(rounds=12)).decode("utf-8")
 
 
-def create_access_token(subject: str | int, expires_delta: timedelta | None = None) -> str:
+def create_access_token(
+    subject: str | int,
+    expires_delta: timedelta | None = None,
+    *,
+    token_version: int = 0,
+) -> str:
     """Create a JWT access token.
 
     Args:
         subject: The subject of the token (user ID or email)
         expires_delta: Optional custom expiration time. Defaults to ACCESS_TOKEN_EXPIRE_MINUTES.
+        token_version: The user's ``token_version``. A token whose ``ver`` no longer
+            matches is refused, which is how a reset or a disable ends sessions.
 
     Returns:
         Encoded JWT token string
@@ -106,7 +137,7 @@ def create_access_token(subject: str | int, expires_delta: timedelta | None = No
     else:
         expire = datetime.now(UTC) + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
 
-    to_encode = {"sub": str(subject), "exp": expire}
+    to_encode = {"sub": str(subject), "exp": expire, "ver": token_version}
     encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
     return encoded_jwt
 
@@ -114,6 +145,13 @@ def create_access_token(subject: str | int, expires_delta: timedelta | None = No
 # =============================================================================
 # Auth Endpoints
 # =============================================================================
+
+
+@router.get("/config", response_model=AuthConfigResponse)
+async def auth_config() -> AuthConfigResponse:
+    """Whether sign-up is open. The pages hide the link and the form when it is not;
+    ``/register`` refuses on the same setting whatever the pages do."""
+    return AuthConfigResponse(signup_open=settings.public_signup_allowed)
 
 
 @router.post("/register", response_model=UserResponse)
@@ -242,7 +280,8 @@ async def login(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    access_token = create_access_token(user.id)
+    access_token = create_access_token(user.id, token_version=user.token_version)
+    refresh_token = await issue_refresh_token(db, user.id)
     await record_audit(
         db,
         AuditAction.LOGIN_SUCCESS,
@@ -254,7 +293,76 @@ async def login(
     )
     log.info("login_success", user_id=user.id)
 
-    return TokenResponse(access_token=access_token)
+    return TokenResponse(access_token=access_token, refresh_token=refresh_token)
+
+
+def _invalid_refresh() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid refresh token",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+
+@router.post("/refresh", response_model=TokenResponse)
+@limiter.limit("30/minute")
+async def refresh(
+    request: Request,
+    payload: RefreshRequest,
+    db: AsyncSession = Depends(get_db),
+) -> TokenResponse:
+    """Trade a refresh token for a new access token and a new refresh token.
+
+    The old refresh token stops working. Presenting one that already has is
+    treated as theft: its whole family is revoked (see ``rotate_refresh_token``),
+    unless it was rotated within the last few seconds, which is a 409 with no
+    tokens and no revocation. Every other refusal is the same 401.
+    """
+    try:
+        user, successor = await rotate_refresh_token(db, payload.refresh_token, request=request)
+    except RefreshRecentlyRotated:
+        # Another tab rotated this token a moment ago. No tokens are issued; the
+        # caller looks for the newer pair in its storage and does not sign out.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="Refresh token was just rotated"
+        ) from None
+    except RefreshRejected:
+        raise _invalid_refresh() from None
+    return TokenResponse(
+        access_token=create_access_token(user.id, token_version=user.token_version),
+        refresh_token=successor,
+    )
+
+
+@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
+@limiter.limit("30/minute")
+async def logout(
+    request: Request,
+    payload: RefreshRequest,
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """End the sign-in a refresh token belongs to. Always 204: whether the token
+    was known is not something to tell the caller."""
+    row = (
+        await db.execute(
+            select(RefreshToken).where(RefreshToken.token_hash == hash_token(payload.refresh_token))
+        )
+    ).scalar_one_or_none()
+    if row is not None:
+        user_id = row.user_id
+        ended = await revoke_family(db, row.family_id)
+        if ended:
+            # Only a sign-in that was still live is an event; repeating the call
+            # or presenting a stale token changes nothing and records nothing.
+            await record_audit(
+                db,
+                AuditAction.LOGOUT,
+                actor_user_id=user_id,
+                target_type="user",
+                target_id=str(user_id),
+                request=request,
+            )
+        await db.commit()
 
 
 @router.get("/me", response_model=UserResponse)
@@ -311,6 +419,11 @@ async def _set_account_active(
         )
     was_active = user.is_active
     user.is_active = active
+    if not active:
+        # Disabling ends every sign-in now. Without this, enabling the account
+        # again would bring back refresh tokens the administrator meant to cut off.
+        # Access tokens need no version bump: they are refused while the account is off.
+        await revoke_user_sessions(db, user, revoke_access_tokens=False)
     # Who switched whose account off, and when: the one administrative action
     # that takes a customer's access away has to be answerable afterwards.
     await record_audit(

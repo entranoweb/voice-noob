@@ -2,6 +2,8 @@
  * API client for user settings
  */
 
+import { authedFetch } from "@/lib/session";
+
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 function getAuthHeaders(): HeadersInit {
@@ -28,7 +30,7 @@ async function fetchWithTimeout(
   };
 
   try {
-    const response = await fetch(url, {
+    const response = await authedFetch(url, {
       ...options,
       headers,
       signal: controller.signal,

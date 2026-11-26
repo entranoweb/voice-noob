@@ -1,4 +1,11 @@
-import axios from "axios";
+import axios, { type InternalAxiosRequestConfig } from "axios";
+import {
+  clearSession,
+  endSessionOnServer,
+  getAccessToken,
+  getRefreshToken,
+  refreshSession,
+} from "@/lib/session";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -10,39 +17,23 @@ export const api = axios.create({
   withCredentials: true,
 });
 
-// Safely get/set localStorage with error handling
-function safeGetItem(key: string): string | null {
-  try {
-    return localStorage.getItem(key);
-  } catch (error) {
-    console.warn(`Failed to access localStorage for key "${key}":`, error);
-    return null;
-  }
-}
-
-function safeRemoveItem(key: string): void {
-  try {
-    localStorage.removeItem(key);
-  } catch (error) {
-    console.warn(`Failed to remove localStorage key "${key}":`, error);
-  }
-}
-
-// Logout function - clears auth token and redirects to login
+// Logout function - ends the sign-in on the server, clears the session and redirects to login
 export function logout(): void {
-  safeRemoveItem("access_token");
-  try {
-    // eslint-disable-next-line @next/next/no-location-assign-relative-destination -- a full page load is the point: it drops every piece of client state along with the token. router.push() would keep a logged-out SPA alive.
-    window.location.href = "/login";
-  } catch (navError) {
-    console.error("Failed to redirect to login:", navError);
-  }
+  void endSessionOnServer().finally(() => {
+    clearSession();
+    try {
+      // eslint-disable-next-line @next/next/no-location-assign-relative-destination -- a full page load is the point: it drops every piece of client state along with the token. router.push() would keep a logged-out SPA alive.
+      window.location.href = "/login";
+    } catch (navError) {
+      console.error("Failed to redirect to login:", navError);
+    }
+  });
 }
 
 // Request interceptor for adding auth token
 api.interceptors.request.use(
   (config) => {
-    const token = safeGetItem("access_token");
+    const token = getAccessToken();
     if (token) {
       config.headers.Authorization = `Bearer ${token}`;
     }
@@ -57,13 +48,25 @@ api.interceptors.request.use(
 api.interceptors.response.use(
   (response) => response,
   async (error) => {
-    // Log authentication failures
+    const original = error.config as
+      | (InternalAxiosRequestConfig & { _retried?: boolean })
+      | undefined;
     if (error.response?.status === 401) {
+      // The access token is short-lived. Renew it once and replay the request;
+      // only when that fails is the person signed out.
+      if (original && !original._retried && getRefreshToken()) {
+        original._retried = true;
+        const renewed = await refreshSession();
+        if (renewed) {
+          original.headers.Authorization = `Bearer ${renewed}`;
+          return api.request(original);
+        }
+      }
       console.error("Authentication failed - redirecting to login", {
         endpoint: error.config?.url,
         status: error.response.status,
       });
-      safeRemoveItem("access_token");
+      clearSession();
       // Safely navigate to login
       try {
         // eslint-disable-next-line @next/next/no-location-assign-relative-destination -- a full page load is the point: it drops every piece of client state along with the token. router.push() would keep a logged-out SPA alive.

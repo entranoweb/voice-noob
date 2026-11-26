@@ -43,7 +43,18 @@ def _stored_password_is_shipped(hashed_password: str) -> bool:
 
 
 async def ensure_first_admin(db: AsyncSession) -> None:
-    """Create the first administrator if there are no users; refuse shipped passwords."""
+    """Create the first administrator if there are no users; refuse shipped passwords.
+
+    Then make sure the install has a workspace, so the first account can upload
+    without anyone creating one by hand.
+    """
+    from app.services.workspace_bootstrap import ensure_default_workspace
+
+    await _ensure_first_admin_account(db)
+    await ensure_default_workspace(db)
+
+
+async def _ensure_first_admin_account(db: AsyncSession) -> None:
     from app.api.auth import get_password_hash
 
     production = not settings.DEBUG

@@ -25,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import undefer
 
 from app.core.audit import AuditAction, record_audit
-from app.core.auth import CurrentUser
+from app.core.auth import CallerUploader, CurrentUser
 from app.core.config import settings
 from app.core.limiter import limiter
 from app.db.session import get_db
@@ -398,7 +398,7 @@ def _rows(bundle: ParsedBundle, workspace_id: uuid.UUID, user_id: int) -> Caller
 async def upload_run(
     request: Request,  # named `request` for slowapi, and read as a stream for the size cap
     response: Response,
-    current_user: CurrentUser,
+    current_user: CallerUploader,
     workspace_id: uuid.UUID = Query(description="Workspace the run belongs to"),
     replace: bool = Query(
         default=False,
@@ -651,7 +651,7 @@ async def get_call(
 @limiter.limit("120/minute")
 async def upload_audio(
     request: Request,  # named `request` for slowapi; the body is read as a stream for the cap
-    current_user: CurrentUser,
+    current_user: CallerUploader,
     run_pk: uuid.UUID,
     file: str = Query(max_length=200, description="The call's run file name, e.g. run-001.json"),
     track: str = Query(description="'caller' (what the rig played) or 'agent'"),

@@ -2,6 +2,8 @@
  * API client for call history
  */
 
+import { authedFetch } from "@/lib/session";
+
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 function getAuthHeaders(): HeadersInit {
@@ -70,7 +72,7 @@ export async function listCalls(params: ListCallsParams = {}): Promise<CallRecor
   if (params.direction) searchParams.set("direction", params.direction);
   if (params.status) searchParams.set("status", params.status);
 
-  const response = await fetch(`${API_BASE}/api/v1/calls?${searchParams.toString()}`, {
+  const response = await authedFetch(`${API_BASE}/api/v1/calls?${searchParams.toString()}`, {
     headers: getAuthHeaders(),
   });
 
@@ -86,7 +88,7 @@ export async function listCalls(params: ListCallsParams = {}): Promise<CallRecor
  * Get a specific call record
  */
 export async function getCall(callId: string): Promise<CallRecord> {
-  const response = await fetch(`${API_BASE}/api/v1/calls/${callId}`, {
+  const response = await authedFetch(`${API_BASE}/api/v1/calls/${callId}`, {
     headers: getAuthHeaders(),
   });
 
@@ -103,7 +105,7 @@ export async function getCall(callId: string): Promise<CallRecord> {
  * server, so it does not depend on how many calls a page happens to hold.
  */
 export async function getCallStats(): Promise<CallStats> {
-  const response = await fetch(`${API_BASE}/api/v1/calls/stats`, {
+  const response = await authedFetch(`${API_BASE}/api/v1/calls/stats`, {
     headers: getAuthHeaders(),
   });
 
@@ -119,7 +121,7 @@ export async function getCallStats(): Promise<CallStats> {
  * Get call statistics for an agent
  */
 export async function getAgentCallStats(agentId: string): Promise<CallStats> {
-  const response = await fetch(`${API_BASE}/api/v1/calls/agent/${agentId}/stats`, {
+  const response = await authedFetch(`${API_BASE}/api/v1/calls/agent/${agentId}/stats`, {
     headers: getAuthHeaders(),
   });
 
@@ -159,7 +161,7 @@ export interface CallMetrics {
  * Get what was measured on one real call
  */
 export async function getCallMetrics(callId: string): Promise<CallMetrics> {
-  const response = await fetch(`${API_BASE}/api/v1/calls/${callId}/metrics`, {
+  const response = await authedFetch(`${API_BASE}/api/v1/calls/${callId}/metrics`, {
     headers: getAuthHeaders(),
   });
 

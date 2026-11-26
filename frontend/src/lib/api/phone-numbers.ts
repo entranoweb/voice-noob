@@ -2,6 +2,8 @@
  * API client for phone numbers
  */
 
+import { authedFetch } from "@/lib/session";
+
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 function getAuthHeaders(): HeadersInit {
@@ -78,9 +80,12 @@ export async function listPhoneNumbers(
   if (params.workspace_id) searchParams.set("workspace_id", params.workspace_id);
   if (params.status) searchParams.set("status", params.status);
 
-  const response = await fetch(`${API_BASE}/api/v1/phone-numbers?${searchParams.toString()}`, {
-    headers: getAuthHeaders(),
-  });
+  const response = await authedFetch(
+    `${API_BASE}/api/v1/phone-numbers?${searchParams.toString()}`,
+    {
+      headers: getAuthHeaders(),
+    }
+  );
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ detail: response.statusText }));
@@ -94,7 +99,7 @@ export async function listPhoneNumbers(
  * Get a specific phone number
  */
 export async function getPhoneNumber(phoneNumberId: string): Promise<PhoneNumber> {
-  const response = await fetch(`${API_BASE}/api/v1/phone-numbers/${phoneNumberId}`, {
+  const response = await authedFetch(`${API_BASE}/api/v1/phone-numbers/${phoneNumberId}`, {
     headers: getAuthHeaders(),
   });
 
@@ -110,7 +115,7 @@ export async function getPhoneNumber(phoneNumberId: string): Promise<PhoneNumber
  * Create a new phone number
  */
 export async function createPhoneNumber(data: CreatePhoneNumberRequest): Promise<PhoneNumber> {
-  const response = await fetch(`${API_BASE}/api/v1/phone-numbers`, {
+  const response = await authedFetch(`${API_BASE}/api/v1/phone-numbers`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -134,7 +139,7 @@ export async function updatePhoneNumber(
   phoneNumberId: string,
   data: UpdatePhoneNumberRequest
 ): Promise<PhoneNumber> {
-  const response = await fetch(`${API_BASE}/api/v1/phone-numbers/${phoneNumberId}`, {
+  const response = await authedFetch(`${API_BASE}/api/v1/phone-numbers/${phoneNumberId}`, {
     method: "PUT",
     headers: {
       "Content-Type": "application/json",
@@ -155,7 +160,7 @@ export async function updatePhoneNumber(
  * Delete a phone number
  */
 export async function deletePhoneNumber(phoneNumberId: string): Promise<void> {
-  const response = await fetch(`${API_BASE}/api/v1/phone-numbers/${phoneNumberId}`, {
+  const response = await authedFetch(`${API_BASE}/api/v1/phone-numbers/${phoneNumberId}`, {
     method: "DELETE",
     headers: getAuthHeaders(),
   });

@@ -24,6 +24,7 @@ import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { Separator } from "@/components/ui/separator";
 import Link from "next/link";
+import { authedFetch } from "@/lib/session";
 
 interface Workspace {
   id: string;
@@ -525,7 +526,7 @@ export default function TestAgentPage() {
       const apiBase = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
       const authToken = localStorage.getItem("access_token");
 
-      const response = await fetch(`${apiBase}/api/v1/realtime/transcript/${agentId}`, {
+      const response = await authedFetch(`${apiBase}/api/v1/realtime/transcript/${agentId}`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -624,7 +625,7 @@ export default function TestAgentPage() {
       const tokenUrl = isAdminMode
         ? `${apiBase}/api/v1/realtime/token/${selectedAgentId}`
         : `${apiBase}/api/v1/realtime/token/${selectedAgentId}?workspace_id=${selectedWorkspaceId}`;
-      const tokenResponse = await fetch(tokenUrl, {
+      const tokenResponse = await authedFetch(tokenUrl, {
         headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
       });
 
@@ -800,7 +801,7 @@ export default function TestAgentPage() {
 
             try {
               // Execute tool via backend API
-              const toolResponse = await fetch(`${apiBase}/api/v1/tools/execute`, {
+              const toolResponse = await authedFetch(`${apiBase}/api/v1/tools/execute`, {
                 method: "POST",
                 headers: {
                   "Content-Type": "application/json",

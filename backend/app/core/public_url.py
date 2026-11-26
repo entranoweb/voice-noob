@@ -82,7 +82,28 @@ def frontend_base_url(request: Request | None = None) -> str:
     return public_base_url(request)
 
 
+def configured_frontend_origin() -> str | None:
+    """The web app's origin from configuration alone, or ``None``.
+
+    For links that carry a credential (the password-reset link). Unlike
+    ``frontend_base_url`` this never falls back to the request: the Host header is
+    chosen by whoever sends the request, so a link built from it could point a
+    victim's reset token at an attacker's server. ``FRONTEND_URL``, then the first
+    real CORS origin, then ``PUBLIC_URL`` (a single-host install); nothing else.
+    """
+    configured = (settings.FRONTEND_URL or "").strip()
+    if configured:
+        return configured.rstrip("/")
+    for origin in settings.CORS_ORIGINS:
+        candidate = origin.strip().rstrip("/")
+        if candidate and candidate != "*":
+            return candidate
+    public = (settings.PUBLIC_URL or "").strip()
+    return public.rstrip("/") or None
+
+
 __all__ = [
+    "configured_frontend_origin",
     "frontend_base_url",
     "public_base_url",
     "public_request_url",
