@@ -5,17 +5,19 @@ Provides endpoints for managing call evaluations and QA metrics.
 
 import uuid
 from datetime import datetime
-from typing import Any
+from types import SimpleNamespace
+from typing import Annotated, Any
 
 import structlog
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StringConstraints
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import CurrentUser, user_id_to_uuid
 from app.core.config import settings
 from app.core.limiter import limiter
+from app.core.limits import MAX_LIST_ITEMS, enforce_caps_on_update
 from app.db.session import get_db
 from app.models.call_evaluation import CallEvaluation
 from app.models.call_record import CallRecord
@@ -161,7 +163,7 @@ class EvaluateCallResponse(BaseModel):
 class BatchEvaluateRequest(BaseModel):
     """Batch evaluation request."""
 
-    call_ids: list[str]
+    call_ids: list[str] = Field(max_length=MAX_LIST_ITEMS)
     max_concurrent: int = Field(default=5, ge=1, le=10)
 
 
@@ -188,6 +190,9 @@ class QAStatusResponse(BaseModel):
 # =============================================================================
 
 
+EVALUATION_MODEL_MAX_CHARS = 100  # a model id; the longest in use is under 40
+
+
 class WorkspaceQASettings(BaseModel):
     """Workspace-specific QA settings."""
 
@@ -204,7 +209,7 @@ class WorkspaceQASettingsUpdate(BaseModel):
     qa_enabled: bool | None = None
     auto_evaluate: bool | None = None
     pass_threshold: int | None = None
-    evaluation_model: str | None = None
+    evaluation_model: str | None = None  # capped in the handler, see below
     inherit_global: bool | None = None
 
 
@@ -394,6 +399,16 @@ async def update_workspace_qa_settings(
 
     # Apply updates (only non-None values)
     update_data = body.model_dump(exclude_none=True)
+    # A name saved before the cap existed is accepted when sent back unchanged.
+    enforce_caps_on_update(
+        update_data,
+        SimpleNamespace(**qa_settings),
+        {
+            "evaluation_model": Annotated[
+                str, StringConstraints(max_length=EVALUATION_MODEL_MAX_CHARS)
+            ]
+        },
+    )
     for key, value in update_data.items():
         qa_settings[key] = value
 

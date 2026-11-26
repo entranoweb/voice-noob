@@ -5,16 +5,26 @@ Provides endpoints for managing test scenarios and running tests.
 
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import Annotated, Any
 
 import structlog
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StringConstraints
 from sqlalchemy import desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import CurrentUser
 from app.core.config import settings
+from app.core.limits import (
+    DESCRIPTION_MAX_CHARS,
+    MAX_LIST_ITEMS,
+    MAX_TURNS,
+    SHORT_TEXT_MAX_CHARS,
+    TURN_TEXT_MAX_CHARS,
+    BoundedDict,
+    BoundedDictList,
+    enforce_caps_on_update,
+)
 from app.db.session import AsyncSessionLocal, get_db
 from app.models.agent import Agent
 from app.models.test_scenario import (
@@ -150,14 +160,18 @@ class InlineCheckRequest(BaseModel):
     """
 
     agent_id: str
-    says: list[str] = Field(min_length=1, description="Caller turns, in order")
-    invokes: list[str] = Field(default_factory=list, description="Tools that must be called")
-    leaves: dict[str, Any] | None = Field(
+    says: list[Annotated[str, StringConstraints(max_length=TURN_TEXT_MAX_CHARS)]] = Field(
+        min_length=1, max_length=MAX_TURNS, description="Caller turns, in order"
+    )
+    invokes: list[Annotated[str, StringConstraints(max_length=SHORT_TEXT_MAX_CHARS)]] = Field(
+        default_factory=list, max_length=MAX_LIST_ITEMS, description="Tools that must be called"
+    )
+    leaves: BoundedDict | None = Field(
         default=None,
         description="Database state the run must produce",
     )
-    given: dict[str, Any] | None = Field(default=None, description="Rows to seed before the run")
-    persona: dict[str, Any] | None = None
+    given: BoundedDict | None = Field(default=None, description="Rows to seed before the run")
+    persona: BoundedDict | None = None
     max_response_ms: float | None = None
     workspace_id: str | None = None
     judge: bool = Field(default=False, description="Also run the qualitative judge")
@@ -230,20 +244,29 @@ class TestScenarioCreate(BaseModel):
     """Create test scenario request."""
 
     name: str = Field(..., max_length=200)
-    description: str | None = None
+    description: str | None = Field(default=None, max_length=DESCRIPTION_MAX_CHARS)
     category: str
     difficulty: str
-    caller_persona: dict[str, Any]
-    conversation_flow: list[dict[str, Any]]
-    expected_behaviors: list[str]
-    expected_tool_calls: list[dict[str, Any]] | None = None
-    success_criteria: dict[str, Any]
+    caller_persona: BoundedDict
+    conversation_flow: BoundedDictList = Field(max_length=MAX_TURNS)
+    expected_behaviors: list[
+        Annotated[str, StringConstraints(max_length=DESCRIPTION_MAX_CHARS)]
+    ] = Field(max_length=MAX_LIST_ITEMS)
+    expected_tool_calls: BoundedDictList | None = Field(default=None, max_length=MAX_LIST_ITEMS)
+    success_criteria: BoundedDict
     workspace_id: str | None = None
-    tags: list[str] | None = None
+    tags: list[Annotated[str, StringConstraints(max_length=SHORT_TEXT_MAX_CHARS)]] | None = Field(
+        default=None, max_length=MAX_LIST_ITEMS
+    )
 
 
 class TestScenarioUpdate(BaseModel):
-    """Update test scenario request."""
+    """Update test scenario request.
+
+    The size caps are not on these fields. A scenario saved before the caps existed
+    may hold more, and sending it back as it is must keep working, so
+    ``update_scenario`` holds only a changed value to ``UPDATE_SCENARIO_CAPS``.
+    """
 
     name: str | None = Field(None, max_length=200)
     description: str | None = None
@@ -256,6 +279,23 @@ class TestScenarioUpdate(BaseModel):
     success_criteria: dict[str, Any] | None = None
     is_active: bool | None = None
     tags: list[str] | None = None
+
+
+UPDATE_SCENARIO_CAPS: dict[str, Any] = {
+    "description": Annotated[str, StringConstraints(max_length=DESCRIPTION_MAX_CHARS)],
+    "caller_persona": BoundedDict,
+    "conversation_flow": Annotated[BoundedDictList, Field(max_length=MAX_TURNS)],
+    "expected_behaviors": Annotated[
+        list[Annotated[str, StringConstraints(max_length=DESCRIPTION_MAX_CHARS)]],
+        Field(max_length=MAX_LIST_ITEMS),
+    ],
+    "expected_tool_calls": Annotated[BoundedDictList, Field(max_length=MAX_LIST_ITEMS)],
+    "success_criteria": BoundedDict,
+    "tags": Annotated[
+        list[Annotated[str, StringConstraints(max_length=SHORT_TEXT_MAX_CHARS)]],
+        Field(max_length=MAX_LIST_ITEMS),
+    ],
+}
 
 
 class DuplicateScenarioResponse(BaseModel):
@@ -526,6 +566,10 @@ async def update_scenario(
                 detail=f"Invalid difficulty: {request.difficulty}. Must be one of: {', '.join(valid_difficulties)}",
             )
 
+    enforce_caps_on_update(
+        request.model_dump(include=set(UPDATE_SCENARIO_CAPS)), scenario, UPDATE_SCENARIO_CAPS
+    )
+
     # Apply partial updates (only non-None fields)
     update_fields = request.model_dump(exclude_unset=True)
     for field, value in update_fields.items():
@@ -615,6 +659,17 @@ async def duplicate_scenario(
 
     if not scenario:
         raise HTTPException(status_code=404, detail="Scenario not found")
+
+    # A copy is a create: a scenario saved before the caps existed is refused here,
+    # naming the field, rather than copied over the limit.
+    enforce_caps_on_update(
+        {
+            "name": f"{scenario.name} (Copy)",
+            **{field: getattr(scenario, field) for field in UPDATE_SCENARIO_CAPS},
+        },
+        object(),
+        {**UPDATE_SCENARIO_CAPS, "name": Annotated[str, StringConstraints(max_length=200)]},
+    )
 
     # Create a duplicate with a new name
     new_scenario = TestScenario(

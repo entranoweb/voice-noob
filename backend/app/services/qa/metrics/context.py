@@ -90,6 +90,7 @@ def turns_from_conversation(conversation: list[Any] | None) -> tuple[TurnData, .
                 audio_duration_ms=_as_float(entry.get("audio_duration_ms")),
                 interrupted=bool(entry.get("interrupted", False)),
                 barge_in=bool(entry.get("barge_in", False)),
+                text_truncated=bool(entry.get("text_truncated", False)),
             ),
         )
     return tuple(turns)

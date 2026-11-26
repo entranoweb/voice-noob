@@ -38,6 +38,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.core.limits import TRANSCRIPT_MAX_CHARS, truncate_with_marker
 from app.core.log_redaction import log_exception
 from app.core.stream_token import STREAM_TOKEN_REJECTED, verify_stream_token
 from app.core.stream_token_use import claim_stream_token
@@ -729,6 +730,9 @@ async def save_transcript_to_call_record(
     if not transcript.strip():
         log.debug("empty_transcript_skipped")
         return
+    # The session already stops at the cap; this is the same rule at the write,
+    # for any caller that hands in its own text.
+    transcript = truncate_with_marker(transcript, TRANSCRIPT_MAX_CHARS)
 
     result = await db.execute(
         select(CallRecord).where(

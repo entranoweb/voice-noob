@@ -12,7 +12,7 @@ import jwt
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,6 +21,12 @@ from app.api.settings import get_user_api_keys
 from app.core.auth import CurrentUser, user_id_to_uuid
 from app.core.config import settings
 from app.core.limiter import limiter
+from app.core.limits import (
+    MAX_DURATION_SECONDS,
+    SHORT_TEXT_MAX_CHARS,
+    TRANSCRIPT_MAX_CHARS,
+    truncate_with_marker,
+)
 from app.core.log_redaction import redact_arguments
 from app.core.ownership import get_owned_agent, owned_agent_workspace_id, parse_uuid
 from app.core.safe_errors import public_error
@@ -762,9 +768,11 @@ async def get_ephemeral_token(
 class SaveTranscriptRequest(BaseModel):
     """Request body for saving a transcript."""
 
-    session_id: str
+    session_id: str = Field(max_length=SHORT_TEXT_MAX_CHARS)
+    # Not capped here: a transcript over the limit is stored cut, with the marker,
+    # rather than refused and lost. The body cap bounds the request.
     transcript: str
-    duration_seconds: int = 0
+    duration_seconds: int = Field(default=0, ge=0, le=MAX_DURATION_SECONDS)
 
 
 @webrtc_router.post("/transcript/{agent_id}")
@@ -838,7 +846,7 @@ async def save_transcript(
         started_at=started_at,
         ended_at=ended_at,
         duration_seconds=request.duration_seconds,
-        transcript=request.transcript,
+        transcript=truncate_with_marker(request.transcript, TRANSCRIPT_MAX_CHARS),
     )
 
     db.add(call_record)

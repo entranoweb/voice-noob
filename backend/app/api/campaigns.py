@@ -2,14 +2,21 @@
 
 import uuid
 from datetime import UTC, datetime, time
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, StringConstraints, field_validator
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.auth import CurrentUser, user_id_to_uuid
+from app.core.limits import (
+    DESCRIPTION_MAX_CHARS,
+    MAX_CONTACT_IDS,
+    NOTES_MAX_CHARS,
+    enforce_caps_on_update,
+)
 from app.core.ownership import get_owned_agent, get_owned_workspace
 from app.db.session import get_db
 from app.models.campaign import (
@@ -109,7 +116,7 @@ class CampaignCreate(BaseModel):
     workspace_id: str
     agent_id: str
     name: str
-    description: str | None = None
+    description: str | None = Field(default=None, max_length=DESCRIPTION_MAX_CHARS)
     from_phone_number: str
     scheduled_start: datetime | None = None
     scheduled_end: datetime | None = None
@@ -123,7 +130,7 @@ class CampaignCreate(BaseModel):
     max_concurrent_calls: int = 1
     max_attempts_per_contact: int = 3
     retry_delay_minutes: int = 60
-    contact_ids: list[int] = []
+    contact_ids: list[int] = Field(default=[], max_length=MAX_CONTACT_IDS)
 
     @field_validator("workspace_id", "agent_id")
     @classmethod
@@ -223,7 +230,7 @@ class CampaignUpdate(BaseModel):
 class AddContactsRequest(BaseModel):
     """Request to add contacts to campaign."""
 
-    contact_ids: list[int]
+    contact_ids: list[int] = Field(max_length=MAX_CONTACT_IDS)
 
 
 class AddContactsByFilterRequest(BaseModel):
@@ -504,6 +511,12 @@ async def update_campaign(
     # Only allow updates to draft campaigns
     if campaign.status not in (CampaignStatus.DRAFT.value, CampaignStatus.PAUSED.value):
         raise HTTPException(status_code=400, detail="Cannot update a running or completed campaign")
+
+    enforce_caps_on_update(
+        {"description": data.description},
+        campaign,
+        {"description": Annotated[str, StringConstraints(max_length=DESCRIPTION_MAX_CHARS)]},
+    )
 
     # Update fields, handling time fields specially
     update_data = data.model_dump(exclude_unset=True)
@@ -1028,6 +1041,12 @@ async def update_contact_disposition(
 
     if not campaign_contact:
         raise HTTPException(status_code=404, detail="Contact not found in campaign")
+
+    enforce_caps_on_update(
+        {"disposition_notes": data.disposition_notes},
+        campaign_contact,
+        {"disposition_notes": Annotated[str, StringConstraints(max_length=NOTES_MAX_CHARS)]},
+    )
 
     # Update disposition fields
     campaign_contact.disposition = data.disposition
