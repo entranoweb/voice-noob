@@ -3,7 +3,7 @@
 import os
 from typing import Any
 
-from pydantic import PostgresDsn, RedisDsn, field_validator
+from pydantic import PostgresDsn, RedisDsn, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # The value SECRET_KEY shipped with. It is public, so anything signed with it is
@@ -44,6 +44,17 @@ SHIPPED_ADMIN_PASSWORDS = (
     "CHANGE_ME_BEFORE_RUNNING",
     "your_secure_admin_password",
 )
+
+
+# How long gunicorn lets a worker finish on shutdown before it is killed
+# (gunicorn.conf.py reads this, and docker-compose.prod.yml's stop_grace_period
+# must exceed it). Shutdown spends it on, in order: each live call's tool grace
+# (CALL_TOOL_GRACE_S), the database writes that save the call, and the registry
+# drain (SHUTDOWN_DRAIN_TIMEOUT). Settings refuses a combination that does not
+# fit, because a worker killed mid-save loses the call record silently.
+GUNICORN_GRACEFUL_TIMEOUT_S = 40
+# What the saves between the tool grace and the drain are allowed to take.
+SHUTDOWN_SAVE_MARGIN_S = 5
 
 
 class Settings(BaseSettings):
@@ -345,6 +356,20 @@ class Settings(BaseSettings):
     # How often expired audio is deleted. Always on (it is not tied to
     # RETENTION_SWEEP_ENABLED): a pass also runs at start-up. Minimum 1.
     CALLER_AUDIO_EXPIRY_INTERVAL_MINUTES: int = 60
+
+    @model_validator(mode="after")
+    def shutdown_fits_in_graceful_timeout(self) -> "Settings":
+        """Tool grace + saves + drain must finish before gunicorn kills the worker."""
+        needed = self.CALL_TOOL_GRACE_S + SHUTDOWN_SAVE_MARGIN_S + self.SHUTDOWN_DRAIN_TIMEOUT
+        if needed > GUNICORN_GRACEFUL_TIMEOUT_S:
+            raise ValueError(
+                f"CALL_TOOL_GRACE_S ({self.CALL_TOOL_GRACE_S:g}) + SHUTDOWN_DRAIN_TIMEOUT "
+                f"({self.SHUTDOWN_DRAIN_TIMEOUT}) + {SHUTDOWN_SAVE_MARGIN_S} s for saving "
+                f"is {needed:g} s, more than gunicorn's graceful timeout of "
+                f"{GUNICORN_GRACEFUL_TIMEOUT_S} s: the worker would be killed mid-save. "
+                "Lower one of them."
+            )
+        return self
 
     @property
     def public_signup_allowed(self) -> bool:

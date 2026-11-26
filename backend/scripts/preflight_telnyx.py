@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import os
 import re
 import sys
 import uuid
@@ -409,6 +410,36 @@ def check_tracing() -> list[Result]:
     return [ok("tracing", settings.OTEL_EXPORTER_OTLP_ENDPOINT)]
 
 
+def check_realtime_models() -> list[Result]:
+    """Which models a call will actually use, so a wrong override is visible."""
+    from app.core.config import settings
+
+    transcription = settings.OPENAI_REALTIME_INPUT_TRANSCRIPTION_MODEL.strip()
+    return [
+        ok(
+            "realtime models",
+            f"premium={settings.OPENAI_REALTIME_MODEL_PREMIUM}, "
+            f"premium-mini={settings.OPENAI_REALTIME_MODEL_PREMIUM_MINI}",
+        ),
+        ok("transcription model", transcription or "none: calls will have no caller transcript"),
+    ]
+
+
+def check_trusted_proxy(url: str | None, trusted_proxy_ips: str | None) -> list[Result]:
+    """Warn, never fail: loopback-only trust is right without a proxy."""
+    if trusted_proxy_ips and trusted_proxy_ips.strip():
+        return [ok("TRUSTED_PROXY_IPS", trusted_proxy_ips.strip())]
+    if url and url.startswith("https://") and not _is_loopback(url):
+        return [
+            warn(
+                "TRUSTED_PROXY_IPS",
+                "unset — if the app sits behind a reverse proxy every client looks like "
+                "the proxy and shares one rate-limit bucket",
+            )
+        ]
+    return [ok("TRUSTED_PROXY_IPS", "unset (no proxy in front of a local instance)")]
+
+
 async def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -443,6 +474,8 @@ async def main() -> int:
         results += await check_reachable(url)
         results += await check_stream_url(url)
     results += check_tracing()
+    results += check_realtime_models()
+    results += check_trusted_proxy(url, os.environ.get("TRUSTED_PROXY_IPS"))
 
     marks = {Level.PASS: "  ok  ", Level.WARN: " warn ", Level.FAIL: " FAIL "}
     width = max(len(r.check) for r in results)
