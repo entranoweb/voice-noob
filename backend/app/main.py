@@ -35,6 +35,7 @@ from app.api import settings as settings_api
 from app.core.config import InsecureDefaultCredentialsError, settings
 from app.core.first_admin import ensure_first_admin
 from app.core.limiter import limiter
+from app.core.log_redaction import install_stdlib_redaction, redact_event_dict
 from app.db.redis import close_redis, get_redis, require_min_redis_version
 from app.db.session import AsyncSessionLocal, engine
 from app.middleware.body_limit import BodySizeLimitMiddleware
@@ -55,6 +56,7 @@ structlog.configure(
         structlog.processors.TimeStamper(fmt="iso"),
         structlog.processors.StackInfoRenderer(),
         structlog.processors.format_exc_info,
+        redact_event_dict,
         structlog.processors.JSONRenderer(),
     ],
     wrapper_class=structlog.make_filtering_bound_logger(
@@ -64,6 +66,8 @@ structlog.configure(
     logger_factory=structlog.PrintLoggerFactory(),
     cache_logger_on_first_use=True,
 )
+
+install_stdlib_redaction()
 
 logger = structlog.get_logger()
 

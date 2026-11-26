@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
+from app.core.log_redaction import scrub_text
 from app.monitoring.call_trace import ToolOutcome
 from app.services.tools.registry import ToolRegistry
 
@@ -163,7 +164,7 @@ class BoundTools:
         try:
             result = await self._registry.execute_tool(name, arguments)
         except Exception as exc:  # a failing tool is data, not a crash
-            logger.warning("qa_tool_execution_failed", tool=name, error=str(exc))
+            logger.warning("qa_tool_execution_failed", tool=name, error=scrub_text(exc))
             return self._record(
                 name,
                 arguments,

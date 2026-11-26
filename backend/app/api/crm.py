@@ -20,6 +20,7 @@ from app.core.limits import (
     SHORT_TEXT_MAX_CHARS,
     enforce_caps_on_update,
 )
+from app.core.log_redaction import redact_phone
 from app.db.session import get_db
 from app.models.appointment import Appointment
 from app.models.call_interaction import CallInteraction
@@ -489,7 +490,7 @@ async def create_contact(
             "Created contact: id=%d, user_id=%d, phone=%s, workspace_id=%s",
             contact.id,
             contact.user_id,
-            contact.phone_number,
+            redact_phone(contact.phone_number),
             contact.workspace_id,
         )
 
@@ -526,7 +527,7 @@ async def create_contact(
         logger.warning(
             "Integrity constraint violation creating contact: user_id=%d, phone=%s",
             user_id,
-            contact_data.phone_number,
+            redact_phone(contact_data.phone_number),
         )
         # Check if it's a duplicate phone or email
         error_msg = str(e.orig) if hasattr(e, "orig") else str(e)
@@ -546,17 +547,24 @@ async def create_contact(
         ) from e
     except DBAPIError as e:
         await db.rollback()
-        logger.exception("Database error creating contact: phone=%s", contact_data.phone_number)
+        # DBAPIError text carries the bound SQL parameters (the whole contact, names
+        # included, which scrub_text cannot recognise), so only the type is logged.
+        logger.error(  # noqa: TRY400 - a traceback would carry the SQL parameters
+            "Database error creating contact: phone=%s error_type=%s",
+            redact_phone(contact_data.phone_number),
+            type(e).__name__,
+        )
         raise HTTPException(
             status_code=503,
             detail="Database temporarily unavailable. Please try again later.",
         ) from e
     except Exception as e:
         await db.rollback()
-        logger.exception(
-            "Unexpected error creating contact: user_id=%d, phone=%s",
+        logger.error(  # noqa: TRY400 - a traceback would carry the SQL parameters
+            "Unexpected error creating contact: user_id=%d, phone=%s error_type=%s",
             user_id,
-            contact_data.phone_number,
+            redact_phone(contact_data.phone_number),
+            type(e).__name__,
         )
         raise HTTPException(
             status_code=500,

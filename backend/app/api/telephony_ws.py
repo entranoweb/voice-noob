@@ -39,6 +39,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.limits import TRANSCRIPT_MAX_CHARS, truncate_with_marker
+from app.core.log_redaction import log_exception
 from app.core.stream_token import STREAM_TOKEN_REJECTED, verify_stream_token
 from app.core.stream_token_use import claim_stream_token
 from app.db.session import get_db
@@ -417,7 +418,7 @@ def _emit_call_trace(
                 end_time_ns=base_time_ns + int(call_duration_s * 1_000_000_000),
             )
     except Exception:  # pragma: no cover - defensive; the emitter does not raise
-        logger.exception("call_trace_emit_failed", call_id=call_id)
+        log_exception(logger, "call_trace_emit_failed", None, call_id=call_id)
 
 
 def _record_transcript_event(
@@ -636,7 +637,7 @@ async def _persist_step(
     try:
         await write()
     except Exception:
-        log.exception("call_persistence_failed", step=name)
+        log_exception(log, "call_persistence_failed", None, step=name)
         with contextlib.suppress(Exception):
             await db.rollback()
 
@@ -676,7 +677,7 @@ async def _persist_call_artifacts(
     try:
         await db.rollback()
     except Exception:
-        log.warning("pre_persist_rollback_failed", exc_info=True)
+        log_exception(log, "pre_persist_rollback_failed", level="warning")
 
     if store_transcript:
         transcript = realtime_session.get_transcript()
@@ -847,7 +848,7 @@ async def twilio_media_stream(  # noqa: PLR0912, PLR0915
                 else:
                     log.warning("call_registration_refused", call_sid=sid)
             except Exception:
-                log.exception("call_registration_failed", call_sid=sid)
+                log_exception(log, "call_registration_failed", None, call_sid=sid)
 
         # Initialize GPT Realtime session
         conversation_over = False
@@ -889,7 +890,7 @@ async def twilio_media_stream(  # noqa: PLR0912, PLR0915
         log.info("twilio_websocket_disconnected")
     except Exception as e:
         call_failed = True
-        log.exception("twilio_websocket_error", error=str(e))
+        log_exception(log, "twilio_websocket_error", e)
     finally:
         # Unregister call and record metrics
         call_duration = time.time() - call_start_time
@@ -911,7 +912,7 @@ async def twilio_media_stream(  # noqa: PLR0912, PLR0915
                     duration_seconds=round(call_duration, 2),
                 )
             except Exception:
-                log.exception("call_unregistration_failed", call_sid=call_sid)
+                log_exception(log, "call_unregistration_failed", None, call_sid=call_sid)
         log.info("twilio_websocket_closed", stream_sid=stream_sid, call_sid=call_sid)
 
 
@@ -994,7 +995,7 @@ async def _handle_twilio_stream(  # noqa: PLR0915
             log.info("twilio_to_realtime_disconnected", close_code=disconnect.code)
             state.end(_carrier_disconnect_reason(disconnect))
         except Exception as e:
-            log.exception("twilio_to_realtime_error", error=str(e))
+            log_exception(log, "twilio_to_realtime_error", e)
             state.end(TerminationReason.PIPELINE_ERROR)
 
     async def realtime_to_twilio() -> None:  # noqa: PLR0912, PLR0915
@@ -1067,7 +1068,7 @@ async def _handle_twilio_stream(  # noqa: PLR0915
                             )
                         )
                     except Exception as audio_err:
-                        log.exception("audio_send_error", error=str(audio_err))
+                        log_exception(log, "audio_send_error", audio_err)
 
                 # Handle tool calls
                 elif event_type == "response.function_call_arguments.done":
@@ -1134,7 +1135,7 @@ async def _handle_twilio_stream(  # noqa: PLR0915
                     log.debug("realtime_event", event_type=event_type)
 
         except Exception as e:
-            log.exception("realtime_to_twilio_error", error=str(e))
+            log_exception(log, "realtime_to_twilio_error", e)
             state.end(TerminationReason.PIPELINE_ERROR)
 
     # Run both directions until either ends; the other is then ended with it
@@ -1297,7 +1298,7 @@ async def telnyx_media_stream(  # noqa: PLR0912, PLR0915
                 else:
                     log.warning("call_registration_refused", call_control_id=cid)
             except Exception:
-                log.exception("call_registration_failed", call_control_id=cid)
+                log_exception(log, "call_registration_failed", None, call_control_id=cid)
 
         # Initialize GPT Realtime session
         conversation_over = False
@@ -1339,7 +1340,7 @@ async def telnyx_media_stream(  # noqa: PLR0912, PLR0915
         log.info("telnyx_websocket_disconnected")
     except Exception as e:
         call_failed = True
-        log.exception("telnyx_websocket_error", error=str(e))
+        log_exception(log, "telnyx_websocket_error", e)
     finally:
         # Unregister call and record metrics
         call_duration = time.time() - call_start_time
@@ -1361,7 +1362,9 @@ async def telnyx_media_stream(  # noqa: PLR0912, PLR0915
                     duration_seconds=round(call_duration, 2),
                 )
             except Exception:
-                log.exception("call_unregistration_failed", call_control_id=call_control_id)
+                log_exception(
+                    log, "call_unregistration_failed", None, call_control_id=call_control_id
+                )
 
         # Only for a call that actually carried something: a stream that
         # announced itself, audio that moved, or a failure worth recording. A
@@ -1456,7 +1459,7 @@ async def _handle_telnyx_stream(  # noqa: PLR0915
             log.info("telnyx_to_realtime_disconnected", close_code=disconnect.code)
             state.end(_carrier_disconnect_reason(disconnect))
         except Exception as e:
-            log.exception("telnyx_to_realtime_error", error=str(e))
+            log_exception(log, "telnyx_to_realtime_error", e)
             state.end(TerminationReason.PIPELINE_ERROR)
 
     async def realtime_to_telnyx() -> None:  # noqa: PLR0912, PLR0915
@@ -1565,7 +1568,7 @@ async def _handle_telnyx_stream(  # noqa: PLR0915
                     log.debug("realtime_event", event_type=event_type)
 
         except Exception as e:
-            log.exception("realtime_to_telnyx_error", error=str(e))
+            log_exception(log, "realtime_to_telnyx_error", e)
             state.end(TerminationReason.PIPELINE_ERROR)
 
     # Run both directions until either ends; the other is then ended with it

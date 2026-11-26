@@ -17,6 +17,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.core.log_redaction import describe_exception
 from app.db.redis import get_redis
 from app.db.session import get_db
 from app.monitoring import loop_lag
@@ -37,6 +38,9 @@ async def health_check() -> dict[str, str]:
     }
 
 
+# These answer without a login. The body carries a fixed message and the exception
+# type; the detail (scrubbed) is in the log only, since a database error string
+# holds the statement and its parameters and a Redis one holds the host.
 @router.get("/health/db")
 async def health_check_db(response: Response, db: AsyncSession = Depends(get_db)) -> dict[str, str]:
     """Database health check endpoint."""
@@ -45,9 +49,9 @@ async def health_check_db(response: Response, db: AsyncSession = Depends(get_db)
         result.scalar()
         return {"status": "healthy", "database": "connected"}
     except Exception as e:
-        logger.exception("Database health check failed")
+        logger.error("Database health check failed: %s", describe_exception(e))  # noqa: TRY400
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
-        return {"status": "unhealthy", "database": str(e)}
+        return {"status": "unhealthy", "database": f"database unavailable ({type(e).__name__})"}
 
 
 @router.get("/health/redis")
@@ -66,9 +70,9 @@ async def health_check_redis(
         await redis.ping()
         return {"status": "healthy", "redis": "connected"}
     except Exception as e:
-        logger.exception("Redis health check failed")
+        logger.error("Redis health check failed: %s", describe_exception(e))  # noqa: TRY400
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
-        return {"status": "unhealthy", "redis": str(e)}
+        return {"status": "unhealthy", "redis": f"redis unavailable ({type(e).__name__})"}
 
 
 @router.get("/health/ready")
@@ -93,18 +97,18 @@ async def readiness_probe(
         result = await db.execute(text("SELECT 1"))
         result.scalar()
     except Exception as e:
-        logger.warning("Readiness check failed: database", exc_info=True)
+        logger.warning("Readiness check failed: database: %s", describe_exception(e))
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
-        return {"status": "not_ready", "reason": f"database: {e}"}
+        return {"status": "not_ready", "reason": f"database unavailable ({type(e).__name__})"}
 
     # Check Redis
     try:
         redis = await get_redis()
         await redis.ping()
     except Exception as e:
-        logger.warning("Readiness check failed: redis", exc_info=True)
+        logger.warning("Readiness check failed: redis: %s", describe_exception(e))
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
-        return {"status": "not_ready", "reason": f"redis: {e}"}
+        return {"status": "not_ready", "reason": f"redis unavailable ({type(e).__name__})"}
 
     return {"status": "ready"}
 
@@ -151,8 +155,8 @@ async def detailed_health(
         db_result.scalar()
         result["services"]["database"] = "healthy"
     except Exception as e:
-        logger.warning("Detailed health: database unhealthy", exc_info=True)
-        result["services"]["database"] = f"unhealthy: {e}"
+        logger.warning("Detailed health: database unhealthy: %s", describe_exception(e))
+        result["services"]["database"] = f"unhealthy: database unavailable ({type(e).__name__})"
         result["status"] = "degraded"
 
     # Check Redis
@@ -161,8 +165,8 @@ async def detailed_health(
         await redis.ping()
         result["services"]["redis"] = "healthy"
     except Exception as e:
-        logger.warning("Detailed health: redis unhealthy", exc_info=True)
-        result["services"]["redis"] = f"unhealthy: {e}"
+        logger.warning("Detailed health: redis unhealthy: %s", describe_exception(e))
+        result["services"]["redis"] = f"unhealthy: redis unavailable ({type(e).__name__})"
         result["status"] = "degraded"
 
     # Call registry stats
@@ -174,8 +178,8 @@ async def detailed_health(
                 "shutting_down": is_shutting_down(),
             }
         except Exception as e:
-            logger.warning("Detailed health: call registry error", exc_info=True)
-            result["calls"] = {"error": str(e)}
+            logger.warning("Detailed health: call registry error: %s", describe_exception(e))
+            result["calls"] = {"error": f"call registry unavailable ({type(e).__name__})"}
 
     if result["status"] != "healthy":
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
