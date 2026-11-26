@@ -4,12 +4,13 @@ from typing import Any
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.integrations import get_workspace_integrations
 from app.core.auth import CurrentUser, user_id_to_uuid
 from app.core.limiter import limiter
+from app.core.limits import SHORT_TEXT_MAX_CHARS, BoundedDict
 from app.core.ownership import get_owned_agent, owned_agent_workspace_id
 from app.db.session import get_db
 from app.services.tools.registry import ToolRegistry
@@ -25,9 +26,9 @@ TOOL_EXECUTE_LIMIT = "120/minute"
 class ToolExecuteRequest(BaseModel):
     """Request body for tool execution."""
 
-    tool_name: str
-    arguments: dict[str, Any]
-    agent_id: str
+    tool_name: str = Field(max_length=SHORT_TEXT_MAX_CHARS)
+    arguments: BoundedDict
+    agent_id: str = Field(max_length=SHORT_TEXT_MAX_CHARS)
 
 
 @router.post("/execute")

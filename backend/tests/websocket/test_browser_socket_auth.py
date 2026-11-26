@@ -37,6 +37,7 @@ from app.core.embed_session import (
     EMBED_SESSION_REJECTED,
     mint_embed_session,
 )
+from app.core.limits import TRANSCRIPT_MAX_CHARS
 from app.db.session import get_db
 from app.main import app
 from app.models.agent import Agent
@@ -489,6 +490,39 @@ class TestEmbedTranscript:
             record = (await session.execute(select(CallRecord))).scalar_one()
         assert record.provider_call_id == f"embed-{minted.session_id}"
         assert record.agent_id == env["agent"].id
+
+
+class TestEmbedTranscriptLimit:
+    async def _post(self, env: dict[str, Any], transcript: str) -> Any:
+        minted = mint_embed_session(agent_id=str(env["agent"].id), site="shop.example.com")
+        async with _client() as client:
+            return await client.post(
+                f"/api/public/embed/{env['agent'].public_id}/transcript",
+                headers={"Origin": CUSTOMER, "X-Embed-Session": minted.token},
+                json={"session_id": "s", "transcript": transcript, "duration_seconds": 5},
+            )
+
+    @pytest.mark.asyncio
+    async def test_a_transcript_over_the_limit_is_refused_and_nothing_is_written(
+        self, env: dict[str, Any]
+    ) -> None:
+        response = await self._post(env, "x" * (TRANSCRIPT_MAX_CHARS + 1))
+
+        assert response.status_code == 422
+        assert f"at most {TRANSCRIPT_MAX_CHARS} characters" in str(response.json()["detail"])
+        async with env["sessions"]() as session:
+            assert (await session.execute(select(CallRecord))).scalars().all() == []
+
+    @pytest.mark.asyncio
+    async def test_a_transcript_at_the_limit_is_stored_whole(self, env: dict[str, Any]) -> None:
+        transcript = "x" * TRANSCRIPT_MAX_CHARS
+
+        response = await self._post(env, transcript)
+
+        assert response.status_code == 200, response.text
+        async with env["sessions"]() as session:
+            record = (await session.execute(select(CallRecord))).scalar_one()
+        assert record.transcript == transcript
 
 
 class TestEmbedSocket:

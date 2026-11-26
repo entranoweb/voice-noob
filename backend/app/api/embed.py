@@ -32,7 +32,7 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
 )
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -52,6 +52,12 @@ from app.core.embed_session import (
     verify_embed_session,
 )
 from app.core.limiter import limiter
+from app.core.limits import (
+    MAX_DURATION_SECONDS,
+    SHORT_TEXT_MAX_CHARS,
+    TRANSCRIPT_MAX_CHARS,
+    BoundedDict,
+)
 from app.core.ownership import AGENT_WORKSPACE_ORDER
 from app.core.stream_token_use import claim_stream_token
 from app.db.session import get_db
@@ -714,16 +720,16 @@ async def get_embed_ephemeral_token(  # noqa: PLR0915
 class ToolCallRequest(BaseModel):
     """Request model for tool execution."""
 
-    tool_name: str
-    arguments: dict[str, Any]
+    tool_name: str = Field(max_length=SHORT_TEXT_MAX_CHARS)
+    arguments: BoundedDict
 
 
 class SaveTranscriptRequest(BaseModel):
     """Request model for saving call transcript."""
 
-    session_id: str
-    transcript: str
-    duration_seconds: int = 0
+    session_id: str = Field(max_length=SHORT_TEXT_MAX_CHARS)
+    transcript: str = Field(max_length=TRANSCRIPT_MAX_CHARS)
+    duration_seconds: int = Field(default=0, ge=0, le=MAX_DURATION_SECONDS)
 
 
 @router.post("/{public_id}/tool-call")

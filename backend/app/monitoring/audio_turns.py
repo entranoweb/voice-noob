@@ -67,6 +67,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.core.limits import TRANSCRIPT_MAX_CHARS, truncation_marker
 from app.monitoring.call_trace import Speaker, ToolOutcome
 
 # G.711 (both µ-law and A-law) is one byte per sample. The sample rate is the
@@ -137,6 +138,12 @@ class AudioTurnRecorder:
     _caller_speech_ended_at: float | None = field(default=None, init=False)
     _audio_observed: bool = field(default=False, init=False)
     _scripted_index: int = field(default=0, init=False)
+    # Recognised text kept so far, and text dropped past TRANSCRIPT_MAX_CHARS. The
+    # turns are stored on the call record, so their words are bounded like the
+    # transcript is: the call carries on, the stored text is cut and says so.
+    _text_chars: int = field(default=0, init=False)
+    _text_omitted: int = field(default=0, init=False)
+    _last_cut_turn: _Turn | None = field(default=None, init=False)
 
     # -- caller side ------------------------------------------------------
 
@@ -183,7 +190,7 @@ class AudioTurnRecorder:
             self._audio_observed = True
 
         if self.retain_text:
-            turn.text_transcribed = text
+            turn.text_transcribed = self._admit_text(text, turn)
             # Only a scripted caller has an intention distinct from what was heard.
             if self._scripted_index < len(self.intended_caller_script):
                 turn.text_intended = self.intended_caller_script[self._scripted_index]
@@ -233,7 +240,7 @@ class AudioTurnRecorder:
             turn = _Turn(speaker=Speaker.AGENT, started_at=_now() if at is None else at)
             self._turns.append(turn)
         if self.retain_text:
-            turn.text_intended = (turn.text_intended or "") + delta
+            turn.text_intended = (turn.text_intended or "") + self._admit_text(delta, turn)
 
     def agent_turn_ended(self, *, interrupted: bool = False, at: float | None = None) -> None:
         """The agent's turn finished, either naturally or because it was cut off."""
@@ -347,6 +354,10 @@ class AudioTurnRecorder:
             # side's text onto the other.
             record["text_intended"] = turn.text_intended
             record["text_transcribed"] = turn.text_transcribed
+            if turn is self._last_cut_turn:
+                # Where text stopped being kept, and how much was left out in all.
+                key = "text_intended" if turn.speaker is Speaker.AGENT else "text_transcribed"
+                record[key] = f"{record[key] or ''}\n{truncation_marker(self._text_omitted)}"
 
             if turn.ttfb_ms is not None:
                 record["ttfb_ms"] = turn.ttfb_ms
@@ -364,6 +375,20 @@ class AudioTurnRecorder:
 
             records.append(record)
         return records
+
+    def _admit_text(self, text: str, turn: _Turn) -> str:
+        """``text`` as far as the cap allows; what does not fit is counted.
+
+        The turn that first lost text is remembered, so the stored turns say
+        where the cut happened.
+        """
+        room = max(TRANSCRIPT_MAX_CHARS - self._text_chars, 0)
+        kept = text[:room]
+        self._text_chars += len(kept)
+        if len(kept) < len(text):
+            self._text_omitted += len(text) - len(kept)
+            self._last_cut_turn = turn
+        return kept
 
     # -- internals --------------------------------------------------------
 

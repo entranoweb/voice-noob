@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.integrations import get_workspace_integrations
 from app.api.settings import get_user_api_keys
 from app.core.auth import user_id_to_uuid
+from app.core.limits import TRANSCRIPT_MAX_CHARS, truncation_marker
 from app.core.safe_http import assert_public_url
 from app.services.realtime_models import input_transcription, realtime_model_for_tier
 from app.services.tools.registry import ToolRegistry
@@ -186,6 +187,10 @@ class GPTRealtimeSession:
         # Transcript accumulation
         self._transcript_entries: list[TranscriptEntry] = []
         self._current_assistant_text: str = ""
+        # Characters kept so far, and characters dropped once the stored
+        # transcript reached TRANSCRIPT_MAX_CHARS. A long call is cut, never failed.
+        self._transcript_chars: int = 0
+        self._transcript_omitted: int = 0
         # Initial greeting (triggered after event loop starts to avoid race condition)
         self._pending_initial_greeting: str | None = None
         self._greeting_triggered: bool = False
@@ -637,15 +642,29 @@ class GPTRealtimeSession:
         except Exception as e:
             self.logger.exception("send_audio_error", error=str(e), error_type=type(e).__name__)
 
+    def _admit_transcript_text(self, role: str, text: str) -> None:
+        """Keep ``text`` as an entry while the cap allows; count what it drops."""
+        text = text.strip()
+        if not text:
+            return
+        room = max(TRANSCRIPT_MAX_CHARS - self._transcript_chars, 0)
+        kept = text[:room]
+        self._transcript_omitted += len(text) - len(kept)
+        if kept:
+            self._transcript_entries.append(TranscriptEntry(role=role, content=kept))
+            self._transcript_chars += len(kept)
+        if len(kept) < len(text):
+            self.logger.warning(
+                "transcript_cap_reached", cap=TRANSCRIPT_MAX_CHARS, omitted=self._transcript_omitted
+            )
+
     def add_user_transcript(self, text: str) -> None:
         """Add a user transcript entry.
 
         Args:
             text: Transcribed user speech
         """
-        if text.strip():
-            self._transcript_entries.append(TranscriptEntry(role="user", content=text.strip()))
-            self.logger.debug("user_transcript_added", text_length=len(text))
+        self._admit_transcript_text("user", text)
 
     def add_assistant_transcript(self, text: str) -> None:
         """Add an assistant transcript entry.
@@ -653,9 +672,7 @@ class GPTRealtimeSession:
         Args:
             text: Assistant response text
         """
-        if text.strip():
-            self._transcript_entries.append(TranscriptEntry(role="assistant", content=text.strip()))
-            self.logger.debug("assistant_transcript_added", text_length=len(text))
+        self._admit_transcript_text("assistant", text)
 
     def accumulate_assistant_text(self, delta: str) -> None:
         """Accumulate assistant text delta for transcript.
@@ -663,7 +680,13 @@ class GPTRealtimeSession:
         Args:
             delta: Text delta from response.text.delta event
         """
-        self._current_assistant_text += delta
+        # One response is held in memory until it is flushed; it may not outgrow
+        # what the transcript could still keep.
+        room = max(
+            TRANSCRIPT_MAX_CHARS - self._transcript_chars - len(self._current_assistant_text), 0
+        )
+        self._current_assistant_text += delta[:room]
+        self._transcript_omitted += len(delta) - len(delta[:room])
 
     def flush_assistant_text(self) -> None:
         """Flush accumulated assistant text to transcript."""
@@ -681,6 +704,8 @@ class GPTRealtimeSession:
         for entry in self._transcript_entries:
             role_label = "User" if entry.role == "user" else "Assistant"
             lines.append(f"[{role_label}]: {entry.content}")
+        if self._transcript_omitted:
+            lines.append(truncation_marker(self._transcript_omitted))
         return "\n\n".join(lines)
 
     def get_transcript_entries(self) -> list[dict[str, str]]:

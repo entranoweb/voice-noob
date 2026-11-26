@@ -5,7 +5,7 @@ from datetime import datetime
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import desc, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.audit import AuditAction, record_audit
 from app.core.auth import CurrentUser, user_id_to_uuid
 from app.core.limiter import limiter
+from app.core.limits import NOTES_MAX_CHARS
 from app.core.ownership import get_owned_agent, number_variants, parse_uuid
 from app.db.session import get_db
 from app.models.phone_number import PhoneNumber, PhoneNumberStatus
@@ -104,7 +105,7 @@ class CreatePhoneNumberRequest(BaseModel):
     can_make_calls: bool = True
     can_receive_sms: bool = False
     can_send_sms: bool = False
-    notes: str | None = None
+    notes: str | None = Field(default=None, max_length=NOTES_MAX_CHARS)
 
 
 class UpdatePhoneNumberRequest(BaseModel):
@@ -114,7 +115,7 @@ class UpdatePhoneNumberRequest(BaseModel):
     workspace_id: str | None = None
     assigned_agent_id: str | None = None
     status: str | None = None
-    notes: str | None = None
+    notes: str | None = Field(default=None, max_length=NOTES_MAX_CHARS)
 
 
 # =============================================================================

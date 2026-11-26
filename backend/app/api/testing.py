@@ -5,16 +5,25 @@ Provides endpoints for managing test scenarios and running tests.
 
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import Annotated, Any
 
 import structlog
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StringConstraints
 from sqlalchemy import desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import CurrentUser
 from app.core.config import settings
+from app.core.limits import (
+    DESCRIPTION_MAX_CHARS,
+    MAX_LIST_ITEMS,
+    MAX_TURNS,
+    SHORT_TEXT_MAX_CHARS,
+    TURN_TEXT_MAX_CHARS,
+    BoundedDict,
+    BoundedDictList,
+)
 from app.db.session import AsyncSessionLocal, get_db
 from app.models.agent import Agent
 from app.models.test_scenario import (
@@ -150,14 +159,18 @@ class InlineCheckRequest(BaseModel):
     """
 
     agent_id: str
-    says: list[str] = Field(min_length=1, description="Caller turns, in order")
-    invokes: list[str] = Field(default_factory=list, description="Tools that must be called")
-    leaves: dict[str, Any] | None = Field(
+    says: list[Annotated[str, StringConstraints(max_length=TURN_TEXT_MAX_CHARS)]] = Field(
+        min_length=1, max_length=MAX_TURNS, description="Caller turns, in order"
+    )
+    invokes: list[Annotated[str, StringConstraints(max_length=SHORT_TEXT_MAX_CHARS)]] = Field(
+        default_factory=list, max_length=MAX_LIST_ITEMS, description="Tools that must be called"
+    )
+    leaves: BoundedDict | None = Field(
         default=None,
         description="Database state the run must produce",
     )
-    given: dict[str, Any] | None = Field(default=None, description="Rows to seed before the run")
-    persona: dict[str, Any] | None = None
+    given: BoundedDict | None = Field(default=None, description="Rows to seed before the run")
+    persona: BoundedDict | None = None
     max_response_ms: float | None = None
     workspace_id: str | None = None
     judge: bool = Field(default=False, description="Also run the qualitative judge")
@@ -230,32 +243,40 @@ class TestScenarioCreate(BaseModel):
     """Create test scenario request."""
 
     name: str = Field(..., max_length=200)
-    description: str | None = None
+    description: str | None = Field(default=None, max_length=DESCRIPTION_MAX_CHARS)
     category: str
     difficulty: str
-    caller_persona: dict[str, Any]
-    conversation_flow: list[dict[str, Any]]
-    expected_behaviors: list[str]
-    expected_tool_calls: list[dict[str, Any]] | None = None
-    success_criteria: dict[str, Any]
+    caller_persona: BoundedDict
+    conversation_flow: BoundedDictList = Field(max_length=MAX_TURNS)
+    expected_behaviors: list[
+        Annotated[str, StringConstraints(max_length=DESCRIPTION_MAX_CHARS)]
+    ] = Field(max_length=MAX_LIST_ITEMS)
+    expected_tool_calls: BoundedDictList | None = Field(default=None, max_length=MAX_LIST_ITEMS)
+    success_criteria: BoundedDict
     workspace_id: str | None = None
-    tags: list[str] | None = None
+    tags: list[Annotated[str, StringConstraints(max_length=SHORT_TEXT_MAX_CHARS)]] | None = Field(
+        default=None, max_length=MAX_LIST_ITEMS
+    )
 
 
 class TestScenarioUpdate(BaseModel):
     """Update test scenario request."""
 
     name: str | None = Field(None, max_length=200)
-    description: str | None = None
+    description: str | None = Field(default=None, max_length=DESCRIPTION_MAX_CHARS)
     category: str | None = None
     difficulty: str | None = None
-    caller_persona: dict[str, Any] | None = None
-    conversation_flow: list[dict[str, Any]] | None = None
-    expected_behaviors: list[str] | None = None
-    expected_tool_calls: list[dict[str, Any]] | None = None
-    success_criteria: dict[str, Any] | None = None
+    caller_persona: BoundedDict | None = None
+    conversation_flow: BoundedDictList | None = Field(default=None, max_length=MAX_TURNS)
+    expected_behaviors: (
+        list[Annotated[str, StringConstraints(max_length=DESCRIPTION_MAX_CHARS)]] | None
+    ) = Field(default=None, max_length=MAX_LIST_ITEMS)
+    expected_tool_calls: BoundedDictList | None = Field(default=None, max_length=MAX_LIST_ITEMS)
+    success_criteria: BoundedDict | None = None
     is_active: bool | None = None
-    tags: list[str] | None = None
+    tags: list[Annotated[str, StringConstraints(max_length=SHORT_TEXT_MAX_CHARS)]] | None = Field(
+        default=None, max_length=MAX_LIST_ITEMS
+    )
 
 
 class DuplicateScenarioResponse(BaseModel):

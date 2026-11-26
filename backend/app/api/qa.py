@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.auth import CurrentUser, user_id_to_uuid
 from app.core.config import settings
 from app.core.limiter import limiter
+from app.core.limits import MAX_LIST_ITEMS
 from app.db.session import get_db
 from app.models.call_evaluation import CallEvaluation
 from app.models.call_record import CallRecord
@@ -161,7 +162,7 @@ class EvaluateCallResponse(BaseModel):
 class BatchEvaluateRequest(BaseModel):
     """Batch evaluation request."""
 
-    call_ids: list[str]
+    call_ids: list[str] = Field(max_length=MAX_LIST_ITEMS)
     max_concurrent: int = Field(default=5, ge=1, le=10)
 
 

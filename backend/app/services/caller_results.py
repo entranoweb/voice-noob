@@ -28,12 +28,15 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
+from app.core import limits
+
 BUNDLE_FORMAT = "synthiq-caller-bundle"
 # The newest bundle version this code was written against. A higher number is
 # accepted: its unknown parts ride along in ``raw``.
 KNOWN_BUNDLE_VERSION = 1
 
 MAX_BUNDLE_BYTES = 25 * 1024 * 1024
+MAX_CALL_PAYLOAD_BYTES = limits.MAX_CALL_PAYLOAD_BYTES
 MAX_CALLS = 2000
 MAX_NOT_RUN = 5000
 
@@ -256,6 +259,12 @@ def parse_bundle(body: bytes) -> ParsedBundle:
     for index, entry in enumerate(runs, start=1):
         if not isinstance(entry, dict):
             raise BundleError(f"runs[{index - 1}] is not an object")
+        payload_size = len(json.dumps(entry, separators=(",", ":")))
+        if payload_size > MAX_CALL_PAYLOAD_BYTES:
+            raise BundleError(
+                f"runs[{index - 1}] is {payload_size} bytes; the most one call may hold is "
+                f"{MAX_CALL_PAYLOAD_BYTES}"
+            )
         calls.append(_call(index, entry))
 
     batch = _dict(data.get("batch"))

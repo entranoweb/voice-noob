@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import AuditAction, record_audit
 from app.core.auth import CurrentUser, user_id_to_uuid
+from app.core.limits import BoundedDict
 from app.db.session import get_db
 from app.models.user_integration import UserIntegration
 from app.models.workspace import Workspace
@@ -21,10 +22,10 @@ router = APIRouter(prefix="/api/v1/integrations", tags=["integrations"])
 class IntegrationCredentials(BaseModel):
     """Credentials for connecting an integration."""
 
-    credentials: dict[str, Any] = Field(
+    credentials: BoundedDict = Field(
         ..., description="Integration credentials (api_key, access_token, etc.)"
     )
-    metadata: dict[str, Any] | None = Field(
+    metadata: BoundedDict | None = Field(
         None, description="Additional integration-specific metadata"
     )
 
@@ -37,10 +38,10 @@ class ConnectIntegrationRequest(BaseModel):
     workspace_id: str | None = Field(
         None, description="Workspace ID (null for user-level integration)"
     )
-    credentials: dict[str, Any] = Field(
+    credentials: BoundedDict = Field(
         ..., description="Integration credentials (api_key, access_token, etc.)"
     )
-    metadata: dict[str, Any] | None = Field(
+    metadata: BoundedDict | None = Field(
         None, description="Additional integration-specific metadata"
     )
 
@@ -48,10 +49,10 @@ class ConnectIntegrationRequest(BaseModel):
 class UpdateIntegrationRequest(BaseModel):
     """Request to update integration credentials."""
 
-    credentials: dict[str, Any] | None = Field(
+    credentials: BoundedDict | None = Field(
         None, description="Updated credentials (partial update supported)"
     )
-    metadata: dict[str, Any] | None = Field(None, description="Updated metadata")
+    metadata: BoundedDict | None = Field(None, description="Updated metadata")
     is_active: bool | None = Field(None, description="Enable/disable integration")
 
 

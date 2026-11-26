@@ -13,6 +13,7 @@ from sqlalchemy.orm import selectinload
 
 from app.core.auth import CurrentUser
 from app.core.limiter import limiter
+from app.core.limits import BoundedDict
 from app.db.session import get_db
 from app.models.agent import Agent
 from app.models.contact import Contact
@@ -65,7 +66,7 @@ class WorkspaceCreate(BaseModel):
 
     name: str
     description: str | None = None
-    settings: dict[str, Any] | None = None
+    settings: BoundedDict | None = None
 
     @field_validator("name")
     @classmethod
@@ -96,7 +97,7 @@ class WorkspaceUpdate(BaseModel):
 
     name: str | None = None
     description: str | None = None
-    settings: dict[str, Any] | None = None
+    settings: BoundedDict | None = None
     is_default: bool | None = None
     # Days the audio of this workspace's caller calls is kept (the retention job
     # deletes it after). Omit to leave it unchanged.

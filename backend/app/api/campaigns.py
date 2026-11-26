@@ -4,12 +4,13 @@ import uuid
 from datetime import UTC, datetime, time
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.auth import CurrentUser, user_id_to_uuid
+from app.core.limits import DESCRIPTION_MAX_CHARS, MAX_CONTACT_IDS, NOTES_MAX_CHARS
 from app.core.ownership import get_owned_agent, get_owned_workspace
 from app.db.session import get_db
 from app.models.campaign import (
@@ -109,7 +110,7 @@ class CampaignCreate(BaseModel):
     workspace_id: str
     agent_id: str
     name: str
-    description: str | None = None
+    description: str | None = Field(default=None, max_length=DESCRIPTION_MAX_CHARS)
     from_phone_number: str
     scheduled_start: datetime | None = None
     scheduled_end: datetime | None = None
@@ -123,7 +124,7 @@ class CampaignCreate(BaseModel):
     max_concurrent_calls: int = 1
     max_attempts_per_contact: int = 3
     retry_delay_minutes: int = 60
-    contact_ids: list[int] = []
+    contact_ids: list[int] = Field(default=[], max_length=MAX_CONTACT_IDS)
 
     @field_validator("workspace_id", "agent_id")
     @classmethod
@@ -204,7 +205,7 @@ class CampaignUpdate(BaseModel):
     """Campaign update schema."""
 
     name: str | None = None
-    description: str | None = None
+    description: str | None = Field(default=None, max_length=DESCRIPTION_MAX_CHARS)
     from_phone_number: str | None = None
     scheduled_start: datetime | None = None
     scheduled_end: datetime | None = None
@@ -223,7 +224,7 @@ class CampaignUpdate(BaseModel):
 class AddContactsRequest(BaseModel):
     """Request to add contacts to campaign."""
 
-    contact_ids: list[int]
+    contact_ids: list[int] = Field(max_length=MAX_CONTACT_IDS)
 
 
 class AddContactsByFilterRequest(BaseModel):
@@ -258,7 +259,7 @@ class UpdateDispositionRequest(BaseModel):
     """Request to update contact disposition."""
 
     disposition: str
-    disposition_notes: str | None = None
+    disposition_notes: str | None = Field(default=None, max_length=NOTES_MAX_CHARS)
     callback_requested_at: datetime | None = None
 
     @field_validator("disposition")

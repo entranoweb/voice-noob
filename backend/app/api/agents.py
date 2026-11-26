@@ -11,6 +11,12 @@ from app.core.audit import AuditAction, record_audit
 from app.core.auth import CurrentUser
 from app.core.config import settings
 from app.core.limiter import limiter
+from app.core.limits import (
+    DESCRIPTION_MAX_CHARS,
+    PROMPT_MAX_CHARS,
+    TURN_TEXT_MAX_CHARS,
+    BoundedDict,
+)
 from app.core.ownership import ensure_phone_reference_is_owned, parse_uuid
 from app.core.public_id import generate_public_id
 from app.core.public_url import frontend_base_url
@@ -28,9 +34,9 @@ class CreateAgentRequest(BaseModel):
     """Request to create a voice agent."""
 
     name: str = Field(..., min_length=1, max_length=200)
-    description: str | None = None
+    description: str | None = Field(default=None, max_length=DESCRIPTION_MAX_CHARS)
     pricing_tier: str = Field(..., pattern="^(budget|balanced|premium-mini|premium)$")
-    system_prompt: str = Field(..., min_length=10)
+    system_prompt: str = Field(..., min_length=10, max_length=PROMPT_MAX_CHARS)
     language: str = Field(default="en-US")
     voice: str = Field(default="shimmer")
     enabled_tools: list[str] = Field(default_factory=list)
@@ -52,6 +58,7 @@ class CreateAgentRequest(BaseModel):
     # Initial greeting (optional)
     initial_greeting: str | None = Field(
         default=None,
+        max_length=TURN_TEXT_MAX_CHARS,
         description="Optional initial greeting the agent speaks when call starts",
     )
 
@@ -60,9 +67,9 @@ class UpdateAgentRequest(BaseModel):
     """Request to update a voice agent."""
 
     name: str | None = Field(None, min_length=1, max_length=200)
-    description: str | None = None
+    description: str | None = Field(default=None, max_length=DESCRIPTION_MAX_CHARS)
     pricing_tier: str | None = Field(None, pattern="^(budget|balanced|premium-mini|premium)$")
-    system_prompt: str | None = Field(None, min_length=10)
+    system_prompt: str | None = Field(None, min_length=10, max_length=PROMPT_MAX_CHARS)
     language: str | None = None
     voice: str | None = None
     enabled_tools: list[str] | None = None
@@ -85,6 +92,7 @@ class UpdateAgentRequest(BaseModel):
     # Initial greeting (optional)
     initial_greeting: str | None = Field(
         default=None,
+        max_length=TURN_TEXT_MAX_CHARS,
         description="Optional initial greeting the agent speaks when call starts",
     )
 
@@ -535,7 +543,7 @@ class UpdateEmbedSettingsRequest(BaseModel):
 
     embed_enabled: bool | None = None
     allowed_domains: list[str] | None = None
-    embed_settings: dict[str, Any] | None = None
+    embed_settings: BoundedDict | None = None
 
 
 @router.get("/{agent_id}/embed", response_model=EmbedSettingsResponse)
