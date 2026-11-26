@@ -102,6 +102,26 @@ def altered(payload: dict[str, Any]) -> bool | None:
     return not (isinstance(block, dict) and block.get("sha256") == digest(payload))
 
 
+def verdict(path: Path, payload: dict[str, Any]) -> str:
+    """``ok``, ``altered``, ``stripped`` or ``unstamped`` for one stored file (as ``check``).
+
+    ``stripped``: no digest in a file that belongs to a planned batch (the rig stamps every one,
+    so it was removed). ``unstamped``: no digest, written before the rig stamped files.
+    """
+    from synthiq_caller import manifest
+
+    state = altered(payload)
+    if state is not None:
+        return ALTERED if state else "ok"
+    document = manifest.load(path.parent)
+    ids = {
+        str(e.get("id"))
+        for e in (document or {}).get("entries", [])
+        if e.get("kind") == "batch" and isinstance(e.get("plan"), dict)
+    }
+    return "stripped" if str(payload.get("batch", "")) in ids else "unstamped"
+
+
 @dataclass
 class Completeness:
     status: str = UNKNOWN
