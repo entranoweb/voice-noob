@@ -69,6 +69,20 @@ from synthiq_caller.manifestcsv import ManifestError, read_rows
 
 MARK = "clips_removed"
 
+# Every top-level key the rig writes into a result file (run, phone run, chain): the batch
+# payload, what a leg adds about its line, what a chain call adds, regrade, a phone run, the
+# digest and forget's own mark. Anything else in a file is a hand-added field.
+RIG_FIELDS = frozenset(
+    {
+        "scenario_file", "leg", "mutates", "states_expectations", "repeat", "record", "trace",
+        "trace_error", "read_back", "read_back_error", "hook_error", "labels_unverified",
+        "provenance_unknown", "consent_missing", "synthetic_clips", "grade", "rehearsal",
+        "batch", "carrier_call_ref", "phone", "audio", "chain", "variables", "dry_run",
+        "recordings", "chain_file", "outcome", "uncaptured", "reason", "calls", "integrity",
+        "fault", MARK,
+    }
+)  # fmt: skip
+
 UPLOAD_REMINDER = (
     "NOT DONE: runs uploaded to a dashboard (upload.json marks a directory that was uploaded) "
     "still hold these clip names and what the caller said. Delete those runs on the server, "
@@ -1159,8 +1173,29 @@ def _rewrite_file(path: Path, stems: list[str], removal: str, everywhere: bool =
     _write_atomic(path, _dump_scenario(path, data, text))
 
 
+def altered_results(plan: Plan) -> dict[Path, str]:
+    """The result files this plan would mark that are not what the rig wrote: file -> why."""
+    found: dict[Path, str] = {}
+    for path in plan.results:
+        state = verdict(path, json.loads(path.read_text(encoding="utf-8")))
+        if state in (ALTERED, "stripped"):
+            found[path] = (
+                "it was edited after the rig wrote it (its digest does not match)"
+                if state == ALTERED
+                else "its integrity digest was removed after the rig wrote it"
+            )
+    return found
+
+
 def _mark_result(
-    path: Path, plan: Plan, removal: str, day: str, todo: list[str], *, wipe: bool
+    path: Path,
+    plan: Plan,
+    removal: str,
+    day: str,
+    todo: list[str],
+    *,
+    wipe: bool,
+    cleared: dict[str, list[str]] | None = None,
 ) -> None:
     data = json.loads(path.read_text(encoding="utf-8"))
     held = [m for m in data.get(MARK, []) if isinstance(m, dict)]
@@ -1183,6 +1218,13 @@ def _mark_result(
     ]
     data[MARK] = sorted(held, key=lambda m: str(m.get("clip")))
     state = verdict(path, json.loads(path.read_text(encoding="utf-8")))
+    if state in (ALTERED, "stripped") and cleared is not None:
+        # --erase-altered: a field the rig does not write may hold what was said; clear it
+        hand = sorted(k for k in data if k not in RIG_FIELDS)
+        for key in hand:
+            del data[key]
+        if hand:
+            cleared[_label(path)] = hand
     if state == "unstamped":
         write_json(path, data)  # written before digests existed: nothing to vouch for or lose
         return
@@ -1217,7 +1259,8 @@ def execute(
     keep_text: bool = False,
     verify: Callable[[], list[str]] | None = None,
     everywhere: bool = False,
-) -> tuple[str, list[str], list[str]]:
+    erase_altered: bool = False,
+) -> tuple[str, list[str], list[str], dict[str, list[str]]]:
     """Carry the plan out; return the id of the record and what failed (empty when nothing).
 
     The record is appended first (outcome ``started``), so a run that dies leaves
@@ -1241,6 +1284,7 @@ def execute(
     }
     removals.append(log, {**base, "outcome": "started"})
     failed: list[str] = []
+    cleared: dict[str, list[str]] = {}  # hand-added fields removed from altered files
     untouched: list[str] = []  # erased, but already altered: the digest was left as it was
     done = {"audio_files": 0, "manifest_rows": 0, "overrides": 0, "scenarios": 0, "results": 0}
 
@@ -1281,7 +1325,16 @@ def execute(
         attempt(
             "mark",
             path,
-            partial(_mark_result, path, plan, removal, day, todo, wipe=wipe),
+            partial(
+                _mark_result,
+                path,
+                plan,
+                removal,
+                day,
+                todo,
+                wipe=wipe,
+                cleared=cleared if erase_altered else None,
+            ),
             "results",
         )
     for path, clips in plan.rows.items():
@@ -1313,6 +1366,8 @@ def execute(
             "outcome": "incomplete" if failed else "complete",
             "failed": failed,
             "digest_untouched": untouched,
+            "erase_altered": erase_altered,
+            "cleared_fields": cleared,
             "effects": {
                 **done,
                 "scenario_files": sorted(p.name for p in plan.scenarios),
@@ -1320,7 +1375,7 @@ def execute(
             },
         },
     )
-    return removal, failed, untouched
+    return removal, failed, untouched, cleared
 
 
 def _left_to_do(plan: Plan) -> list[str]:
@@ -1396,6 +1451,22 @@ def run(args: argparse.Namespace) -> int:
         finishing=[str(r["removal"]) for r in pending],
     ):
         print(line)
+    erase_altered = bool(getattr(args, "erase_altered", False))
+    refused = altered_results(plan)
+    if refused and not erase_altered:
+        # Nothing has been written yet and nothing will be: erasing first and reporting after
+        # would destroy the evidence of what was edited.
+        print(f"forget: REFUSED: {len(refused)} result file(s) are not what the rig wrote:")
+        for path, why in refused.items():
+            print(f"  {_label(path)}: {why}")
+        print(
+            "Nothing was changed: no audio removed, no scenario rewritten, no value blanked. "
+            "Find out who changed them and why, then regenerate them (rerun the calls) or keep "
+            "them out of --results. Only the owner may override this: --erase-altered erases "
+            "anyway, blanks the forgotten values and clears every field the rig does not "
+            "write in those files (each is listed), and leaves their digest untouched."
+        )
+        return 1
     if args.dry_run:
         return 0
     if not (plan.changes or pending):
@@ -1416,7 +1487,7 @@ def run(args: argparse.Namespace) -> int:
         return [f"left to do after the run: {line}" for line in _left_to_do(again)]
 
     try:
-        removal, failed, untouched = execute(
+        removal, failed, untouched, cleared = execute(
             plan,
             banks,
             operator=args.operator,
@@ -1425,6 +1496,7 @@ def run(args: argparse.Namespace) -> int:
             keep_text=args.keep_text,
             verify=recheck,
             everywhere=everywhere,
+            erase_altered=erase_altered,
         )
     except OSError as error:
         print(f"forget: INCOMPLETE: the removal log could not be written ({error!r})")
@@ -1436,6 +1508,8 @@ def run(args: argparse.Namespace) -> int:
         print("The record says so. Fix the cause and run the same command again to finish.")
         return 1
     print(f"removal {removal} complete; recorded in {log}")
+    for name, fields in cleared.items():
+        print(f"forget: cleared hand-added field(s) from {name}: {', '.join(fields)}")
     if untouched:
         print(
             f"forget: {len(untouched)} result file(s) were already altered, so their integrity "
@@ -1498,6 +1572,13 @@ def register(sub: Any) -> None:
         help="also blank every whole-word match of a forgotten answer (and each word of a short "
         "name) anywhere in a scenario; without it a short answer is only blanked beside its "
         "own step, and a match left elsewhere is reported and the run is not complete",
+    )
+    parser.add_argument(
+        "--erase-altered",
+        action="store_true",
+        help="OWNER ONLY: without it forget refuses, changing nothing, when a result file it "
+        "would mark was edited or lost its digest. With it forget erases anyway, clears every "
+        "field the rig does not write in those files (listed) and leaves their digest alone",
     )
     parser.add_argument(
         "--dry-run", action="store_true", help="list everything it would touch; change nothing"

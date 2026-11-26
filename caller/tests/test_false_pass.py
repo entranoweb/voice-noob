@@ -35,40 +35,67 @@ def stamped_result(world: dict[str, Path]) -> Path:
     return path
 
 
-@pytest.mark.parametrize("how", ["edited", "stripped"])
-def test_forget_does_not_restamp_a_result_that_was_already_altered(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str], how: str
-) -> None:
+def snapshot(world: dict[str, Path]) -> dict[str, bytes]:
+    return {str(p): p.read_bytes() for d in world.values() if d.is_dir() for p in d.rglob("*")}
+
+
+def altered_world(tmp_path: Path, how: str) -> tuple[dict[str, Path], Path, Any]:
     world = forget_world(tmp_path)
     path = stamped_result(world)
     data = read(path)
     data["grade"]["outcome"] = "passed"  # the hand edit
+    data["notes"] = "Zebediah said this"  # a field the rig does not write
     if how == "stripped":
         del data["integrity"]
     write_json(path, data)
-    before = data.get("integrity")
+    return world, path, data.get("integrity")
+
+
+@pytest.mark.parametrize("how", ["edited", "stripped"])
+def test_forget_refuses_by_default_and_changes_nothing_when_a_result_was_altered(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], how: str
+) -> None:
+    world, path, _ = altered_world(tmp_path, how)
+    before = snapshot(world)
 
     code = cli.main(forget_args(world, "a1"))
     out = capsys.readouterr().out
 
-    after = read(path)
-    # the erasure still happens: the forgotten person's words are gone
-    assert after["clips_removed"] and "Zebediah" not in path.read_text(encoding="utf-8")
-    # but the file is NOT vouched for: it is exactly as untrustworthy as it was
-    assert after.get("integrity") == before
-    assert completeness.altered(after) is (True if how == "edited" else None)
-    # and forget says so, and does not end complete
     assert code == 1
-    assert "run-001.json" in out and "already altered" in out
-    # the erasure is DONE: it is not reported as a step that failed, and nothing is left to rerun
-    assert "INCOMPLETE" not in out and "erasure is done" in out
+    assert snapshot(world) == before  # byte for byte: no audio, scenario, row or value touched
+    assert "REFUSED" in out and "run-001.json" in out and "--erase-altered" in out
+    assert ("digest does not match" if how == "edited" else "digest was removed") in out
+    assert not (world["bank"] / "removals.jsonl").exists()  # not even a started record
+    # a dry run says the same and changes nothing
+    assert cli.main([*forget_args(world, "a1"), "--dry-run"]) == 1
+    assert snapshot(world) == before
+
+
+@pytest.mark.parametrize("how", ["edited", "stripped"])
+def test_forget_with_erase_altered_blanks_clears_hand_fields_and_leaves_the_digest(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], how: str
+) -> None:
+    world, path, digest = altered_world(tmp_path, how)
+
+    code = cli.main([*forget_args(world, "a1"), "--erase-altered"])
+    out = capsys.readouterr().out
+
+    after = read(path)
+    text = path.read_text(encoding="utf-8")
+    assert "Zebediah" not in text and after["clips_removed"]  # values blanked, hand field gone
+    assert "notes" not in after
+    assert after.get("integrity") == digest  # digest untouched: still altered / still stripped
+    assert completeness.altered(after) is (True if how == "edited" else None)
+    assert code == 1  # the run that found altered files stays nonzero
+    assert "cleared hand-added field(s) from" in out and "notes" in out
     record = [json.loads(x) for x in (world["bank"] / "removals.jsonl").read_text().splitlines()]
-    assert record[-1]["outcome"] == "complete"
-    assert record[-1]["failed"] == [] and "run-001.json" in record[-1]["digest_untouched"][0]
-    # a rerun finds nothing to do, claims nothing, and leaves the file as altered as it was
+    assert record[-1]["outcome"] == "complete" and record[-1]["failed"] == []
+    assert record[-1]["erase_altered"] is True
+    assert record[-1]["cleared_fields"] == {"results/run-001.json": ["notes"]}
+    assert "run-001.json" in record[-1]["digest_untouched"][0]
+    # a rerun has nothing to do and claims nothing
     assert cli.main(forget_args(world, "a1")) == 0
-    assert "complete" not in capsys.readouterr().out
-    assert read(path).get("integrity") == before
+    assert read(path).get("integrity") == digest
 
 
 def test_forget_still_restamps_an_intact_result(tmp_path: Path) -> None:
@@ -76,6 +103,7 @@ def test_forget_still_restamps_an_intact_result(tmp_path: Path) -> None:
     path = stamped_result(world)
     assert cli.main(forget_args(world, "a1")) == 0
     assert completeness.altered(read(path)) is False
+    # the override flag changes nothing for an intact file: nothing is cleared, it is restamped
 
 
 # --- baseline: held-back calls and empty baselines -----------------------------------------
@@ -277,12 +305,13 @@ def test_baseline_counts_blocked_calls_in_batch_json_when_there_is_no_plan(
     assert read(stored)["held_back"] == {"allowed": True, "count": 2}
 
 
-def test_forget_blanks_only_the_fields_the_rig_writes_on_an_intact_file(tmp_path: Path) -> None:
-    """Pins what is NOT covered (PR body, Not verified): a hand-added field keeps the words."""
+def test_forget_on_an_intact_file_with_a_hand_added_field_is_unchanged(tmp_path: Path) -> None:
+    """Intact files behave as before, flag or not: only altered files have fields cleared."""
     world = forget_world(tmp_path)
     path = stamped_result(world)
     data = read(path)
-    data["notes"] = "Zebediah said this"  # not a field the rig writes
+    data["notes"] = "Zebediah said this"
     write_json(path, completeness.stamp(data))
-    assert cli.main(forget_args(world, "a1")) == 0
-    assert "Zebediah" in read(path)["notes"]  # known gap, stated in the PR; not widened here
+    assert cli.main([*forget_args(world, "a1"), "--erase-altered"]) == 0
+    assert read(path)["notes"] == "Zebediah said this"  # unchanged scope: intact files
+    assert completeness.altered(read(path)) is False
