@@ -48,6 +48,7 @@ from typing import Any
 
 from synthiq_caller.chain import Chain, variables_in
 from synthiq_caller.clips import OVERRIDES_FILE, ClipBank
+from synthiq_caller.completeness import Unreadable, read_json, read_object
 from synthiq_caller.jsonio import write_json
 from synthiq_caller.scenario import Scenario
 
@@ -183,11 +184,12 @@ def load(directory: str | Path) -> dict[str, Any] | None:
     path = Path(directory) / MANIFEST_FILE
     if not path.exists():
         return None
-    data: Any = json.loads(path.read_text(encoding="utf-8"))
+    data: Any = read_json(path)
     if not isinstance(data, dict) or data.get("version") != VERSION:
-        raise ValueError(f"{path}: not a version {VERSION} run manifest")
-    if not isinstance(data.get("entries"), list):
-        raise ValueError(f"{path}: a manifest holds a list of entries")
+        raise Unreadable(f"{path}: not a version {VERSION} run manifest")
+    entries = data.get("entries")
+    if not isinstance(entries, list) or not all(isinstance(e, dict) for e in entries):
+        raise Unreadable(f"{path}: a manifest holds a list of entries")
     return data
 
 
@@ -217,8 +219,16 @@ def open_batch(
     allow_mutating: str = "none",
     seed: int | None = None,
     started: str = "",
+    plan: list[dict[str, Any]] | None = None,
 ) -> str:
-    """Record a batch that is about to start; returns the id its runs must carry."""
+    """Record a batch that is about to start; returns the id its runs must carry.
+
+    ``plan`` is every call the batch means to place, written before the first one:
+    ``{"file": ..., "repeat": n, "kind": "run" | "chain"}``. What the directory
+    holds afterwards is compared with it (``completeness``). Without one the
+    batch is recorded as it was before plans existed, and its completeness is
+    "unknown".
+    """
     root = Path(directory)
     manifest = load(root) or {"version": VERSION, "entries": []}
     entry_id = _next_id(manifest, "b")
@@ -241,11 +251,27 @@ def open_batch(
             "order": ORDER,
         }
     )
+    if plan is not None:
+        entry = manifest["entries"][-1]
+        entry["plan"] = {"units": plan}
+        entry["status"] = "running"
+        entry["held_back"] = []
     _save(root, manifest)
     return entry_id
 
 
-def close_batch(directory: str | Path, entry_id: str, *, ended: str = "") -> None:
+def close_batch(
+    directory: str | Path,
+    entry_id: str,
+    *,
+    ended: str = "",
+    status: str = "finished",
+    held_back: list[dict[str, Any]] | None = None,
+) -> None:
+    """Close a batch entry. ``status`` is "finished", "interrupted" or "failed"; a batch
+    that ends any other way than "finished" is incomplete whatever it recorded.
+    ``held_back`` are the planned calls the rig chose not to place, each with its reason:
+    they are accounted for, and reported as not run."""
     root = Path(directory)
     manifest = load(root)
     if manifest is None:
@@ -253,6 +279,9 @@ def close_batch(directory: str | Path, entry_id: str, *, ended: str = "") -> Non
     for entry in manifest["entries"]:
         if entry.get("id") == entry_id:
             entry["ended"] = ended or now()
+            if "plan" in entry:
+                entry["status"] = status
+                entry["held_back"] = held_back or []
     _save(root, manifest)
 
 
@@ -282,7 +311,7 @@ def _runs(directory: Path) -> list[tuple[str, str, str]]:
     """(run file, scenario file, batch id) for every stored run."""
     found = []
     for path in sorted(directory.glob("run-*.json")):
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = read_object(path)
         found.append(
             (path.name, str(payload.get("scenario_file", "")), str(payload.get("batch", "")))
         )
@@ -366,6 +395,23 @@ def named_clips(
     return names
 
 
+def plan_units(
+    scenarios: list[tuple[str, Scenario]], chains: list[tuple[str, Chain]], repeats: int
+) -> list[dict[str, Any]]:
+    """Every call a batch will be asked to place, in the order it will be asked."""
+    units = [
+        {"file": file, "repeat": repeat, "kind": "run"}
+        for repeat in range(1, repeats + 1)
+        for file, _ in scenarios
+    ]
+    units += [
+        {"file": file, "repeat": repeat, "kind": "chain"}
+        for repeat in range(1, repeats + 1)
+        for file, _ in chains
+    ]
+    return units
+
+
 def open_for(
     args: Any,
     out: Path,
@@ -377,8 +423,10 @@ def open_for(
     """Open a batch entry from a parsed command line. The leg is recorded as it was named:
     a direct socket, a phone line, or ``fake`` (a rehearsal, and marked as one)."""
     leg = str(getattr(args, "leg", "") or "")
+    repeats = getattr(args, "repeats", 1)
     return open_batch(
         out,
+        plan=plan_units(scenarios, chains, repeats),
         argv=list(getattr(args, "argv_raw", [])),
         scenarios=scenario_identity(
             directory, [file for file, _ in scenarios] + [file for file, _ in chains]
@@ -393,6 +441,6 @@ def open_for(
             profile_path=getattr(args, "target", ""),
         ),
         rehearsal=leg == "fake",
-        repeats=getattr(args, "repeats", 1),
+        repeats=repeats,
         allow_mutating=getattr(args, "allow_mutating", "none"),
     )

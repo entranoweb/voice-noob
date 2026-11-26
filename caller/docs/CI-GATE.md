@@ -129,7 +129,8 @@ uv run python -m synthiq_caller.ci_gate check --target "$TARGET" --allowed "$ALL
   --root "<scenario sets>" --set "<set>"
 uv run synthiq-caller batch "<scenario set>" --leg "<leg>" --clips "<clip bank>" \
   --allow-mutating none --out runs
-# Exit status 1 on a regression: the build fails.
+# Exit status 1 on a regression, on a batch that is not what was planned, and when
+# nothing of the baseline ran: the build fails. 2: a file could not be read.
 uv run synthiq-caller compare runs --baseline "<baseline file>" --fail-on beyond-noise
 uv run synthiq-caller scorecard runs --out scorecard.html
 ```

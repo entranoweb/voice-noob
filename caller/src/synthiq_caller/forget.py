@@ -62,7 +62,7 @@ from synthiq_caller.consent import (
     reference_problem,
 )
 from synthiq_caller.ingest import CLIPS_DIR
-from synthiq_caller.jsonio import write_json
+from synthiq_caller.jsonio import write_run
 
 MARK = "clips_removed"
 
@@ -914,7 +914,7 @@ def _mark_result(
         for s in todo
     ]
     data[MARK] = sorted(held, key=lambda m: str(m.get("clip")))
-    write_json(path, data)
+    write_run(path, data)
 
 
 def _drop_overrides(path: Path, stems: list[str]) -> None:

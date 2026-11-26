@@ -32,6 +32,8 @@ from pathlib import Path
 from typing import Any
 
 from synthiq_caller.compare import Baseline, compare, make_baseline
+from synthiq_caller.completeness import check as check_completeness
+from synthiq_caller.completeness import combine, read_json, read_run
 from synthiq_caller.jsonio import write_json
 from synthiq_caller.report import FieldTally, Summary, failing_step, summarise
 from synthiq_caller.stats import describe, wilson_interval
@@ -140,7 +142,7 @@ def build(
     class_reasons: dict[str, dict[str, int]] = {}
     for root in roots:
         for path in sorted(root.glob("run-*.json")):
-            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload = read_run(path)
             grade = payload["grade"]
             name, key = grade["scenario"], f"{root.name}/{path.name}"
             if _has_unavailable(payload):
@@ -205,9 +207,13 @@ def build(
     class_reasons["not_run"] = {}
     for (_, reason), count in not_run.items():
         class_reasons["not_run"][reason] = class_reasons["not_run"].get(reason, 0) + count
-    baseline = make_baseline(summary, source=", ".join(root.name for root in roots))
+    shape = combine([check_completeness(root) for root in roots])
+    baseline = make_baseline(
+        summary, source=", ".join(root.name for root in roots), completeness=shape.status
+    )
     card: dict[str, Any] = {
         "title": title or "Scorecard",
+        "completeness": shape.to_json(),
         "generated": datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC"),
         "sources": [root.name for root in roots],
         "calls": summary.runs,
@@ -301,7 +307,7 @@ def load_previous(path: str | Path) -> Baseline:
     """An earlier result to compare with: a scorecard page, its ``.json``, or a baseline file."""
     text = Path(path).read_text(encoding="utf-8")
     if Path(path).suffix.lower() == ".json":
-        data = json.loads(text)
+        data = read_json(Path(path))
     else:
         found = _DATA.search(text)
         if not found:
@@ -320,7 +326,7 @@ def load_previous(path: str | Path) -> Baseline:
 
 
 def load_faults(path: str | Path) -> dict[str, str]:
-    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    data = read_json(Path(path))
     if not isinstance(data, dict):
         raise ValueError("a faults file is one object: run -> fault class")
     return {str(k): str(v) for k, v in data.items()}
