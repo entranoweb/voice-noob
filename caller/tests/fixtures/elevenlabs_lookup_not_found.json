@@ -15,7 +15,7 @@
      "request_id": "fc_05cdabae1e6eeee6016b05d415b98487d1b04c79cd03c06c65",
      "tool_name": "notify_condition_2_met",
      "tool_id": null,
-     "params_as_json": "{\"nested_conditions\":{\"condition\":false,\"condition_2\":false},\"nested_tools\":{\"sophie_v2_identify_returning_patient\":{\"fullName\":\"Mark Marshall\",\"intent\":\"mri\"}}}",
+     "params_as_json": "{\"nested_conditions\":{\"condition\":false,\"condition_2\":false},\"nested_tools\":{\"example_v2_identify_returning_patient\":{\"fullName\":\"Mark Marshall\",\"intent\":\"mri\"}}}",
      "tool_has_been_called": true,
      "tool_details": null
     }
@@ -32,7 +32,7 @@
      "request_id": "fc_05cdabae1e6eeee6016b05d415b98487d1b04c79cd03c06c65",
      "tool_name": "notify_condition_2_met",
      "tool_id": null,
-     "result_value": "{\"steps\":[{\"step_latency_secs\":0.00007434003055095673,\"type\":\"edge\",\"edge_id\":\"e10_I1_T1\",\"target_node_id\":\"T1\"},{\"step_latency_secs\":0.5389231110457331,\"type\":\"nested_tools\",\"node_id\":\"T1\",\"requests\":[{\"type\":\"webhook\",\"request_id\":\"tlcal_5701m87c8xsterds9zhh8b7z6qmp\",\"tool_name\":\"sophie_v2_identify_returning_patient\",\"tool_id\":\"tool_fixture\",\"params_as_json\":\"{\\\"fullName\\\": \\\"Mark Marshall\\\", \\\"intent\\\": \\\"mri\\\"}\",\"tool_has_been_called\":true,\"tool_details\":{\"type\":\"webhook\",\"method\":\"POST\",\"url\":\"https://target.example/api/identify-patient\",\"headers\":{\"Content-Type\":\"application/json\",\"Authorization\":\"<REDACTED>\",\"X-Conversation-Id\":\"conv_fixture\"},\"path_params\":{},\"query_params\":{},\"body\":\"{\\\"fullName\\\": \\\"Mark Marshall\\\", \\\"intent\\\": \\\"mri\\\"}\"}}],\"results\":[{\"request_id\":\"tlcal_5701m87c8xsterds9zhh8b7z6qmp\",\"tool_name\":\"sophie_v2_identify_returning_patient\",\"tool_id\":\"tool_fixture\",\"result_value\":\"{\\\"success\\\": true}\",\"is_error\":false,\"is_blocked\":false,\"tool_has_been_called\":true,\"tool_latency_secs\":0.5361135710263625,\"error_type\":\"\",\"raw_error_message\":\"\",\"dynamic_variable_updates\":[{\"variable_name\":\"status\",\"old_value\":null,\"new_value\":\"not_found\",\"updated_at\":1795544086.8676796,\"tool_name\":\"sophie_v2_identify_returning_patient\",\"tool_request_id\":\"tlcal_5701m87c8xsterds9zhh8b7z6qmp\"},{\"variable_name\":\"callerIntent\",\"old_value\":null,\"new_value\":\"mri\",\"updated_at\":1795544086.8676796,\"tool_name\":\"sophie_v2_identify_returning_patient\",\"tool_request_id\":\"tlcal_5701m87c8xsterds9zhh8b7z6qmp\"},{\"variable_name\":\"intentEchoVersion\",\"old_value\":null,\"new_value\":\"2\",\"updated_at\":1795544086.8676796,\"tool_name\":\"sophie_v2_identify_returning_patient\",\"tool_request_id\":\"tlcal_5701m87c8xsterds9zhh8b7z6qmp\"},{\"variable_name\":\"postcodeOnFile\",\"old_value\":null,\"new_value\":\"False\",\"updated_at\":1795544086.8676796,\"tool_name\":\"sophie_v2_identify_returning_patient\",\"tool_request_id\":\"tlcal_5701m87c8xsterds9zhh8b7z6qmp\"}],\"type\":\"webhook\"}],\"is_successful\":true},{\"step_latency_secs\":0.002076201024465263,\"type\":\"edge\",\"edge_id\":\"e12_T1_I2\",\"target_node_id\":\"I2\"},{\"step_latency_secs\":0.006043888977728784,\"type\":\"nested_tools\",\"node_id\":\"I2\",\"requests\":[{\"type\":\"system\",\"request_id\":\"tlcal_2901m87c8yaqebat8czd9ktx2n67\",\"tool_name\":\"transfer_to_agent\",\"tool_id\":\"__system_transfer_to_agent\",\"params_as_json\":\"{\\\"reason\\\": \\\"Transferring to agent as part of a workflow route.\\\", \\\"agent_number\\\": 0, \\\"agent_id\\\": \\\"agent_fixture\\\"}\",\"tool_has_been_called\":true,\"tool_details\":null}],\"results\":[{\"request_id\":\"tlcal_2901m87c8yaqebat8czd9ktx2n67\",\"tool_name\":\"transfer_to_agent\",\"tool_id\":\"__system_transfer_to_agent\",\"result_value\":\"{\\\"result_type\\\":\\\"transfer_to_agent_success\\\",\\\"status\\\":\\\"success\\\",\\\"from_agent\\\":\\\"agent_fixture\\\",\\\"to_agent\\\":\\\"agent_fixture\\\",\\\"to_node\\\":\\\"I2\\\",\\\"condition\\\":\\\"\\\",\\\"delay_ms\\\":0,\\\"transfer_message\\\":null,\\\"enable_transferred_agent_first_message\\\":false,\\\"branch_info\\\":null,\\\"preserve_client_tts_overrides\\\":false,\\\"preserve_voice_settings\\\":false,\\\"transfer_op\\\":{\\\"type\\\":\\\"replace\\\"}}\",\"is_error\":false,\"is_blocked\":false,\"tool_has_been_called\":true,\"tool_latency_secs\":0.0007838800083845854,\"error_type\":\"\",\"raw_error_message\":\"\",\"dynamic_variable_updates\":[],\"type\":\"system\",\"result\":{\"result_type\":\"transfer_to_agent_success\",\"status\":\"success\",\"from_agent\":\"agent_fixture\",\"to_agent\":\"agent_fixture\",\"to_node\":\"I2\",\"condition\":\"\",\"delay_ms\":0,\"transfer_message\":null,\"enable_transferred_agent_first_message\":false,\"branch_info\":null,\"preserve_client_tts_overrides\":false,\"preserve_voice_settings\":false,\"transfer_op\":{\"type\":\"replace\"}}}],\"is_successful\":true}]}",
+     "result_value": "{\"steps\":[{\"step_latency_secs\":0.00007434003055095673,\"type\":\"edge\",\"edge_id\":\"e10_I1_T1\",\"target_node_id\":\"T1\"},{\"step_latency_secs\":0.5389231110457331,\"type\":\"nested_tools\",\"node_id\":\"T1\",\"requests\":[{\"type\":\"webhook\",\"request_id\":\"tlcal_5701m87c8xsterds9zhh8b7z6qmp\",\"tool_name\":\"example_v2_identify_returning_patient\",\"tool_id\":\"tool_fixture\",\"params_as_json\":\"{\\\"fullName\\\": \\\"Mark Marshall\\\", \\\"intent\\\": \\\"mri\\\"}\",\"tool_has_been_called\":true,\"tool_details\":{\"type\":\"webhook\",\"method\":\"POST\",\"url\":\"https://target.example/api/identify-patient\",\"headers\":{\"Content-Type\":\"application/json\",\"Authorization\":\"<REDACTED>\",\"X-Conversation-Id\":\"conv_fixture\"},\"path_params\":{},\"query_params\":{},\"body\":\"{\\\"fullName\\\": \\\"Mark Marshall\\\", \\\"intent\\\": \\\"mri\\\"}\"}}],\"results\":[{\"request_id\":\"tlcal_5701m87c8xsterds9zhh8b7z6qmp\",\"tool_name\":\"example_v2_identify_returning_patient\",\"tool_id\":\"tool_fixture\",\"result_value\":\"{\\\"success\\\": true}\",\"is_error\":false,\"is_blocked\":false,\"tool_has_been_called\":true,\"tool_latency_secs\":0.5361135710263625,\"error_type\":\"\",\"raw_error_message\":\"\",\"dynamic_variable_updates\":[{\"variable_name\":\"status\",\"old_value\":null,\"new_value\":\"not_found\",\"updated_at\":1795544086.8676796,\"tool_name\":\"example_v2_identify_returning_patient\",\"tool_request_id\":\"tlcal_5701m87c8xsterds9zhh8b7z6qmp\"},{\"variable_name\":\"callerIntent\",\"old_value\":null,\"new_value\":\"mri\",\"updated_at\":1795544086.8676796,\"tool_name\":\"example_v2_identify_returning_patient\",\"tool_request_id\":\"tlcal_5701m87c8xsterds9zhh8b7z6qmp\"},{\"variable_name\":\"intentEchoVersion\",\"old_value\":null,\"new_value\":\"2\",\"updated_at\":1795544086.8676796,\"tool_name\":\"example_v2_identify_returning_patient\",\"tool_request_id\":\"tlcal_5701m87c8xsterds9zhh8b7z6qmp\"},{\"variable_name\":\"postcodeOnFile\",\"old_value\":null,\"new_value\":\"False\",\"updated_at\":1795544086.8676796,\"tool_name\":\"example_v2_identify_returning_patient\",\"tool_request_id\":\"tlcal_5701m87c8xsterds9zhh8b7z6qmp\"}],\"type\":\"webhook\"}],\"is_successful\":true},{\"step_latency_secs\":0.002076201024465263,\"type\":\"edge\",\"edge_id\":\"e12_T1_I2\",\"target_node_id\":\"I2\"},{\"step_latency_secs\":0.006043888977728784,\"type\":\"nested_tools\",\"node_id\":\"I2\",\"requests\":[{\"type\":\"system\",\"request_id\":\"tlcal_2901m87c8yaqebat8czd9ktx2n67\",\"tool_name\":\"transfer_to_agent\",\"tool_id\":\"__system_transfer_to_agent\",\"params_as_json\":\"{\\\"reason\\\": \\\"Transferring to agent as part of a workflow route.\\\", \\\"agent_number\\\": 0, \\\"agent_id\\\": \\\"agent_fixture\\\"}\",\"tool_has_been_called\":true,\"tool_details\":null}],\"results\":[{\"request_id\":\"tlcal_2901m87c8yaqebat8czd9ktx2n67\",\"tool_name\":\"transfer_to_agent\",\"tool_id\":\"__system_transfer_to_agent\",\"result_value\":\"{\\\"result_type\\\":\\\"transfer_to_agent_success\\\",\\\"status\\\":\\\"success\\\",\\\"from_agent\\\":\\\"agent_fixture\\\",\\\"to_agent\\\":\\\"agent_fixture\\\",\\\"to_node\\\":\\\"I2\\\",\\\"condition\\\":\\\"\\\",\\\"delay_ms\\\":0,\\\"transfer_message\\\":null,\\\"enable_transferred_agent_first_message\\\":false,\\\"branch_info\\\":null,\\\"preserve_client_tts_overrides\\\":false,\\\"preserve_voice_settings\\\":false,\\\"transfer_op\\\":{\\\"type\\\":\\\"replace\\\"}}\",\"is_error\":false,\"is_blocked\":false,\"tool_has_been_called\":true,\"tool_latency_secs\":0.0007838800083845854,\"error_type\":\"\",\"raw_error_message\":\"\",\"dynamic_variable_updates\":[],\"type\":\"system\",\"result\":{\"result_type\":\"transfer_to_agent_success\",\"status\":\"success\",\"from_agent\":\"agent_fixture\",\"to_agent\":\"agent_fixture\",\"to_node\":\"I2\",\"condition\":\"\",\"delay_ms\":0,\"transfer_message\":null,\"enable_transferred_agent_first_message\":false,\"branch_info\":null,\"preserve_client_tts_overrides\":false,\"preserve_voice_settings\":false,\"transfer_op\":{\"type\":\"replace\"}}}],\"is_successful\":true}]}",
      "is_error": false,
      "is_blocked": false,
      "tool_has_been_called": true,
@@ -57,7 +57,7 @@
          {
           "type": "webhook",
           "request_id": "tlcal_5701m87c8xsterds9zhh8b7z6qmp",
-          "tool_name": "sophie_v2_identify_returning_patient",
+          "tool_name": "example_v2_identify_returning_patient",
           "tool_id": "tool_fixture",
           "params_as_json": "{\"fullName\": \"Mark Marshall\", \"intent\": \"mri\"}",
           "tool_has_been_called": true,
@@ -79,7 +79,7 @@
         "results": [
          {
           "request_id": "tlcal_5701m87c8xsterds9zhh8b7z6qmp",
-          "tool_name": "sophie_v2_identify_returning_patient",
+          "tool_name": "example_v2_identify_returning_patient",
           "tool_id": "tool_fixture",
           "result_value": "{\"success\": true}",
           "is_error": false,
@@ -94,7 +94,7 @@
             "old_value": null,
             "new_value": "not_found",
             "updated_at": 1795544086.8676796,
-            "tool_name": "sophie_v2_identify_returning_patient",
+            "tool_name": "example_v2_identify_returning_patient",
             "tool_request_id": "tlcal_5701m87c8xsterds9zhh8b7z6qmp"
            },
            {
@@ -102,7 +102,7 @@
             "old_value": null,
             "new_value": "mri",
             "updated_at": 1795544086.8676796,
-            "tool_name": "sophie_v2_identify_returning_patient",
+            "tool_name": "example_v2_identify_returning_patient",
             "tool_request_id": "tlcal_5701m87c8xsterds9zhh8b7z6qmp"
            },
            {
@@ -110,7 +110,7 @@
             "old_value": null,
             "new_value": "2",
             "updated_at": 1795544086.8676796,
-            "tool_name": "sophie_v2_identify_returning_patient",
+            "tool_name": "example_v2_identify_returning_patient",
             "tool_request_id": "tlcal_5701m87c8xsterds9zhh8b7z6qmp"
            },
            {
@@ -118,7 +118,7 @@
             "old_value": null,
             "new_value": "False",
             "updated_at": 1795544086.8676796,
-            "tool_name": "sophie_v2_identify_returning_patient",
+            "tool_name": "example_v2_identify_returning_patient",
             "tool_request_id": "tlcal_5701m87c8xsterds9zhh8b7z6qmp"
            }
           ],

@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { Mic, MicOff, X, Phone } from "lucide-react";
 import { useParams, useSearchParams } from "next/navigation";
+import { embedTokenHeaders } from "@/lib/embed-token-request";
 
 interface AgentConfig {
   public_id: string;
@@ -281,6 +282,12 @@ export default function EmbedPage() {
 
   // Save transcript to backend
   const saveTranscript = useCallback(async () => {
+    // The session ends here: take its token and forget it now, so a restart
+    // (which sends no token of an ended session) is a new session and is not
+    // refused as one that already holds a key.
+    const sessionToken = sessionTokenRef.current;
+    sessionTokenRef.current = "";
+
     // Flush any remaining assistant text
     if (currentAssistantTextRef.current.trim()) {
       transcriptRef.current.push({
@@ -311,7 +318,7 @@ export default function EmbedPage() {
         headers: {
           "Content-Type": "application/json",
           Origin: window.location.origin,
-          "X-Embed-Session": sessionTokenRef.current,
+          "X-Embed-Session": sessionToken,
           ...embedParentHeaders(),
         },
         body: JSON.stringify({
@@ -428,36 +435,63 @@ export default function EmbedPage() {
     setAgentState("idle");
 
     try {
-      // Get ephemeral token from backend
-      const tokenRes = await fetch(`/api/public/embed/${publicId}/token`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Origin: window.location.origin,
-          ...embedParentHeaders(),
-        },
-        signal: abortController.signal,
-      });
+      // The microphone first: the key is good for about a minute from the moment
+      // the server mints it, and a first-time permission prompt can outlast that.
+      const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const stopMic = () => micStream.getTracks().forEach((track) => track.stop());
+      if (abortController.signal.aborted) {
+        stopMic();
+        return;
+      }
+
+      // Get ephemeral token from backend. If this widget still holds a live
+      // session token it is sent, and the server refuses a second key for that
+      // session (409). A client that leaves the header off is limited only by the
+      // key's short expiry and the per-agent and per-IP hourly caps.
+      let tokenRes: Response;
+      try {
+        tokenRes = await fetch(`/api/public/embed/${publicId}/token`, {
+          method: "POST",
+          headers: embedTokenHeaders(
+            sessionTokenRef.current,
+            window.location.origin,
+            embedParentHeaders()
+          ),
+          signal: abortController.signal,
+        });
+      } catch (fetchErr) {
+        stopMic();
+        throw fetchErr;
+      }
 
       // Check if cancelled
-      if (abortController.signal.aborted) return;
+      if (abortController.signal.aborted) {
+        stopMic();
+        return;
+      }
 
       if (!tokenRes.ok) {
-        const errData = await tokenRes.json();
-        throw new Error((errData.detail as string) ?? "Failed to get token");
+        stopMic();
+        const errData = (await tokenRes.json().catch(() => ({}))) as { detail?: string };
+        throw new Error(errData.detail ?? "Failed to get token");
       }
 
       const tokenData: TokenResponse = await tokenRes.json();
       const ephemeralKey = tokenData.value;
-      if (!ephemeralKey) throw new Error("No session key received");
+      if (!ephemeralKey) {
+        stopMic();
+        throw new Error("No session key received");
+      }
       sessionTokenRef.current = tokenData.session_token ?? "";
 
       // Check if cancelled before WebRTC setup
-      if (abortController.signal.aborted) return;
+      if (abortController.signal.aborted) {
+        stopMic();
+        return;
+      }
 
       // Manual WebRTC connection
       const pc = new RTCPeerConnection();
-      const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const audioTrack = micStream.getAudioTracks()[0];
       if (audioTrack) {
         pc.addTrack(audioTrack);

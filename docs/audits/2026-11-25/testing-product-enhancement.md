@@ -16,7 +16,7 @@ Synthiq column: **W** working (run live), **B** built, not run live, **S** stub 
 
 | Need | Synthiq today | Cekura | Hamming† | Coval | Bluejay | Roark | Nopaque |
 |---|---|---|---|---|---|---|---|
-| **Authoring: by hand** | W — JSON scenarios, `caller/src/synthiq_caller/scenario.py:105`; 20 in `caller/scenarios/sophie/` | Y | Y | Y | Y | Y | Y (saved discovered paths) |
+| **Authoring: by hand** | W — JSON scenarios, `caller/src/synthiq_caller/scenario.py:105`; 20 in `caller/scenarios/example-receptionist/` | Y | Y | Y | Y | Y | Y (saved discovered paths) |
 | Authoring: from a production call | S — `clipbank/from_call.py:1-7` lays clips out as steps; a person still sets facts, expectations and `mutates` | Y ("create simulations from production calls", Nov 2025) | Y† | – (upload and score, not convert) | Y (Replay From Transcript) | – | P (mapping by calling the number) |
 | Authoring: generated | A in `caller/`; S in the text harness (`backend/app/services/qa/scenarios.py`, seeded set) | Y (also from the agent's code, Oct 2026) | Y† | Y | Y | Y | Y |
 | **Realism: real recorded clips as caller input** | W — `clips.py`, `director.py:208` | Y per changelog (Aug and Sep 2026); contradicted by its FAQ; unverified | Claimed† | – | – | – | – |

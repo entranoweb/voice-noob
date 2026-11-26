@@ -221,3 +221,19 @@ class TestMintedRequestIsGa:
             parse_client_secret(httpx.Response(200, text="not json"))
         with pytest.raises(ClientSecretError):
             parse_client_secret(httpx.Response(200, json={"value": ""}))
+
+
+class TestKeyExpiry:
+    def test_expires_after_is_sent_in_the_ga_shape_and_is_valid(self) -> None:
+        from openai.types.realtime.client_secret_create_params import ClientSecretCreateParams
+
+        body = build_client_secret_body(
+            dashboard_token_session_config("m", "cedar"), expires_after_seconds=60
+        )
+
+        assert body["expires_after"] == {"anchor": "created_at", "seconds": 60}
+        assert set(body) <= set(ClientSecretCreateParams.__annotations__)
+
+    def test_no_expiry_is_sent_unless_asked_for(self) -> None:
+        body = build_client_secret_body(dashboard_token_session_config("m", "cedar"))
+        assert "expires_after" not in body

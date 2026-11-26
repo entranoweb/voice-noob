@@ -2,7 +2,7 @@
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import redis.asyncio as aioredis
 from redis.asyncio import ConnectionPool
@@ -65,6 +65,45 @@ async def get_redis() -> "Redis":
                 raise
 
     return redis_client
+
+
+MIN_REDIS_VERSION = (7, 0)
+
+
+class RedisVersionError(RuntimeError):
+    """Redis is older than this application needs."""
+
+
+def parse_redis_version(text: str) -> tuple[int, ...]:
+    """``"7.2.4"`` as ``(7, 2, 4)``; non-numeric tails (``"7.0-rc1"``) are cut."""
+    parts: list[int] = []
+    for piece in text.strip().split("."):
+        digits = ""
+        for char in piece:
+            if not char.isdigit():
+                break
+            digits += char
+        if not digits:
+            break
+        parts.append(int(digits))
+    return tuple(parts)
+
+
+async def require_min_redis_version(client: Any) -> str:
+    """Refuse a Redis older than 7.0 (``EXPIRE ... NX``, used by the embed key limiter).
+
+    Returns the version string. Raises ``RedisVersionError`` naming the requirement.
+    """
+    info = await client.info("server")
+    version = str(info.get("redis_version", ""))
+    if parse_redis_version(version) < MIN_REDIS_VERSION:
+        needed = ".".join(str(n) for n in MIN_REDIS_VERSION)
+        raise RedisVersionError(
+            f"Redis {version or 'of unknown version'} is too old: this application needs "
+            f"Redis {needed} or newer (the embed widget's key limiter uses EXPIRE ... NX). "
+            "Upgrade Redis, or every embed key request will fail with 503."
+        )
+    return version
 
 
 async def close_redis() -> None:

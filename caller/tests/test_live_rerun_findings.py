@@ -24,9 +24,9 @@ from synthiq_caller.traces.base import Trace
 from synthiq_caller.validation import validate_directory
 
 HERE = Path(__file__).parent
-SOPHIE = HERE.parent / "scenarios" / "sophie"
-ORIGINAL = SOPHIE / "targets" / "original-clinic.json"
-TEST_CLINIC = SOPHIE / "targets" / "test-clinic.json"
+EXAMPLE_SET = HERE.parent / "scenarios" / "example-receptionist"
+ORIGINAL = EXAMPLE_SET / "targets" / "original-clinic.json"
+TEST_CLINIC = EXAMPLE_SET / "targets" / "test-clinic.json"
 
 
 def saved(name: str) -> dict[str, Any]:
@@ -38,7 +38,7 @@ def saved(name: str) -> dict[str, Any]:
 
 def regraded(name: str) -> Any:
     run = saved(name)
-    scenario = load_scenario(SOPHIE / run["scenario_file"], load_target(ORIGINAL))
+    scenario = load_scenario(EXAMPLE_SET / run["scenario_file"], load_target(ORIGINAL))
     return grade(scenario, RunRecord.from_json(run["record"]), Trace.from_json(run["trace"]))
 
 
@@ -99,14 +99,14 @@ ASKED_LIVE = (
 
 def test_the_booking_scenarios_answer_who_the_appointment_is_for() -> None:
     for number in ("01", "02", "03", "04", "05", "06", "07", "16", "17"):
-        path = next(SOPHIE.glob(f"{number}-*.json"))
+        path = next(EXAMPLE_SET.glob(f"{number}-*.json"))
         scenario = load_scenario(path)
         step = next((s for s in scenario.steps if s.clips == ("booking_for_myself",)), None)
         assert step is not None, path.name
         for line in ASKED_LIVE:
             assert step.when.search(line), (path.name, line)
     # The caller who is booking for a son has an answer of their own.
-    son = load_scenario(next(SOPHIE.glob("20-*.json")))
+    son = load_scenario(next(EXAMPLE_SET.glob("20-*.json")))
     assert not any("booking_for_myself" in s.clips for s in son.steps)
 
 
@@ -114,7 +114,7 @@ def test_the_booking_scenarios_answer_who_the_appointment_is_for() -> None:
 
 
 def test_no_scenario_file_states_a_bookable_day_or_time() -> None:
-    for path in sorted(SOPHIE.glob("*.json")):
+    for path in sorted(EXAMPLE_SET.glob("*.json")):
         booking = (json.loads(path.read_text(encoding="utf-8")).get("expect") or {}).get("booking")
         for part in ("weekdays", "time_from", "time_to", "date_from", "date_to"):
             assert part not in (booking or {}), f"{path.name} states {part}"
@@ -124,15 +124,16 @@ def test_a_scenario_gets_its_times_from_the_target_and_is_held_back_without_them
     tmp_path: Path,
 ) -> None:
     shoulder = "01-consultation-self-pay-shoulder.json"
-    with_times = dict(load_scenarios(SOPHIE, load_target(ORIGINAL)))[shoulder]
+    with_times = dict(load_scenarios(EXAMPLE_SET, load_target(ORIGINAL)))[shoulder]
     assert (with_times.expect.booking.time_from, with_times.missing_target) == ("16:30", ())
 
     for target in (None, load_target(TEST_CLINIC)):  # no profile, and one not yet filled in
-        without = dict(load_scenarios(SOPHIE, target))[shoulder]
+        without = dict(load_scenarios(EXAMPLE_SET, target))[shoulder]
         assert without.missing_target == ("time_from", "time_to")
 
     rows = {
-        row.file: row for row in validate_directory(SOPHIE, None, None, load_target(TEST_CLINIC))
+        row.file: row
+        for row in validate_directory(EXAMPLE_SET, None, None, load_target(TEST_CLINIC))
     }
     assert rows[shoulder].missing_target and "TARGET PROFILE LACKS" in rows[shoulder].line()
     assert not rows["14-symptom-first-new-caller.json"].missing_target
@@ -141,7 +142,7 @@ def test_a_scenario_gets_its_times_from_the_target_and_is_held_back_without_them
 async def test_a_batch_does_not_place_a_call_whose_times_the_target_did_not_give(
     tmp_path: Path,
 ) -> None:
-    scenarios = [(f, s) for f, s in load_scenarios(SOPHIE) if f.startswith("01-")]
+    scenarios = [(f, s) for f, s in load_scenarios(EXAMPLE_SET) if f.startswith("01-")]
 
     def never() -> Any:
         raise AssertionError("no call may be placed")

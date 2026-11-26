@@ -48,7 +48,7 @@ A new engine is one leg and one trace reader. Nothing else changes.
 - **Clip bank builder** (`clipbank/`): cuts caller-only clips from recordings
   and their word-level transcripts, labels them, and turns one recorded call
   into a scenario skeleton.
-- **Scenario set** (`scenarios/sophie/`): a 20-call script for one agent.
+- **Scenario set** (`scenarios/example-receptionist/`): a 20-call script for one agent.
 
 ## Set up a new target
 
@@ -115,11 +115,11 @@ stored runs, and `regrade` grades stored runs again after a scenario is
 corrected, without calling.
 
 ```
-uv run synthiq-caller validate scenarios/sophie --clips <clip bank dir>
-uv run synthiq-caller validate scenarios/sophie --strict                   # CI and acceptance: ungradeable is an error
-uv run synthiq-caller batch scenarios/sophie --leg elevenlabs-socket --agent <agent id>     --clips <clip bank dir> --repeats 3 --out runs/
+uv run synthiq-caller validate scenarios/example-receptionist --clips <clip bank dir>
+uv run synthiq-caller validate scenarios/example-receptionist --strict                   # CI and acceptance: ungradeable is an error
+uv run synthiq-caller batch scenarios/example-receptionist --leg elevenlabs-socket --agent <agent id>     --clips <clip bank dir> --repeats 3 --out runs/
 uv run synthiq-caller report runs/ --summary-only
-uv run synthiq-caller regrade runs/ --scenarios scenarios/sophie      # after fixing a scenario; no calls
+uv run synthiq-caller regrade runs/ --scenarios scenarios/example-receptionist      # after fixing a scenario; no calls
 ```
 
 Three guards run before every call.
@@ -139,7 +139,7 @@ Three guards run before every call.
   `SYNTHIQ_SCENARIO_NAME`, `SYNTHIQ_MUTATES`, `SYNTHIQ_REPEAT`,
   `SYNTHIQ_PHASE`). A failing before-hook stops that call. This is where a
   deployment resets the system under test. **No reset is built here**: for the
-  ClinWell test clinic the reset lives in that product's fixture scripts and is
+  example test clinic the reset lives in that product's fixture scripts and is
   wired in by this option, not by code in this package.
 
 Report of one live batch against a test agent (24 Nov 2026): three lookup-only
@@ -191,7 +191,7 @@ What that batch showed:
 
 ## The scenario set
 
-`scenarios/sophie/` holds 20 scenarios built from recorded calls to one agent.
+`scenarios/example-receptionist/` holds 20 scenarios built from recorded calls to one agent.
 
 | Files | What | Changes on the target |
 | --- | --- | --- |

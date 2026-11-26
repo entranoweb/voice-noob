@@ -1,12 +1,12 @@
 {
-  "name": "New patient books a consultation: shoulder, self-pay, as soon as possible",
+  "name": "New patient books a consultation: insured, asks for Wednesday",
   "mutates": "books",
   "persona": {
     "facts": {
-      "name": "claire collins",
-      "date_of_birth": "1993-01-04",
-      "phone": "0785251459",
-      "postcode": "C56EF"
+      "name": "freya foreman",
+      "date_of_birth": "1996-03-03",
+      "phone": "0781345827",
+      "postcode": "F89GH"
     }
   },
   "max_seconds": 360,
@@ -29,17 +29,9 @@
       "max_uses": 2
     },
     {
-      "when": "fee is|self-pay fee|pounds",
-      "clips": [
-        "2026-11-23T110737Z_szz9_09_confirm_fee"
-      ],
-      "intended": "That's fine.",
-      "max_uses": 2
-    },
-    {
       "when": "i have the name|that's the name",
       "clips": [
-        "2026-11-23T110737Z_szz9_10_confirm_details"
+        "2026-11-23T130234Z_eeab_10_confirm_details"
       ],
       "intended": "Yes.",
       "max_uses": 2
@@ -47,7 +39,7 @@
     {
       "when": "that would be with",
       "clips": [
-        "2026-11-23T110737Z_szz9_11_confirm_practitioner"
+        "2026-11-23T130234Z_eeab_11_confirm_practitioner"
       ],
       "intended": "Yes, please.",
       "max_uses": 2
@@ -55,7 +47,7 @@
     {
       "when": "read that back|that's a consultation|that's an mri|moving you|go ahead",
       "clips": [
-        "2026-11-23T110737Z_szz9_14_confirm_booking"
+        "2026-11-23T130234Z_eeab_14_confirm_booking"
       ],
       "intended": "Yes, please.",
       "max_uses": 2
@@ -63,67 +55,75 @@
     {
       "when": "how can i help",
       "clips": [
-        "2026-11-23T110737Z_szz9_01_opener"
+        "2026-11-23T130234Z_eeab_01_opener"
       ],
-      "intended": "Can you book an appointment for me, Sophie?",
+      "intended": "Can you book an appointment for me?",
       "max_uses": 2
     },
     {
       "when": "full name|your name|registered under",
       "clips": [
-        "2026-11-23T110737Z_szz9_02_name"
+        "2026-11-23T130234Z_eeab_02_name"
       ],
-      "intended": "Claire Collins.",
+      "intended": "It's Freya Foreman.",
       "max_uses": 2,
       "field": "name"
     },
     {
       "when": "been to see us before|visited us before|been to the clinic|been here before",
       "clips": [
-        "2026-11-23T110737Z_szz9_03_been_before"
+        "2026-11-23T130234Z_eeab_03_been_before"
       ],
       "intended": "No.",
       "max_uses": 2
     },
     {
+      "when": "which insurer",
+      "clips": [
+        "2026-11-23T130234Z_eeab_09_insurer"
+      ],
+      "intended": "Bupa.",
+      "max_uses": 2
+    },
+    {
       "when": "health insurance|paying yourself|paying privately",
       "clips": [
-        "2026-11-23T110737Z_szz9_08_insurance"
+        "2026-11-23T130234Z_eeab_08_insurance"
       ],
-      "intended": "Paying myself.",
+      "intended": "Health insurance.",
       "max_uses": 2
     },
     {
       "when": "mobile number|phone number",
       "clips": [
-        "2026-11-23T110737Z_szz9_06_phone"
+        "2026-11-23T130234Z_eeab_06_phone"
       ],
-      "intended": "Zero seven eight five two five one four five nine.",
+      "intended": "Zero seven eight one three four five eight two seven.",
       "max_uses": 2,
       "field": "phone"
     },
     {
       "when": "post ?code",
       "clips": [
-        "2026-11-23T110737Z_szz9_07_postcode"
+        "2026-11-23T130234Z_eeab_07_postcode"
       ],
-      "intended": "C five six E F.",
+      "intended": "F-eight nine G-H.",
       "max_uses": 2,
       "field": "postcode"
     },
     {
       "when": "date of birth",
       "clips": [
-        "2026-11-23T110737Z_szz9_05_dob"
+        "2026-11-23T130234Z_eeab_05_dob"
       ],
-      "intended": "Fourth January nineteen ninety-three.",
+      "intended": "Third March nineteen ninety-six.",
       "max_uses": 2,
       "field": "date_of_birth"
     },
     {
       "when": "bringing you in|knee or shoulder",
       "clips": [
-        "2026-11-23T110737Z_szz9_04_reason"
+        "2026-11-23T130234Z_eeab_04_reason"
       ],
       "intended": "Having shoulder pain.",
       "max_uses": 2
@@ -131,17 +131,17 @@
     {
       "when": "which suits you|which one would suit|which of those",
       "clips": [
-        "2026-11-23T110737Z_szz9_13_slot"
+        "2026-11-23T130234Z_eeab_13_slot"
       ],
-      "intended": "Half past four, please.",
+      "intended": "Nine in the morning.",
       "max_uses": 2
     },
     {
       "when": "when would suit|particular day|earliest available|soonest we have",
       "clips": [
-        "2026-11-23T110737Z_szz9_12_when"
+        "2026-11-23T130234Z_eeab_12_when"
       ],
-      "intended": "As soon as possible.",
+      "intended": "On Wednesday.",
       "max_uses": 2
     },
     {
@@ -156,10 +156,10 @@
   "expect": {
     "tools": [
       {
-        "name": "sophie_v2_register_patient"
+        "name": "example_v2_register_patient"
       },
       {
-        "name": "sophie_v2_book"
+        "name": "example_v2_book"
       }
     ],
     "fields": [
@@ -169,7 +169,7 @@
       "postcode"
     ],
     "booking": {
-      "tool": "sophie_v2_book",
+      "tool": "example_v2_book",
       "type": "consultation",
       "start_keys": [
         "bookedDisplayTime"
@@ -177,29 +177,30 @@
     },
     "booking_from_target": [
       "time_from",
-      "time_to"
+      "time_to",
+      "weekdays"
     ]
   },
   "tool_outcomes": {
-    "sophie_v2_verify_identity": {
+    "example_v2_verify_identity": {
       "path": "verified",
       "success": [
         "true"
       ]
     },
-    "sophie_v2_book": {
+    "example_v2_book": {
       "path": "bookOutcome",
       "success": [
         "BOOKED"
       ]
     },
-    "sophie_v2_reschedule_appointment": {
+    "example_v2_reschedule_appointment": {
       "path": "rescheduleOutcome",
       "success": [
         "RESCHEDULED"
       ]
     },
-    "sophie_v2_register_patient": {
+    "example_v2_register_patient": {
       "path": "newPatientRegistered",
       "success": [
         "true"

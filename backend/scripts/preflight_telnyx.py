@@ -173,14 +173,15 @@ async def check_migrations() -> list[Result]:
 
 
 async def check_redis() -> list[Result]:
-    from app.db.redis import get_redis
+    from app.db.redis import get_redis, require_min_redis_version
 
     try:
         client = await get_redis()
         await client.ping()
+        version = await require_min_redis_version(client)
     except Exception as exc:  # any failure here is a failed check
         return [fail("redis", f"{type(exc).__name__}: {exc}")]
-    return [ok("redis", "reachable")]
+    return [ok("redis", f"reachable, version {version} (7.0+ needed)")]
 
 
 async def _dialable() -> list[tuple[Any, str, str]]:

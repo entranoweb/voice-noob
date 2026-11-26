@@ -125,6 +125,19 @@ def ungradeable_problems(rows: list[Row]) -> list[str]:
     return [ungradeable_why(row.file) for row in rows if not row.states_expectations]
 
 
+def missing_clip_problems(rows: list[Row]) -> list[str]:
+    """One line per scenario that names a clip that was removed (``forget``), for ``--strict``.
+
+    Such a scenario will not run: a batch holds it back. A gate built on it would be a gate
+    over fewer scenarios than the directory seems to hold.
+    """
+    return [
+        f"{row.file}: MISSING CLIP: needs {row.needs_recordings} recording(s) and will not run"
+        for row in rows
+        if row.needs_recordings
+    ]
+
+
 def load_problems(directory: str | Path, target: dict[str, Any] | None = None) -> list[str]:
     """One line per file that cannot be loaded (``<file>: <why>``), for a clean error.
 
