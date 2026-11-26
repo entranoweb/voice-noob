@@ -139,7 +139,14 @@ def _scrub_value(value: Any) -> Any:
     return value
 
 
-def log_exception(log: Any, event: str, exc: BaseException | None = None, **fields: Any) -> None:
+def log_exception(
+    log: Any,
+    event: str,
+    exc: BaseException | None = None,
+    *,
+    level: str = "error",
+    **fields: Any,
+) -> None:
     """Log a caught exception without putting its message in the record.
 
     ``log.exception`` sets ``exc_info`` and structlog renders the whole
@@ -151,12 +158,14 @@ def log_exception(log: Any, event: str, exc: BaseException | None = None, **fiel
     message carries the bound SQL parameters), and the file, line
     and function where it was raised, which is what the traceback was for.
 
+    ``level`` is the log method to use (``warning`` for failures the call survives).
+
     Call it from inside ``except``; ``exc`` defaults to the exception being
     handled. Leave framework-internal exceptions on plain ``log.exception``.
     """
     exc = exc if exc is not None else sys.exc_info()[1]
     if exc is None:
-        log.error(event, **fields)
+        getattr(log, level)(event, **fields)
         return
     where = None
     tb = exc.__traceback__
@@ -166,4 +175,4 @@ def log_exception(log: Any, event: str, exc: BaseException | None = None, **fiel
         code = tb.tb_frame.f_code
         where = f"{code.co_filename.rsplit('/', 1)[-1]}:{tb.tb_lineno} in {code.co_name}"
     message = None if _is_database_error(exc) else scrub_text(exc)
-    log.error(event, error_type=type(exc).__name__, error=message, where=where, **fields)
+    getattr(log, level)(event, error_type=type(exc).__name__, error=message, where=where, **fields)
