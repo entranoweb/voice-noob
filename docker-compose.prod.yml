@@ -168,6 +168,10 @@ services:
     # over plain HTTP beside the proxy, to anyone who can reach the server.
     expose:
       - "8000"
+    # Docker kills the container after 10 s by default, which is less than the
+    # worker needs to close live calls and save them. Must exceed gunicorn's
+    # graceful_timeout (40 s) so gunicorn, not Docker, decides when to give up.
+    stop_grace_period: 50s
     depends_on:
       postgres:
         condition: service_healthy

@@ -120,9 +120,12 @@ the public URL (`PUBLIC_URL` + path), because that is the URL Twilio signed.
 `/ws/telephony/{provider}/{agent_id}` admits nobody without the stream token
 the answering webhook minted (`app/core/stream_token.py`): HMAC-SHA256 over
 provider, agent id, call id and expiry, keyed from `SECRET_KEY`, valid for two
-minutes. A refusal closes with **4401** — before 4003 and 4004 are ever
-reached, so an unauthenticated caller cannot even learn whether an agent
-exists.
+minutes. A refusal comes before 4003 and 4004 are ever reached, so an
+unauthenticated caller cannot even learn whether an agent exists. What the
+caller sees differs: the Telnyx check runs before the socket is accepted, so
+the refusal is an **HTTP 403** on the upgrade (the code 4401 exists only in the
+server's log and close call, never on the wire); Twilio's runs after accept and
+is a real close frame, **4401**.
 
 - **Telnyx**: the token is a `token=` query parameter on the `<Stream>` URL,
   beside `call_id`, and is checked before the socket is accepted. It is bound
@@ -136,8 +139,8 @@ Two consequences worth knowing before they cost an afternoon. A deployment
 whose instances do not share one `SECRET_KEY` refuses its own calls, because
 the webhook and the socket can land on different instances. And if a carrier
 ever stops passing the query string through, every Telnyx call closes 4401 —
-loudly, with `telnyx_stream_token_rejected reason=missing` in the log, not
-silently. That the Telnyx TeXML `<Stream>` preserves the query string has
+loudly (HTTP 403 on every upgrade, `telnyx_stream_token_rejected
+reason=missing` in the log), not silently. That the Telnyx TeXML `<Stream>` preserves the query string has
 still only been exercised by the rehearsal, never by the carrier.
 
 ## 5. The OpenAI key is per workspace

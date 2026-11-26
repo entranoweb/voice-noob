@@ -23,7 +23,11 @@ max_requests_jitter = 1000  # Add randomness to prevent all workers restarting t
 
 # Timeout configuration
 timeout = 120  # Longer timeout for voice WebSocket connections
-graceful_timeout = 30  # Time to finish requests on shutdown
+# Time a worker has to finish on shutdown, then it is killed. It covers, in
+# order, each live call's tool grace and database writes (CALL_TOOL_GRACE_S, 10 s
+# plus a few) and the registry drain (SHUTDOWN_DRAIN_TIMEOUT, 15 s). The
+# container's stop_grace_period in docker-compose.prod.yml must exceed it.
+graceful_timeout = 40
 keepalive = 5  # Keep connections alive for reuse
 
 # Reverse proxy. Which peers may say who the real client is (X-Forwarded-For),
