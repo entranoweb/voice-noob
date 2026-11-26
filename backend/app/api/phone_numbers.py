@@ -17,6 +17,11 @@ from app.core.ownership import get_owned_agent, number_variants, parse_uuid
 from app.db.session import get_db
 from app.models.phone_number import PhoneNumber, PhoneNumberStatus
 from app.models.workspace import Workspace
+from app.services.telephony.number_ownership import (
+    CarrierLookupFactory,
+    get_carrier_lookup_factory,
+    verify_number_on_workspace_account,
+)
 
 router = APIRouter(prefix="/api/v1/phone-numbers", tags=["phone-numbers"])
 logger = structlog.get_logger()
@@ -289,8 +294,13 @@ async def create_phone_number(
     request: Request,
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
+    lookup_factory: CarrierLookupFactory = Depends(get_carrier_lookup_factory),
 ) -> PhoneNumberResponse:
     """Register a new phone number.
+
+    The number must be on the carrier account whose credentials the workspace
+    holds: it is looked up there first, and refused (422) if it is not, or
+    (503) if the carrier could not be asked. Only then is it registered.
 
     Args:
         create_request: Phone number details
@@ -312,6 +322,17 @@ async def create_phone_number(
         workspace_uuid = await validate_workspace_access(
             create_request.workspace_id, current_user.id, db
         )
+
+    # Proof first, so someone who does not hold the number learns nothing about
+    # whether another account has registered it (the 409 below).
+    await verify_number_on_workspace_account(
+        db,
+        user_id=user_uuid,
+        workspace_id=workspace_uuid,
+        provider=create_request.provider,
+        number=create_request.phone_number,
+        factory=lookup_factory,
+    )
 
     # One number, one owner. Inbound routing looks a dialled number up across
     # every account, so a second account registering the same number would
@@ -380,8 +401,14 @@ async def update_phone_number(  # noqa: PLR0912
     request: Request,
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
+    lookup_factory: CarrierLookupFactory = Depends(get_carrier_lookup_factory),
 ) -> PhoneNumberResponse:
     """Update a phone number.
+
+    Moving a number into a different workspace, or bringing a released one back,
+    is a number entering a workspace, so it is verified against that workspace's
+    carrier account like a new registration. Assigning it to another agent is
+    not: the number's place in its workspace was proven when it got there.
 
     Args:
         phone_number_id: Phone number ID
@@ -407,6 +434,30 @@ async def update_phone_number(  # noqa: PLR0912
 
     if not phone_number:
         raise HTTPException(status_code=404, detail="Phone number not found")
+
+    # Where the number will sit after this update, and whether it is entering
+    # that place (a different workspace, or back from released).
+    target_workspace = phone_number.workspace_id
+    if update_request.workspace_id is not None:
+        target_workspace = (
+            await validate_workspace_access(update_request.workspace_id, current_user.id, db)
+            if update_request.workspace_id
+            else None
+        )
+    reviving = (
+        phone_number.status == PhoneNumberStatus.RELEASED.value
+        and update_request.status is not None
+        and update_request.status != PhoneNumberStatus.RELEASED.value
+    )
+    if target_workspace != phone_number.workspace_id or reviving:
+        await verify_number_on_workspace_account(
+            db,
+            user_id=user_uuid,
+            workspace_id=target_workspace,
+            provider=phone_number.provider,
+            number=phone_number.phone_number,
+            factory=lookup_factory,
+        )
 
     # Update fields
     if update_request.friendly_name is not None:
