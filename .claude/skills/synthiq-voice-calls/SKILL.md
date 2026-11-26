@@ -170,6 +170,32 @@ never arrives, so the greeting that waits on it never fires.
 against the model's fields, because the model allows extras and validation
 alone would pass every beta field. Keep new session code going through it.
 
+## Models not yet confirmed by a call
+
+**UNVERIFIED until one live call.** Two model choices have never been exercised
+against OpenAI by a call:
+
+1. `gpt-transcribe` (`OPENAI_REALTIME_INPUT_TRANSCRIPTION_MODEL`) is used with
+   `server_vad` turn detection, which every session here sets. OpenAI's docs
+   scope the "no turn detection" rule to transcription sessions naming
+   `gpt-live-transcribe` and `gpt-realtime-whisper`
+   ([realtime-vad](https://developers.openai.com/api/docs/guides/realtime-vad),
+   [realtime-transcription](https://developers.openai.com/api/docs/guides/realtime-transcription),
+   re-read 26 November 2026); `gpt-transcribe` is not named in either rule. Not
+   named is not the same as supported with `server_vad`.
+2. `gpt-realtime-2.1` and `gpt-realtime-2.1-mini` (introduced by PR #56) are the
+   configured names; no call has confirmed OpenAI serves them as configured.
+
+On the call, check: `session.updated` arrives and no `error` event follows the
+`session.update`; the caller's words appear as
+`conversation.item.input_audio_transcription.completed` events with text; turns
+still end on silence (the VAD is working alongside the transcription model); the
+model OpenAI reports in `session.created` / `session.updated` is the configured
+name, for a `premium` agent and again for a `premium-mini` agent; audio flows both
+ways. If any of these fails, set `OPENAI_REALTIME_INPUT_TRANSCRIPTION_MODEL` empty
+(calls then have no caller transcript) or override the model variables, and
+update this note.
+
 ## Before saying a deployment can take a call
 
 ```bash

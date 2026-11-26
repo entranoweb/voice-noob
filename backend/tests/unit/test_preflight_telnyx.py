@@ -210,7 +210,9 @@ class TestRealtimeModelsAndProxy:
         assert _levels(results) == [Level.PASS, Level.PASS]
         assert "model-a" in results[0].detail
         assert "model-b" in results[0].detail
-        assert results[1].detail == "model-c"
+        assert "model-c" in results[1].detail
+        assert "unverified" in results[0].detail
+        assert "unverified" in results[1].detail
 
     def test_no_transcription_model_is_said_plainly(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from app.core.config import settings

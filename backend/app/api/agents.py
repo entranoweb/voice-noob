@@ -16,11 +16,27 @@ from app.core.public_id import generate_public_id
 from app.core.public_url import frontend_base_url
 from app.db.session import get_db
 from app.models.agent import Agent
+from app.services.realtime_models import is_legacy_tier, legacy_tier_refusal
 
 router = APIRouter(prefix="/api/v1/agents", tags=["agents"])
 
 # Pagination constants
 MAX_AGENTS_LIMIT = 100
+
+HTTP_UNPROCESSABLE = 422
+
+
+def _refuse_legacy_tier(pricing_tier: str) -> None:
+    """422 for a tier no call can run on, naming the tiers that are allowed.
+
+    The request schema still accepts the legacy names so that the refusal is this
+    message and not a regex mismatch, and so a dashboard that resends an existing
+    agent's unchanged tier is not rejected by the schema.
+    """
+    raise HTTPException(
+        status_code=HTTP_UNPROCESSABLE,
+        detail=legacy_tier_refusal(pricing_tier),
+    )
 
 
 # Pydantic schemas
@@ -142,6 +158,8 @@ async def create_agent(
     """
     # The phone field is free text that inbound routing reads; it may only
     # point at a number registered to this account.
+    if is_legacy_tier(agent_request.pricing_tier):
+        _refuse_legacy_tier(agent_request.pricing_tier)
     await ensure_phone_reference_is_owned(db, agent_request.phone_number_id, current_user)
 
     # Build provider config based on tier (from pricing-tiers.ts)
@@ -349,6 +367,7 @@ async def update_agent(
             detail="Agent not found",
         )
 
+    _refuse_legacy_tier_change(agent, update_request)
     await ensure_phone_reference_is_owned(db, update_request.phone_number_id, current_user)
 
     # Apply updates from request
@@ -381,6 +400,27 @@ async def update_agent(
     await db.refresh(agent)
 
     return _agent_to_response(agent)
+
+
+def _refuse_legacy_tier_change(agent: Agent, request: UpdateAgentRequest) -> None:
+    """Refuse an update that puts a legacy tier on the phone path.
+
+    Two changes do: moving the agent onto a legacy tier, and giving an agent that
+    is on one a different phone number. An agent already on a legacy tier is
+    otherwise left editable, because the dashboard resends the whole form and a
+    rename should not be a refusal.
+    """
+    tier = request.pricing_tier if request.pricing_tier is not None else agent.pricing_tier
+    if not is_legacy_tier(tier):
+        return
+    moving_onto_tier = (
+        request.pricing_tier is not None and request.pricing_tier != agent.pricing_tier
+    )
+    changing_number = (
+        request.phone_number_id is not None and request.phone_number_id != agent.phone_number_id
+    )
+    if moving_onto_tier or changing_number:
+        _refuse_legacy_tier(tier)
 
 
 def _apply_agent_updates(agent: Agent, request: UpdateAgentRequest) -> None:

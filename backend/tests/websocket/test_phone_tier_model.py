@@ -15,6 +15,7 @@ from typing import Any
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from structlog.testing import capture_logs
 
 from app.api import telephony_ws
 from app.core.config import settings
@@ -212,3 +213,61 @@ async def test_azure_uses_the_tier_model_only_when_no_deployment_is_saved(
     await _call_telnyx(inbound_call_env, connected_models)
 
     assert connected_models == [expected]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tier", ["budget", "balanced"])
+class TestLegacyTierCall:
+    """A call reaching an agent saved before the tier rule is not dropped mid-call.
+
+    It runs as it did, on the premium model, and says once that it did.
+    """
+
+    @staticmethod
+    def _warnings(logs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [e for e in logs if e["event"] == "legacy_pricing_tier_on_call"]
+
+    async def test_telnyx(
+        self,
+        tier: str,
+        connected_models: list[str],
+        test_engine: Any,
+        inbound_call_env: dict[str, Any],  # noqa: F811
+    ) -> None:
+        await _set_tier(test_engine, inbound_call_env, tier)
+        with capture_logs() as logs:
+            await _call_telnyx(inbound_call_env, connected_models)
+
+        assert connected_models == [PREMIUM]
+        found = self._warnings(logs)
+        assert len(found) == 1
+        assert found[0]["log_level"] == "warning"
+        assert found[0]["pricing_tier"] == tier
+        assert found[0]["agent_id"] == str(inbound_call_env["agent"].id)
+
+    async def test_twilio(
+        self,
+        tier: str,
+        connected_models: list[str],
+        test_engine: Any,
+        twilio_env: dict[str, Any],  # noqa: F811
+    ) -> None:
+        await _set_tier(test_engine, twilio_env, tier)
+        with capture_logs() as logs:
+            await _call_twilio(twilio_env, connected_models)
+
+        assert connected_models == [PREMIUM]
+        assert len(self._warnings(logs)) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_realtime_tier_call_logs_no_legacy_warning(
+    connected_models: list[str],
+    test_engine: Any,
+    inbound_call_env: dict[str, Any],  # noqa: F811
+) -> None:
+    await _set_tier(test_engine, inbound_call_env, "premium-mini")
+    with capture_logs() as logs:
+        await _call_telnyx(inbound_call_env, connected_models)
+
+    assert [e for e in logs if e["event"] == "legacy_pricing_tier_on_call"] == []

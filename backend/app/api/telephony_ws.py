@@ -56,6 +56,7 @@ from app.monitoring.metrics import (
 )
 from app.services.call_registry import is_shutting_down, register_call, unregister_call
 from app.services.gpt_realtime import GPTRealtimeSession
+from app.services.realtime_models import warn_if_legacy_tier
 
 router = APIRouter(prefix="/ws/telephony", tags=["telephony-ws"])
 logger = structlog.get_logger()
@@ -807,6 +808,7 @@ async def twilio_media_stream(  # noqa: PLR0912, PLR0915
             return
 
         log.info("agent_loaded", agent_name=agent.name)
+        warn_if_legacy_tier(log, agent)
 
         # agent.user_id is now directly the integer user ID
         user_id_int = agent.user_id
@@ -1252,6 +1254,7 @@ async def telnyx_media_stream(  # noqa: PLR0912, PLR0915
             return
 
         log.info("agent_loaded", agent_name=agent.name)
+        warn_if_legacy_tier(log, agent)
 
         # An agent with transcripts switched off has had its owner decline to
         # store what was said. That covers the metrics and the trace too, so the

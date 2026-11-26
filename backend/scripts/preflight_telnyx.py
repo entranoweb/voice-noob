@@ -254,6 +254,39 @@ async def check_agent() -> list[Result]:
     return results
 
 
+def legacy_tier_results(dialable: list[tuple[Any, str, str]]) -> list[Result]:
+    """Warn about agents on a pricing tier that no longer exists.
+
+    New configuration refuses `budget` and `balanced`, but an agent saved before
+    that still takes calls, on the premium Realtime model and at the premium
+    price. That is worth knowing before dialling and not a reason not to dial.
+    """
+    from app.services.realtime_models import REALTIME_TIERS, is_legacy_tier
+
+    legacy: dict[Any, Any] = {}
+    for agent, _number, _source in dialable:
+        if is_legacy_tier(agent.pricing_tier):
+            legacy.setdefault(agent.id, agent)
+    if not legacy:
+        return [ok("legacy tiers", "no dialable agent is on a legacy pricing tier")]
+    listed = ", ".join(f"{a.name} ({a.id}) on {a.pricing_tier}" for a in legacy.values())
+    return [
+        warn(
+            "legacy tiers",
+            f"{len(legacy)} dialable agent(s) on a retired pricing tier: {listed}. They answer "
+            f"as premium. Move them to one of: {', '.join(REALTIME_TIERS)}",
+        )
+    ]
+
+
+async def check_legacy_tier_agents() -> list[Result]:
+    """A warning, never a failure: the call works, it just is not what the tier says."""
+    try:
+        return legacy_tier_results(await _dialable())
+    except Exception as exc:  # reported, and check_agent has already failed on it
+        return [warn("legacy tiers", f"could not be checked: {type(exc).__name__}: {exc}")]
+
+
 async def check_agent_openai_key() -> list[Result]:
     """The key the call uses, which is not the one in the environment.
 
@@ -419,9 +452,15 @@ def check_realtime_models() -> list[Result]:
         ok(
             "realtime models",
             f"premium={settings.OPENAI_REALTIME_MODEL_PREMIUM}, "
-            f"premium-mini={settings.OPENAI_REALTIME_MODEL_PREMIUM_MINI}",
+            f"premium-mini={settings.OPENAI_REALTIME_MODEL_PREMIUM_MINI} "
+            "(unverified until a live call)",
         ),
-        ok("transcription model", transcription or "none: calls will have no caller transcript"),
+        ok(
+            "transcription model",
+            f"{transcription} with server_vad (unverified until a live call)"
+            if transcription
+            else "none: calls will have no caller transcript",
+        ),
     ]
 
 
@@ -469,6 +508,7 @@ async def main() -> int:
     results += await check_migrations()
     results += await check_redis()
     results += await check_agent()
+    results += await check_legacy_tier_agents()
     results += await check_agent_openai_key()
     if url and not args.skip_remote:
         results += await check_reachable(url)

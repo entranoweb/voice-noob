@@ -27,6 +27,7 @@ from app.models.agent import Agent
 from app.models.user import User
 from app.services.gpt_realtime import GPTRealtimeSession, build_instructions_with_language
 from app.services.realtime_models import (
+    REALTIME_TIERS,
     ClientSecretError,
     input_transcription,
     parse_client_secret,
@@ -248,7 +249,7 @@ async def realtime_websocket(  # noqa: PLR0911, PLR0915
             return
 
         # Check if Premium tier (GPT Realtime only for Premium/Premium-Mini)
-        if agent.pricing_tier not in ("premium", "premium-mini"):
+        if agent.pricing_tier not in REALTIME_TIERS:
             await websocket.send_json(
                 {
                     "type": "error",
@@ -497,7 +498,7 @@ async def create_webrtc_session(
     if not agent.is_active:
         raise HTTPException(status_code=400, detail="Agent is not active")
 
-    if agent.pricing_tier not in ("premium", "premium-mini"):
+    if agent.pricing_tier not in REALTIME_TIERS:
         raise HTTPException(
             status_code=400, detail="WebRTC Realtime only available for Premium tier agents"
         )
@@ -650,7 +651,7 @@ async def get_ephemeral_token(
     if not agent.is_active:
         raise HTTPException(status_code=400, detail="Agent is not active")
 
-    if agent.pricing_tier not in ("premium", "premium-mini"):
+    if agent.pricing_tier not in REALTIME_TIERS:
         raise HTTPException(
             status_code=400, detail="WebRTC Realtime only available for Premium tier agents"
         )

@@ -55,7 +55,7 @@ async def test_agent_changes_and_number_assignment_are_recorded(
 
     created = await client.post(
         "/api/v1/agents",
-        json={"name": "Reception", "pricing_tier": "balanced", "system_prompt": "Be helpful."},
+        json={"name": "Reception", "pricing_tier": "premium", "system_prompt": "Be helpful."},
     )
     assert created.status_code == 201, created.text
     agent_id = created.json()["id"]
