@@ -3,7 +3,7 @@
 import os
 from typing import Any
 
-from pydantic import PostgresDsn, RedisDsn, field_validator, model_validator
+from pydantic import Field, PostgresDsn, RedisDsn, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # The value SECRET_KEY shipped with. It is public, so anything signed with it is
@@ -176,6 +176,18 @@ class Settings(BaseSettings):
     EMBED_ALLOW_ANY_ORIGIN_WHEN_UNSET: bool = False
     # The longest an embedded session can run, and the lifetime of its token.
     EMBED_SESSION_MAX_SECONDS: int = 900
+    # How long the OpenAI client secret minted for a widget stays valid for
+    # *starting* a session (`expires_after.seconds`; OpenAI accepts 10 to 7200,
+    # its own default is 600). The page connects the moment it has the key, so a
+    # minute is ample; a key lifted from the response is worthless soon after.
+    EMBED_KEY_TTL_SECONDS: int = Field(default=60, ge=10, le=7200)
+    # How many keys may be minted per agent per hour, across all visitors. Each
+    # key can open sessions of up to EMBED_SESSION_MAX_SECONDS billed to the
+    # agent's owner. 30 is one new conversation every two minutes sustained,
+    # which is generous for a small business's site and bounds the worst case at
+    # 30 sessions an hour; raise it for a busy site. The per-IP limit on the
+    # endpoint (10/minute) stays on top.
+    EMBED_KEYS_PER_AGENT_PER_HOUR: int = Field(default=30, ge=1)
     # Whether embedded sessions may call an agent's tools when the agent's own
     # embed settings do not say (embed_settings.allow_tools). Off: a tool call
     # from the widget acts with the owner's integrations on an anonymous
