@@ -228,9 +228,9 @@ class Settings(BaseSettings):
     # in a dedicated transcription session. `gpt-live-transcribe` is not usable
     # here: the same guide says it "doesn't support `server_vad` or
     # `semantic_vad`", and every session this app opens sets server_vad.
-    # UNVERIFIED until a live call: the docs' no-VAD rule names only
-    # `gpt-live-transcribe` and `gpt-realtime-whisper`, so `gpt-transcribe` with
-    # `server_vad` is not excluded, but no call has shown it works.
+    # UNVERIFIED until a live call: the docs' no-VAD rule names two other
+    # transcription models (see the synthiq-voice-calls skill), so `gpt-transcribe`
+    # with `server_vad` is not excluded, but no call has shown it works.
     OPENAI_REALTIME_INPUT_TRANSCRIPTION_MODEL: str = "gpt-transcribe"
     DEEPGRAM_API_KEY: str | None = None
     ELEVENLABS_API_KEY: str | None = None
