@@ -85,7 +85,7 @@ def test_a_yes_to_a_read_back_is_a_confirmation_not_a_date_of_birth() -> None:
 
 def test_each_kind_of_confirmation_gets_its_own_label() -> None:
     assert label("the self-pay fee is £250. Is that all right?", "That's fine.") == "confirm_fee"
-    practitioner = "That would be with Kirti Moholkar. Is that all right?"
+    practitioner = "That would be with Jordan Example. Is that all right?"
     assert label(practitioner, "Yes, please.") == "confirm_practitioner"
     booking = "That's a consultation on Monday at midday. Is that right?"
     assert label(booking, "Yes, please.") == "confirm_booking"

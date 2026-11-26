@@ -56,7 +56,7 @@ def test_the_mishearings_from_real_calls_are_told_apart() -> None:
     assert not same("postcode", "A56TB", "A56 6DB")
     assert not same("postcode", "A56TB", "A563B")
     # 13 Nov, call 8398: the clinician's first name leaked into another caller's name.
-    assert not same("name", "Kirti Rathi", "It's Kirti Moholkar.")
+    assert not same("name", "Jordan Archer", "It's Jordan Example.")
     assert same("name", "Elliot Allen", "It's Elliot Allen.")
     assert not same("name", "Alice Wonderland", "Alex Wonderland")
     assert same("phone", "07813 953 95", "0781-395-395")
@@ -187,7 +187,7 @@ def test_a_correct_trace_passes_and_a_missing_trace_is_ungraded() -> None:
         call_ref="c",
         tool_calls=[
             ToolCall(
-                name="sophie_v2_new_patient_check",
+                name="example_v2_new_patient_check",
                 arguments={"fullName": "Elliot Allen", "dateOfBirth": "5th July, 1987"},
                 result={"success": True},
                 ok=True,
@@ -210,7 +210,7 @@ def test_a_forbidden_tool_fails_the_call() -> None:
                 {},
                 True,
             ),
-            ToolCall("sophie_v2_book", {}, {"success": True}, True),
+            ToolCall("example_v2_book", {}, {"success": True}, True),
         ],
     )
     result = grade(SCENARIO, record_with("5th July, 1987."), trace)

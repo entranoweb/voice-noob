@@ -110,7 +110,7 @@ graded call.
 ## A batch of calls, graded
 
 ```
-synthiq-caller batch scenarios/sophie --leg phone \
+synthiq-caller batch scenarios/example-receptionist --leg phone \
   --public-url https://caller.example.com \
   --from +44XXXXXXXXXX --to +44XXXXXXXXXX \
   --allowed-numbers allowed.txt \
@@ -170,7 +170,7 @@ matched to the nearest call. The report lists it with that reason. When the
 platform lists the call later:
 
 ```
-synthiq-caller regrade runs/phone --scenarios scenarios/sophie --reread --leg phone --agent <agent id>
+synthiq-caller regrade runs/phone --scenarios scenarios/example-receptionist --reread --leg phone --agent <agent id>
 ```
 
 `--no-trace` places calls without looking; every one is then ungraded.

@@ -156,6 +156,8 @@ def _clips(roots: list[Path]) -> dict[str, Any]:
     unknown_calls = 0
     no_consent: set[str] = set()
     no_consent_calls = 0
+    removed: set[str] = set()
+    removed_calls = removed_counted = 0
     for root in roots:
         for path in sorted(root.glob("run-*.json")):
             payload = completeness.read_run(path)
@@ -174,6 +176,16 @@ def _clips(roots: list[Path]) -> dict[str, Any]:
             bare = [str(c).partition(": ")[0] for c in payload.get("consent_missing") or []]
             no_consent.update(bare)
             no_consent_calls += bool(bare)
+            gone = [
+                str(m.get("clip"))
+                for m in payload.get("clips_removed") or []
+                if isinstance(m, dict)
+            ]
+            removed.update(gone)
+            removed_calls += bool(gone)
+            graded = payload.get("grade")
+            counted = isinstance(graded, dict) and graded.get("outcome") in ("passed", "failed")
+            removed_counted += bool(gone) and counted
     return {
         "calls": calls,
         "unverified": [{"clip": c, "why": w} for c, w in sorted(unverified.items())],
@@ -184,6 +196,9 @@ def _clips(roots: list[Path]) -> dict[str, Any]:
         "provenance_unknown_calls": unknown_calls,
         "consent_missing": sorted(no_consent),
         "consent_missing_calls": no_consent_calls,
+        "clips_removed": sorted(removed),
+        "clips_removed_calls": removed_calls,
+        "clips_removed_counted": removed_counted,
     }
 
 
@@ -255,6 +270,13 @@ def _not_shown(report: dict[str, Any]) -> list[str]:
         limits.append(
             f"{clips['consent_missing_calls']} call(s) played a clip with no lawful basis or "
             "consent record (consent record missing), allowed for the run."
+        )
+    if clips["clips_removed_calls"]:
+        limits.append(
+            f"{clips['clips_removed_calls']} call(s) ({clips['clips_removed_counted']} of them "
+            f"counted in the verdict) played a clip that has since been removed with 'forget'. "
+            "They stand as they were graded, but that audio can no longer be played, so those "
+            "calls cannot be repeated, and their stored text was redacted."
         )
     if clips["unverified"]:
         limits.append(
