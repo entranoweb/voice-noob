@@ -71,6 +71,9 @@ FIELDS: list[tuple[str, Any, str, int, bool]] = [
 ]
 
 
+QA_MODEL_LABEL = "workspaces.settings.qa.evaluation_model"
+
+
 async def find_over_cap(db: Any) -> dict[str, list[str]]:
     """Map each field's label to the ids (as text) of the rows over its cap."""
     found: dict[str, list[str]] = {}
@@ -79,12 +82,26 @@ async def find_over_cap(db: Any) -> dict[str, list[str]]:
         measured = func.char_length(cast(col, Text) if is_json else col)
         rows = await db.execute(select(model.id).where(measured > cap).order_by(model.id))
         found[label] = [str(row_id) for row_id in rows.scalars().all()]
+    # Inside a JSON document, so it is read in Python rather than by SQL.
+    from app.api.qa import EVALUATION_MODEL_MAX_CHARS
+
+    workspaces = await db.execute(select(Workspace.id, Workspace.settings).order_by(Workspace.id))
+    found[QA_MODEL_LABEL] = [
+        str(ws_id)
+        for ws_id, ws_settings in workspaces.all()
+        if len(str(((ws_settings or {}).get("qa") or {}).get("evaluation_model") or ""))
+        > EVALUATION_MODEL_MAX_CHARS
+    ]
     return found
 
 
 def render(found: dict[str, list[str]]) -> str:
     lines = []
-    for label, _model, _column, cap, _is_json in FIELDS:
+    from app.api.qa import EVALUATION_MODEL_MAX_CHARS
+
+    rows = [(label, cap) for label, _m, _c, cap, _j in FIELDS]
+    rows.append((QA_MODEL_LABEL, EVALUATION_MODEL_MAX_CHARS))
+    for label, cap in rows:
         ids = found.get(label, [])
         shown = ", ".join(ids[:MAX_IDS_PRINTED])
         more = f" (+{len(ids) - MAX_IDS_PRINTED} more)" if len(ids) > MAX_IDS_PRINTED else ""

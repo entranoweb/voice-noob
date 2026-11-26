@@ -546,17 +546,33 @@ class TestCrmToolsRefuseOverCapArguments:
         assert appointment.notes == "Cancellation reason: moved"
 
 
-class TestQaEvaluationModelIsBounded:
-    async def test_a_model_name_over_the_cap_is_refused(
-        self, authenticated_test_client: tuple[AsyncClient, User]
+class TestQaEvaluationModelResave:
+    async def test_a_stored_name_over_the_cap_sent_back_unchanged_is_accepted(
+        self,
+        authenticated_test_client: tuple[AsyncClient, User],
+        test_session: Any,
+        test_workspace: Workspace,
     ) -> None:
         client, _ = authenticated_test_client
-        response = await client.put(
-            f"/api/v1/qa/workspace/{uuid.uuid4()}/settings",
-            json={"evaluation_model": "m" * 101},
+        stored = "m" * 150
+        workspace = await test_session.get(Workspace, test_workspace.id)
+        workspace.settings = {"qa": {"evaluation_model": stored}}
+        await test_session.commit()
+
+        same = await client.put(
+            f"/api/v1/qa/workspace/{test_workspace.id}/settings",
+            json={"evaluation_model": stored, "pass_threshold": 80},
         )
-        assert response.status_code == 422
-        assert "at most 100 characters" in _detail(response)
+        assert same.status_code == 200, same.text
+
+        changed = await client.put(
+            f"/api/v1/qa/workspace/{test_workspace.id}/settings",
+            json={"evaluation_model": "n" * 150},
+        )
+        assert changed.status_code == 422
+        assert "at most 100 characters" in _detail(changed)
+        await test_session.refresh(workspace)
+        assert workspace.settings["qa"]["evaluation_model"] == stored
 
 
 class TestDuplicatingAnOverCapScenario:

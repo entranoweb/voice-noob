@@ -54,3 +54,19 @@ async def test_it_lists_only_rows_over_a_cap_by_id_without_content(
 def test_every_capped_free_text_field_is_in_the_report() -> None:
     labels = {label for label, *_ in report.FIELDS}
     assert {"phone_numbers.notes", "contacts.notes", "agents.system_prompt"} <= labels
+
+
+async def test_a_workspace_with_an_over_long_qa_model_name_is_listed_by_id(
+    authenticated_test_client: Any, test_session: Any, test_workspace: Any
+) -> None:
+    from app.models.workspace import Workspace
+
+    workspace = await test_session.get(Workspace, test_workspace.id)
+    workspace.settings = {"qa": {"evaluation_model": "SECRET-MODEL" + "m" * 150}}
+    await test_session.commit()
+
+    found = await report.find_over_cap(test_session)
+    text = report.render(found)
+
+    assert found[report.QA_MODEL_LABEL] == [str(test_workspace.id)]
+    assert "SECRET-MODEL" not in text
