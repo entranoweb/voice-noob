@@ -25,6 +25,7 @@ from app.api.settings import get_user_api_keys
 from app.core.auth import CurrentUser, user_id_to_uuid
 from app.core.config import settings
 from app.core.limiter import limiter
+from app.core.log_redaction import redact_phone
 from app.core.ownership import parse_uuid
 from app.core.public_url import public_base_url, public_ws_base_url
 from app.core.stream_token import mint_stream_token
@@ -614,7 +615,7 @@ async def purchase_phone_number(
     log = logger.bind(
         user_id=current_user.id, provider=purchase_request.provider, workspace_id=workspace_id
     )
-    log.info("purchasing_phone_number", phone_number=purchase_request.phone_number)
+    log.info("purchasing_phone_number", phone_number=redact_phone(purchase_request.phone_number))
 
     # Parse workspace_id
     try:
@@ -747,7 +748,11 @@ async def initiate_call(
     log = logger.bind(
         user_id=current_user.id, agent_id=call_request.agent_id, workspace_id=workspace_id
     )
-    log.info("initiating_call", to=call_request.to_number, from_=call_request.from_number)
+    log.info(
+        "initiating_call",
+        to=redact_phone(call_request.to_number),
+        from_=redact_phone(call_request.from_number),
+    )
 
     # Parse workspace_id
     try:
@@ -915,8 +920,8 @@ async def twilio_voice_webhook(
     log = logger.bind(
         webhook="twilio_voice",
         call_sid=call_sid,
-        from_number=from_number,
-        to_number=to_number,
+        from_number=redact_phone(from_number),
+        to_number=redact_phone(to_number),
         status=call_status,
     )
     log.info("twilio_incoming_call")
@@ -924,7 +929,7 @@ async def twilio_voice_webhook(
     agent_id = str(agent.id) if agent else None
 
     if not agent:
-        log.warning("no_agent_for_number", to_number=to_number)
+        log.warning("no_agent_for_number", to_number=redact_phone(to_number))
         # Return TwiML that says no agent is available
         return Response(
             content="""<?xml version="1.0" encoding="UTF-8"?>
@@ -1112,8 +1117,8 @@ async def telnyx_voice_webhook(
     log = logger.bind(
         webhook="telnyx_voice",
         call_control_id=event.call_id,
-        from_number=event.from_number,
-        to_number=event.to_number,
+        from_number=redact_phone(event.from_number),
+        to_number=redact_phone(event.to_number),
         event_type=event.event_type,
         wire_format=event.wire_format.value,
     )
@@ -1122,7 +1127,7 @@ async def telnyx_voice_webhook(
     agent_id = str(agent.id) if agent else None
 
     if not agent:
-        log.warning("no_agent_for_number", to_number=event.to_number)
+        log.warning("no_agent_for_number", to_number=redact_phone(event.to_number))
         return Response(
             content="""<?xml version="1.0" encoding="UTF-8"?>
 <Response>

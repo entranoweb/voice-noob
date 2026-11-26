@@ -10,6 +10,8 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 
+from app.core.log_redaction import log_exception, redact_mapping
+
 logger = structlog.get_logger()
 
 
@@ -45,7 +47,7 @@ class RequestTracingMiddleware(BaseHTTPMiddleware):
         # Log request start
         logger.info(
             "request_started",
-            query_params=dict(request.query_params) if request.query_params else None,
+            query_params=redact_mapping(request.query_params) if request.query_params else None,
         )
 
         try:
@@ -71,12 +73,7 @@ class RequestTracingMiddleware(BaseHTTPMiddleware):
             # Calculate duration even on error
             duration_ms = (time.perf_counter() - start_time) * 1000
 
-            logger.exception(
-                "request_failed",
-                error=str(e),
-                error_type=type(e).__name__,
-                duration_ms=round(duration_ms, 2),
-            )
+            log_exception(logger, "request_failed", e, duration_ms=round(duration_ms, 2))
             raise
 
     def _get_client_ip(self, request: Request) -> str:

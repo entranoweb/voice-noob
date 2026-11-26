@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.audit import AuditAction, record_audit
 from app.core.auth import CurrentUser, user_id_to_uuid
 from app.core.limiter import limiter
+from app.core.log_redaction import redact_phone
 from app.core.ownership import (
     agent_is_in_workspace,
     agents_dialling_number_outside,
@@ -328,7 +329,7 @@ async def create_phone_number(
         Created phone number
     """
     log = logger.bind(user_id=current_user.id)
-    log.info("creating_phone_number", phone_number=create_request.phone_number)
+    log.info("creating_phone_number", phone_number=redact_phone(create_request.phone_number))
 
     user_uuid = user_id_to_uuid(current_user.id)
 

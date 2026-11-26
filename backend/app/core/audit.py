@@ -20,6 +20,7 @@ import structlog
 from fastapi import Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.log_redaction import redact_event_dict
 from app.core.proxy import stored_client_address
 from app.models.audit_event import AuditEvent
 
@@ -41,6 +42,7 @@ _audit_logger = structlog.wrap_logger(
     processors=[
         structlog.processors.add_log_level,
         structlog.processors.TimeStamper(fmt="iso"),
+        redact_event_dict,
         structlog.processors.JSONRenderer(),
     ],
     wrapper_class=structlog.make_filtering_bound_logger(logging.INFO),

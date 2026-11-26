@@ -16,6 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.core.log_redaction import describe_text
 from app.db.session import AsyncSessionLocal
 from app.models.agent import Agent
 from app.models.call_evaluation import CallEvaluation
@@ -323,7 +324,7 @@ class QAEvaluator:
             evaluation_data = self._parse_evaluation_response(response_text)
 
             if not evaluation_data:
-                log.error("failed_to_parse_response", response=response_text[:500])
+                log.error("failed_to_parse_response", response=describe_text(response_text))
                 return None
 
             # Calculate cost

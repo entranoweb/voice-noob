@@ -18,6 +18,7 @@ from typing import Any
 import httpx
 import structlog
 
+from app.core.log_redaction import describe_text, log_exception
 from app.services.tools.path_ids import encode_path_id, invalid_id_result
 
 # Type alias for tool handler functions
@@ -304,7 +305,7 @@ class GoHighLevelTools:
                 self.logger.warning(
                     "ghl_search_contact_failed",
                     status_code=response.status_code,
-                    response=response.text,
+                    response=describe_text(response.text),
                 )
                 return {"success": False, "error": f"API error: {response.status_code}"}
 
@@ -339,7 +340,7 @@ class GoHighLevelTools:
             }
 
         except Exception as e:
-            self.logger.exception("ghl_search_contact_error", query=query, error=str(e))
+            log_exception(self.logger, "ghl_search_contact_error", e, query=describe_text(query))
             return {"success": False, "error": str(e)}
 
     async def ghl_get_contact(self, contact_id: str) -> dict[str, Any]:
@@ -381,7 +382,7 @@ class GoHighLevelTools:
             }
 
         except Exception as e:
-            self.logger.exception("ghl_get_contact_error", contact_id=contact_id, error=str(e))
+            log_exception(self.logger, "ghl_get_contact_error", e, contact_id=contact_id)
             return {"success": False, "error": str(e)}
 
     async def ghl_create_contact(
@@ -430,7 +431,7 @@ class GoHighLevelTools:
                 self.logger.warning(
                     "ghl_create_contact_failed",
                     status_code=response.status_code,
-                    response=response.text,
+                    response=describe_text(response.text),
                 )
                 return {"success": False, "error": f"Failed to create contact: {response.text}"}
 
@@ -444,7 +445,7 @@ class GoHighLevelTools:
             }
 
         except Exception as e:
-            self.logger.exception("ghl_create_contact_error", error=str(e))
+            log_exception(self.logger, "ghl_create_contact_error", e)
             return {"success": False, "error": str(e)}
 
     async def ghl_update_contact(
@@ -502,7 +503,7 @@ class GoHighLevelTools:
             }
 
         except Exception as e:
-            self.logger.exception("ghl_update_contact_error", contact_id=contact_id, error=str(e))
+            log_exception(self.logger, "ghl_update_contact_error", e, contact_id=contact_id)
             return {"success": False, "error": str(e)}
 
     async def ghl_add_contact_tags(self, contact_id: str, tags: list[str]) -> dict[str, Any]:
@@ -537,7 +538,7 @@ class GoHighLevelTools:
             }
 
         except Exception as e:
-            self.logger.exception("ghl_add_contact_tags_error", contact_id=contact_id, error=str(e))
+            log_exception(self.logger, "ghl_add_contact_tags_error", e, contact_id=contact_id)
             return {"success": False, "error": str(e)}
 
     async def ghl_get_calendars(self) -> dict[str, Any]:
@@ -575,7 +576,7 @@ class GoHighLevelTools:
             }
 
         except Exception as e:
-            self.logger.exception("ghl_get_calendars_error", error=str(e))
+            log_exception(self.logger, "ghl_get_calendars_error", e)
             return {"success": False, "error": str(e)}
 
     async def ghl_get_calendar_slots(
@@ -646,9 +647,7 @@ class GoHighLevelTools:
             }
 
         except Exception as e:
-            self.logger.exception(
-                "ghl_get_calendar_slots_error", calendar_id=calendar_id, error=str(e)
-            )
+            log_exception(self.logger, "ghl_get_calendar_slots_error", e, calendar_id=calendar_id)
             return {"success": False, "error": str(e)}
 
     async def ghl_book_appointment(
@@ -695,7 +694,7 @@ class GoHighLevelTools:
                 self.logger.warning(
                     "ghl_book_appointment_failed",
                     status_code=response.status_code,
-                    response=response.text,
+                    response=describe_text(response.text),
                 )
                 return {"success": False, "error": f"Failed to book appointment: {response.text}"}
 
@@ -711,7 +710,7 @@ class GoHighLevelTools:
             }
 
         except Exception as e:
-            self.logger.exception("ghl_book_appointment_error", error=str(e))
+            log_exception(self.logger, "ghl_book_appointment_error", e)
             return {"success": False, "error": str(e)}
 
     async def ghl_get_appointments(self, contact_id: str) -> dict[str, Any]:
@@ -755,7 +754,7 @@ class GoHighLevelTools:
             }
 
         except Exception as e:
-            self.logger.exception("ghl_get_appointments_error", contact_id=contact_id, error=str(e))
+            log_exception(self.logger, "ghl_get_appointments_error", e, contact_id=contact_id)
             return {"success": False, "error": str(e)}
 
     async def ghl_cancel_appointment(self, event_id: str) -> dict[str, Any]:
@@ -784,7 +783,7 @@ class GoHighLevelTools:
             }
 
         except Exception as e:
-            self.logger.exception("ghl_cancel_appointment_error", event_id=event_id, error=str(e))
+            log_exception(self.logger, "ghl_cancel_appointment_error", e, event_id=event_id)
             return {"success": False, "error": str(e)}
 
     async def ghl_get_pipelines(self) -> dict[str, Any]:
@@ -824,7 +823,7 @@ class GoHighLevelTools:
             }
 
         except Exception as e:
-            self.logger.exception("ghl_get_pipelines_error", error=str(e))
+            log_exception(self.logger, "ghl_get_pipelines_error", e)
             return {"success": False, "error": str(e)}
 
     async def ghl_create_opportunity(
@@ -878,7 +877,7 @@ class GoHighLevelTools:
             }
 
         except Exception as e:
-            self.logger.exception("ghl_create_opportunity_error", error=str(e))
+            log_exception(self.logger, "ghl_create_opportunity_error", e)
             return {"success": False, "error": str(e)}
 
     async def execute_tool(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
