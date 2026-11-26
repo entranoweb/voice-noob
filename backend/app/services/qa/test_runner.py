@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from app.core.config import settings
 from app.core.log_redaction import log_exception
+from app.core.safe_errors import public_error
 from app.db.session import AsyncSessionLocal
 from app.db.session import engine as default_engine
 from app.models.agent import Agent
@@ -417,7 +418,7 @@ class TestRunner:
             log_exception(log, "test_run_failed", e)
             test_run.status = TestRunStatus.ERROR.value
             test_run.completed_at = datetime.now(UTC)
-            test_run.error_message = str(e)
+            test_run.error_message = public_error(e, "The test run failed")
             await self.db.commit()
 
         return test_run

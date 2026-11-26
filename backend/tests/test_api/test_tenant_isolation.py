@@ -1283,3 +1283,56 @@ class TestNotYoursLooksLikeNotThere:
             )
             assert theirs.status_code == nobodys.status_code == 404, method
             assert theirs.json() == nobodys.json(), method
+
+
+class TestRealtimeTokenErrorText:
+    """What the dashboard sees when the provider call fails: a fixed message."""
+
+    @pytest.mark.asyncio
+    async def test_a_transport_error_does_not_echo_its_text(
+        self, world: World, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import httpx
+
+        async def refuse(*_: Any, **__: Any) -> Any:
+            raise httpx.ConnectError(
+                "cannot reach https://api.example.test/?key=sk-placeholder-0000"
+            )
+
+        monkeypatch.setattr("app.api.realtime.post_client_secret", refuse)
+        await _store_key(world, world.alice, WORKSPACE_KEY, workspace_id=world.alice.workspace.id)
+
+        response = await world.client.get(
+            f"/api/v1/realtime/token/{world.alice.agent.id}", headers=world.alice.headers
+        )
+
+        assert response.status_code == 500, response.text
+        assert "sk-placeholder-0000" not in response.text
+        assert "api.example.test" not in response.text
+
+    @pytest.mark.asyncio
+    async def test_a_provider_error_body_is_not_forwarded(
+        self, world: World, fake_openai: _FakeOpenAI, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import httpx
+
+        await _store_key(world, world.alice, WORKSPACE_KEY, workspace_id=world.alice.workspace.id)
+
+        async def refuse(*_: Any, **__: Any) -> Any:
+            return httpx.Response(
+                401, text="Incorrect API key provided: sk-placeholder-0000 for +15550100042"
+            )
+
+        monkeypatch.setattr("app.api.realtime.post_client_secret", refuse)
+
+        response = await world.client.get(
+            f"/api/v1/realtime/token/{world.alice.agent.id}", headers=world.alice.headers
+        )
+
+        # Our 401 signs the dashboard user out; the provider refusing the key is not that.
+        assert response.status_code == 502, response.text
+        assert (
+            "key was refused" in response.json()["detail"] or "refused" in response.json()["detail"]
+        )
+        assert "sk-placeholder-0000" not in response.text
+        assert "+15550100042" not in response.text
