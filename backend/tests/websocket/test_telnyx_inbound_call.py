@@ -969,7 +969,23 @@ class TestStreamUsesTheWorkspaceTheWebhookRecorded:
                 )
             )
             await session.commit()
-        query = await _place_webhook(env)  # the newer row, in the second workspace
+            # Newer, in the second workspace. Written directly: the answering webhook
+            # refuses an id that already has a row, so only the stream can meet two.
+            session.add(
+                CallRecord(
+                    user_id=user_id_to_uuid(env["agent"].user_id),
+                    workspace_id=second,
+                    provider="telnyx",
+                    provider_call_id=CALL_SID,
+                    agent_id=env["agent"].id,
+                    direction="inbound",
+                    status="ringing",
+                    from_number=CALLER_NUMBER,
+                    to_number=AGENT_NUMBER,
+                )
+            )
+            await session.commit()
+        query = _minted_query(str(env["agent"].id), CALL_SID)
 
         await _run_stream(env, query)
 

@@ -27,15 +27,19 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.auth import user_id_to_uuid
 from app.core.config import settings
 from app.db.redis import get_redis
 from app.db.session import get_db
 from app.main import app
 from app.models.agent import Agent
 from app.models.call_record import CallDirection, CallRecord, CallStatus
+from app.models.phone_number import PhoneNumber, PhoneNumberStatus
 from app.models.user import User
+from app.models.workspace import AgentWorkspace, Workspace
 
 AGENT_NUMBER = "+15559997777"
+TELNYX_AGENT_NUMBER = "+15559996666"
 CALLER_NUMBER = "+15551230000"
 TWILIO_TOKEN = "twilio-auth-token-for-replay-tests"
 BASE = "https://voice.example.com"
@@ -72,6 +76,25 @@ async def env(test_engine: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
             phone_number_id=AGENT_NUMBER,
         )
         session.add(agent)
+        await session.commit()
+        # A call routes only for a number a registered record puts in a workspace the
+        # agent is in, on the carrier that sent the webhook: one number per carrier.
+        workspace = Workspace(user_id=user.id, name="Main")
+        session.add(workspace)
+        await session.commit()
+        session.add(AgentWorkspace(agent_id=agent.id, workspace_id=workspace.id, is_default=True))
+        for number, provider in ((AGENT_NUMBER, "twilio"), (TELNYX_AGENT_NUMBER, "telnyx")):
+            session.add(
+                PhoneNumber(
+                    user_id=user_id_to_uuid(user.id),
+                    workspace_id=workspace.id,
+                    phone_number=number,
+                    provider=provider,
+                    provider_id=f"pn-{uuid.uuid4()}",
+                    status=PhoneNumberStatus.ACTIVE.value,
+                    assigned_agent_id=agent.id,
+                )
+            )
         await session.commit()
 
     key = Ed25519PrivateKey.generate()
@@ -137,7 +160,7 @@ def _telnyx_body(call_id: str) -> bytes:
         {
             "CallSid": call_id,
             "From": CALLER_NUMBER,
-            "To": AGENT_NUMBER,
+            "To": TELNYX_AGENT_NUMBER,
             "CallStatus": "ringing",
             "Direction": "inbound",
         }
@@ -211,7 +234,7 @@ class TestTelnyxReplay:
             raise RuntimeError("database blip")
 
         with monkeypatch.context() as patch:
-            patch.setattr("app.api.telephony.get_agent_workspace_id", boom)
+            patch.setattr("app.api.telephony._existing_call_age", boom)
             async with AsyncClient(
                 transport=ASGITransport(app=app, raise_app_exceptions=False), base_url=BASE
             ) as client:
@@ -399,6 +422,34 @@ async def _seed_outbound(env: dict[str, Any], call_id: str, status: str = "initi
             )
         )
         await session.commit()
+
+
+async def _seed_pending(env: dict[str, Any]) -> uuid.UUID:
+    """What the dial helper writes before dialling: `pending:<id>` until the carrier's id is known."""
+    async with env["session_maker"]() as session:
+        agent = await session.get(Agent, uuid.UUID(env["agent_id"]))
+        assert agent is not None
+        record_id = uuid.uuid4()
+        session.add(
+            CallRecord(
+                id=record_id,
+                user_id=user_id_to_uuid(agent.user_id),
+                workspace_id=(
+                    await session.execute(
+                        select(Workspace.id).where(Workspace.user_id == agent.user_id)
+                    )
+                ).scalar_one(),
+                provider="telnyx",
+                provider_call_id=f"pending:{record_id}",
+                agent_id=agent.id,
+                direction=CallDirection.OUTBOUND.value,
+                status="initiated",
+                from_number=TELNYX_AGENT_NUMBER,
+                to_number=CALLER_NUMBER,
+            )
+        )
+        await session.commit()
+        return record_id
 
 
 def _telnyx_answer(env: dict[str, Any], call_id: str, ts: str | None = None) -> Any:
@@ -652,12 +703,11 @@ class TestReplayOutlivesTheRow:
 
 
 class TestAnswerWithNoRow:
-    @pytest.fixture(autouse=True)
-    def _fast(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("app.api.telephony._ROW_RECHECK_DELAY_SECONDS", 0.0)
+    """An answer for a call with no record is never accepted (the record is written
+    before the dial, so a legitimate answer always has one)."""
 
     @pytest.mark.asyncio
-    async def test_a_rowless_answer_is_claimable_once_even_with_distinct_signatures(
+    async def test_a_rowless_answer_is_refused_every_time_whatever_its_signature(
         self, env: dict[str, Any]
     ) -> None:
         url = f"/webhooks/telnyx/answer?agent_id={env['agent_id']}"
@@ -667,31 +717,26 @@ class TestAnswerWithNoRow:
             first = await client.post(url, content=first_body, headers=first_headers)
             later_body, later_headers = _telnyx_answer(env, "v3:norow", str(now - 1))
             later = await client.post(url, content=later_body, headers=later_headers)
-        assert "token=" in first.text
-        assert "token=" not in later.text
+        assert first.status_code == 403
+        assert later.status_code == 403
+        assert "token=" not in first.text + later.text
 
     @pytest.mark.asyncio
     @needs_postgres
-    async def test_a_row_that_lands_during_the_recheck_is_answered_normally(
-        self, env: dict[str, Any], monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        real_sleep = asyncio.sleep
-        seeded = {"done": False}
-
-        async def sleep_then_seed(_: float) -> None:
-            if not seeded["done"]:
-                seeded["done"] = True
-                await _seed_outbound(env, "v3:late-row")
-            await real_sleep(0)
-
-        monkeypatch.setattr("app.api.telephony.asyncio.sleep", sleep_then_seed)
-        body, headers = _telnyx_answer(env, "v3:late-row")
+    async def test_a_pending_row_is_answered_once_by_record_id(self, env: dict[str, Any]) -> None:
+        """The answer beat the write of the carrier's id: the record id still claims it, once."""
+        record_id = await _seed_pending(env)
+        url = f"/webhooks/telnyx/answer?agent_id={env['agent_id']}&record_id={record_id}"
+        now = int(time.time())
         async with _client() as client:
-            response = await client.post(
-                f"/webhooks/telnyx/answer?agent_id={env['agent_id']}", content=body, headers=headers
-            )
-        assert "token=" in response.text
-        assert (await _fetch(env, "v3:late-row")).answered_at is not None
+            first_body, first_headers = _telnyx_answer(env, "v3:early", str(now))
+            first = await client.post(url, content=first_body, headers=first_headers)
+            later_body, later_headers = _telnyx_answer(env, "v3:early", str(now - 1))
+            later = await client.post(url, content=later_body, headers=later_headers)
+        assert "token=" in first.text
+        assert "token=" not in later.text
+        row = await _fetch(env, "v3:early")
+        assert row.answered_at is not None
 
 
 class TestIdempotentRetry:
@@ -839,7 +884,7 @@ class TestClaimReleaseAfterCommit:
 
 class TestRedisDuplicatePathWithoutARow:
     @pytest.mark.asyncio
-    async def test_a_replayed_status_callback_for_an_unknown_call_is_a_duplicate(
+    async def test_a_status_callback_for_an_unknown_call_is_never_accepted(
         self, env: dict[str, Any]
     ) -> None:
         path = "/webhooks/twilio/status"
@@ -848,8 +893,9 @@ class TestRedisDuplicatePathWithoutARow:
         async with _client() as client:
             first = await client.post(path, content=_form(params), headers=headers)
             second = await client.post(path, content=_form(params), headers=headers)
-        assert first.json() == {"status": "received"}
-        assert second.json() == {"status": "duplicate"}
+        assert first.status_code == 503
+        assert second.status_code == 503
+        assert first.headers["retry-after"] == "5"
 
 
 async def _set_retention(env: dict[str, Any], days: int) -> int:

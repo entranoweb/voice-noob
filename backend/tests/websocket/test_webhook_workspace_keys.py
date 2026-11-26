@@ -894,3 +894,41 @@ class TestCampaignCallsGoThroughTheSameGates:
         async with env["sessions"]() as db:
             record = (await db.execute(select(CallRecord))).scalar_one()
         assert record.provider_call_id == "answer-first-sid"
+
+
+class TestOutboundAnswerClaimMatchesTheRecord:
+    """#71's one-shot claim must find a row stored as `pending:<id>` by its record id."""
+
+    @pytest.mark.asyncio
+    async def test_a_pending_row_is_claimed_by_record_id_exactly_once(
+        self, env: dict[str, Any]
+    ) -> None:
+        record = await _seed_call(env, provider="telnyx", call_id=f"pending:{uuid.uuid4()}")
+        scope = {"type": "http", "method": "POST", "path": "/", "headers": [], "query_string": b""}
+        from starlette.requests import Request
+
+        async with env["sessions"]() as session:
+            first = await telephony._claim_outbound_answer(
+                Request(scope), "telnyx", "carrier-id-1", session, record_id=record.id
+            )
+        async with env["sessions"]() as session:
+            second = await telephony._claim_outbound_answer(
+                Request(scope), "telnyx", "carrier-id-1", session, record_id=record.id
+            )
+
+        assert first == (True, None)
+        assert second[0] is False
+        assert second[1] is not None
+        assert second[1] is not telephony._NO_ROW
+
+    @pytest.mark.asyncio
+    async def test_the_lost_answer_age_finds_a_pending_row_by_record_id(
+        self, env: dict[str, Any]
+    ) -> None:
+        record = await _seed_call(env, provider="twilio", call_id=f"pending:{uuid.uuid4()}")
+        async with env["sessions"]() as session:
+            by_id = await telephony._lost_answer_age("twilio", "CAx", session, record.id)
+            without = await telephony._lost_answer_age("twilio", "CAx", session)
+
+        assert by_id is not telephony._NO_ROW
+        assert without is telephony._NO_ROW
