@@ -709,7 +709,7 @@ class TestHangingRedis:
             async def _hang(self, *_: Any, **__: Any) -> Any:
                 await asyncio.sleep(30)
 
-            set = get = exists = delete = _hang  # noqa: A003
+            set = get = exists = delete = _hang
 
         async def store() -> Any:
             return Hung()
