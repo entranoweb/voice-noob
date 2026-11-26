@@ -288,7 +288,7 @@ class ShopifyTools:
         """Get detailed order information."""
         try:
             # Handle order number vs ID
-            if order_id.startswith("#"):
+            if isinstance(order_id, str) and order_id.startswith("#"):
                 order_id = order_id[1:]
 
             safe_order_id = encode_path_id(order_id)
@@ -305,8 +305,10 @@ class ShopifyTools:
                 if search_response.status_code == HTTPStatus.OK:
                     orders = search_response.json().get("orders", [])
                     if orders:
-                        order_id = str(orders[0]["id"])
-                        response = await self.client.get(f"/orders/{order_id}.json")
+                        found_id = encode_path_id(str(orders[0]["id"]))
+                        if found_id is None:
+                            return invalid_id_result("order_id")
+                        response = await self.client.get(f"/orders/{found_id}.json")
 
             if response.status_code != HTTPStatus.OK:
                 return {

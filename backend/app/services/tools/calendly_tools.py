@@ -3,6 +3,7 @@
 from collections.abc import Awaitable, Callable
 from http import HTTPStatus
 from typing import Any
+from urllib.parse import urlencode
 
 import httpx
 import structlog
@@ -318,9 +319,11 @@ class CalendlyTools:
             booking_url = data["resource"]["booking_url"]
 
             # Add prefill parameters for invitee
-            prefill_params = f"?email={invitee_email}"
+            prefill: dict[str, str] = {"email": invitee_email}
             if invitee_name:
-                prefill_params += f"&name={invitee_name}"
+                prefill["name"] = invitee_name
+            separator = "&" if "?" in booking_url else "?"
+            prefill_params = separator + urlencode(prefill)
 
             return {
                 "success": True,

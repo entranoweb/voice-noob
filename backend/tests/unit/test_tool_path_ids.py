@@ -194,6 +194,117 @@ async def test_normal_id_hits_the_same_url_as_before(
     assert requests[0].url.path == base_url.path.rstrip("/") + expected
 
 
+ENCODED_IDS = [("a b", "a%20b"), ("a@b.com", "a%40b.com"), ("caf\u00e9", "caf%C3%A9")]
+
+
+@pytest.mark.parametrize(("raw_id", "encoded"), ENCODED_IDS)
+@pytest.mark.parametrize(("label", "factory", "base", "call", "expected"), CASES, ids=_IDS)
+async def test_legal_id_is_percent_encoded_on_the_wire(
+    label: str,
+    factory: Callable[[], Any],
+    base: str,
+    call: Callable[[Any, str], Any],
+    expected: str,
+    raw_id: str,
+    encoded: str,
+) -> None:
+    requests: list[httpx.Request] = []
+    tools = factory()
+    _wire(tools, base, requests)
+
+    await call(tools, raw_id)
+
+    assert requests, f"{label} sent no request"
+    sent_path = requests[0].url.raw_path.split(b"?")[0].decode()
+    assert sent_path == httpx.URL(base).path.rstrip("/") + expected.replace(GOOD_ID, encoded)
+
+
+async def test_shopify_get_order_non_string_id_does_not_crash() -> None:
+    requests: list[httpx.Request] = []
+    tools = ShopifyTools("token", SHOP)
+    _wire(tools, SHOPIFY_BASE, requests)
+
+    result = await tools.get_order(1001)  # type: ignore[arg-type]
+
+    assert requests[0].url.path.endswith("/orders/1001.json")
+    assert result["success"] is False
+    assert "AttributeError" not in result["error"]
+    assert "startswith" not in result["error"]
+
+
+@pytest.mark.parametrize("bad_value", [None, ["1"], {"a": 1}])
+async def test_shopify_get_order_garbage_id_is_invalid(bad_value: Any) -> None:
+    requests: list[httpx.Request] = []
+    tools = ShopifyTools("token", SHOP)
+    _wire(tools, SHOPIFY_BASE, requests)
+
+    result = await tools.get_order(bad_value)
+
+    assert requests == []
+    assert result["success"] is False
+    assert "invalid" in result["error"].lower()
+
+
+@pytest.mark.parametrize(
+    ("found", "ok"), [("987654", True), ("../products/1", False), ("a/b", False)]
+)
+async def test_shopify_get_order_name_search_id_goes_through_the_helper(
+    found: str, ok: bool
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.endswith("/orders.json"):
+            return httpx.Response(200, json={"orders": [{"id": found}]})
+        return httpx.Response(404, json={})
+
+    tools = ShopifyTools("token", SHOP)
+    tools._client = httpx.AsyncClient(
+        base_url=SHOPIFY_BASE, transport=httpx.MockTransport(handler), timeout=5.0
+    )
+
+    result = await tools.get_order("1001")
+
+    paths = [r.url.path for r in requests]
+    prefix = f"/admin/api/{ShopifyTools.API_VERSION}"
+    assert paths[0] == f"{prefix}/orders/1001.json"
+    assert paths[1] == f"{prefix}/orders.json"
+    assert result["success"] is False
+    if ok:
+        assert paths[2] == f"{prefix}/orders/{found}.json"
+    else:
+        assert len(paths) == 2
+        assert "invalid" in result["error"].lower()
+
+
+async def test_calendly_prefill_query_stays_encoded() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/users/me":
+            return httpx.Response(
+                200,
+                json={"resource": {"uri": "u1", "current_organization": "o1"}},
+            )
+        return httpx.Response(
+            201, json={"resource": {"booking_url": "https://book.example.test/abc"}}
+        )
+
+    tools = CalendlyTools("token")
+    tools._client = httpx.AsyncClient(
+        base_url=CalendlyTools.BASE_URL, transport=httpx.MockTransport(handler), timeout=5.0
+    )
+
+    result = await tools.create_scheduling_link("x&utm_source=evil@a.test", "Sam & Co=1")
+
+    assert result["success"] is True
+    url = httpx.URL(result["booking_url"])
+    assert result["booking_url"] == (
+        "https://book.example.test/abc?email=x%26utm_source%3Devil%40a.test&name=Sam+%26+Co%3D1"
+    )
+    assert dict(url.params) == {"email": "x&utm_source=evil@a.test", "name": "Sam & Co=1"}
+    assert "utm_source" not in url.params
+
+
 async def test_shopify_order_hash_prefix_is_still_stripped() -> None:
     requests: list[httpx.Request] = []
     tools = ShopifyTools("token", SHOP)
