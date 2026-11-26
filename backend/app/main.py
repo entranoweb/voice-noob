@@ -38,6 +38,7 @@ from app.core.limiter import limiter
 from app.core.log_redaction import install_stdlib_redaction, redact_event_dict
 from app.db.redis import close_redis, get_redis, require_min_redis_version
 from app.db.session import AsyncSessionLocal, engine
+from app.middleware.body_limit import BodySizeLimitMiddleware
 from app.middleware.request_tracing import RequestTracingMiddleware
 from app.middleware.security import SecurityHeadersMiddleware
 from app.monitoring import get_metrics_router, loop_lag
@@ -239,6 +240,13 @@ app.add_middleware(RequestTracingMiddleware)
 
 # Add security headers middleware
 app.add_middleware(SecurityHeadersMiddleware)
+
+# Refuse an oversize body with 413. The caller routes are exempt: they read
+# their own streams against their own, larger caps (bundle, audio file).
+app.add_middleware(
+    BodySizeLimitMiddleware,
+    exempt_prefixes=(f"{settings.API_V1_PREFIX}/caller/",),
+)
 
 # Add CORS middleware (must be added AFTER security headers so it runs first)
 app.add_middleware(

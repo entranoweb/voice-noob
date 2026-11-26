@@ -7,14 +7,18 @@ from typing import Any
 import structlog
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import selectinload, undefer
 
 from app.core.cache import cache_invalidate
+from app.core.limits import NOTES_MAX_CHARS
 from app.core.log_redaction import describe_text, log_exception
 from app.models.appointment import Appointment
 from app.models.contact import Contact
 
 logger = structlog.get_logger()
+
+
+CANCEL_REASON_MAX_CHARS = 500  # a spoken reason; it is appended to notes
 
 
 class CRMTools:
@@ -284,6 +288,30 @@ class CRMTools:
             log_exception(self.logger, "search_customer_failed", e, query=describe_text(query))
             return {"success": False, "error": str(e)}
 
+    def _over_cap(
+        self, tool: str, fields: dict[str, tuple[str | None, int]]
+    ) -> dict[str, Any] | None:
+        """Refuse a live-call argument longer than its column or cap.
+
+        Returns the tool's failure answer, worded so the agent can say it aloud and
+        does not claim anything was saved, or None when every field fits. The log
+        carries the field name and length, never the value.
+        """
+        for field, (value, cap) in fields.items():
+            if value is not None and len(value) > cap:
+                self.logger.warning(
+                    "tool_argument_over_cap", tool=tool, field=field, length=len(value), cap=cap
+                )
+                label = field.replace("_", " ")
+                return {
+                    "success": False,
+                    "error": (
+                        f"The {label} is too long, so nothing was saved. "
+                        "Ask for a shorter one and try again."
+                    ),
+                }
+        return None
+
     async def create_contact(
         self,
         first_name: str,
@@ -304,6 +332,17 @@ class CRMTools:
         Returns:
             Created contact info
         """
+        too_long = self._over_cap(
+            "create_contact",
+            {
+                "first_name": (first_name, 100),
+                "last_name": (last_name, 100),
+                "email": (email, 255),
+                "company_name": (company_name, 255),
+            },
+        )
+        if too_long:
+            return too_long
         try:
             contact = Contact(
                 user_id=self.user_id,
@@ -421,6 +460,12 @@ class CRMTools:
         Returns:
             Booking confirmation
         """
+        too_long = self._over_cap(
+            "book_appointment",
+            {"service_type": (service_type, 100), "notes": (notes, NOTES_MAX_CHARS)},
+        )
+        if too_long:
+            return too_long
         try:
             # Find contact - filtered by workspace or user for security
             if self.workspace_id:
@@ -596,9 +641,19 @@ class CRMTools:
         Returns:
             Cancellation confirmation
         """
+        too_long = self._over_cap(
+            "cancel_appointment", {"reason": (reason, CANCEL_REASON_MAX_CHARS)}
+        )
+        if too_long:
+            return too_long
         try:
             # Verify appointment belongs to user's workspace/contact
-            base_stmt = select(Appointment).join(Contact).where(Appointment.id == appointment_id)
+            base_stmt = (
+                select(Appointment)
+                .options(undefer(Appointment.notes))  # deferred, and read below
+                .join(Contact)
+                .where(Appointment.id == appointment_id)
+            )
 
             if self.workspace_id:
                 stmt = base_stmt.where(Contact.workspace_id == self.workspace_id)
@@ -612,6 +667,17 @@ class CRMTools:
                 return {
                     "success": False,
                     "error": f"Appointment {appointment_id} not found",
+                }
+
+            if appointment.status == "cancelled":
+                # Already cancelled: report the state, do not append the reason again.
+                return {
+                    "success": True,
+                    "appointment_id": appointment_id,
+                    "message": (
+                        f"Appointment on {appointment.scheduled_at.strftime('%B %d at %I:%M %p')}"
+                        " was already cancelled"
+                    ),
                 }
 
             # Update status
