@@ -39,7 +39,11 @@ from app.models.campaign import Campaign, CampaignContact, CampaignContactStatus
 # services.telephony.base, which is a different thing from the table.
 from app.services.qa import trigger_qa_evaluation
 from app.services.telephony.number_routing import resolve_number_route
-from app.services.telephony.outbound import OutboundRefusedError, place_outbound_call
+from app.services.telephony.outbound import (
+    OutboundRefusedError,
+    adopt_provider_call_id,
+    place_outbound_call,
+)
 from app.services.telephony.telnyx_events import parse_telnyx_webhook
 from app.services.telephony.telnyx_service import TelnyxService
 from app.services.telephony.twilio_service import TwilioService
@@ -172,49 +176,57 @@ async def _call_record_for(
 ) -> CallRecord | None:
     """The call record a webhook reports on, found by provider and call id.
 
-    The record is what the answering webhook wrote, so its workspace is the one
-    whose credentials sign everything else about the call. Newest first if the
-    carrier ever reuses an id. `record_id` (put in the answer URL by `/calls`)
-    is the fallback for an outbound call whose carrier-side id is not the one
-    stored; it has to belong to the same provider and the named agent.
+    The record is what `/calls` (or the campaign worker) wrote before dialling,
+    so its workspace is the one whose credentials sign everything else about
+    the call. `record_id` (named in the answer and status URLs) is tried first:
+    it is our own key, it works before the carrier's id has been stored, and it
+    has to belong to the same provider and the named agent. Otherwise the
+    carrier's id, newest first if the carrier ever reuses one.
     """
-    if provider_call_id:
-        found = (
-            (
-                await db.execute(
-                    select(CallRecord)
-                    .where(
-                        CallRecord.provider == provider,
-                        CallRecord.provider_call_id == provider_call_id,
-                    )
-                    .order_by(CallRecord.created_at.desc())
-                    .limit(1)
+    named = await _named_call_record(db, provider, record_id, agent_id)
+    if named is not None:
+        return named
+    if not provider_call_id:
+        return None
+    return (
+        (
+            await db.execute(
+                select(CallRecord)
+                .where(
+                    CallRecord.provider == provider,
+                    CallRecord.provider_call_id == provider_call_id,
+                )
+                .order_by(CallRecord.created_at.desc())
+                .limit(1)
+            )
+        )
+        .scalars()
+        .first()
+    )
+
+
+async def _named_call_record(
+    db: AsyncSession, provider: str, record_id: str | None, agent_id: str | None
+) -> CallRecord | None:
+    if not (record_id and agent_id):
+        return None
+    try:
+        record_uuid, agent_uuid = uuid.UUID(record_id), uuid.UUID(agent_id)
+    except ValueError:
+        return None
+    return (
+        (
+            await db.execute(
+                select(CallRecord).where(
+                    CallRecord.id == record_uuid,
+                    CallRecord.provider == provider,
+                    CallRecord.agent_id == agent_uuid,
                 )
             )
-            .scalars()
-            .first()
         )
-        if found is not None:
-            return found
-    if record_id and agent_id:
-        try:
-            record_uuid, agent_uuid = uuid.UUID(record_id), uuid.UUID(agent_id)
-        except ValueError:
-            return None
-        return (
-            (
-                await db.execute(
-                    select(CallRecord).where(
-                        CallRecord.id == record_uuid,
-                        CallRecord.provider == provider,
-                        CallRecord.agent_id == agent_uuid,
-                    )
-                )
-            )
-            .scalars()
-            .first()
-        )
-    return None
+        .scalars()
+        .first()
+    )
 
 
 def _refuse_status_without_record(provider: str, call_id: str, what: str) -> NoReturn:
@@ -1030,6 +1042,7 @@ async def twilio_status_callback(
     if call_record is None:
         _refuse_status_without_record("twilio", call_sid, call_status)
     await verify_twilio_webhook(request, await twilio_auth_token_for_call(call_record, db))
+    await adopt_provider_call_id(db, call_record, call_sid)
 
     log = logger.bind(
         webhook="twilio_status",
@@ -1108,6 +1121,8 @@ async def twilio_answer_webhook(
     if call_record is None:
         raise HTTPException(status_code=403, detail="Unknown call")
     await verify_twilio_webhook(request, await twilio_auth_token_for_call(call_record, db))
+
+    await adopt_provider_call_id(db, call_record, call_sid)
 
     log = logger.bind(webhook="twilio_answer", agent_id=agent_id, call_sid=call_sid)
     log.info("twilio_outbound_answered")
@@ -1238,7 +1253,10 @@ async def telnyx_answer_webhook(
     )
     log.info("telnyx_outbound_answered")
 
-    # The stream is admitted against the id the call record is stored under.
+    # The stream is admitted against the id the call record is stored under. If
+    # the answer beat the post-dial write, the record still holds `pending:`:
+    # take the id the carrier itself is using now (kept only if still pending).
+    await adopt_provider_call_id(db, call_record, event.call_id)
     stream_call_id = call_record.provider_call_id
     stream_url = build_telnyx_stream_url(
         request, agent_id, call_id=stream_call_id, direction="outbound"
@@ -1254,6 +1272,8 @@ async def telnyx_answer_webhook(
 async def telnyx_status_callback(
     request: Request,
     background_tasks: BackgroundTasks,
+    agent_id: str = Query(default=""),
+    record_id: str = Query(default=""),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, str]:
     """Handle Telnyx call status callbacks.
@@ -1263,10 +1283,13 @@ async def telnyx_status_callback(
     # Find the call record first: the call it reports on decides whose Telnyx
     # account should have signed this. Nothing is changed until that is verified.
     event = await parse_telnyx_webhook(request)
-    call_record = await _call_record_for(db, "telnyx", event.call_id)
+    call_record = await _call_record_for(
+        db, "telnyx", event.call_id, record_id=record_id, agent_id=agent_id
+    )
     if call_record is None:
         _refuse_status_without_record("telnyx", event.call_id, event.event_type)
     await verify_telnyx_webhook(request, await telnyx_public_key_for_call(call_record, db))
+    await adopt_provider_call_id(db, call_record, event.call_id)
 
     log = logger.bind(
         webhook="telnyx_status",

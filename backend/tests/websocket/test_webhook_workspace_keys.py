@@ -404,6 +404,100 @@ class TestTelnyx:
 
         assert response.status_code == 403
 
+    @pytest.mark.asyncio
+    async def test_an_answer_that_beats_the_post_dial_write_streams_with_the_carriers_id(
+        self, env: dict[str, Any]
+    ) -> None:
+        """A pending record must not put `pending:<id>` in the stream URL (a silent call)."""
+        record = await _seed_call(env, provider="telnyx", call_id=f"pending:{uuid.uuid4()}")
+        body = self._voice_body("carrier-sid-early")
+        path = f"/webhooks/telnyx/answer?agent_id={env['agent'].id}&record_id={record.id}"
+
+        response = await self._post(path, body, env["keys"]["w2"])
+
+        assert response.status_code == 200, response.text
+        stream = ET.fromstring(response.text).find("./Connect/Stream")  # noqa: S314
+        assert stream is not None
+        query = dict(parse_qsl(urlsplit(stream.attrib["url"]).query))
+        assert query["call_id"] == "carrier-sid-early"
+        async with env["sessions"]() as session:
+            stored = (
+                await session.execute(
+                    select(CallRecord.provider_call_id).where(CallRecord.id == record.id)
+                )
+            ).scalar_one()
+        assert stored == "carrier-sid-early"
+
+    @pytest.mark.asyncio
+    async def test_an_answer_does_not_replace_an_id_that_is_already_stored(
+        self, env: dict[str, Any]
+    ) -> None:
+        record = await _seed_call(env, provider="telnyx", call_id="stored-id")
+        body = self._voice_body("some-other-sid")
+        path = f"/webhooks/telnyx/answer?agent_id={env['agent'].id}&record_id={record.id}"
+
+        response = await self._post(path, body, env["keys"]["w2"])
+
+        assert response.status_code == 200, response.text
+        stream = ET.fromstring(response.text).find("./Connect/Stream")  # noqa: S314
+        assert stream is not None
+        assert dict(parse_qsl(urlsplit(stream.attrib["url"]).query))["call_id"] == "stored-id"
+
+    @pytest.mark.asyncio
+    async def test_an_early_status_callback_finds_its_record_by_record_id(
+        self, env: dict[str, Any]
+    ) -> None:
+        record = await _seed_call(env, provider="telnyx", call_id=f"pending:{uuid.uuid4()}")
+        body = json.dumps(
+            {
+                "data": {
+                    "event_type": "call.hangup",
+                    "payload": {"call_control_id": "carrier-sid-early", "duration_seconds": 3},
+                }
+            }
+        ).encode()
+        path = f"/webhooks/telnyx/status?agent_id={env['agent'].id}&record_id={record.id}"
+
+        response = await self._post(path, body, env["keys"]["w2"])
+
+        assert response.status_code == 200, response.text
+        async with env["sessions"]() as session:
+            row = (
+                await session.execute(select(CallRecord).where(CallRecord.id == record.id))
+            ).scalar_one()
+        assert row.provider_call_id == "carrier-sid-early"
+        assert row.ended_at is not None
+
+    @pytest.mark.asyncio
+    async def test_the_create_call_request_carries_a_status_callback_with_the_record_id(
+        self,
+    ) -> None:
+        seen: list[dict[str, Any]] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(json.loads(request.content))
+            return httpx.Response(200, json={"data": {"sid": "s1", "call_control_id": "cc1"}})
+
+        service = TelnyxService("key")
+        service._http_client = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), base_url="https://api.telnyx.com/v2"
+        )
+
+        async def connection() -> str:
+            return "conn-1"
+
+        service._get_connection_id = connection  # type: ignore[method-assign]
+        await service.initiate_call(
+            to_number=CALLER,
+            from_number=TELNYX_NUMBER,
+            webhook_url=f"{PUBLIC}/webhooks/telnyx/answer?agent_id=a&record_id=r1",
+        )
+
+        assert (
+            seen[0]["status_callback"] == f"{PUBLIC}/webhooks/telnyx/status?agent_id=a&record_id=r1"
+        )
+        assert seen[0]["status_callback_method"] == "POST"
+
 
 class TestTwilio:
     async def _post(
@@ -767,3 +861,36 @@ class TestCampaignCallsGoThroughTheSameGates:
         assert record.status == CallStatus.FAILED.value
         assert record.ended_at is not None
         assert record.provider_call_id.startswith("pending:")
+
+    @pytest.mark.asyncio
+    async def test_the_post_dial_write_does_not_replace_an_id_an_early_answer_stored(
+        self, env: dict[str, Any]
+    ) -> None:
+        from app.services.campaign_worker import CampaignWorker
+
+        class _AnswerFirst(_FakeTelnyx):
+            async def initiate_call(  # type: ignore[override]
+                self,
+                to_number: str,
+                from_number: str,
+                webhook_url: str,
+                agent_id: str | None = None,
+            ) -> CallInfo:
+                info = await super().initiate_call(to_number, from_number, webhook_url, agent_id)
+                # The answer webhook lands before the dial returns to us.
+                async with env["sessions"]() as other:
+                    from app.services.telephony.outbound import adopt_provider_call_id
+
+                    row = (await other.execute(select(CallRecord))).scalar_one()
+                    assert await adopt_provider_call_id(other, row, "answer-first-sid")
+                return info
+
+        campaign, contact, link = _campaign_objects(env, workspace="w2", from_number=TELNYX_NUMBER)
+        async with env["sessions"]() as db:
+            await CampaignWorker(base_url=PUBLIC)._initiate_call(
+                campaign, link, contact, _AnswerFirst(), db
+            )
+
+        async with env["sessions"]() as db:
+            record = (await db.execute(select(CallRecord))).scalar_one()
+        assert record.provider_call_id == "answer-first-sid"

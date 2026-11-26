@@ -27,7 +27,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Protocol
 
 import structlog
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from app.core.auth import user_id_to_uuid
 from app.core.ownership import agent_is_in_workspace, number_variants
@@ -138,6 +138,29 @@ async def place_outbound_call(
         logger.warning("outbound_dial_failed", record_id=str(record_id), provider=provider)
         raise
 
-    record.provider_call_id = call_info.call_id
-    await db.commit()
+    # Only while still pending: an answer or status callback that arrived first
+    # has already stored the id the carrier itself used, and that one stands.
+    await adopt_provider_call_id(db, record, call_info.call_id)
     return record, call_info
+
+
+async def adopt_provider_call_id(db: AsyncSession, record: CallRecord, call_id: str) -> bool:
+    """Store the carrier's id on a record that is still `pending:`, atomically.
+
+    The conditional UPDATE means whichever of the post-dial write and an early
+    webhook gets there first wins, and the other leaves it alone. Commits, and
+    refreshes `record` so the caller sees what is stored.
+    """
+    if not call_id:
+        return False
+    result = await db.execute(
+        update(CallRecord)
+        .where(
+            CallRecord.id == record.id,
+            CallRecord.provider_call_id.startswith(PENDING_PREFIX),
+        )
+        .values(provider_call_id=call_id)
+    )
+    await db.commit()
+    await db.refresh(record)
+    return bool(result.rowcount)  # type: ignore[attr-defined]
