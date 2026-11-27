@@ -76,6 +76,7 @@ RIG_FIELDS = frozenset(
     {
         "scenario_file", "leg", "mutates", "states_expectations", "repeat", "record", "trace",
         "trace_error", "read_back", "read_back_error", "hook_error", "labels_unverified",
+        "undeclared_writes",
         "provenance_unknown", "consent_missing", "synthetic_clips", "grade", "rehearsal",
         "batch", "carrier_call_ref", "phone", "audio", "chain", "variables", "dry_run",
         "recordings", "chain_file", "outcome", "uncaptured", "reason", "calls", "integrity",

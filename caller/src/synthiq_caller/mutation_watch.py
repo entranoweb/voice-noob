@@ -84,3 +84,13 @@ def flag(grade: Grade, found: WriteWatch) -> None:
             "the trace shows a write the scenario did not declare; the declaration or the "
             "agent is wrong, and the system under test may need cleaning up"
         )
+
+
+def restored(payload: dict[str, Any]) -> WriteWatch:
+    """The watch a stored run carries, for a regrade that has no profile to read it from."""
+    stored = payload.get("undeclared_writes") or {}
+    return WriteWatch(
+        checked=bool(stored.get("checked")),
+        tools=[str(t) for t in stored.get("tools") or []],
+        note=str(stored.get("note", "")),
+    )

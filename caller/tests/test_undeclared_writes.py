@@ -182,3 +182,13 @@ async def test_cleanup_hook_still_skipped_for_a_clean_none_call(
     hooks = ShellHooks(after=[sys.executable, "-c", script], after_only_when_mutating=True)
     await one(bank, tmp_path / "o", Calls(HOURS), write_tools=["book_appointment"], hooks=hooks)
     assert not marker.exists()
+
+
+async def test_regrade_keeps_the_stray_write_flag(bank: ClipBank, tmp_path: Path) -> None:
+    from synthiq_caller.batch import regrade
+
+    out = tmp_path / "o"
+    await one(bank, out, Calls(HOURS, BOOKED), write_tools=["book_appointment"])
+    assert regrade(out, [("r.json", read_scenario())]) == 0  # nothing to change
+    run = json.loads((out / "run-001.json").read_text())
+    assert run["grade"]["outcome"] == "failed"

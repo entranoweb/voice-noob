@@ -63,6 +63,7 @@ from synthiq_caller.grading import Grade, grade
 from synthiq_caller.jsonio import next_index, write_json, write_new_run, write_run
 from synthiq_caller.leg import Leg
 from synthiq_caller.mutation_watch import flag as flag_writes
+from synthiq_caller.mutation_watch import restored as restored_watch
 from synthiq_caller.mutation_watch import watch_writes
 from synthiq_caller.prereq import PrereqChecker, requires_state
 from synthiq_caller.readback import ReadBack, ReadBackContext
@@ -905,7 +906,9 @@ def regrade(out: Path, scenarios: list[tuple[str, Scenario]]) -> int:
         trace = Trace.from_json(payload["trace"]) if payload.get("trace") else None
         if trace is not None and looks_unfinished(trace, record):
             trace = None  # an empty trace proves nothing: ungraded, not failed
-        fresh = grade(scenario, record, trace, payload.get("read_back")).to_json()
+        regraded = grade(scenario, record, trace, payload.get("read_back"))
+        flag_writes(regraded, restored_watch(payload))
+        fresh = regraded.to_json()
         if fresh != payload["grade"]:
             payload["grade"] = fresh
             write_run(path, payload)
@@ -959,7 +962,9 @@ def regrade_chains(out: Path, chains: list[tuple[str, Chain]]) -> int:
         trace = Trace.from_json(payload["trace"]) if payload.get("trace") else None
         if trace is not None and looks_unfinished(trace, record):
             trace = None
-        fresh = grade(scenario, record, trace, payload.get("read_back")).to_json()
+        regraded = grade(scenario, record, trace, payload.get("read_back"))
+        flag_writes(regraded, restored_watch(payload))
+        fresh = regraded.to_json()
         if fresh != payload["grade"]:
             payload["grade"] = fresh
             write_run(path, payload)
