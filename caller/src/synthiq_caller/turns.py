@@ -63,6 +63,10 @@ class TurnSettings:
     text_follows_audio: bool = False
 
 
+# Quiet this long before speech makes it a new stretch of speech, not the same one resuming.
+ONSET_GAP_S = 0.3
+
+
 class AgentTurnTracker:
     """Tracks one side's speech from its audio frames."""
 
@@ -74,6 +78,8 @@ class AgentTurnTracker:
         self._spoke_since_mark = False
         self._spoke_since_answer = False
         self._mark_time = 0.0
+        self._run_start = 0.0
+        self._run_is_onset = False
         self._levels: deque[float] = deque(maxlen=max(1, self.settings.noise_window_frames))
 
     def floor(self) -> float:
@@ -97,8 +103,12 @@ class AgentTurnTracker:
         """The caller has started an answer: speech after this is a new agent line."""
         self._spoke_since_answer = False
 
-    def feed(self, pcm: bytes, rate: int, now: float) -> None:
-        """Account for one frame of agent audio received at ``now``."""
+    def feed(self, pcm: bytes, rate: int, now: float) -> float | None:
+        """Account for one frame of agent audio received at ``now``.
+
+        Returns when a new stretch of speech started (one that follows at least
+        ``ONSET_GAP_S`` of quiet), once the frame confirms it; otherwise None.
+        """
         duration = len(pcm) / 2 / rate if rate > 0 else 0.0
         start = max(self._playhead, now)
         self._playhead = start + duration
@@ -107,14 +117,24 @@ class AgentTurnTracker:
         loud = level > self.floor()
         if level <= self.settings.max_floor:
             self._levels.append(level)
+        began: float | None = None
         if loud:
+            if self._speech_run_s == 0.0:
+                self._run_start = start
+                self._run_is_onset = (
+                    self._speech_end is None or start - self._speech_end >= ONSET_GAP_S
+                )
+            before = self._speech_run_s
             self._speech_run_s += duration
             if self._speech_run_s >= self.settings.min_speech_s:
+                if before < self.settings.min_speech_s and self._run_is_onset:
+                    began = self._run_start
                 self._speech_end = self._playhead
                 self._spoke_since_mark = True
                 self._spoke_since_answer = True
         else:
             self._speech_run_s = 0.0
+        return began
 
     def interrupted(self, now: float) -> None:
         """The agent was cut off: whatever was queued will not be heard."""
