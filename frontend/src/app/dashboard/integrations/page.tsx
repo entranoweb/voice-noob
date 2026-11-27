@@ -480,7 +480,7 @@ const IntegrationConfigForm = memo(function IntegrationConfigForm({
       <div className="space-y-4">
         <div className="rounded-lg border p-4">
           <p className="text-sm text-muted-foreground">
-            This integration requires OAuth authentication which is coming soon.
+            This integration cannot be connected from here yet: it has no setup fields to fill in.
           </p>
         </div>
         <Button onClick={onClose} className="w-full">

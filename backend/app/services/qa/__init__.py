@@ -27,13 +27,10 @@ from app.services.qa.scenarios import (
     get_scenarios_by_category,
     get_scenarios_by_difficulty,
 )
-from app.services.qa.test_caller import AITestCaller, TestResult
 from app.services.qa.test_runner import TestRunner, seed_scenarios_background
 
 __all__ = [
-    "AITestCaller",
     "QAEvaluator",
-    "TestResult",
     "TestRunner",
     "acknowledge_alert",
     "call_claude_with_resilience",

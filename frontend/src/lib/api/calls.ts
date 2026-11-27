@@ -47,6 +47,8 @@ export interface ListCallsParams {
   workspace_id?: string;
   direction?: "inbound" | "outbound";
   status?: string;
+  /** Matches agent name, contact name or either number, across every page. */
+  search?: string;
 }
 
 export interface CallStats {
@@ -69,6 +71,7 @@ export async function listCalls(params: ListCallsParams = {}): Promise<CallRecor
   if (params.workspace_id) searchParams.set("workspace_id", params.workspace_id);
   if (params.direction) searchParams.set("direction", params.direction);
   if (params.status) searchParams.set("status", params.status);
+  if (params.search) searchParams.set("search", params.search);
 
   const response = await fetch(`${API_BASE}/api/v1/calls?${searchParams.toString()}`, {
     headers: getAuthHeaders(),
