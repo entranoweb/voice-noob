@@ -61,6 +61,8 @@ from synthiq_caller.external import ExternalFailed, run_blocking, safe_id
 from synthiq_caller.grading import Grade, grade
 from synthiq_caller.jsonio import next_index, write_json, write_new_run, write_run
 from synthiq_caller.leg import Leg
+from synthiq_caller.mutation_watch import flag as flag_writes
+from synthiq_caller.mutation_watch import watch_writes
 from synthiq_caller.prereq import PrereqChecker, requires_state
 from synthiq_caller.readback import ReadBack, ReadBackContext
 from synthiq_caller.reset import Reset, ResetContext, ResetFailed
@@ -94,6 +96,8 @@ class CallInfo:
     out: str
     # "passed", "failed" or "ungraded".
     outcome: str
+    # The trace showed a successful write in a scenario declared ``mutates: none``.
+    stray_write: bool = False
 
     @property
     def run_id(self) -> str:
@@ -188,6 +192,7 @@ class ShellHooks:
                     "SYNTHIQ_RUN_ID": call.run_id,
                     "SYNTHIQ_OUT_DIR": call.out,
                     "SYNTHIQ_OUTCOME": call.outcome,
+                    "SYNTHIQ_STRAY_WRITE": "1" if call.stray_write else "0",
                 }
             )
             words.update(call_ref=call.call_ref, run_file=call.run_file, run_id=call.run_id)
@@ -215,7 +220,8 @@ class ShellHooks:
     async def after_call(
         self, scenario_file: str, scenario: Scenario, repeat: int, call: CallInfo | None = None
     ) -> None:
-        if self.after_only_when_mutating and scenario.mutates == "none":
+        stray = call is not None and call.stray_write
+        if self.after_only_when_mutating and scenario.mutates == "none" and not stray:
             return
         await self._run(self.after, "after", scenario_file, scenario, repeat, call)
 
@@ -446,6 +452,7 @@ async def run_batch(
     leg_name: str = "",
     batch_id: str = "",
     result: BatchResult | None = None,
+    write_tools: Sequence[str] | None = None,
 ) -> BatchResult:
     if allow_mutating not in ALLOWED:
         raise ValueError(f"allow_mutating must be one of {sorted(ALLOWED)}")
@@ -584,6 +591,8 @@ async def run_batch(
             except Exception as error:  # noqa: BLE001 - recorded; the grader falls back
                 read_back_error = str(error) or repr(error)
         graded = grade(scenario, record, trace, held)
+        writes = watch_writes(scenario, trace, write_tools)
+        flag_writes(graded, writes)
         payload: dict[str, Any] = {
             "scenario_file": file,
             "leg": leg_name or kind,
@@ -599,6 +608,8 @@ async def run_batch(
             # None: no read-back was made. An object: what the system held afterwards.
             "read_back": held,
             "read_back_error": read_back_error,
+            # Successful writes in a scenario declared ``mutates: none`` (or why not checked).
+            "undeclared_writes": writes.to_json(),
             "hook_error": "",
             "labels_unverified": doubts,
             # Clips played whose manifest does not say where they came from.
@@ -631,7 +642,7 @@ async def run_batch(
                 file,
                 scenario,
                 repeat,
-                CallInfo(engine_ref, name, str(out), graded.outcome),
+                CallInfo(engine_ref, name, str(out), graded.outcome, writes.stray),
             )
         except Exception as error:  # noqa: BLE001 - recorded, never hidden
             payload["hook_error"] = f"after hook: {error}"

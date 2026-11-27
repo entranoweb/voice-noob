@@ -743,6 +743,7 @@ def _batch(args: argparse.Namespace) -> int:
                 rehearsal=rehearsal,
                 batch_id=batch_id,
                 result=result,
+                write_tools=(target or {}).get("write_tools") or None,
             )
             status = "finished"
             return result
