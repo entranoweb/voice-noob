@@ -82,12 +82,13 @@ export default function CallHistoryPage() {
 
   // Fetch calls from API
   const { data, isLoading, error } = useQuery({
-    queryKey: ["calls", page, statusFilter, selectedWorkspaceId],
+    queryKey: ["calls", page, statusFilter, selectedWorkspaceId, debouncedSearchQuery],
     queryFn: () =>
       listCalls({
         page,
         page_size: pageSize,
         workspace_id: selectedWorkspaceId !== "all" ? selectedWorkspaceId : undefined,
+        search: debouncedSearchQuery.trim() || undefined,
         status:
           statusFilter !== "all" && !["inbound", "outbound"].includes(statusFilter)
             ? statusFilter
@@ -158,20 +159,6 @@ export default function CallHistoryPage() {
     router.push(`/dashboard/calls/${callId}`);
   };
 
-  // Filter calls by search query (client-side for now)
-  const filteredCalls = useMemo(() => {
-    if (!debouncedSearchQuery) return callsData;
-    return callsData.filter((call) => {
-      const searchLower = debouncedSearchQuery.toLowerCase();
-      return (
-        (call.agent_name?.toLowerCase().includes(searchLower) ?? false) ||
-        (call.contact_name?.toLowerCase().includes(searchLower) ?? false) ||
-        call.from_number.includes(debouncedSearchQuery) ||
-        call.to_number.includes(debouncedSearchQuery)
-      );
-    });
-  }, [callsData, debouncedSearchQuery]);
-
   const getStatusBadgeVariant = (status: string) => {
     switch (status) {
       case "completed":
@@ -202,12 +189,14 @@ export default function CallHistoryPage() {
         </div>
         <div className="flex items-center gap-2">
           <Input
-            placeholder="Filter this page..."
-            aria-label="Filter the calls on this page"
-            title="Filters the calls loaded on this page only, not the whole history"
+            placeholder="Search calls..."
+            aria-label="Search calls by agent, contact or number"
             className="w-[200px]"
             value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
+            onChange={(e) => {
+              setSearchQuery(e.target.value);
+              setPage(1);
+            }}
           />
           {workspaces.length > 0 && (
             <Select
@@ -222,7 +211,10 @@ export default function CallHistoryPage() {
                 toast.info(`Switched to ${wsName}`);
               }}
             >
-              <SelectTrigger className="h-8 w-[220px] text-sm">
+              <SelectTrigger
+                className="h-8 w-[220px] text-sm"
+                aria-label="Filter calls by workspace"
+              >
                 <FolderOpen className="mr-2 h-3.5 w-3.5" />
                 <SelectValue placeholder="All Workspaces" />
               </SelectTrigger>
@@ -243,7 +235,7 @@ export default function CallHistoryPage() {
               setPage(1);
             }}
           >
-            <SelectTrigger className="h-8 w-[130px] text-sm">
+            <SelectTrigger className="h-8 w-[130px] text-sm" aria-label="Filter calls by status">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -279,7 +271,7 @@ export default function CallHistoryPage() {
                 Call history will appear here once your voice agents start handling calls
               </p>
             </div>
-          ) : filteredCalls.length === 0 ? (
+          ) : callsData.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-16">
               <History className="mb-4 h-16 w-16 text-muted-foreground/50" />
               <h3 className="mb-2 text-lg font-semibold">No matching calls found</h3>
@@ -302,7 +294,7 @@ export default function CallHistoryPage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {filteredCalls.map((call) => (
+                  {callsData.map((call) => (
                     <TableRow
                       key={call.id}
                       className="cursor-pointer"

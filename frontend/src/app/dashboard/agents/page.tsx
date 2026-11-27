@@ -249,7 +249,10 @@ export default function AgentsPage() {
                 toast.info(`Switched to ${wsName}`);
               }}
             >
-              <SelectTrigger className="h-8 w-[220px] text-sm">
+              <SelectTrigger
+                className="h-8 w-[220px] text-sm"
+                aria-label="Filter agents by workspace"
+              >
                 <FolderOpen className="mr-2 h-3.5 w-3.5" />
                 <SelectValue placeholder="All Workspaces" />
               </SelectTrigger>
@@ -334,8 +337,7 @@ export default function AgentsPage() {
             .map((agent) => (
               <Card
                 key={agent.id}
-                className="group cursor-pointer transition-all hover:border-primary/50"
-                onClick={() => router.push(`/dashboard/agents/${agent.id}`)}
+                className="group relative transition-all focus-within:border-primary/50 hover:border-primary/50"
               >
                 <CardContent className="p-4">
                   <div className="flex items-start justify-between gap-2">
@@ -344,7 +346,15 @@ export default function AgentsPage() {
                         <Bot className="h-4 w-4 text-primary" />
                       </div>
                       <div className="min-w-0">
-                        <h3 className="truncate text-sm font-medium">{agent.name}</h3>
+                        <h3 className="truncate text-sm font-medium">
+                          <Link
+                            href={`/dashboard/agents/${agent.id}`}
+                            prefetch={false}
+                            className="after:absolute after:inset-0 focus-visible:outline-none"
+                          >
+                            {agent.name}
+                          </Link>
+                        </h3>
                         <p className="text-xs text-muted-foreground">
                           {agent.pricing_tier.charAt(0).toUpperCase() + agent.pricing_tier.slice(1)}
                         </p>
@@ -355,10 +365,11 @@ export default function AgentsPage() {
                         <Button
                           variant="ghost"
                           size="icon"
-                          className="h-7 w-7 shrink-0"
+                          className="relative z-10 h-7 w-7 shrink-0"
+                          aria-label={`More actions for ${agent.name}`}
                           onClick={(e) => e.stopPropagation()}
                         >
-                          <MoreVertical className="h-3.5 w-3.5" />
+                          <MoreVertical className="h-3.5 w-3.5" aria-hidden="true" />
                         </Button>
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>

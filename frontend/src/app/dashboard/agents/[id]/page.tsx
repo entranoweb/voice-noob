@@ -339,7 +339,7 @@ export default function EditAgentPage({ params }: EditAgentPageProps) {
       maxTokens: 2000,
       telephonyProvider: "telnyx",
       phoneNumberId: undefined,
-      enableRecording: true,
+      enableRecording: false,
       enableTranscript: true,
       turnDetectionMode: "server-vad",
       isActive: true,
@@ -1691,22 +1691,6 @@ export default function EditAgentPage({ params }: EditAgentPageProps) {
                   />
 
                   <Separator />
-
-                  <FormField
-                    control={form.control}
-                    name="enableRecording"
-                    render={({ field }) => (
-                      <FormItem className="flex flex-row items-center justify-between rounded-lg border p-4">
-                        <div className="space-y-0.5">
-                          <FormLabel className="text-base">Enable Call Recording</FormLabel>
-                          <FormDescription>Record all calls for quality assurance</FormDescription>
-                        </div>
-                        <FormControl>
-                          <Switch checked={field.value} onCheckedChange={field.onChange} />
-                        </FormControl>
-                      </FormItem>
-                    )}
-                  />
 
                   <FormField
                     control={form.control}
