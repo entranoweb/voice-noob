@@ -439,7 +439,9 @@ export default function PhoneNumbersPage() {
             <CardDescription>
               {phoneNumbers.length} number(s) available
               {selectedWorkspaceId !== "all" && (
-                <span className="ml-1 text-muted-foreground">(workspace filter coming soon)</span>
+                <span className="ml-1 text-muted-foreground">
+                  (this list shows every workspace; the selection only applies to new purchases)
+                </span>
               )}
             </CardDescription>
           </CardHeader>

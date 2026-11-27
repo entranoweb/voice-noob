@@ -340,8 +340,6 @@ export default function SettingsPage() {
         <div className="flex items-center justify-between">
           <TabsList>
             <TabsTrigger value="api-keys">API Keys</TabsTrigger>
-            <TabsTrigger value="profile">Profile</TabsTrigger>
-            <TabsTrigger value="billing">Billing</TabsTrigger>
           </TabsList>
           <div className="flex items-center gap-2">
             <Badge variant="secondary" className="font-normal">
@@ -419,26 +417,6 @@ export default function SettingsPage() {
               ))}
             </div>
           </div>
-        </TabsContent>
-
-        <TabsContent value="profile" className="mt-6 space-y-4">
-          <Card>
-            <CardContent className="flex flex-col items-center justify-center py-16">
-              <SettingsIcon className="mb-4 h-16 w-16 text-muted-foreground/50" />
-              <h3 className="mb-2 text-lg font-semibold">Profile Settings</h3>
-              <p className="text-sm text-muted-foreground">Coming soon...</p>
-            </CardContent>
-          </Card>
-        </TabsContent>
-
-        <TabsContent value="billing" className="mt-6 space-y-4">
-          <Card>
-            <CardContent className="flex flex-col items-center justify-center py-16">
-              <SettingsIcon className="mb-4 h-16 w-16 text-muted-foreground/50" />
-              <h3 className="mb-2 text-lg font-semibold">Billing & Usage</h3>
-              <p className="text-sm text-muted-foreground">Coming soon...</p>
-            </CardContent>
-          </Card>
         </TabsContent>
       </Tabs>
     </div>
