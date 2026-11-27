@@ -16,8 +16,9 @@ engine = create_async_engine(
     echo=False,  # Disable SQL query logging (too verbose even in debug mode)
     future=True,
     pool_pre_ping=True,
-    pool_size=50,  # Production: increased for 100+ concurrent voice agents
-    max_overflow=50,  # Production: total max 100 connections for scalability
+    # Per worker process; see DB_POOL_SIZE in app/core/config.py for the budget.
+    pool_size=settings.DB_POOL_SIZE,
+    max_overflow=settings.DB_MAX_OVERFLOW,
     pool_recycle=900,  # Recycle every 15 min for better connection health
     pool_timeout=5,  # Fail fast if pool exhausted (prevents cascading timeouts)
     pool_use_lifo=True,  # Use LIFO for better connection reuse (keeps hot connections)
