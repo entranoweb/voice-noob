@@ -183,3 +183,40 @@ def test_scenarios_are_validated() -> None:
         parse_scenario(
             {"name": "x", "steps": [{"when": "a", "clips": ["a.wav"], "field": "shoe_size"}]}
         )
+
+
+async def test_resampling_runs_off_the_event_loop_thread(
+    bank: ClipBank, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F19: the phone leg's ffmpeg resample must not block the loop that pumps audio."""
+    import threading
+
+    from synthiq_caller import clips as clips_module
+
+    write_clip(tmp_path, "opener.wav", 0.2, rate=RATE * 2)  # another rate: needs a resample
+    loop_thread = threading.get_ident()
+    seen: list[int] = []
+
+    def fake_resample(path: Path, rate: int) -> bytes:
+        seen.append(threading.get_ident())
+        return tone(0.2, rate)
+
+    monkeypatch.setattr(clips_module, "resample_with_ffmpeg", fake_resample)
+    scenario = parse_scenario(
+        {
+            "name": "resample",
+            "persona": {"facts": {}},
+            "steps": [{"when": "how can i help", "clips": ["opener.wav"]}],
+            "hangup_after": "anything else",
+            "max_seconds": 20,
+        }
+    )
+    leg = FakeLeg(
+        [
+            AgentLine("Hi, how can I help you today?", speech_s=0.3),
+            AgentLine("Is there anything else?", speech_s=0.3),
+        ]
+    )
+    await Director(scenario, leg, bank, turn_settings=FAST, chunk_ms=20).run()
+    assert seen, "the clip was never resampled"
+    assert loop_thread not in seen

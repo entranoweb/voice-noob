@@ -54,7 +54,7 @@ from typing import Any
 KNOWN = {
     "name", "notes", "timezone", "naive_times", "identity_budget", "fixture_faults",
     "tool_outcomes", "bookings", "allow_mutating", "reset", "read_back", "before_call",
-    "after_call",
+    "after_call", "write_tools",
 }  # fmt: skip
 
 # How the rig reaches the system around a call, in the order they happen.
@@ -100,6 +100,9 @@ def parse_target(data: Any) -> dict[str, Any]:
     for name in ("fixture_faults", "tool_outcomes"):
         if not isinstance(data.get(name) or {}, dict):
             raise TargetError(f"'{name}' must be an object")
+    tools = data.get("write_tools", [])
+    if not isinstance(tools, list) or not all(isinstance(t, str) and t for t in tools):
+        raise TargetError("'write_tools' is a list of tool names that change the system")
     if "allow_mutating" in data and data["allow_mutating"] not in ALLOWANCES:
         raise TargetError(f"'allow_mutating' must be one of {list(ALLOWANCES)}")
     for name in COMMANDS:

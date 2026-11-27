@@ -1,0 +1,33 @@
+{
+  "lines": [
+    {
+      "text": "Hi, how can I help you today?",
+      "speech_s": 0.3
+    },
+    {
+      "text": "Let me see.",
+      "speech_s": 0.3
+    },
+    {
+      "text": "Let me see again.",
+      "speech_s": 0.3
+    }
+  ],
+  "trace": {
+    "tool_calls": [
+      {
+        "name": "scripted_new_patient_check",
+        "arguments": {
+          "dateOfBirth": "20th of February, 2002"
+        },
+        "result": {},
+        "ok": true,
+        "step_id": "NP"
+      }
+    ],
+    "step_path": [
+      "I1",
+      "NP_CHECK"
+    ]
+  }
+}
