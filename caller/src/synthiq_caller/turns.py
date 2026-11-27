@@ -34,14 +34,18 @@ class TurnSettings:
     # the line to know its own noise. Telephone-grade speech sits in the
     # thousands; comfort noise and codec hiss sit well under two hundred.
     speech_floor: float = 250.0
-    # Once ``noise_warmup_frames`` frames have been heard, the floor is
-    # ``noise_factor`` times the 20th-percentile level of the recent frames (the
-    # quiet ones: the call's own noise), kept between these two bounds. A hissy
-    # line is then not mistaken for speech, and a quiet one is not missed.
+    # Once ``noise_warmup_frames`` frames at or below ``max_floor`` have been
+    # heard, the floor is ``noise_factor`` times the 20th-percentile level of
+    # those quiet frames (the call's own noise), kept between ``min_floor`` and
+    # ``max_floor``. Only frames that could be noise feed the estimate, so a leg
+    # that sends audio only while the agent talks cannot teach it that speech is
+    # the noise. ``max_floor`` sits under typical decoded telephone speech
+    # (rms 400 and up), so speech always counts. A quiet line then lowers the
+    # floor and soft speech is not missed; a hissy one raises it to the cap.
     adaptive_floor: bool = True
     noise_factor: float = 4.0
     min_floor: float = 60.0
-    max_floor: float = 1500.0
+    max_floor: float = 300.0
     noise_window_frames: int = 250
     noise_warmup_frames: int = 10
     # Speech shorter than this is a click, not a turn.
@@ -99,10 +103,10 @@ class AgentTurnTracker:
         start = max(self._playhead, now)
         self._playhead = start + duration
         level = rms(pcm)
-        # Judged against the floor as it stood before this frame, so a burst of
-        # speech cannot raise the bar it is measured by.
+        # Judged against the floor as it stood before this frame.
         loud = level > self.floor()
-        self._levels.append(level)
+        if level <= self.settings.max_floor:
+            self._levels.append(level)
         if loud:
             self._speech_run_s += duration
             if self._speech_run_s >= self.settings.min_speech_s:

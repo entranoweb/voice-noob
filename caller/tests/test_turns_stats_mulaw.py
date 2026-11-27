@@ -1,3 +1,5 @@
+import math
+
 import pytest
 
 from synthiq_caller.legs.fake import tone
@@ -106,17 +108,36 @@ def noise(seconds: float, level: int) -> bytes:
 
 
 def test_a_noisy_line_does_not_hold_the_turn_open() -> None:
-    # Line noise at rms ~400 is above the old fixed floor of 250, so every frame
+    # Line noise at rms ~280 is above the old fixed floor of 250, so every frame
     # counted as speech and the turn never ended. The floor follows the call's noise.
     tracker = AgentTurnTracker(TurnSettings(hangover_s=0.5))
     tracker.mark(0.0)
-    t = feed(tracker, noise(1.0, 400), 0.0)
+    t = feed(tracker, noise(1.0, 280), 0.0)
     t = feed(tracker, tone(0.6), t)
     speech_end = t
-    feed(tracker, noise(3.0, 400), t)
-    assert tracker.floor() > 400
+    feed(tracker, noise(3.0, 280), t)
+    assert tracker.floor() > 280
     assert not tracker.turn_finished(speech_end + 0.3)
     assert tracker.turn_finished(speech_end + 0.6)
+
+
+@pytest.mark.parametrize("base", [600, 1000, 2000])
+def test_continuous_speech_is_never_taken_for_noise(base: int) -> None:
+    # A leg that sends audio only while the agent talks gives the tracker no
+    # silence to learn from. Thirty seconds of speech, level wandering between
+    # 0.6x and 1.4x of ``base``, must all count as speech.
+    tracker = AgentTurnTracker(TurnSettings())
+    tracker.mark(0.0)
+    frame_s = 0.02
+    heard = 0
+    frames = int(30 / frame_s)
+    for i in range(frames):
+        level = base * (1.0 + 0.4 * math.sin(i / 7.0))
+        before = tracker._speech_run_s  # noqa: SLF001
+        tracker.feed(noise(frame_s, int(level)), RATE, i * frame_s)
+        heard += tracker._speech_run_s > before  # noqa: SLF001
+    assert heard / frames > 0.95
+    assert tracker.floor() <= 300
 
 
 def test_speech_quieter_than_the_old_floor_is_heard_on_a_quiet_line() -> None:

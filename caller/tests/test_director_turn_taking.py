@@ -11,7 +11,7 @@ from typing import Any
 import pytest
 
 from synthiq_caller.clips import ClipBank
-from synthiq_caller.director import Director
+from synthiq_caller.director import Director, RunRecord
 from synthiq_caller.leg import AgentAudio, AgentText, Closed, LegEvent
 from synthiq_caller.legs.fake import RATE, AgentLine, FakeLeg, tone
 from synthiq_caller.scenario import Scenario, parse_scenario
@@ -30,7 +30,12 @@ def write_clip(directory: Path, name: str, seconds: float) -> None:
 
 @pytest.fixture
 def bank(tmp_path: Path) -> ClipBank:
-    for name, seconds in (("short.wav", 0.3), ("long.wav", 2.0), ("name.wav", 0.2)):
+    for name, seconds in (
+        ("short.wav", 0.3),
+        ("long.wav", 2.0),
+        ("mid.wav", 1.0),
+        ("name.wav", 0.2),
+    ):
         write_clip(tmp_path, name, seconds)
     return ClipBank(tmp_path, allow_unknown_provenance=True, allow_missing_consent=True)
 
@@ -147,6 +152,82 @@ async def test_caller_yields_when_the_agent_speaks_over_it(bank: ClipBank) -> No
     assert leg.clears == 1
     assert leg.speech_sent() < 1.0  # nowhere near the 2 s clip
     assert any(e["kind"] == "yielded" for e in director.record.timeline)
+    # The run file says the answer was not all played, and counts the barge-in.
+    assert [s.played for s in director.record.said] == [False]
+    assert director.record.agent_barge_ins == 1
+    payload = director.record.to_json()
+    assert payload["said"][0]["played"] is False and payload["agent_barge_ins"] == 1
+    assert RunRecord.from_json(payload).said[0].played is False
+
+
+async def test_an_agent_that_always_talks_over_the_caller_does_not_mute_it(bank: ClipBank) -> None:
+    sc = scenario([{"when": "name", "clips": ["mid.wav"]}], max_seconds=20)
+    leg = ScriptLeg()
+    director = Director(sc, leg, bank, turn_settings=FAST, chunk_ms=20, max_yields_per_step=3)
+
+    async def script() -> None:
+        for _ in range(4):
+            await leg.agent_says("What is your name?", 0.3)
+            await leg.agent_audio(0.6, speech=False)  # the caller starts answering
+            await leg.agent_audio(0.3)  # and is talked over
+        await leg.agent_audio(1.6, speech=False)
+        leg.inbox.put_nowait(Closed("done"))
+
+    await run_with(director, script())
+    assert leg.clears == 3  # three yields, then the fourth answer is played anyway
+    assert [s.played for s in director.record.said] == [False, False, False, True]
+    assert director.record.agent_barge_ins == 4
+
+
+async def test_a_goodbye_the_agent_never_finishes_does_not_hold_the_hang_up_forever(
+    bank: ClipBank,
+) -> None:
+    sc = scenario([{"when": "never", "clips": ["short.wav"]}], hangup_after="goodbye")
+    leg = ScriptLeg()
+    director = Director(sc, leg, bank, turn_settings=FAST, chunk_ms=20, hangup_wait_s=0.5)
+
+    async def script() -> None:
+        await leg.agent_says("Thank you, goodbye.", 2.5)
+        leg.inbox.put_nowait(Closed("done"))
+
+    await run_with(director, script())
+    assert director.record.ended.startswith("caller hung up: scenario end, agent still speaking")
+    hangup = next(e for e in director.record.timeline if e["kind"] == "hangup")
+    assert hangup["t"] < 1.6
+
+
+class FollowingLeg(ScriptLeg):
+    """A leg that hears the agent through a transcriber: words follow the speech."""
+
+    text_follows_audio = True
+
+
+async def test_speech_heard_during_a_delay_still_counts_for_the_next_line(bank: ClipBank) -> None:
+    sc = scenario(
+        [
+            {"when": "how can i help", "clips": ["short.wav"], "delay_s": 0.8},
+            {"when": "full name", "clips": ["name.wav"]},
+        ]
+    )
+    leg = FollowingLeg()
+    settings = TurnSettings(hangover_s=0.2, audio_start_wait_s=3.0, min_speech_s=0.06)
+    director = Director(sc, leg, bank, turn_settings=settings, chunk_ms=20)
+
+    async def script() -> None:
+        await leg.agent_audio(0.3)
+        leg.inbox.put_nowait(AgentText("How can I help?"))
+        await leg.agent_audio(0.4, speech=False)  # the director decides, then delays
+        await leg.agent_audio(0.3)  # the next line, spoken during the delay
+        await leg.agent_audio(0.5, speech=False)
+        leg.inbox.put_nowait(AgentText("Your full name?"))  # its words trail the speech
+        await leg.agent_audio(1.5, speech=False)
+        leg.inbox.put_nowait(Closed("done"))
+
+    await run_with(director, script())
+    names = [s for s in director.record.said if s.clips == ["name.wav"]]
+    assert names, "the second line was never answered"
+    # Answered soon after its words arrived, not after waiting for audio that had already played.
+    assert names[0].t < 2.6
 
 
 async def test_talk_over_steps_do_not_yield(bank: ClipBank) -> None:

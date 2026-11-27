@@ -108,6 +108,9 @@ class Said:
     fallback: bool = False
     # Clips in this answer that are a synthetic voice, not a recorded caller.
     synthetic_clips: list[str] = dc_field(default_factory=list)
+    # False when the agent talked over this answer and the caller stopped before
+    # it was all said: the agent did not hear all of it. Older runs lack the field.
+    played: bool = True
 
 
 @dataclass
@@ -121,6 +124,12 @@ class RunRecord:
     # Questions from the agent the caller had nothing to say to. A call that
     # goes wrong after one of these went wrong because of the test rig.
     unanswered: list[str] = dc_field(default_factory=list)
+    # Times the agent started speaking over the caller's answer. An agent fault,
+    # counted here so it shows in the run file and not only in the timeline.
+    agent_barge_ins: int = 0
+    # The turn-taking settings this call was made with (adaptive floor and its
+    # bounds), so runs made under different rules can be told apart.
+    turn_settings: dict[str, Any] = dc_field(default_factory=dict)
 
     def to_json(self) -> dict[str, Any]:
         return asdict(self)
@@ -136,6 +145,8 @@ class RunRecord:
             timeline=list(data.get("timeline", [])),
             said=said,
             unanswered=list(data.get("unanswered", [])),
+            agent_barge_ins=int(data.get("agent_barge_ins", 0)),
+            turn_settings=dict(data.get("turn_settings", {})),
         )
 
 
@@ -149,6 +160,8 @@ class Director:
         turn_settings: TurnSettings | None = None,
         chunk_ms: int = 100,
         clock: Callable[[], float] = time.monotonic,
+        max_yields_per_step: int = 3,
+        hangup_wait_s: float = 10.0,
     ) -> None:
         self.scenario = scenario
         self.leg = leg
@@ -159,6 +172,15 @@ class Director:
             # after they were spoken, not before.
             settings = replace(settings, text_follows_audio=True)
         self.tracker = AgentTurnTracker(settings)
+        # After this many yields to the agent for one step, play it anyway: an
+        # agent that always talks over the caller must not mute the caller.
+        self._max_yields = max_yields_per_step
+        # How long to wait for the agent to finish saying the end phrase.
+        self._hangup_wait_s = hangup_wait_s
+        self._hangup_seen_at: float | None = None
+        self._yields: dict[int, int] = {}
+        self._queued_said: list[Said] = []
+        self._barge_counted = False
         self.chunk_ms = chunk_ms
         self._clock = clock
         self._t0 = 0.0
@@ -170,7 +192,7 @@ class Director:
         self._done = False
         self._pending: list[tuple[float, str]] = []  # agent lines not yet answered
         self._uses: dict[int, int] = {}
-        self.record = RunRecord(scenario=scenario.name)
+        self.record = RunRecord(scenario=scenario.name, turn_settings=asdict(settings))
 
     def _now(self) -> float:
         return self._clock() - self._t0
@@ -256,12 +278,21 @@ class Director:
         """
         if not self._queue or self._queue_talk_over or not self.tracker.speaking(now):
             return
+        if not self._barge_counted:
+            self._barge_counted = True
+            self.record.agent_barge_ins += 1
+        if any(self._yields.get(i, 0) >= self._max_yields for i in self._queued_steps):
+            return  # yielded often enough for this step: say it
         left = len(self._queue) / 2 / self.leg.input_rate
         self._queue = b""
         for index in self._queued_steps:
             # The answer was cut off; if the agent asks again it may be given again.
             self._uses[index] = max(0, self._uses.get(index, 0) - 1)
+            self._yields[index] = self._yields.get(index, 0) + 1
+        for said in self._queued_said:
+            said.played = False
         self._queued_steps = []
+        self._queued_said = []
         clear = getattr(self.leg, "clear_playback", None)
         if clear is not None:
             await clear()
@@ -279,6 +310,7 @@ class Director:
             else:
                 chunk = b"\0" * size
                 self._queued_steps = []
+                self._queued_said = []
             await self.leg.send_pcm(chunk)
             next_at += period
             await asyncio.sleep(max(0.0, next_at - self._clock()))
@@ -352,8 +384,19 @@ class Director:
             # The end phrase arrives as text before the agent has said it: hang
             # up once the turn has been spoken, not when the words are read.
             if scenario.hangup_after is not None and scenario.hangup_after.search(text):
+                if self._hangup_seen_at is None:
+                    self._hangup_seen_at = now
                 if not self.tracker.turn_finished(now):
-                    continue
+                    waited = now - self._hangup_seen_at
+                    if waited < self._hangup_wait_s:
+                        continue
+                    # The agent never finished saying it. Hang up anyway, and
+                    # say so: this is not the clean ending.
+                    self.record.ended = (
+                        f"caller hung up: scenario end, agent still speaking after {waited:.0f}s"
+                    )
+                    self._note("hangup", on=text[-100:], agent_still_speaking=True)
+                    return
                 self.record.ended = "caller hung up: scenario end"
                 self._note("hangup", on=text[-100:])
                 return
@@ -362,9 +405,13 @@ class Director:
             if match is not None and match[1].talk_over:
                 if now < first_at + match[1].delay_s:
                     continue
+                self.tracker.answered()
             else:
                 if not self.tracker.turn_finished(now, hold):
                     continue
+                # The answer starts now: speech from here on is the agent's next
+                # line, including any heard during the delay below.
+                self.tracker.answered()
                 if match is not None and match[1].delay_s:
                     await asyncio.sleep(match[1].delay_s)
 
@@ -395,7 +442,7 @@ class Director:
 
     async def _act(self, index: int, step: Step, answering: str, *, fallback: bool = False) -> None:
         seconds = 0.0
-        self.tracker.answered()
+        queued = False
         unverified = any(not self.clips.verified(clip) for clip in step.clips)
         synthetic = [clip for clip in step.clips if self.clips.synthetic(clip)]
         if step.stay_silent:
@@ -412,25 +459,28 @@ class Director:
             seconds = len(pcm) / 2 / self.leg.input_rate
             # Appended, not replaced: one turn can ask for two answers.
             pause = b"\0" * (int(self.leg.input_rate * step.gap_s) * 2) if self._queue else b""
+            self._barge_counted = False
             self._queue_talk_over = step.talk_over and (
                 self._queue_talk_over if self._queue else True
             )
+            queued = True
             self._queued_steps.append(index)
             self._queue += pause + pcm
             self._note("said", step=index, clips=list(step.clips), seconds=round(seconds, 2))
-        self.record.said.append(
-            Said(
-                t=round(self._now(), 2),
-                step_index=index,
-                field=step.field,
-                intended=step.intended,
-                clips=list(step.clips),
-                dtmf=step.dtmf,
-                seconds=round(seconds, 2),
-                talk_over=step.talk_over,
-                answering=answering[-140:],
-                labels_unverified=unverified,
-                fallback=fallback,
-                synthetic_clips=synthetic,
-            )
+        entry = Said(
+            t=round(self._now(), 2),
+            step_index=index,
+            field=step.field,
+            intended=step.intended,
+            clips=list(step.clips),
+            dtmf=step.dtmf,
+            seconds=round(seconds, 2),
+            talk_over=step.talk_over,
+            answering=answering[-140:],
+            labels_unverified=unverified,
+            fallback=fallback,
+            synthetic_clips=synthetic,
         )
+        self.record.said.append(entry)
+        if queued:
+            self._queued_said.append(entry)
