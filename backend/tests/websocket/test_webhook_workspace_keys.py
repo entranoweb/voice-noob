@@ -497,18 +497,18 @@ class TestTelnyx:
         seen: list[dict[str, Any]] = []
 
         def handler(request: httpx.Request) -> httpx.Response:
+            if request.method == "GET":
+                return httpx.Response(
+                    200, json={"data": [{"id": "app-1", "friendly_name": "voice-noob-inbound"}]}
+                )
             seen.append(json.loads(request.content))
-            return httpx.Response(200, json={"data": {"sid": "s1", "call_control_id": "cc1"}})
+            return httpx.Response(200, json={"call_sid": "s1"})
 
         service = TelnyxService("key")
         service._http_client = httpx.AsyncClient(
             transport=httpx.MockTransport(handler), base_url="https://api.telnyx.com/v2"
         )
 
-        async def connection() -> str:
-            return "conn-1"
-
-        service._get_connection_id = connection  # type: ignore[method-assign]
         await service.initiate_call(
             to_number=CALLER,
             from_number=TELNYX_NUMBER,
@@ -516,9 +516,9 @@ class TestTelnyx:
         )
 
         assert (
-            seen[0]["status_callback"] == f"{PUBLIC}/webhooks/telnyx/status?agent_id=a&record_id=r1"
+            seen[0]["StatusCallback"] == f"{PUBLIC}/webhooks/telnyx/status?agent_id=a&record_id=r1"
         )
-        assert seen[0]["status_callback_method"] == "POST"
+        assert seen[0]["StatusCallbackMethod"] == "POST"
 
 
 class TestTwilio:

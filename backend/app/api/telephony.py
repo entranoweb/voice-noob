@@ -59,7 +59,7 @@ from app.services.telephony.outbound import (
     place_outbound_call,
 )
 from app.services.telephony.telnyx_events import parse_telnyx_webhook
-from app.services.telephony.telnyx_service import TelnyxService
+from app.services.telephony.telnyx_service import TelnyxConfigurationError, TelnyxService
 from app.services.telephony.twilio_service import TwilioService
 
 if TYPE_CHECKING:
@@ -891,6 +891,8 @@ async def initiate_call(
         )
     except OutboundRefusedError as refused:
         raise HTTPException(status_code=refused.status_code, detail=refused.detail) from refused
+    except TelnyxConfigurationError as missing:
+        raise HTTPException(status_code=400, detail=str(missing)) from missing
 
     log.info("call_initiated", call_id=call_info.call_id, provider=provider)
     log.info("call_record_created", record_id=str(call_record.id))

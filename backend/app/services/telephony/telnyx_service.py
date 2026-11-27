@@ -16,6 +16,29 @@ from app.services.telephony.base import (
 logger = structlog.get_logger()
 
 
+TEXML_APP_NAME = "voice-noob-inbound"
+
+
+def _call_id_from_response(body: dict[str, object]) -> str:
+    """The call id from a create-call response.
+
+    Documented: a flat ``call_sid``. Also accepted, in case Telnyx wraps it as
+    its other endpoints do: the same under ``data``, or ``sid`` /
+    ``call_control_id``. Empty when none is present, never invented.
+    """
+    inner = body.get("data")
+    for source in (body, inner if isinstance(inner, dict) else {}):
+        for key in ("call_sid", "sid", "call_control_id"):
+            value = source.get(key)
+            if isinstance(value, str) and value:
+                return value
+    return ""
+
+
+class TelnyxConfigurationError(Exception):
+    """The Telnyx account is missing something an outbound call needs."""
+
+
 class TelnyxService(TelephonyProvider):
     """Telnyx telephony service for voice calls and phone number management."""
 
@@ -73,34 +96,31 @@ class TelnyxService(TelephonyProvider):
 
         client = await self._get_http_client()
 
-        # Use Telnyx TeXML API for call initiation
+        # Telnyx "Create a connection-scoped TeXML call": POST
+        # /texml/calls/{texml_application_id}. Field names are case-sensitive
+        # PascalCase; `Url` overrides the application's XML request URL.
+        # The StatusCallback* fields are NOT listed on this operation (they are
+        # on the account-scoped one), so Telnyx may ignore them; they are the
+        # answer URL's twin and carry the same record_id when honoured.
         payload = {
-            "to": to_number,
-            "from": from_number,
-            "connection_id": await self._get_connection_id(),
-            "texml_url": webhook_url,
-            # Telnyx documents `StatusCallback` / `StatusCallbackMethod` /
-            # `StatusCallbackEvent` on its TeXML initiate-call request. The
-            # URL is the answer URL's twin, so it carries the same record_id
-            # and an early callback finds its call record by it.
-            "status_callback": webhook_url.replace("/answer", "/status"),
-            "status_callback_method": "POST",
-            "status_callback_event": "initiated ringing answered completed",
+            "To": to_number,
+            "From": from_number,
+            "Url": webhook_url,
+            "StatusCallback": webhook_url.replace("/answer", "/status"),
+            "StatusCallbackMethod": "POST",
+            "StatusCallbackEvent": "initiated ringing answered completed",
         }
 
-        response = await client.post("/texml/calls", json=payload)
+        application_id = await self._get_texml_application_id()
+        response = await client.post(f"/texml/calls/{application_id}", json=payload)
         response.raise_for_status()
-        data = response.json()
+        call_id = _call_id_from_response(response.json())
 
-        call_data = data.get("data", {})
-        call_control_id = call_data.get("call_control_id", "")
-        call_sid = call_data.get("sid", call_control_id)
-
-        self.logger.info("call_initiated", call_control_id=call_control_id)
+        self.logger.info("call_initiated", call_sid=call_id)
 
         return CallInfo(
-            call_id=call_sid,
-            call_control_id=call_control_id,
+            call_id=call_id,
+            call_control_id=call_id,
             from_number=from_number,
             to_number=to_number,
             direction=CallDirection.OUTBOUND,
@@ -491,7 +511,7 @@ class TelnyxService(TelephonyProvider):
             TeXML application ID or None if failed
         """
         client = await self._get_http_client()
-        app_name = "voice-noob-inbound"
+        app_name = TEXML_APP_NAME
 
         try:
             # List existing TeXML applications
@@ -533,33 +553,27 @@ class TelnyxService(TelephonyProvider):
             log_exception(self.logger, "texml_app_error", e)
             return None
 
-    async def _get_connection_id(self) -> str:
-        """Get or create a Telnyx connection for outbound calls.
+    async def _get_texml_application_id(self) -> str:
+        """The id of the TeXML application the purchase flow attaches numbers to.
 
-        Returns:
-            Connection ID string
+        Telnyx's outbound TeXML call is scoped to a TeXML application, not to a
+        credential connection. Nothing is created here: an application made
+        without our voice URL would answer calls with nothing.
+
+        Raises:
+            TelnyxConfigurationError: when the account has no such application.
         """
-        # List existing connections
         client = await self._get_http_client()
-        response = await client.get("/credential_connections")
+        response = await client.get("/texml_applications")
         response.raise_for_status()
-        data = response.json()
-
-        connections = data.get("data", [])
-        if connections:
-            return str(connections[0].get("id", ""))
-
-        # Create a new connection if none exists
-        response = await client.post(
-            "/credential_connections",
-            json={
-                "connection_name": "voice-agent-connection",
-                "active": True,
-            },
+        for app in response.json().get("data", []):
+            if app.get("friendly_name") == TEXML_APP_NAME and app.get("id"):
+                return str(app["id"])
+        raise TelnyxConfigurationError(
+            f"No Telnyx TeXML application named '{TEXML_APP_NAME}' exists on this account. "
+            "Buy or assign a number through Synthiq first (that creates it), or create a "
+            "TeXML application with that name in Telnyx Mission Control."
         )
-        response.raise_for_status()
-        new_data = response.json()
-        return str(new_data.get("data", {}).get("id", ""))
 
     def generate_answer_response(self, websocket_url: str, agent_id: str | None = None) -> str:  # noqa: ARG002
         """Generate TeXML response to answer a call and stream to WebSocket.
