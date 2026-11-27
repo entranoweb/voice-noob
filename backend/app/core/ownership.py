@@ -81,24 +81,30 @@ async def get_owned_workspace(
     return workspace
 
 
-async def owned_agent_workspace_id(db: AsyncSession, agent: Agent, user: User) -> uuid.UUID | None:
-    """The workspace an owned agent acts in, when that workspace is also the user's.
-
-    The link table is written by the owner, but a row is only trusted when the
-    workspace on the other end belongs to the same user.
+async def agent_workspace_id(db: AsyncSession, agent: Agent) -> uuid.UUID | None:
+    """The one workspace an agent acts in, or None when it has no usable link.
 
     An agent can be linked to several workspaces. The answer is the default link
     first, then the oldest, then the lowest id, so the same workspace (and so the
-    same API key and bill) is chosen every time.
+    same API key and bill) is chosen every time. A link is only trusted when the
+    workspace on the other end belongs to the agent's owner.
+
+    Every lookup of "the agent's workspace" goes through here; a bare
+    `.limit(1)` returns whichever row Postgres reads first.
     """
     result = await db.execute(
         select(AgentWorkspace.workspace_id)
         .join(Workspace, Workspace.id == AgentWorkspace.workspace_id)
-        .where(AgentWorkspace.agent_id == agent.id, Workspace.user_id == user.id)
+        .where(AgentWorkspace.agent_id == agent.id, Workspace.user_id == agent.user_id)
         .order_by(*AGENT_WORKSPACE_ORDER)
         .limit(1)
     )
     return result.scalar_one_or_none()
+
+
+async def owned_agent_workspace_id(db: AsyncSession, agent: Agent, user: User) -> uuid.UUID | None:
+    """`agent_workspace_id` for an agent the caller owns (the agent is already checked)."""
+    return await agent_workspace_id(db, agent)
 
 
 def is_diallable(value: str | None) -> bool:
