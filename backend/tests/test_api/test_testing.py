@@ -1525,17 +1525,67 @@ class TestTestingRateLimits:
         assert other.status_code != 429
 
     @pytest.mark.asyncio
-    async def test_forged_token_cannot_pick_its_own_bucket(
-        self,
-        authenticated_test_client: tuple[AsyncClient, User],
-    ) -> None:
-        client, _user = authenticated_test_client
-        body = {"scenario_id": str(uuid.uuid4()), "agent_id": str(uuid.uuid4())}
+    async def test_unverifiable_token_keys_on_address_not_on_its_claimed_user(self) -> None:
+        """Key function only: a token that does not verify never names a user bucket.
 
-        for i in range(11):
-            forged = {"Authorization": f"Bearer not-a-real-token-{i}"}
-            response = await client.post("/api/v1/testing/run", json=body, headers=forged)
-        assert response.status_code == 429  # all land in the one address bucket
+        On these routes such a request is answered 401 by the auth dependency
+        before the limiter runs (see the next test), so this fallback is not
+        reached over HTTP; it pins that a forged ``sub`` cannot choose a key.
+        """
+        import jwt
+        from starlette.requests import Request
+
+        from app.core.config import settings
+        from app.core.limiter import user_or_ip_key
+
+        def request_with(token: str) -> Request:
+            return Request(
+                {
+                    "type": "http",
+                    "headers": [(b"authorization", f"Bearer {token}".encode())],
+                    "client": ("203.0.113.7", 1234),
+                }
+            )
+
+        forged = jwt.encode({"sub": "42"}, "wrong-secret", algorithm=settings.ALGORITHM)
+        valid = jwt.encode({"sub": "42"}, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+
+        assert user_or_ip_key(request_with(forged)) == "203.0.113.7"
+        assert user_or_ip_key(request_with("garbage")) == "203.0.113.7"
+        assert user_or_ip_key(request_with(valid)) == "user:42"
+
+    @pytest.mark.asyncio
+    async def test_flood_for_missing_or_disabled_user_gets_401_and_spares_real_user(
+        self,
+        test_client: AsyncClient,
+        test_session: AsyncSession,
+    ) -> None:
+        """Validly signed tokens for a missing or disabled user are 401, never counted."""
+        real = User(email="real@example.test", hashed_password="x", is_active=True)  # noqa: S106
+        disabled = User(email="off@example.test", hashed_password="x", is_active=False)  # noqa: S106
+        test_session.add_all([real, disabled])
+        await test_session.commit()
+        await test_session.refresh(real)
+        await test_session.refresh(disabled)
+
+        body = {"scenario_id": str(uuid.uuid4()), "agent_id": str(uuid.uuid4())}
+        for user_id in (real.id + 9999, disabled.id):
+            for _ in range(15):
+                response = await test_client.post(
+                    "/api/v1/testing/run", json=body, headers=_bearer(user_id)
+                )
+                assert response.status_code == 401
+
+        # The real user still has the whole allowance: 10 reach the handler, 11th refused.
+        statuses = [
+            (
+                await test_client.post("/api/v1/testing/run", json=body, headers=_bearer(real.id))
+            ).status_code
+            for _ in range(11)
+        ]
+        assert 401 not in statuses[:10]
+        assert 429 not in statuses[:10]
+        assert statuses[10] == 429
 
     @pytest.mark.asyncio
     async def test_run_all_is_stricter_than_run(
