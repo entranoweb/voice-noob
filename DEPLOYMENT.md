@@ -69,6 +69,8 @@ POSTGRES_PASSWORD=YourSecurePostgresPassword123!
 POSTGRES_DB=synthiq_voice
 
 # Redis (REQUIRED - change this!)
+# No spaces, quotes or backslashes: Redis reads it from a config file, and the
+# generator below produces a safe one. It is never on a command line.
 REDIS_PASSWORD=YourSecureRedisPassword456!
 
 # Security (REQUIRED - generate a new one!)
