@@ -11,7 +11,7 @@ answers the default.
 
 from __future__ import annotations
 
-import re
+import ast
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -29,8 +29,6 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 APP = Path(__file__).resolve().parents[2] / "app"
-# The phone path is owned by another change and is checked there.
-EXCLUDED = ("api/telephony.py", "api/telephony_ws.py", "services/telephony/")
 
 
 async def _owner_with_agent(session: AsyncSession, email: str) -> tuple[User, Agent]:
@@ -79,10 +77,21 @@ async def test_default_link_wins_even_when_physically_last(test_session: AsyncSe
     user, agent = await _owner_with_agent(test_session, "a@example.test")
     default_ws = await _workspace(test_session, user, "default")
     other_ws = await _workspace(test_session, user, "other")
-    default_link = AgentWorkspace(agent_id=agent.id, workspace_id=default_ws.id, is_default=True)
+    # The default link is the NEWER one, so only is_default ordering can pick it.
+    now = datetime.now(UTC)
+    default_link = AgentWorkspace(
+        agent_id=agent.id, workspace_id=default_ws.id, is_default=True, created_at=now
+    )
     test_session.add(default_link)
     await test_session.commit()
-    test_session.add(AgentWorkspace(agent_id=agent.id, workspace_id=other_ws.id, is_default=False))
+    test_session.add(
+        AgentWorkspace(
+            agent_id=agent.id,
+            workspace_id=other_ws.id,
+            is_default=False,
+            created_at=now - timedelta(days=30),
+        )
+    )
     await test_session.commit()
     await _push_to_the_end_of_the_table(test_session, default_link)
 
@@ -133,14 +142,58 @@ async def test_no_link_is_none(test_session: AsyncSession) -> None:
     assert await agent_workspace_id(test_session, agent) is None
 
 
-def test_no_unordered_agent_workspace_lookup_outside_the_helper() -> None:
-    """A new `select(AgentWorkspace...).limit(1)` must go through the helper."""
+# Files that may query agent_workspaces without the helper, and why.
+ALLOWED_LOOKUPS = {
+    # Known leftovers: an unordered `.limit(1)`. Pending PR #67, which takes the
+    # workspace from the call record and deletes these lookups.
+    "api/telephony.py",
+    "api/telephony_ws.py",
+    # Link management: exact (agent, workspace) pair, or whole lists, never a
+    # "pick one" lookup.
+    "api/workspaces.py",
+}
+
+
+def _queries_agent_workspaces(tree: ast.AST) -> list[int]:
+    """Line numbers of select()/text() calls that reach the agent_workspaces table."""
+    lines = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+        if name not in {"select", "text"}:
+            continue
+        for sub in ast.walk(node):
+            if (isinstance(sub, ast.Name) and sub.id == "AgentWorkspace") or (
+                isinstance(sub, ast.Constant)
+                and isinstance(sub.value, str)
+                and "agent_workspaces" in sub.value
+            ):
+                lines.append(node.lineno)
+                break
+    return lines
+
+
+def test_agent_workspace_lookups_go_through_the_helper() -> None:
+    """Any select()/text() on agent_workspaces outside the helper fails unless listed."""
     offenders = []
     for path in APP.rglob("*.py"):
         rel = path.relative_to(APP).as_posix()
-        if rel == "core/ownership.py" or rel.startswith(EXCLUDED):
+        if rel == "core/ownership.py" or rel in ALLOWED_LOOKUPS:
             continue
-        source = path.read_text()
-        for match in re.finditer(r"select\(\s*AgentWorkspace[^;]*?\.limit\(1\)", source, re.S):
-            offenders.append(f"{rel}: {match.group(0)[:60]!r}")
+        offenders += [f"{rel}:{n}" for n in _queries_agent_workspaces(ast.parse(path.read_text()))]
     assert offenders == []
+
+
+def test_the_guard_sees_the_shapes_a_regex_would_miss() -> None:
+    sources = [
+        "q = select(AgentWorkspace.workspace_id)\nq = q.limit(1)",
+        "(select(AgentWorkspace).where(x)\n.scalars().first())",
+        "select(\n  AgentWorkspace\n)",
+        "select(AgentWorkspace.workspace_id.label('w'))",
+        "text('SELECT workspace_id FROM agent_workspaces')",
+    ]
+    for source in sources:
+        assert _queries_agent_workspaces(ast.parse(source)), source
+    assert not _queries_agent_workspaces(ast.parse("select(Agent)"))
