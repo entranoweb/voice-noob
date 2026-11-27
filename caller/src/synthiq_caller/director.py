@@ -248,7 +248,10 @@ class Director:
         async for event in self.leg.events():
             now = self._now()
             if isinstance(event, AgentAudio):
-                self.tracker.feed(event.pcm, event.rate, now)
+                began = self.tracker.feed(event.pcm, event.rate, now)
+                if began is not None:
+                    # Where response time is read from (``timing.py``).
+                    self.record.timeline.append({"t": round(began, 2), "kind": "agent_speech"})
                 await self._yield_if_talked_over(now)
             elif isinstance(event, AgentText):
                 self.tracker.mark(now)

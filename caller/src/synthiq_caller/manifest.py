@@ -246,9 +246,9 @@ def open_batch(
             "rehearsal": rehearsal,
             "repeats": repeats,
             "allow_mutating": allow_mutating,
-            # Scenarios run in file name order; there is nothing to seed.
+            # File name order unless the batch was shuffled; then the seed reproduces it.
             "seed": seed,
-            "order": ORDER,
+            "order": ORDER if seed is None else f"shuffled with seed {seed}",
         }
     )
     if plan is not None:
@@ -443,4 +443,5 @@ def open_for(
         rehearsal=leg == "fake",
         repeats=repeats,
         allow_mutating=getattr(args, "allow_mutating", "none"),
+        seed=getattr(args, "shuffle_seed", None),
     )

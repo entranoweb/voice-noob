@@ -7,7 +7,10 @@ from pathlib import Path
 from typing import Any
 
 from synthiq_caller.completeness import Completeness, read_object, read_run
+from synthiq_caller.mutation_watch import describe as describe_writes
+from synthiq_caller.mutation_watch import tally as tally_writes
 from synthiq_caller.stats import describe, gate, wilson_interval
+from synthiq_caller.timing import TimingTally, describe_timing, measure
 
 
 @dataclass
@@ -89,6 +92,10 @@ class Summary:
     legs: dict[str, int] = field(default_factory=dict)
     # Why calls could not be graded, when the run says (a trace that was not found).
     ungraded_reasons: dict[str, int] = field(default_factory=dict)
+    # Response time, re-asks and call length over every call placed (``timing.py``).
+    timing: TimingTally = field(default_factory=TimingTally)
+    # Undeclared-write watch over read-only scenarios (``mutation_watch.tally``).
+    writes: dict[str, int] = field(default_factory=dict)
 
 
 def failing_step(payload: dict[str, Any]) -> str:
@@ -155,11 +162,14 @@ def fail_under_exit(
 def summarise(directory: str | Path) -> Summary:
     root = Path(directory)
     summary = Summary()
+    stored: list[dict[str, Any]] = []
     for path in sorted(root.glob("run-*.json")):
         payload = read_run(path)
+        stored.append(payload)
         graded = payload["grade"]
         outcome = graded["outcome"]
         summary.runs += 1
+        summary.timing.add(measure(payload))
         name = graded["scenario"]
         tally = summary.by_scenario.setdefault(name, [0, 0])
         placed = summary.by_scenario_placed.setdefault(name, [0, 0])
@@ -239,6 +249,7 @@ def summarise(directory: str | Path) -> Summary:
             summary.consent_missing_calls += 1
         if payload.get("clips_removed"):
             summary.removed_clip_calls += 1
+    summary.writes = tally_writes(stored)
     for path in sorted(root.glob("chain-*.json")):
         chain = read_object(path)
         chain_tally = summary.chains.setdefault(chain["chain"], [0, 0, 0])
@@ -448,6 +459,9 @@ def render(summary: Summary) -> str:
             "by line: " + ", ".join(f"{name} {n}" for name, n in sorted(summary.legs.items()))
         )
 
+    lines.append("")
+    lines += describe_timing(summary.timing.to_json())
+    lines += describe_writes(summary.writes)
     lines.append("\nper scenario")
     for name, (passed, total) in sorted(summary.by_scenario.items()):
         lines.append(f"  {describe(passed, total):<52} {name}")
