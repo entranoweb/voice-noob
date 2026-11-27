@@ -224,13 +224,17 @@ def test_a_regression_against_the_baseline_fails_the_compare(
     assert "regressions: 2" in capsys.readouterr().out
 
 
-def test_a_baseline_from_an_older_grading_rule_is_refused(tmp_path: Path) -> None:
+def test_a_baseline_from_an_older_grading_rule_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     old = tmp_path / "old.json"
     data = json.loads(BASELINE.read_text(encoding="utf-8"))
     old.write_text(json.dumps({**data, "version": 1}), encoding="utf-8")
     out = run_smoke(tmp_path, AGENTS / "smoke")
-    with pytest.raises(ValueError, match="make the baseline again"):
-        main(["compare", str(out), "--baseline", str(old), "--fail-on", "any"])
+    capsys.readouterr()
+    code = main(["compare", str(out), "--baseline", str(old), "--fail-on", "any"])
+    assert code == 2  # could not compare: neither a pass (0) nor a regression (1)
+    assert "make the baseline again" in capsys.readouterr().err
 
 
 def test_the_committed_baseline_names_exactly_the_committed_scenarios() -> None:
