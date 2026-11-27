@@ -107,6 +107,7 @@ def _like_pattern(text: str) -> str:
 
 def _list_filters(
     *,
+    user_id: int,
     agent_id: str | None,
     workspace_id: str | None,
     direction: str | None,
@@ -123,7 +124,7 @@ def _list_filters(
         filters.append(CallRecord.direction == direction)
     if status:
         filters.append(CallRecord.status == status)
-    term = (search or "").strip()
+    term = (search or "").replace("\x00", "").strip()
     if term:
         pattern = _like_pattern(term)
         full_name = func.trim(Contact.first_name + " " + func.coalesce(Contact.last_name, ""))
@@ -132,10 +133,14 @@ def _list_filters(
                 CallRecord.from_number.ilike(pattern, escape="\\"),
                 CallRecord.to_number.ilike(pattern, escape="\\"),
                 CallRecord.agent_id.in_(
-                    select(Agent.id).where(Agent.name.ilike(pattern, escape="\\"))
+                    select(Agent.id).where(
+                        Agent.user_id == user_id, Agent.name.ilike(pattern, escape="\\")
+                    )
                 ),
                 CallRecord.contact_id.in_(
-                    select(Contact.id).where(full_name.ilike(pattern, escape="\\"))
+                    select(Contact.id).where(
+                        Contact.user_id == user_id, full_name.ilike(pattern, escape="\\")
+                    )
                 ),
             )
         )
@@ -192,6 +197,7 @@ async def list_calls(
 
     # Apply filters. The count and the page share one list, so they cannot disagree.
     filters = _list_filters(
+        user_id=current_user.id,
         agent_id=agent_id,
         workspace_id=workspace_id,
         direction=direction,
@@ -201,10 +207,10 @@ async def list_calls(
     query = query.where(*filters)
 
     # Get total count
-    count_query = select(CallRecord.id).where(CallRecord.user_id == user_uuid, *filters)
+    count_query = select(func.count(CallRecord.id)).where(CallRecord.user_id == user_uuid, *filters)
 
     count_result = await db.execute(count_query)
-    total = len(count_result.all())
+    total = count_result.scalar_one()
 
     # Apply pagination and ordering
     offset = (page - 1) * page_size

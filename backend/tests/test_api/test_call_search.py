@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import secrets
 import uuid
 from typing import TYPE_CHECKING, Any
 
@@ -12,11 +13,10 @@ from app.core.auth import user_id_to_uuid
 from app.models.agent import Agent
 from app.models.call_record import CallRecord
 from app.models.contact import Contact
+from app.models.user import User
 
 if TYPE_CHECKING:
     from httpx import AsyncClient
-
-    from app.models.user import User
 
 URL = "/api/v1/calls"
 
@@ -133,3 +133,55 @@ class TestCallSearch:
             await session.commit()
 
         assert (await _found(client, search="3334444"))[1] == 0
+
+    @pytest.mark.asyncio
+    async def test_nul_byte_is_dropped_not_a_server_error(
+        self, authenticated_test_client: tuple[AsyncClient, User], test_engine: Any
+    ) -> None:
+        client, user = authenticated_test_client
+        ids = await _seed(test_engine, user)
+
+        response = await client.get(URL, params={"search": "front\x00 desk"})
+
+        assert response.status_code == 200
+        assert {c["id"] for c in response.json()["calls"]} == {ids["agent"]}
+
+    @pytest.mark.asyncio
+    async def test_someone_elses_agent_name_does_not_match_my_call(
+        self, authenticated_test_client: tuple[AsyncClient, User], test_engine: Any
+    ) -> None:
+        client, user = authenticated_test_client
+        await _seed(test_engine, user)
+        maker = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+        async with maker() as session:
+            # My call, but pointing at an agent another user owns (a stale link).
+            stranger = User(
+                email="stranger@example.com",
+                hashed_password=secrets.token_hex(8),
+                full_name="Stranger",
+                is_active=True,
+            )
+            session.add(stranger)
+            await session.flush()
+            other = Agent(
+                user_id=stranger.id, name="Zephyr", pricing_tier="premium", system_prompt="x"
+            )
+            session.add(other)
+            await session.flush()
+            call_id = uuid.uuid4()
+            session.add(
+                CallRecord(
+                    id=call_id,
+                    user_id=user_id_to_uuid(user.id),
+                    agent_id=other.id,
+                    provider="telnyx",
+                    provider_call_id="v3:stale",
+                    direction="inbound",
+                    status="completed",
+                    from_number="+15550009999",
+                    to_number="+15559990000",
+                )
+            )
+            await session.commit()
+
+        assert (await _found(client, search="zephyr"))[1] == 0

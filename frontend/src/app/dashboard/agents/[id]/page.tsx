@@ -180,7 +180,7 @@ const agentFormSchema = z.object({
   phoneNumberId: z.string().optional(),
 
   // Advanced
-  enableRecording: z.boolean().default(true),
+  enableRecording: z.boolean().default(false),
   enableTranscript: z.boolean().default(true),
   turnDetectionMode: z.enum(["server-vad", "pushToTalk"]).default("server-vad"),
   isActive: z.boolean().default(true),
@@ -377,7 +377,8 @@ export default function EditAgentPage({ params }: EditAgentPageProps) {
         maxTokens: agent.max_tokens,
         telephonyProvider: "telnyx",
         phoneNumberId: agent.phone_number_id ?? undefined,
-        enableRecording: agent.enable_recording,
+        // No recording is made of any call; an old true is cleared on the next save.
+        enableRecording: false,
         enableTranscript: agent.enable_transcript,
         turnDetectionMode: "server-vad",
         isActive: agent.is_active,
@@ -585,7 +586,7 @@ export default function EditAgentPage({ params }: EditAgentPageProps) {
       enabled_tools: enabledIntegrations,
       enabled_tool_ids: data.enabledToolIds,
       phone_number_id: data.phoneNumberId,
-      enable_recording: data.enableRecording,
+      enable_recording: false,
       enable_transcript: data.enableTranscript,
       is_active: data.isActive,
       temperature: data.temperature,
@@ -690,7 +691,7 @@ export default function EditAgentPage({ params }: EditAgentPageProps) {
                   <div className="rounded-md border border-destructive/20 bg-destructive/5 p-3">
                     <ul className="space-y-1 text-sm">
                       <li className="flex items-center justify-between">
-                        <span>Call recordings & transcripts</span>
+                        <span>Call transcripts</span>
                         <span className="font-medium">{agent.total_calls} calls</span>
                       </li>
                       <li className="flex items-center justify-between">

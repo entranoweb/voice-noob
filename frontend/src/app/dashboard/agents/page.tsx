@@ -171,7 +171,7 @@ export default function AgentsPage() {
         language: agent.language,
         enabled_tools: agent.enabled_tools,
         phone_number_id: undefined, // Don't copy phone number
-        enable_recording: agent.enable_recording,
+        enable_recording: false, // nothing is recorded, so a copy never claims it
         enable_transcript: agent.enable_transcript,
       });
     },
@@ -337,7 +337,7 @@ export default function AgentsPage() {
             .map((agent) => (
               <Card
                 key={agent.id}
-                className="group relative transition-all focus-within:border-primary/50 hover:border-primary/50"
+                className="group relative transition-all focus-within:border-primary/50 focus-within:ring-2 focus-within:ring-ring hover:border-primary/50"
               >
                 <CardContent className="p-4">
                   <div className="flex items-start justify-between gap-2">

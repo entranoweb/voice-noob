@@ -71,3 +71,14 @@ describe("AgentsPage accessibility", () => {
     ).toBeVisible();
   });
 });
+
+describe("AgentsPage focus", () => {
+  it("shows a focus ring on the card while its link has focus", async () => {
+    serve();
+    render(<AgentsPage />);
+
+    const link = await screen.findByRole("link", { name: "Front Desk" });
+    const card = link.closest("div.group");
+    expect(card?.className).toContain("focus-within:ring-2");
+  });
+});
