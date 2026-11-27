@@ -794,7 +794,6 @@ async def save_transcript(
     from datetime import UTC, datetime, timedelta
 
     from app.models.call_record import CallRecord
-    from app.models.workspace import AgentWorkspace
 
     user_id = current_user.id
     transcript_logger = logger.bind(
@@ -817,11 +816,7 @@ async def save_transcript(
         return {"success": True, "message": "Empty transcript skipped"}
 
     # Get workspace for this agent (like embed does)
-    workspace_result = await db.execute(
-        select(AgentWorkspace).where(AgentWorkspace.agent_id == agent.id).limit(1)
-    )
-    agent_workspace = workspace_result.scalar_one_or_none()
-    agent_workspace_id = agent_workspace.workspace_id if agent_workspace else None
+    transcript_workspace_id = await owned_agent_workspace_id(db, agent, current_user)
 
     # Create call record with proper timestamps
     ended_at = datetime.now(UTC)
@@ -829,7 +824,7 @@ async def save_transcript(
 
     call_record = CallRecord(
         user_id=user_uuid,
-        workspace_id=agent_workspace_id,
+        workspace_id=transcript_workspace_id,
         agent_id=agent.id,
         provider="test",
         provider_call_id=request.session_id,
