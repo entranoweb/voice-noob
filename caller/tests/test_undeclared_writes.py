@@ -162,18 +162,6 @@ async def test_tool_outcomes_names_serve_when_no_list(bank: ClipBank, tmp_path: 
     assert run["undeclared_writes"]["tools"] == ["book_appointment"]
 
 
-async def test_cleanup_hook_runs_for_a_stray_write_even_when_only_mutating(
-    bank: ClipBank, tmp_path: Path
-) -> None:
-    marker = tmp_path / "ran.txt"
-    script = f"import pathlib; pathlib.Path(r'{marker}').write_text('x')"
-    hooks = ShellHooks(after=[sys.executable, "-c", script], after_only_when_mutating=True)
-    await one(
-        bank, tmp_path / "o", Calls(HOURS, BOOKED), write_tools=["book_appointment"], hooks=hooks
-    )
-    assert marker.exists()
-
-
 async def test_cleanup_hook_still_skipped_for_a_clean_none_call(
     bank: ClipBank, tmp_path: Path
 ) -> None:
@@ -192,3 +180,142 @@ async def test_regrade_keeps_the_stray_write_flag(bank: ClipBank, tmp_path: Path
     assert regrade(out, [("r.json", read_scenario())]) == 0  # nothing to change
     run = json.loads((out / "run-001.json").read_text())
     assert run["grade"]["outcome"] == "failed"
+
+
+def marker_hooks(tmp_path: Path) -> tuple[Path, ShellHooks]:
+    marker = tmp_path / "ran.txt"
+    script = f"import pathlib; pathlib.Path(r'{marker}').write_text('x')"
+    return marker, ShellHooks(after=[sys.executable, "-c", script], after_only_when_mutating=True)
+
+
+async def test_cleanup_hook_is_not_run_when_the_batch_may_not_mutate(
+    bank: ClipBank, tmp_path: Path
+) -> None:
+    marker, hooks = marker_hooks(tmp_path)
+    run = await one(  # `one` runs with the default allowance: none
+        bank, tmp_path / "o", Calls(HOURS, BOOKED), write_tools=["book_appointment"], hooks=hooks
+    )
+    assert not marker.exists()
+    assert run["grade"]["outcome"] == "failed"  # still flagged
+    assert (
+        "cleanup not run: mutation not allowed, residue may remain"
+        in (run["undeclared_writes"]["cleanup"])
+    )
+    assert "cleanup not run: mutation not allowed" in run["grade"]["reason"]
+
+
+async def test_cleanup_hook_runs_when_the_batch_may_mutate(bank: ClipBank, tmp_path: Path) -> None:
+    marker, hooks = marker_hooks(tmp_path)
+    out = tmp_path / "o"
+    await run_batch(
+        [("r.json", read_scenario("none"))],
+        lambda: (leg(), Calls(HOURS, BOOKED)),
+        bank,
+        out,
+        turn_settings=FAST,
+        write_tools=["book_appointment"],
+        allow_mutating="registers",
+        hooks=hooks,
+    )
+    assert marker.exists()
+    run = json.loads((out / "run-001.json").read_text())
+    assert "cleanup not run" not in run["undeclared_writes"]["cleanup"]
+
+
+async def test_unknown_write_outcome_is_a_possible_write_not_clean(
+    bank: ClipBank, tmp_path: Path
+) -> None:
+    withheld = ToolCall("book_appointment", {"slot": "x"}, {}, True)
+    scenario = parse_scenario(
+        {
+            "name": "r",
+            "mutates": "none",
+            "persona": {"facts": {"name": "Alice Wonderland"}},
+            "steps": [{"when": "how can i help", "clips": ["opener.wav"]}],
+            "hangup_after": "anything else",
+            "max_seconds": 20,
+            "expect": {"tools": [{"name_contains": "lookup_hours"}]},
+            "tool_outcomes": {"book_appointment": {"path": "id", "success": ["*"]}},
+        }
+    )
+    run = await one(
+        bank, tmp_path / "o", Calls(HOURS, withheld), write_tools=None, scenario=scenario
+    )
+    watch = run["undeclared_writes"]
+    assert watch["possible"] == ["book_appointment"]
+    assert watch["checked"] is False  # never "checked, nothing written"
+    assert run["grade"]["outcome"] != "passed"
+    assert any("may have written" in c["what"] for c in run["grade"]["checks"])
+
+
+async def test_errored_write_outcome_is_a_possible_write(bank: ClipBank, tmp_path: Path) -> None:
+    timed_out = ToolCall("book_appointment", {"slot": "x"}, {}, False, error="connection timeout")
+    run = await one(bank, tmp_path / "o", Calls(HOURS, timed_out), write_tools=["book_appointment"])
+    assert run["undeclared_writes"]["possible"] == ["book_appointment"]
+    assert run["grade"]["outcome"] != "passed"
+
+
+async def test_report_and_scorecard_show_not_checked_and_possible(
+    bank: ClipBank, tmp_path: Path
+) -> None:
+    from synthiq_caller.mutation_watch import CLEANUP_NOT_ALLOWED, describe, tally
+
+    out = tmp_path / "o"
+    await one(bank, out, Calls(HOURS, BOOKED), write_tools=None)  # not checked
+    lines = "\n".join(describe(tally([json.loads((out / "run-001.json").read_text())])))
+    assert "1 not checked" in lines
+    assert "write_tools" in lines
+    out2 = tmp_path / "p"
+    await one(bank, out2, Calls(HOURS, BOOKED), write_tools=["book_appointment"])
+    lines = "\n".join(describe(tally([json.loads((out2 / "run-001.json").read_text())])))
+    assert "1 with a successful write" in lines
+    assert CLEANUP_NOT_ALLOWED in lines
+
+
+async def test_chain_calls_are_watched_like_any_other_call(tmp_path: Path) -> None:
+    from test_reset_chains_readback import BOOKED as BOOK_SLOT
+    from test_reset_chains_readback import agents, chain_data
+    from test_reset_chains_readback import bank as chain_bank_fixture
+
+    from synthiq_caller.chain import parse_chain
+
+    data = chain_data()
+    data["chain"][0]["mutates"] = "none"  # declared read-only, yet the agent books
+    out = tmp_path / "out"
+    await run_batch(
+        [],
+        agents([[BOOK_SLOT]]),
+        chain_bank_fixture.__wrapped__(tmp_path),
+        out,
+        chains=[("c.json", parse_chain(data))],
+        allow_mutating="all",
+        turn_settings=FAST,
+        write_tools=["book_slot"],
+    )
+    first = json.loads((out / "run-001.json").read_text(encoding="utf-8"))
+    assert first["undeclared_writes"]["tools"] == ["book_slot"]
+    assert first["grade"]["outcome"] == "failed"
+    chain = json.loads((out / "chain-001.json").read_text(encoding="utf-8"))
+    assert chain["outcome"] != "passed"
+
+
+def test_forget_leaves_agent_speech_events_alone_and_chain_captures_ignore_them() -> None:
+    from synthiq_caller.forget import _redacted_result
+
+    event = {"t": 1.25, "kind": "agent_speech"}
+    data = {"record": {"timeline": [event, {"t": 2.0, "kind": "heard", "text": "secret words"}]}}
+    out, _found = _redacted_result(data, "r1")
+    assert out["record"]["timeline"][0] == event  # timing only: nothing to redact
+    assert "secret" not in json.dumps(out)
+
+
+async def test_scorecard_html_shows_the_write_watch(bank: ClipBank, tmp_path: Path) -> None:
+    from synthiq_caller import scorecard
+
+    out = tmp_path / "o"
+    await one(bank, out, Calls(HOURS, BOOKED), write_tools=["book_appointment"])
+    card = scorecard.build([out])
+    assert card["undeclared_writes"]["stray"] == 1
+    html = scorecard.render_html(card)
+    assert "Undeclared writes" in html
+    assert "cleanup not run: mutation not allowed, residue may remain" in html

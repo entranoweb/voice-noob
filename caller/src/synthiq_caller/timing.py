@@ -111,7 +111,7 @@ class TimingTally:
 def describe_timing(card: dict[str, Any]) -> list[str]:
     """The three figures as report lines; a figure with no data says so."""
     latency = (
-        f"median {card['response_median_s']} s, p90 {card['response_p90_s']} s "
+        f"median {card['response_median_s']} s, p90 (nearest-rank) {card['response_p90_s']} s "
         f"over {card['response_turns']} turn(s)"
         if card["response_turns"]
         else NOT_MEASURED
@@ -122,7 +122,7 @@ def describe_timing(card: dict[str, Any]) -> list[str]:
         else NOT_MEASURED
     )
     length = (
-        f"median {card['length_median_s']} s, p90 {card['length_p90_s']} s "
+        f"median {card['length_median_s']} s, p90 (nearest-rank) {card['length_p90_s']} s "
         f"over {card['length_calls']} call(s)"
         if card["length_calls"]
         else NOT_MEASURED

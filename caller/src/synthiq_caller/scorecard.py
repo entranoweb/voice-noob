@@ -35,6 +35,7 @@ from synthiq_caller.compare import Baseline, compare, make_baseline
 from synthiq_caller.completeness import check as check_completeness
 from synthiq_caller.completeness import combine, read_json, read_run
 from synthiq_caller.jsonio import write_json
+from synthiq_caller.mutation_watch import describe as describe_writes
 from synthiq_caller.report import FieldTally, Summary, failing_step, summarise
 from synthiq_caller.stats import describe, wilson_interval
 from synthiq_caller.timing import TimingTally, describe_timing
@@ -63,6 +64,8 @@ def merged(summaries: list[Summary]) -> Summary:
             total.faults[who] = total.faults.get(who, 0) + count
         total.rehearsals += one.rehearsals
         total.timing.merge(one.timing)
+        for key, count in one.writes.items():
+            total.writes[key] = total.writes.get(key, 0) + count
         for name, (passed, graded) in one.by_scenario.items():
             tally = total.by_scenario.setdefault(name, [0, 0])
             tally[0] += passed
@@ -242,6 +245,7 @@ def build(
         "labels_unverified_calls": unverified_calls,
         "failed_by_fault": dict(sorted(summary.faults.items())),
         "timing": summary.timing.to_json(),
+        "undeclared_writes": dict(summary.writes),
         "synthetic_calls": summary.synthetic_calls,
         "consent_missing_calls": summary.consent_missing_calls,
         "graded": graded,
@@ -669,6 +673,11 @@ def render_html(card: dict[str, Any]) -> str:
     # A card written before these were measured has no "timing": not measured.
     timing = card.get("timing") or TimingTally().to_json()
     parts += [f'<p class="meta">{_e(line)}</p>' for line in describe_timing(timing)]
+
+    writes = describe_writes(card.get("undeclared_writes") or {})
+    if writes:
+        parts.append("<h2>Undeclared writes</h2>")
+        parts += [f'<p class="meta">{_e(line.strip())}</p>' for line in writes]
 
     parts.append("<h2>Said, heard, stored</h2>")
     parts += _fields(card)

@@ -62,9 +62,9 @@ from synthiq_caller.external import ExternalFailed, run_blocking, safe_id
 from synthiq_caller.grading import Grade, grade
 from synthiq_caller.jsonio import next_index, write_json, write_new_run, write_run
 from synthiq_caller.leg import Leg
+from synthiq_caller.mutation_watch import CLEANUP_NOT_ALLOWED, CLEANUP_RUN, watch_writes
 from synthiq_caller.mutation_watch import flag as flag_writes
 from synthiq_caller.mutation_watch import restored as restored_watch
-from synthiq_caller.mutation_watch import watch_writes
 from synthiq_caller.prereq import PrereqChecker, requires_state
 from synthiq_caller.readback import ReadBack, ReadBackContext
 from synthiq_caller.reset import Reset, ResetContext, ResetFailed
@@ -98,7 +98,8 @@ class CallInfo:
     out: str
     # "passed", "failed" or "ungraded".
     outcome: str
-    # The trace showed a successful write in a scenario declared ``mutates: none``.
+    # The trace showed a successful write in a scenario declared ``mutates: none`` and the
+    # batch may mutate: the after hook runs even if it skips read-only scenarios.
     stray_write: bool = False
 
     @property
@@ -601,6 +602,10 @@ async def run_batch(
                 read_back_error = str(error) or repr(error)
         graded = grade(scenario, record, trace, held)
         writes = watch_writes(scenario, trace, write_tools)
+        # The cleanup hook for a stray write runs only where the batch may mutate at all.
+        cleanup = writes.stray and allow_mutating != "none"
+        if writes.stray:
+            writes.cleanup = CLEANUP_RUN if cleanup else CLEANUP_NOT_ALLOWED
         flag_writes(graded, writes)
         payload: dict[str, Any] = {
             "scenario_file": file,
@@ -651,7 +656,7 @@ async def run_batch(
                 file,
                 scenario,
                 repeat,
-                CallInfo(engine_ref, name, str(out), graded.outcome, writes.stray),
+                CallInfo(engine_ref, name, str(out), graded.outcome, cleanup),
             )
         except Exception as error:  # noqa: BLE001 - recorded, never hidden
             payload["hook_error"] = f"after hook: {error}"

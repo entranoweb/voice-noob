@@ -9,7 +9,14 @@ from test_ci_gate import AGENTS, SETS
 from synthiq_caller import ci_gate, scorecard
 from synthiq_caller.cli import main
 from synthiq_caller.report import render, summarise
-from synthiq_caller.timing import NOT_MEASURED, TimingTally, describe_timing, measure, percentile
+from synthiq_caller.timing import (
+    NOT_MEASURED,
+    CallTiming,
+    TimingTally,
+    describe_timing,
+    measure,
+    percentile,
+)
 from synthiq_caller.turns import AgentTurnTracker
 
 
@@ -122,3 +129,9 @@ def test_old_runs_without_the_data_say_not_measured(tmp_path: Path) -> None:
     lines = render(summarise(tmp_path))
     assert "response time (agent first audio after the caller's answer): not measured" in lines
     assert "call length: not measured" in lines
+
+
+def test_p90_is_labelled_nearest_rank() -> None:
+    tally = TimingTally()
+    tally.add(CallTiming(latencies_s=[0.5, 1.0], reasks=0, length_s=3.0, has_agent_speech=True))
+    assert "nearest-rank" in "\n".join(describe_timing(tally.to_json()))
