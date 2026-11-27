@@ -1,3 +1,5 @@
+import math
+
 import pytest
 
 from synthiq_caller.legs.fake import tone
@@ -98,3 +100,64 @@ def test_mulaw_round_trip_is_close() -> None:
     # Mu-law is lossy; the level must survive within a few percent.
     assert abs(rms(back) - rms(pcm)) / rms(pcm) < 0.05
     assert lin2ulaw(b"\0\0") == b"\xff"
+
+
+def noise(seconds: float, level: int) -> bytes:
+    """Steady line noise at roughly ``level`` RMS (a tone is a stand-in for hiss)."""
+    return tone(seconds, RATE, level=int(level * 1.414))
+
+
+def test_a_noisy_line_does_not_hold_the_turn_open() -> None:
+    # Line noise at rms ~280 is above the old fixed floor of 250, so every frame
+    # counted as speech and the turn never ended. The floor follows the call's noise.
+    tracker = AgentTurnTracker(TurnSettings(hangover_s=0.5))
+    tracker.mark(0.0)
+    t = feed(tracker, noise(1.0, 280), 0.0)
+    t = feed(tracker, tone(0.6), t)
+    speech_end = t
+    feed(tracker, noise(3.0, 280), t)
+    assert tracker.floor() > 280
+    assert not tracker.turn_finished(speech_end + 0.3)
+    assert tracker.turn_finished(speech_end + 0.6)
+
+
+@pytest.mark.parametrize("base", [600, 1000, 2000])
+def test_continuous_speech_is_never_taken_for_noise(base: int) -> None:
+    # A leg that sends audio only while the agent talks gives the tracker no
+    # silence to learn from. Thirty seconds of speech, level wandering between
+    # 0.6x and 1.4x of ``base``, must all count as speech.
+    tracker = AgentTurnTracker(TurnSettings())
+    tracker.mark(0.0)
+    frame_s = 0.02
+    heard = 0
+    frames = int(30 / frame_s)
+    for i in range(frames):
+        level = base * (1.0 + 0.4 * math.sin(i / 7.0))
+        before = tracker._speech_run_s  # noqa: SLF001
+        tracker.feed(noise(frame_s, int(level)), RATE, i * frame_s)
+        heard += tracker._speech_run_s > before  # noqa: SLF001
+    assert heard / frames > 0.95
+    assert tracker.floor() <= 300
+
+
+def test_speech_quieter_than_the_old_floor_is_heard_on_a_quiet_line() -> None:
+    tracker = AgentTurnTracker(TurnSettings(hangover_s=0.5, audio_start_wait_s=30.0))
+    tracker.mark(0.0)
+    t = feed(tracker, SILENCE * 50, 0.0)
+    t = feed(tracker, noise(0.5, 150), t)  # soft speech, rms 150
+    assert tracker.speaking(t - 0.1)
+    assert tracker.floor() < 150
+
+
+def test_extra_quiet_holds_a_turn_but_never_past_the_hard_wait() -> None:
+    tracker = AgentTurnTracker(TurnSettings(hangover_s=0.5, max_turn_s=5.0))
+    tracker.mark(0.0)
+    end = feed(tracker, tone(1.0), 0.0)
+    assert tracker.turn_finished(end + 0.6)
+    assert not tracker.turn_finished(end + 0.6, extra_quiet_s=0.5)
+    assert tracker.turn_finished(end + 1.1, extra_quiet_s=0.5)
+    # Text with no audio, and a hold: still bounded.
+    text_only = AgentTurnTracker(TurnSettings(audio_start_wait_s=1.0, max_turn_s=5.0))
+    text_only.mark(0.0)
+    assert not text_only.turn_finished(1.2, extra_quiet_s=0.5)
+    assert text_only.turn_finished(5.0, extra_quiet_s=100.0)
