@@ -12,7 +12,9 @@ services:
     # hold are GUNICORN_WORKERS x (DB_POOL_SIZE + DB_MAX_OVERFLOW). Keep that at
     # least 20 below this limit. The defaults (8 workers at most, 50 + 50
     # each) need 800, hence 850; connections open lazily, so an idle backend
-    # does not hold them (DEPLOYMENT.md, "Runtime settings"). Postgres'
+    # does not hold them.
+    # 850 is an upper bound: each open connection costs a Postgres backend
+    # process, so size it for the host (DEPLOYMENT.md) (DEPLOYMENT.md, "Runtime settings"). Postgres'
     # own default is 100; changing it takes effect when this container restarts.
     command: ["postgres", "-c", "max_connections=${POSTGRES_MAX_CONNECTIONS:-850}"]
     environment:

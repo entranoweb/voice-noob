@@ -141,6 +141,13 @@ def test_gunicorn_workers_empty_means_the_default(monkeypatch: pytest.MonkeyPatc
     assert 1 <= runpy.run_path(str(GUNICORN_CONF))["workers"] <= 8
 
 
+def test_gunicorn_workers_bad_value_names_the_variable(monkeypatch: pytest.MonkeyPatch) -> None:
+    for bad in ("many", "0", "-2"):
+        monkeypatch.setenv("GUNICORN_WORKERS", bad)
+        with pytest.raises(ValueError, match="GUNICORN_WORKERS"):
+            runpy.run_path(str(GUNICORN_CONF))
+
+
 def test_gunicorn_rejects_a_negative_max_requests(monkeypatch: pytest.MonkeyPatch) -> None:
     with pytest.raises(ValueError, match="GUNICORN_MAX_REQUESTS"):
         _gunicorn(monkeypatch, GUNICORN_MAX_REQUESTS="-1")
@@ -275,12 +282,118 @@ def test_scrubber_masks_phones_and_emails_everywhere_and_drops_locals() -> None:
     assert out["extra"]["n"] == 3
 
 
-def test_scrubber_never_raises_and_never_drops_the_event() -> None:
+def test_scrubber_survives_a_cyclic_event() -> None:
     from app.core.sentry import scrub_event
 
     cyclic: dict[str, Any] = {"request": {"headers": None, "data": 1}}
     cyclic["self"] = cyclic
     assert scrub_event(cyclic, {}) is not None
+
+
+def test_a_scrubber_error_drops_the_event(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Returning None makes the SDK drop the event (and a transaction) instead of
+    # sending it unscrubbed or as a replacement without a type.
+    # https://docs.sentry.io/platforms/python/configuration/filtering/
+    from app.core import sentry
+
+    def boom(*_: Any, **__: Any) -> Any:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(sentry, "_scrub", boom)
+    assert sentry.scrub_event(_sample_event(), {}) is None
+    assert sentry.scrub_event({"type": "transaction", "message": "x"}, {}) is None
+
+
+SECRET_URL = "https://api.example.test/ws/telnyx?token=abc123SECRET&sig=zzz#frag"
+
+
+def test_query_strings_are_removed_from_every_url_field() -> None:
+    import json
+
+    from app.core.sentry import scrub_event
+
+    event = {
+        "type": "transaction",
+        "request": {"url": SECRET_URL},
+        "breadcrumbs": {
+            "values": [{"category": "httplib", "data": {"url": SECRET_URL, "status_code": 101}}]
+        },
+        "spans": [
+            {
+                "description": f"GET {SECRET_URL}",
+                "data": {
+                    "http.query": "token=abc123SECRET",
+                    "url": SECRET_URL,
+                    "http.fragment": "frag",
+                },
+            },
+            {"description": "GET /ws/telnyx?token=abc123SECRET"},
+        ],
+        "contexts": {
+            "trace": {"data": {"url.full": SECRET_URL, "http.target": "/ws?token=abc123SECRET"}}
+        },
+        "exception": {"values": [{"type": "E", "value": f"failed {SECRET_URL} now"}]},
+    }
+    out = scrub_event(event, {})
+    assert out is not None
+    blob = json.dumps(out)
+    assert "abc123SECRET" not in blob
+    assert "zzz" not in blob
+    assert "https://api.example.test/ws/telnyx" in out["request"]["url"]
+    assert out["request"]["url"] == "https://api.example.test/ws/telnyx"
+
+
+def test_breadcrumbs_keep_only_allowlisted_fields() -> None:
+    import json
+
+    from app.core.sentry import scrub_breadcrumb, scrub_event
+
+    crumb = {
+        "type": "log",
+        "category": "app.realtime",
+        "level": "info",
+        "timestamp": "2026-11-27T00:00:00Z",
+        "message": "utterance: my insurance number is ABC and I live on Elm Street",
+        "data": {
+            "text": "I live on Elm Street",
+            "transcript": "hello there",
+            "status_code": 200,
+            "method": "POST",
+            "url": SECRET_URL,
+        },
+    }
+    out = scrub_breadcrumb(dict(crumb), {})
+    assert out is not None
+    assert "message" not in out
+    assert out["category"] == "app.realtime"
+    assert out["data"] == {
+        "status_code": 200,
+        "method": "POST",
+        "url": "https://api.example.test/ws/telnyx",
+    }
+    event = scrub_event({"breadcrumbs": {"values": [crumb]}}, {})
+    assert event is not None
+    blob = json.dumps(event)
+    assert "Elm Street" not in blob
+    assert "hello there" not in blob
+    assert "abc123SECRET" not in blob
+
+
+def test_card_like_digit_runs_are_fully_masked() -> None:
+    from app.core.sentry import scrub_event
+
+    out = scrub_event(
+        {"message": "card 4111 1111 1111 1111 and 4111-1111-1111-1111 and 4111111111111111"}, {}
+    )
+    assert out is not None
+    assert "11" not in out["message"].replace("[masked]", "")
+    assert out["message"].count("[masked]") == 3
+
+
+def test_sentry_registers_the_breadcrumb_scrubber() -> None:
+    from app.core.sentry import scrub_breadcrumb, sentry_init_kwargs
+
+    assert sentry_init_kwargs(_FakeSettings())["before_breadcrumb"] is scrub_breadcrumb  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------- deployment files
@@ -311,6 +424,8 @@ def test_deployment_documents_every_new_variable() -> None:
         "POSTGRES_MAX_CONNECTIONS",
     ):
         assert f"`{name}`" in text, name
+    # max_connections is an upper bound with a memory cost, and the page says so.
+    assert "upper bound" in text
 
 
 def test_default_pool_fits_the_compose_postgres_limit() -> None:
