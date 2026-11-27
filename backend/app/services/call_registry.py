@@ -7,6 +7,8 @@ Supports graceful shutdown by tracking call state.
 from __future__ import annotations
 
 import asyncio
+import os
+import socket
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -29,6 +31,11 @@ SHUTDOWN_FLAG_KEY = "synthiq:shutdown"
 # Module-level state
 _shutdown_flag = False
 _registry_lock = asyncio.Lock()
+
+
+def _instance_id() -> str:
+    """Identify this process (host + pid; pid read each call so forks differ)."""
+    return f"{socket.gethostname()}:{os.getpid()}"
 
 
 @dataclass
@@ -71,6 +78,7 @@ async def register_call(
             "agent_id": agent_id,
             "started_at": str(time.time()),
             "phone_number": phone_number or "",
+            "owner": _instance_id(),
         }
 
         if metadata:
@@ -190,6 +198,28 @@ async def get_call_count() -> int:
         return 0
 
 
+async def get_own_call_count() -> int:
+    """Count registry entries owned by this process.
+
+    Entries with no owner (stale or written by older code) are not counted.
+    """
+    if not settings.ENABLE_CALL_REGISTRY:
+        return 0
+
+    try:
+        redis: Redis[str] = await get_redis()
+        me = _instance_id()
+        count = 0
+        async for key in redis.scan_iter(match=f"{CALL_REGISTRY_PREFIX}*"):
+            if await redis.hget(key, "owner") == me:
+                count += 1
+        return count
+
+    except Exception:
+        log_exception(logger, "get_own_call_count_failed")
+        return 0
+
+
 async def set_shutting_down(shutting_down: bool = True) -> None:
     """Set shutdown flag in Redis.
 
@@ -227,7 +257,9 @@ def is_shutting_down() -> bool:
 
 
 async def wait_for_calls_to_drain(drain_timeout: int | None = None) -> bool:
-    """Wait for all active calls to complete.
+    """Wait for this process's own calls to complete.
+
+    Other workers' and hosts' calls, and entries with no owner, are ignored.
 
     Args:
         drain_timeout: Max seconds to wait (defaults to SHUTDOWN_DRAIN_TIMEOUT).
@@ -244,7 +276,7 @@ async def wait_for_calls_to_drain(drain_timeout: int | None = None) -> bool:
     logger.info("drain_started", timeout=timeout)
 
     while time.time() - start_time < timeout:
-        count = await get_call_count()
+        count = await get_own_call_count()
         if count == 0:
             logger.info("drain_complete", elapsed=time.time() - start_time)
             return True
@@ -252,7 +284,7 @@ async def wait_for_calls_to_drain(drain_timeout: int | None = None) -> bool:
         logger.info("drain_waiting", active_calls=count)
         await asyncio.sleep(1)
 
-    remaining = await get_call_count()
+    remaining = await get_own_call_count()
     logger.warning(
         "drain_timeout",
         timeout=timeout,
@@ -265,6 +297,7 @@ __all__ = [
     "CallInfo",
     "get_active_calls",
     "get_call_count",
+    "get_own_call_count",
     "is_shutting_down",
     "register_call",
     "set_shutting_down",

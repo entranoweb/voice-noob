@@ -339,7 +339,8 @@ class TestWaitForCallsToDrain:
         """Test drain waits for calls to complete."""
         # Register a call
         key = "synthiq:calls:drain-test"
-        await mock_redis.hset(key, mapping={"call_id": "drain-test", "agent_id": "agent"})
+        with patch.object(call_registry, "get_redis", AsyncMock(return_value=mock_redis)):
+            await register_call("drain-test", "agent")
 
         async def remove_call_after_delay() -> None:
             await asyncio.sleep(0.5)
@@ -362,8 +363,8 @@ class TestWaitForCallsToDrain:
     ) -> None:
         """Test drain returns False on timeout."""
         # Register a call that won't be removed
-        key = "synthiq:calls:timeout-test"
-        await mock_redis.hset(key, mapping={"call_id": "timeout-test", "agent_id": "agent"})
+        with patch.object(call_registry, "get_redis", AsyncMock(return_value=mock_redis)):
+            await register_call("timeout-test", "agent")
 
         with patch.object(call_registry, "get_redis", AsyncMock(return_value=mock_redis)):
             result = await wait_for_calls_to_drain(drain_timeout=1)
@@ -377,3 +378,50 @@ class TestWaitForCallsToDrain:
         """Test drain returns True when disabled."""
         result = await wait_for_calls_to_drain(drain_timeout=1)
         assert result is True
+
+
+class TestDrainOwnCallsOnly:
+    """The drain waits on this process's calls, not on the shared registry."""
+
+    @pytest.mark.asyncio
+    async def test_other_process_entry_does_not_delay_drain(
+        self, mock_redis: Any, enable_call_registry: Any
+    ) -> None:
+        await mock_redis.hset(
+            "synthiq:calls:foreign",
+            mapping={"call_id": "foreign", "agent_id": "a", "owner": "other-host:4242"},
+        )
+        with patch.object(call_registry, "get_redis", AsyncMock(return_value=mock_redis)):
+            assert await wait_for_calls_to_drain(drain_timeout=2) is True
+
+    @pytest.mark.asyncio
+    async def test_unowned_stale_entry_does_not_block(
+        self, mock_redis: Any, enable_call_registry: Any
+    ) -> None:
+        await mock_redis.hset("synthiq:calls:stale", mapping={"call_id": "stale", "agent_id": "a"})
+        with patch.object(call_registry, "get_redis", AsyncMock(return_value=mock_redis)):
+            assert await wait_for_calls_to_drain(drain_timeout=2) is True
+
+    @pytest.mark.asyncio
+    async def test_own_live_call_blocks_until_unregistered(
+        self, mock_redis: Any, enable_call_registry: Any
+    ) -> None:
+        with patch.object(call_registry, "get_redis", AsyncMock(return_value=mock_redis)):
+            await register_call("mine", "a")
+            assert await wait_for_calls_to_drain(drain_timeout=1) is False
+            await unregister_call("mine")
+            assert await wait_for_calls_to_drain(drain_timeout=1) is True
+
+    @pytest.mark.asyncio
+    async def test_foreign_and_own_mixed_waits_only_for_own(
+        self, mock_redis: Any, enable_call_registry: Any
+    ) -> None:
+        await mock_redis.hset(
+            "synthiq:calls:foreign",
+            mapping={"call_id": "foreign", "agent_id": "a", "owner": "other-host:4242"},
+        )
+        with patch.object(call_registry, "get_redis", AsyncMock(return_value=mock_redis)):
+            await register_call("mine", "a")
+            assert await call_registry.get_own_call_count() == 1
+            assert await get_call_count() == 2  # cross-process view unchanged
+            assert len(await get_active_calls()) == 2
