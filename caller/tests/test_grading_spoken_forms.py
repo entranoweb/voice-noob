@@ -290,3 +290,32 @@ def test_elevenlabs_trace_carries_the_agents_lines() -> None:
     )
     assert trace.agent_lines == ["Hello, how can I help?", "Please call 999."]
     assert Trace.from_json(trace.to_json()).agent_lines == trace.agent_lines
+
+
+# --- unplayed answers (a yielded answer the agent never heard) ----------------------------------
+
+
+def _unplayed_scenario() -> Any:
+    return _scenario({"postcode": "SW1A 1AA"}, {"fields": ["postcode"]})
+
+
+def test_an_unplayed_answer_is_not_graded_as_a_storage_failure_or_a_pass() -> None:
+    record = _record("postcode", ["SW1A 1AA"])
+    record.said[0].played = False
+    trace = _trace(_call("x", postcode="SW1A 1AA"))
+    result = grade(_unplayed_scenario(), record, trace)
+    assert result.outcome == "ungradeable"
+    assert result.fault != "agent"
+    assert result.fields == []
+    assert "never played" in result.checks[0].what
+
+
+def test_an_unplayed_answer_does_not_hide_a_played_one() -> None:
+    record = _record("postcode", ["SW1A 1AA"])
+    record.said[0].played = False
+    record.said.append(_said("postcode", ["SW1A 1AA"]))
+    good = grade(_unplayed_scenario(), record, _trace(_call("x", postcode="SW1A 1AA")))
+    assert good.outcome == "passed"
+    bad = grade(_unplayed_scenario(), record, _trace(_call("x", postcode="SW1A 9ZZ")))
+    assert bad.outcome == "failed"
+    assert bad.fault == "agent"

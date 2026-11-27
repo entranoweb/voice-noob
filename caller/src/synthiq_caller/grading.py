@@ -422,7 +422,8 @@ def field_rows(
 ) -> list[FieldRow]:
     rows: list[FieldRow] = []
     for name, fact in scenario.facts.items():
-        answers = [said for said in record.said if said.field == name]
+        # A yielded answer (played=False) was never heard by the agent: it says nothing.
+        answers = [said for said in record.said if said.field == name and said.played]
         if not answers:
             continue
         heard_all = [text for said in answers for text in said.heard]
@@ -975,6 +976,18 @@ def grade(
     by_field = {row.field: row for row in rows}
     for name in scenario.expect.fields:
         row = by_field.get(name)
+        if row is None and any(x.field == name and not x.played for x in record.said):
+            # Every answer was yielded to the agent talking over it, so the agent was never
+            # told this value: not the agent's storage failure, and nothing to pass.
+            result.checks.append(
+                Check(
+                    f"'{name}' reaches a tool as the caller said it "
+                    f"({NOT_CHECKED}: the answer was never played, the agent talked over it)",
+                    False,
+                    f"field {name} reaches a tool as said",
+                )
+            )
+            continue
         result.checks.append(
             Check(
                 f"'{name}' reaches a tool as the caller said it",
