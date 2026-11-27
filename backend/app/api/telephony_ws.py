@@ -1020,7 +1020,7 @@ async def _handle_twilio_stream(  # noqa: PLR0915
 
                 # Log all events for debugging
                 if event_count <= EVENT_LOG_THRESHOLD or event_count % 100 == 0:
-                    log.info("realtime_event_received", event_type=event_type, count=event_count)
+                    log.debug("realtime_event_received", event_type=event_type, count=event_count)
 
                 # Trigger initial greeting after session is configured
                 # This avoids race condition where audio events arrive before listener is ready
@@ -1053,7 +1053,7 @@ async def _handle_twilio_stream(  # noqa: PLR0915
                         audio_bytes = base64.b64decode(delta_data)
                         # Encode for Twilio (already in g711_ulaw format now)
                         payload = base64.b64encode(audio_bytes).decode("utf-8")
-                        log.info(
+                        log.debug(
                             "sending_audio_to_twilio",
                             audio_size=len(audio_bytes),
                             stream_sid=stream_sid,

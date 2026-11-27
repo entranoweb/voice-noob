@@ -1,5 +1,6 @@
 """Application configuration using Pydantic settings."""
 
+import logging
 import os
 from typing import Any
 
@@ -53,6 +54,14 @@ SHIPPED_ADMIN_PASSWORDS = (
 # drain (SHUTDOWN_DRAIN_TIMEOUT). Settings refuses a combination that does not
 # fit, because a worker killed mid-save loses the call record silently.
 GUNICORN_GRACEFUL_TIMEOUT_S = 40
+_LOG_LEVELS = {
+    "DEBUG": logging.DEBUG,
+    "INFO": logging.INFO,
+    "WARNING": logging.WARNING,
+    "ERROR": logging.ERROR,
+    "CRITICAL": logging.CRITICAL,
+}
+
 # What the saves between the tool grace and the drain are allowed to take.
 SHUTDOWN_SAVE_MARGIN_S = 5
 
@@ -105,6 +114,12 @@ class Settings(BaseSettings):
 
     APP_VERSION: str = "0.1.0"
     DEBUG: bool = False
+    # Level of the application's own log lines (DEBUG, INFO, WARNING, ERROR,
+    # CRITICAL). Unset: DEBUG when DEBUG is on, INFO otherwise. INFO is the first
+    # level that carries the call lifecycle (connected, registered, ended, saved);
+    # per-frame lines are DEBUG, so INFO is not flooded. Gunicorn's own log has
+    # its own GUNICORN_LOG_LEVEL.
+    LOG_LEVEL: str | None = None
     API_V1_PREFIX: str = "/api/v1"
 
     # Server
@@ -315,7 +330,19 @@ class Settings(BaseSettings):
     # Monitoring
     SENTRY_DSN: str | None = None
     SENTRY_ENVIRONMENT: str = "development"
-    SENTRY_TRACES_SAMPLE_RATE: float = 1.0
+    # Fraction of requests traced (0 turns tracing off). Errors are always sent.
+    SENTRY_TRACES_SAMPLE_RATE: float = Field(default=0.1, ge=0.0, le=1.0)
+
+    # Database pool, per worker process. Every worker opens its own pool, so the
+    # most connections the backend can hold is
+    #   workers x (DB_POOL_SIZE + DB_MAX_OVERFLOW)
+    # and it must stay below Postgres max_connections (docker-compose.prod.yml
+    # sets it from POSTGRES_MAX_CONNECTIONS) with headroom for migrations,
+    # backups and an operator's psql. A phone call holds one connection for its
+    # whole length, so DB_POOL_SIZE + DB_MAX_OVERFLOW is also about how many
+    # calls one worker can carry.
+    DB_POOL_SIZE: int = Field(default=50, ge=1)
+    DB_MAX_OVERFLOW: int = Field(default=50, ge=0)
 
     # OpenTelemetry
     OTEL_ENABLED: bool = False
@@ -418,6 +445,23 @@ class Settings(BaseSettings):
     # How often expired audio is deleted. Always on (it is not tied to
     # RETENTION_SWEEP_ENABLED): a pass also runs at start-up. Minimum 1.
     CALLER_AUDIO_EXPIRY_INTERVAL_MINUTES: int = 60
+
+    @field_validator("LOG_LEVEL")
+    @classmethod
+    def log_level_is_a_known_name(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        name = value.strip().upper()
+        if name not in _LOG_LEVELS:
+            raise ValueError(f"LOG_LEVEL must be one of {', '.join(_LOG_LEVELS)} (got {value!r})")
+        return name
+
+    @property
+    def effective_log_level(self) -> int:
+        """The numeric level the application logs at."""
+        if self.LOG_LEVEL is not None:
+            return _LOG_LEVELS[self.LOG_LEVEL]
+        return logging.DEBUG if self.DEBUG else logging.INFO
 
     @model_validator(mode="after")
     def shutdown_fits_in_graceful_timeout(self) -> "Settings":
