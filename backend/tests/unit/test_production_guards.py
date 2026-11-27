@@ -173,6 +173,10 @@ class TestProductionComposeFile:
         # The server takes its config on stdin, with the variable expanded by the
         # shell inside the heredoc, never as an argument of redis-server.
         assert "redis-server -" in argv
+        # The image's entrypoint is what drops root to the redis user; a bare
+        # `exec redis-server` skips it and Redis runs as root.
+        assert "exec docker-entrypoint.sh redis-server -" in argv
+        assert redis.get("user") not in ("root", "0")
         assert "--requirepass" not in argv
         assert "requirepass $$REDIS_PASSWORD" in argv
         assert ":?" in redis["environment"]["REDIS_PASSWORD"]

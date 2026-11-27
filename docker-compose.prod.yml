@@ -31,20 +31,24 @@ services:
     image: redis:7-alpine
     container_name: synthiq-redis
     restart: unless-stopped
-    # The password must not be on the command line: argv is readable by every
-    # user on the host in `ps` and /proc, and in `docker inspect`. redis-server
-    # reads its configuration from stdin when its argument is "-"; the shell
-    # expands the variable into the heredoc, not into argv. `exec` keeps
-    # redis-server as PID 1 so it gets Docker's stop signal. The value is written
-    # unquoted, so it must contain no whitespace or quotes (a hex or urlsafe
-    # token, as DEPLOYMENT.md generates).
+    # The password must not be in argv, which every user on the host can read in
+    # `ps` and /proc/<pid>/cmdline. redis-server reads its configuration from
+    # stdin when its argument is "-"; the shell expands the variable into the
+    # heredoc, not into argv. This does NOT hide it entirely: the variable is
+    # still visible in `docker inspect` and /proc/1/environ to anyone with
+    # Docker or root access. The command goes through the image's
+    # docker-entrypoint.sh (not bare `exec redis-server`), because that script
+    # is what chowns /data and drops from root to the redis user; bypassing it
+    # runs Redis as root. `exec` keeps redis-server as PID 1 for Docker's stop
+    # signal. The value is written unquoted, so it must contain no whitespace
+    # or quotes (a hex or urlsafe token, as DEPLOYMENT.md generates).
     environment:
       REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD to a long random value}
     command:
       - sh
       - -c
       - |
-        exec redis-server - <<EOF
+        exec docker-entrypoint.sh redis-server - <<EOF
         appendonly yes
         requirepass $$REDIS_PASSWORD
         EOF
