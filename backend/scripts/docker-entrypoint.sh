@@ -13,7 +13,8 @@ echo "✅ PostgreSQL is ready"
 
 # Wait for Redis to be ready
 echo "⏳ Waiting for Redis..."
-until redis-cli -h "${REDIS_HOST:-redis}" -a "${REDIS_PASSWORD:-}" ping 2>/dev/null | grep -q PONG; do
+# REDISCLI_AUTH, not -a: the password stays out of the process list.
+until REDISCLI_AUTH="${REDIS_PASSWORD:-}" redis-cli -h "${REDIS_HOST:-redis}" ping 2>/dev/null | grep -q PONG; do
     echo "Redis not ready, waiting..."
     sleep 2
 done

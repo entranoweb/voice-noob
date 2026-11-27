@@ -31,11 +31,29 @@ services:
     image: redis:7-alpine
     container_name: synthiq-redis
     restart: unless-stopped
-    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:?set REDIS_PASSWORD to a long random value}
+    # The password must not be on the command line: argv is readable by every
+    # user on the host in `ps` and /proc, and in `docker inspect`. redis-server
+    # reads its configuration from stdin when its argument is "-"; the shell
+    # expands the variable into the heredoc, not into argv. `exec` keeps
+    # redis-server as PID 1 so it gets Docker's stop signal. The value is written
+    # unquoted, so it must contain no whitespace or quotes (a hex or urlsafe
+    # token, as DEPLOYMENT.md generates).
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD to a long random value}
+    command:
+      - sh
+      - -c
+      - |
+        exec redis-server - <<EOF
+        appendonly yes
+        requirepass $$REDIS_PASSWORD
+        EOF
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:?set REDIS_PASSWORD to a long random value}", "ping"]
+      # REDISCLI_AUTH is redis-cli's documented way to take a password without
+      # putting it in argv.
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$REDIS_PASSWORD\" redis-cli ping | grep -q PONG"]
       interval: 10s
       timeout: 5s
       retries: 5

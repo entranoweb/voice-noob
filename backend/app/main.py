@@ -239,7 +239,11 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # ty
 app.add_middleware(RequestTracingMiddleware)
 
 # Add security headers middleware
-app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(
+    SecurityHeadersMiddleware,
+    debug=settings.DEBUG,
+    docs_enabled=settings.api_docs_enabled,
+)
 
 # Refuse an oversize body with 413. The caller routes are exempt: they read
 # their own streams against their own, larger caps (bundle, audio file).

@@ -164,6 +164,25 @@ class TestProductionComposeFile:
         assert ":?" in compose["services"]["postgres"]["environment"]["POSTGRES_PASSWORD"]
         assert "POSTGRES_PASSWORD:?" in backend["DATABASE_URL"]
 
+    def test_redis_password_is_not_in_any_command_line(self, compose: dict[str, Any]) -> None:
+        """argv is world-readable in ps, /proc and `docker inspect`."""
+        redis = compose["services"]["redis"]
+        argv = (
+            " ".join(redis["command"]) if isinstance(redis["command"], list) else redis["command"]
+        )
+        # The server takes its config on stdin, with the variable expanded by the
+        # shell inside the heredoc, never as an argument of redis-server.
+        assert "redis-server -" in argv
+        assert "--requirepass" not in argv
+        assert "requirepass $$REDIS_PASSWORD" in argv
+        assert ":?" in redis["environment"]["REDIS_PASSWORD"]
+        check = " ".join(redis["healthcheck"]["test"])
+        assert " -a " not in check
+        assert "REDISCLI_AUTH" in check
+        entrypoint = (REPO / "backend/scripts/docker-entrypoint.sh").read_text(encoding="utf-8")
+        assert 'redis-cli -h "${REDIS_HOST:-redis}" -a' not in entrypoint
+        assert "REDISCLI_AUTH" in entrypoint
+
     def test_the_app_ports_are_not_published_on_the_host(self, compose: dict[str, Any]) -> None:
         for service in ("backend", "frontend", "postgres", "redis"):
             assert "ports" not in compose["services"][service], service
