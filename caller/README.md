@@ -191,7 +191,7 @@ What that batch showed:
 
 ## The scenario set
 
-`scenarios/example-receptionist/` holds 20 scenarios built from recorded calls to one agent.
+`scenarios/example-receptionist/` holds 24 scenarios built from recorded calls to one agent.
 
 | Files | What | Changes on the target |
 | --- | --- | --- |
@@ -205,6 +205,7 @@ What that batch showed:
 | 17 | Fee declined | `none` |
 | 18 | Date of birth corrected at read-back | `registers` |
 | 19, 20 | Out of scope then "actually shoulder"; booking for a son | `none`, and **not runnable**: each needs a recording that does not exist (`missing_clips`) |
+| 21 to 24 | Misbehaviour on demand, date of birth only, hangs up before anything is moved: `talk_over`, `stay_silent`, `delay_s`, keypad digits (`dtmf`, phone leg only) | `none` |
 
 Scenarios 08 to 13 and 15 also carry a `requires` line: what must already exist
 on the target (a patient, an appointment). Nothing sets that up yet.
@@ -334,7 +335,7 @@ conversations in `tests/fixtures/` (synthetic test callers).
   `value` column are only as good as the transcript behind them, and no clip
   has had a human listen. One of three scenarios run live had a wrong date of
   birth for that reason.
-- **Seventeen of the twenty scenarios have never been run.** Anything that
+- **Seventeen of the original twenty scenarios, and all of 21 to 24, have never been run live** (21 to 24 are only rehearsed on the fake leg, `tests/test_misbehaviour_scenarios.py`). Anything that
   registers, books or moves needs a target that can be reset.
 - **The same clip is not heard the same way twice.** One opener clip was heard
   three ways in five runs: "Sorry, can you book...", "Droitwich, any book...",

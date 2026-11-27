@@ -1,0 +1,28 @@
+{
+  "lines": [
+    {
+      "text": "Hi, how can I help you today?",
+      "speech_s": 0.3
+    },
+    {
+      "text": "Could I take your full name?",
+      "speech_s": 0.3,
+      "hears": "Adam Armstrong"
+    },
+    {
+      "text": "Could I take your date of birth?",
+      "speech_s": 0.3,
+      "patience_s": 1.0
+    },
+    {
+      "text": "I can't hear you. Goodbye.",
+      "speech_s": 0.3
+    }
+  ],
+  "trace": {
+    "tool_calls": [],
+    "step_path": [
+      "I1"
+    ]
+  }
+}

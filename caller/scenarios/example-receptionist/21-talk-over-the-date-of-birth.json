@@ -1,0 +1,84 @@
+{
+  "name": "Caller answers the date-of-birth question over the agent",
+  "description": "The caller starts the date of birth while the agent is still asking for it (talk_over). A good agent keeps what it heard and carries on; a bad one loses it and asks again.",
+  "mutates": "none",
+  "requires": "Adam Armstrong is registered with date of birth 1995-01-01 and has one upcoming appointment. The call hangs up before anything is moved.",
+  "persona": {
+    "facts": {
+      "name": "adam armstrong",
+      "date_of_birth": "1995-01-01"
+    }
+  },
+  "max_seconds": 60,
+  "hangup_after": "one you'd like to (?:move|cancel)|anything else",
+  "steps": [
+    {
+      "when": "how can i help",
+      "clips": [
+        "2026-11-20T120849Z_j3sh_01_opener"
+      ],
+      "intended": "Can you rearrange my appointment, please?",
+      "max_uses": 2
+    },
+    {
+      "when": "full name|your name|registered under",
+      "clips": [
+        "2026-11-20T120849Z_j3sh_02_name"
+      ],
+      "intended": "It's Adam Armstrong.",
+      "max_uses": 2,
+      "field": "name"
+    },
+    {
+      "when": "date of birth",
+      "clips": [
+        "2026-11-20T120849Z_j3sh_03_dob"
+      ],
+      "intended": "First January, nineteen ninety-five.",
+      "max_uses": 2,
+      "field": "date_of_birth",
+      "talk_over": true
+    }
+  ],
+  "expect": {
+    "tools": [
+      {
+        "name": "example_v2_verify_identity"
+      }
+    ],
+    "fields": [
+      "name",
+      "date_of_birth"
+    ],
+    "agent_never_says": [
+      "didn't catch|could you (?:repeat|say that again)|say that again"
+    ]
+  },
+  "tool_outcomes": {
+    "example_v2_verify_identity": {
+      "path": "verified",
+      "success": [
+        "true"
+      ]
+    },
+    "example_v2_book": {
+      "path": "bookOutcome",
+      "success": [
+        "BOOKED"
+      ]
+    },
+    "example_v2_reschedule_appointment": {
+      "path": "rescheduleOutcome",
+      "success": [
+        "RESCHEDULED"
+      ]
+    },
+    "example_v2_register_patient": {
+      "path": "newPatientRegistered",
+      "success": [
+        "true"
+      ]
+    }
+  },
+  "identity_budget": 2
+}
