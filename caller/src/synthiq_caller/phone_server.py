@@ -26,6 +26,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from synthiq_caller.batch import ALLOWED
+from synthiq_caller.cli_guard import guarded
 from synthiq_caller.clips import ClipBank
 from synthiq_caller.director import Director, RunRecord
 from synthiq_caller.jsonio import next_index, write_new_json
@@ -235,6 +236,11 @@ async def run_dry(args: argparse.Namespace, scenario: Scenario) -> int:
 
 
 def main(argv: list[str] | None = None, env: Mapping[str, str] | None = None) -> int:
+    """Run the phone caller. A known failure is a message and exit 2, not a traceback."""
+    return guarded(lambda: _main(argv, env), command="synthiq-caller-phone")
+
+
+def _main(argv: list[str] | None = None, env: Mapping[str, str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="synthiq-caller-phone")
     parser.add_argument("--scenario", required=True)
     parser.add_argument("--clips", required=True)

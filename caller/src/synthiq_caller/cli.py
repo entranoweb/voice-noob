@@ -51,6 +51,7 @@ from synthiq_caller.batch import (
     run_batch,
 )
 from synthiq_caller.chain import Chain
+from synthiq_caller.cli_guard import guarded
 from synthiq_caller.clips import ClipBank
 from synthiq_caller.compare import (
     compare,
@@ -854,10 +855,17 @@ def _reread_reader(args: argparse.Namespace) -> TraceReader | None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Run a command. A file that cannot be read stops it with a message and exit 2."""
+    """Run a command. A known failure stops it with ``ERROR: <message>`` on stderr and exit 2."""
+    return guarded(lambda: _unreadable_stops(argv))
+
+
+def _unreadable_stops(argv: list[str] | None) -> int:
+    """A file that cannot be read stops the command with its name and exit 2."""
     try:
         return _main(argv)
     except completeness.Unreadable as error:
+        if os.environ.get("SYNTHIQ_DEBUG") == "1":
+            raise
         print(f"ERROR: {error}")
         print("Nothing was skipped: fix or remove the file, then run the command again.")
         return 2
