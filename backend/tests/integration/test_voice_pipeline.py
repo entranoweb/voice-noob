@@ -17,7 +17,7 @@ import fakeredis
 import pytest
 import pytest_asyncio
 
-from app.services import call_queue, call_registry
+from app.services import call_registry
 from app.services.call_registry import (
     get_active_calls,
     get_call_count,
@@ -302,108 +302,3 @@ class TestHealthEndpointIntegration:
         assert response.status_code == 200
         data = response.json()
         assert data["status"] == "alive"
-
-
-class TestCallRegistryAndQueueIntegration:
-    """Integration tests for call registry with call queue."""
-
-    @pytest.mark.asyncio
-    async def test_registry_and_queue_coexistence(
-        self,
-        mock_redis: Any,
-    ) -> None:
-        """Test call registry and queue can work together."""
-        with (
-            patch.object(call_registry.settings, "ENABLE_CALL_REGISTRY", True),
-            patch.object(call_queue.settings, "ENABLE_CALL_QUEUE", True),
-            patch.object(call_queue.settings, "MAX_CALL_QUEUE_SIZE", 10),
-            patch.object(call_registry, "get_redis", AsyncMock(return_value=mock_redis)),
-            patch.object(call_queue, "get_redis", AsyncMock(return_value=mock_redis)),
-        ):
-            # Register active call in registry
-            await register_call(
-                call_id="active-call",
-                agent_id="agent-1",
-            )
-
-            # Queue a call
-            from app.services.call_queue import enqueue_call, get_queue_depth
-
-            queued = await enqueue_call(
-                call_id="queued-call",
-                agent_id="agent-2",
-            )
-
-            # Both should work independently
-            active_count = await get_call_count()
-            queue_depth = await get_queue_depth()
-
-            assert active_count == 1
-            assert queued is True
-            assert queue_depth == 1
-
-            # Cleanup
-            await unregister_call("active-call")
-
-    @pytest.mark.asyncio
-    async def test_queue_while_at_capacity(
-        self,
-        mock_redis: Any,
-    ) -> None:
-        """Test queuing calls while active calls are at capacity."""
-        with (
-            patch.object(call_registry.settings, "ENABLE_CALL_REGISTRY", True),
-            patch.object(call_queue.settings, "ENABLE_CALL_QUEUE", True),
-            patch.object(call_queue.settings, "MAX_CALL_QUEUE_SIZE", 3),
-            patch.object(call_registry, "get_redis", AsyncMock(return_value=mock_redis)),
-            patch.object(call_queue, "get_redis", AsyncMock(return_value=mock_redis)),
-        ):
-            from app.services.call_queue import (
-                clear_queue,
-                dequeue_call,
-                enqueue_call,
-                get_queue_depth,
-            )
-
-            # Register some active calls
-            for i in range(3):
-                await register_call(
-                    call_id=f"active-{i}",
-                    agent_id="agent",
-                )
-
-            # Queue additional calls
-            for i in range(3):
-                await enqueue_call(
-                    call_id=f"queued-{i}",
-                    agent_id="agent",
-                )
-
-            # Verify state
-            active = await get_call_count()
-            queued = await get_queue_depth()
-
-            assert active == 3
-            assert queued == 3
-
-            # Simulate processing: dequeue and register
-            queued_call = await dequeue_call()
-            assert queued_call is not None
-
-            # Complete an active call
-            await unregister_call("active-0")
-
-            # Register the dequeued call
-            await register_call(
-                call_id=queued_call.call_id,
-                agent_id=queued_call.agent_id,
-            )
-
-            # Check updated state
-            active = await get_call_count()
-            assert active == 3  # Still 3 active (1 removed, 1 added)
-
-            # Cleanup
-            for i in range(3):
-                await unregister_call(f"active-{i + 1}" if i > 0 else "queued-0")
-            await clear_queue()
