@@ -8,13 +8,20 @@ from datetime import datetime
 from typing import Annotated, Any
 
 import structlog
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field, StringConstraints
 from sqlalchemy import desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import CurrentUser
 from app.core.config import settings
+from app.core.limiter import (
+    limiter,
+    testing_check_limit,
+    testing_run_all_limit,
+    testing_run_limit,
+    user_or_ip_key,
+)
 from app.core.limits import (
     DESCRIPTION_MAX_CHARS,
     MAX_LIST_ITEMS,
@@ -725,16 +732,18 @@ async def duplicate_scenario(
 
 
 @router.post("/run", response_model=RunTestResponse)
+@limiter.limit(testing_run_limit, key_func=user_or_ip_key)
 async def run_test(
-    request: RunTestRequest,
+    body: RunTestRequest,
+    request: Request,
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> RunTestResponse:
     """Run a specific test scenario against an agent."""
     log = logger.bind(
         user_id=current_user.id,
-        scenario_id=request.scenario_id,
-        agent_id=request.agent_id,
+        scenario_id=body.scenario_id,
+        agent_id=body.agent_id,
     )
     log.info("running_test")
 
@@ -744,11 +753,9 @@ async def run_test(
     if not settings.ANTHROPIC_API_KEY:
         raise HTTPException(status_code=400, detail="Anthropic API key not configured")
 
-    scenario_uuid = _parse_uuid(request.scenario_id, "scenario_id")
-    agent_uuid = _parse_uuid(request.agent_id, "agent_id")
-    workspace_uuid = (
-        _parse_uuid(request.workspace_id, "workspace_id") if request.workspace_id else None
-    )
+    scenario_uuid = _parse_uuid(body.scenario_id, "scenario_id")
+    agent_uuid = _parse_uuid(body.agent_id, "agent_id")
+    workspace_uuid = _parse_uuid(body.workspace_id, "workspace_id") if body.workspace_id else None
 
     # Verify scenario exists and user has access (built-in or own)
     scenario_result = await db.execute(
@@ -824,8 +831,10 @@ async def _run_all_scenarios_background(
 
 
 @router.post("/check", response_model=InlineCheckResponse)
+@limiter.limit(testing_check_limit, key_func=user_or_ip_key)
 async def check_inline(
-    request: InlineCheckRequest,
+    body: InlineCheckRequest,
+    request: Request,
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> InlineCheckResponse:
@@ -837,7 +846,7 @@ async def check_inline(
     rolled back and verified, so calling this repeatedly leaves the caller's
     data exactly as it found it.
     """
-    log = logger.bind(user_id=current_user.id, agent_id=request.agent_id)
+    log = logger.bind(user_id=current_user.id, agent_id=body.agent_id)
     log.info("inline_check")
 
     if not settings.QA_ENABLED:
@@ -846,10 +855,8 @@ async def check_inline(
     if not settings.ANTHROPIC_API_KEY:
         raise HTTPException(status_code=400, detail="Anthropic API key not configured")
 
-    agent_uuid = _parse_uuid(request.agent_id, "agent_id")
-    workspace_uuid = (
-        _parse_uuid(request.workspace_id, "workspace_id") if request.workspace_id else None
-    )
+    agent_uuid = _parse_uuid(body.agent_id, "agent_id")
+    workspace_uuid = _parse_uuid(body.workspace_id, "workspace_id") if body.workspace_id else None
 
     agent_result = await db.execute(
         select(Agent).where(Agent.id == agent_uuid, Agent.user_id == current_user.id)
@@ -861,14 +868,14 @@ async def check_inline(
     result = await checker(TestRunner(db)).check(
         agent=agent,
         user_id=current_user.id,
-        says=request.says,
-        invokes=request.invokes,
-        leaves=request.leaves,
-        given=request.given,
-        persona=request.persona,
-        max_response_ms=request.max_response_ms,
+        says=body.says,
+        invokes=body.invokes,
+        leaves=body.leaves,
+        given=body.given,
+        persona=body.persona,
+        max_response_ms=body.max_response_ms,
         workspace_id=workspace_uuid,
-        judge=request.judge,
+        judge=body.judge,
     )
 
     return InlineCheckResponse(
@@ -897,14 +904,16 @@ async def check_inline(
 
 
 @router.post("/run-all", response_model=RunAllTestsResponse)
+@limiter.limit(testing_run_all_limit, key_func=user_or_ip_key)
 async def run_all_tests(
-    request: RunAllTestsRequest,
+    body: RunAllTestsRequest,
     background_tasks: BackgroundTasks,
+    request: Request,
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> RunAllTestsResponse:
     """Run all test scenarios against an agent (async)."""
-    log = logger.bind(user_id=current_user.id, agent_id=request.agent_id)
+    log = logger.bind(user_id=current_user.id, agent_id=body.agent_id)
     log.info("running_all_tests")
 
     if not settings.QA_ENABLED:
@@ -913,10 +922,8 @@ async def run_all_tests(
     if not settings.ANTHROPIC_API_KEY:
         raise HTTPException(status_code=400, detail="Anthropic API key not configured")
 
-    agent_uuid = _parse_uuid(request.agent_id, "agent_id")
-    workspace_uuid = (
-        _parse_uuid(request.workspace_id, "workspace_id") if request.workspace_id else None
-    )
+    agent_uuid = _parse_uuid(body.agent_id, "agent_id")
+    workspace_uuid = _parse_uuid(body.workspace_id, "workspace_id") if body.workspace_id else None
 
     # Verify agent exists and belongs to user
     agent_result = await db.execute(
@@ -940,8 +947,8 @@ async def run_all_tests(
             ),
         )
     )
-    if request.category:
-        query = query.where(TestScenario.category == request.category)
+    if body.category:
+        query = query.where(TestScenario.category == body.category)
 
     count_result = await db.execute(query)
     scenario_count = count_result.scalar() or 0
@@ -955,7 +962,7 @@ async def run_all_tests(
         agent_id=agent_uuid,
         user_id=current_user.id,
         workspace_id=workspace_uuid,
-        category=request.category,
+        category=body.category,
     )
 
     return RunAllTestsResponse(

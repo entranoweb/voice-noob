@@ -1463,3 +1463,113 @@ class TestDuplicateScenarioEndpoint:
         assert "Acknowledge frustration" in new_scenario["expected_behaviors"]
         assert new_scenario["success_criteria"]["min_score"] == 80
         assert new_scenario["tags"] == ["booking", "hard", "frustrated"]
+
+
+# =============================================================================
+# Rate limits on the routes that spend the workspace's model key
+# =============================================================================
+
+
+def _bearer(user_id: int) -> dict[str, str]:
+    """A signed token header; the route's auth dependency is overridden in tests,
+    the limiter's key function reads the header itself."""
+    from app.api.auth import create_access_token
+
+    return {"Authorization": f"Bearer {create_access_token(user_id)}"}
+
+
+async def _count_runs(session: AsyncSession) -> int:
+    from sqlalchemy import func, select
+
+    return int((await session.execute(select(func.count()).select_from(TestRun))).scalar_one())
+
+
+class TestTestingRateLimits:
+    """POST /run, /check and /run-all refuse past their per-user limit."""
+
+    @pytest.mark.asyncio
+    async def test_eleventh_run_in_a_minute_is_refused(
+        self,
+        authenticated_test_client: tuple[AsyncClient, User],
+        test_session: AsyncSession,
+    ) -> None:
+        client, user = authenticated_test_client
+        body = {"scenario_id": str(uuid.uuid4()), "agent_id": str(uuid.uuid4())}
+        headers = _bearer(user.id)
+
+        for _ in range(10):
+            ok = await client.post("/api/v1/testing/run", json=body, headers=headers)
+            assert ok.status_code != 429  # reaches the handler, which refuses on its own terms
+
+        runs_before = await _count_runs(test_session)
+        refused = await client.post("/api/v1/testing/run", json=body, headers=headers)
+
+        assert refused.status_code == 429
+        assert "10 per 1 minute" in refused.json()["error"]
+        assert await _count_runs(test_session) == runs_before == 0
+
+    @pytest.mark.asyncio
+    async def test_other_user_is_not_affected(
+        self,
+        authenticated_test_client: tuple[AsyncClient, User],
+    ) -> None:
+        client, user = authenticated_test_client
+        body = {"scenario_id": str(uuid.uuid4()), "agent_id": str(uuid.uuid4())}
+
+        for _ in range(11):
+            await client.post("/api/v1/testing/run", json=body, headers=_bearer(user.id))
+        exhausted = await client.post("/api/v1/testing/run", json=body, headers=_bearer(user.id))
+        other = await client.post("/api/v1/testing/run", json=body, headers=_bearer(user.id + 1000))
+
+        assert exhausted.status_code == 429
+        assert other.status_code != 429
+
+    @pytest.mark.asyncio
+    async def test_forged_token_cannot_pick_its_own_bucket(
+        self,
+        authenticated_test_client: tuple[AsyncClient, User],
+    ) -> None:
+        client, _user = authenticated_test_client
+        body = {"scenario_id": str(uuid.uuid4()), "agent_id": str(uuid.uuid4())}
+
+        for i in range(11):
+            forged = {"Authorization": f"Bearer not-a-real-token-{i}"}
+            response = await client.post("/api/v1/testing/run", json=body, headers=forged)
+        assert response.status_code == 429  # all land in the one address bucket
+
+    @pytest.mark.asyncio
+    async def test_run_all_is_stricter_than_run(
+        self,
+        authenticated_test_client: tuple[AsyncClient, User],
+        test_session: AsyncSession,
+    ) -> None:
+        client, user = authenticated_test_client
+        body = {"agent_id": str(uuid.uuid4())}
+        headers = _bearer(user.id)
+
+        first = await client.post("/api/v1/testing/run-all", json=body, headers=headers)
+        second = await client.post("/api/v1/testing/run-all", json=body, headers=headers)
+        third = await client.post("/api/v1/testing/run-all", json=body, headers=headers)
+
+        assert first.status_code != 429
+        assert second.status_code != 429
+        assert third.status_code == 429
+        assert "2 per 1 minute" in third.json()["error"]
+        assert await _count_runs(test_session) == 0
+
+    @pytest.mark.asyncio
+    async def test_check_refuses_past_its_limit(
+        self,
+        authenticated_test_client: tuple[AsyncClient, User],
+    ) -> None:
+        client, user = authenticated_test_client
+        body = {"agent_id": str(uuid.uuid4()), "says": ["hello"]}
+        headers = _bearer(user.id)
+
+        for _ in range(20):
+            ok = await client.post("/api/v1/testing/check", json=body, headers=headers)
+            assert ok.status_code != 429
+        refused = await client.post("/api/v1/testing/check", json=body, headers=headers)
+
+        assert refused.status_code == 429
+        assert "20 per 1 minute" in refused.json()["error"]

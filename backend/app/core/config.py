@@ -256,6 +256,12 @@ class Settings(BaseSettings):
 
     # Rate Limiting
     RATE_LIMIT_PER_MINUTE: int = 60
+    # Per signed-in user, per minute, on the /testing routes that spend the
+    # workspace's model key (each scenario run is several model calls).
+    # run-all queues every scenario of an agent, so it is the strictest.
+    TESTING_RUN_RATE_LIMIT_PER_MINUTE: int = Field(default=10, ge=1)
+    TESTING_CHECK_RATE_LIMIT_PER_MINUTE: int = Field(default=20, ge=1)
+    TESTING_RUN_ALL_RATE_LIMIT_PER_MINUTE: int = Field(default=2, ge=1)
     # Where rate-limit counts are kept (app.core.limiter). Unset: Redis, at
     # REDIS_URL, so every worker shares one count. "memory://" counts per
     # process, which is only right for a single-process deployment.
