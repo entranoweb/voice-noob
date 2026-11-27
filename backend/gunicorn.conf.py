@@ -16,11 +16,31 @@ backlog = 2048
 # Worker processes
 # Rule of thumb: (2 x $num_cores) + 1 for I/O bound apps
 # For voice agents, we use fewer workers since each handles async I/O well
-workers = int(os.getenv("GUNICORN_WORKERS", min(multiprocessing.cpu_count() * 2 + 1, 8)))
+workers = int(os.getenv("GUNICORN_WORKERS") or min(multiprocessing.cpu_count() * 2 + 1, 8))
 worker_class = "uvicorn.workers.UvicornWorker"
 worker_connections = 1000
-max_requests = 10000  # Restart workers after N requests (prevents memory leaks)
-max_requests_jitter = 1000  # Add randomness to prevent all workers restarting together
+
+
+def _non_negative_int(name: str, default: int) -> int:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        raise ValueError(f"{name} must be a whole number (got {raw!r})") from None
+    if value < 0:
+        raise ValueError(f"{name} must be 0 or more (got {value})")
+    return value
+
+
+# Recycle a worker after N requests. 0 (the default) never recycles: gunicorn
+# treats max_requests = 0 as "automatic restarts disabled" and the jitter is not
+# read. A recycle stops the worker's server, which closes every live call it
+# carries (a phone call is one long request), so it is off unless an operator
+# trades that for a leak workaround. The jitter spreads recycles when it is on.
+max_requests = _non_negative_int("GUNICORN_MAX_REQUESTS", 0)
+max_requests_jitter = _non_negative_int("GUNICORN_MAX_REQUESTS_JITTER", 1000)
 
 # Timeout configuration
 timeout = 120  # Longer timeout for voice WebSocket connections

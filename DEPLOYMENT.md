@@ -154,8 +154,20 @@ Names and defaults are from `backend/app/core/config.py`.
 | `CALL_IDLE_TIMEOUT_S` | `120` | Seconds of no conversation (nobody speaking, no agent audio, no tool running) before the bridge ends the call and records `silence_timeout`. `0` turns it off |
 | `CALL_TOOL_GRACE_S` | `10` | When a call ends while a tool is running, how long the tool may finish before it is cancelled |
 | `SHUTDOWN_DRAIN_TIMEOUT` | `15` | On shutdown, seconds the worker waits for call-registry entries to clear, after the tool grace and the call saves |
+| `LOG_LEVEL` | `INFO` (`DEBUG` when `DEBUG` is on) | Level of the application's log lines. Before this setting production logged `WARNING` and up, which dropped the call lifecycle (connected, registered, ended, saved); `INFO` restores it. Per-frame lines (every audio chunk) are `DEBUG`. Gunicorn's own log keeps `GUNICORN_LOG_LEVEL` |
+| `DB_POOL_SIZE` / `DB_MAX_OVERFLOW` | `10` / `5` | Database connections per backend worker (was a fixed 50 / 50). See "Runtime settings" below for the budget |
+| `POSTGRES_MAX_CONNECTIONS` | `200` | Postgres `max_connections` (compose passes it to the database container; restart it to apply). Postgres' own default is 100 |
+| `GUNICORN_WORKERS` | 2 x CPUs + 1, at most 8 | Backend worker processes. Multiplies the pool |
+| `GUNICORN_MAX_REQUESTS` / `GUNICORN_MAX_REQUESTS_JITTER` | `0` / `1000` | Recycle a worker after this many requests (plus a random 0 to jitter). `0` never recycles; gunicorn documents `max_requests = 0` as "automatic worker restarts are disabled" and then ignores the jitter. Was a fixed 10000, which restarted a worker, and ended every live call on it, after about that many requests |
+| `SENTRY_TRACES_SAMPLE_RATE` | `0.1` | Fraction of requests traced by Sentry, 0 to 1 (was 1.0). Errors are always reported. Reports never carry request bodies, cookies, query strings, local variables, the user's address or any header outside a short allowlist (so no `Authorization`, `Cookie`, `X-Twilio-Signature` or `telnyx-signature-ed25519`), and phone numbers and emails in what remains are masked |
 
 On shutdown a worker has 40 s (gunicorn `graceful_timeout`; the container's `stop_grace_period` is 50 s) to spend on, in order, `CALL_TOOL_GRACE_S`, about 5 s of database writes that save each call, and `SHUTDOWN_DRAIN_TIMEOUT`. The app checks this at start: `CALL_TOOL_GRACE_S + 5 + SHUTDOWN_DRAIN_TIMEOUT` must be at most 40, or it refuses to boot naming both variables. With the default drain the largest grace is 20 s. A worker killed mid-save loses the call record without any error, which is why this is refused at boot instead.
+
+### Runtime settings
+
+**Database connections.** Every gunicorn worker opens its own pool, so the most connections the backend can hold is `GUNICORN_WORKERS x (DB_POOL_SIZE + DB_MAX_OVERFLOW)`. With the defaults on a large host that is `8 x 15 = 120`, under `POSTGRES_MAX_CONNECTIONS` (200) with 80 to spare for migrations, `db_backup.py`, and an operator's `psql`. Keep that sum at least 20 below the Postgres limit. A phone call holds one connection for its whole length, so `DB_POOL_SIZE + DB_MAX_OVERFLOW` is also roughly how many calls one worker can carry; a call arriving at a full pool waits 5 s and then fails. Raise the pool only together with `POSTGRES_MAX_CONNECTIONS`.
+
+**Worker recycling.** `GUNICORN_MAX_REQUESTS` is `0` (off). A phone call is one long WebSocket request, so a recycle ends every call the worker carries: the worker stops, closes each bridge with the restart code, and saves the calls, bounded by the same 40 s budget as a deploy. The shutdown path also raises the shared "shutting down" flag in Redis, which makes every worker refuse new calls until the drain ends. Turn recycling on only to work around a measured memory leak, and expect it to cost calls.
 
 Three things follow that are not settings.
 

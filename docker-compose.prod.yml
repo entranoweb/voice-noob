@@ -8,6 +8,11 @@ services:
     image: postgres:17-alpine
     container_name: synthiq-postgres
     restart: unless-stopped
+    # Every backend worker opens its own pool, so the connections the backend can
+    # hold are GUNICORN_WORKERS x (DB_POOL_SIZE + DB_MAX_OVERFLOW). Keep that at
+    # least 20 below this limit (DEPLOYMENT.md, "Runtime settings"). Postgres'
+    # own default is 100; changing it takes effect when this container restarts.
+    command: ["postgres", "-c", "max_connections=${POSTGRES_MAX_CONNECTIONS:-200}"]
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       # No default: a database on a password printed in this file is open to
@@ -164,9 +169,22 @@ services:
       OPENAI_REALTIME_INPUT_TRANSCRIPTION_MODEL: ${OPENAI_REALTIME_INPUT_TRANSCRIPTION_MODEL:-gpt-transcribe}
       # Requests per minute per client before the limiter answers 429.
       RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-60}
-      # Optional error reporting. Empty DSN: off.
+      # Optional error reporting. Empty DSN: off. Reports carry no request
+      # bodies, headers, local variables or phone numbers; the trace rate is the
+      # fraction of requests traced (0 = none).
       SENTRY_DSN: ${SENTRY_DSN:-}
       SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-production}
+      SENTRY_TRACES_SAMPLE_RATE: ${SENTRY_TRACES_SAMPLE_RATE:-0.1}
+      # Level of the application's log lines: DEBUG, INFO, WARNING, ERROR.
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # Database pool per gunicorn worker, and the worker count it multiplies
+      # with. Empty GUNICORN_WORKERS: 2 x CPUs + 1, at most 8.
+      DB_POOL_SIZE: ${DB_POOL_SIZE:-10}
+      DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-5}
+      GUNICORN_WORKERS: ${GUNICORN_WORKERS:-}
+      # Recycle a worker after this many requests. 0 never recycles. A recycle
+      # ends every live call on that worker.
+      GUNICORN_MAX_REQUESTS: ${GUNICORN_MAX_REQUESTS:-0}
       DEBUG: ${DEBUG:-false}
       # Optional. A trace carries transcripts, so cleartext to a non-loopback
       # host is refused.
