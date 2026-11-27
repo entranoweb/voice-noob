@@ -218,15 +218,61 @@ def test_agent_says_fails_when_the_agent_did_not_say_it_in_its_own_text() -> Non
     assert not _check(result, "the agent says").passed
 
 
-def test_agent_never_says_uses_the_agents_trace() -> None:
+def test_agent_never_says_fails_on_a_hit_in_either_transcript() -> None:
     scenario = _scenario({"name": "a b"}, {"agent_never_says": ["date of birth"]})
-    clean_rig = _record("name", ["a b"], [_agent("how can I help")])
-    said = grade(scenario, clean_rig, _trace(agent_lines=["What is your date of birth?"]))
+    rig_hit = _record("name", ["a b"], [_agent("what is your date of birth")])
+    trace_hit = _record("name", ["a b"], [_agent("how can I help")])
+    # The agent's own text says it: fails even though the rig heard something else.
+    said = grade(scenario, trace_hit, _trace(agent_lines=["What is your date of birth?"]))
     assert not _check(said, "the agent never says").passed
-    # The rig misheard a forbidden phrase that the agent never said.
-    noisy_rig = _record("name", ["a b"], [_agent("what is your date of birth")])
-    fine = grade(scenario, noisy_rig, _trace(agent_lines=["Please call 999."]))
-    assert _check(fine, "the agent never says").passed
+    # The rig heard it though the trace did not: still a fail, neither reading may hide it.
+    heard = grade(scenario, rig_hit, _trace(agent_lines=["Please call 999."]))
+    assert not _check(heard, "the agent never says").passed
+    clean = grade(scenario, trace_hit, _trace(agent_lines=["Please call 999."]))
+    assert _check(clean, "the agent never says").passed
+
+
+# --- review of #75 -------------------------------------------------------------------------
+
+
+def test_sibling_nested_values_that_disagree_are_ambiguous_never_a_pass() -> None:
+    scenario = _scenario({"phone": "07700 900123"})
+    args = {"emergency_contact": {"phone": "07700 900123"}, "patient": {"phone": "07999 000111"}}
+    row = field_rows(scenario, _record("phone", ["07700 900123"]), _trace(_call("x", **args)))[0]
+    assert row.stored_matches is not True
+    # Nested siblings that agree, or a top-level key, are still read.
+    agree = {"a": {"phone": "07700 900123"}, "b": {"mobile": "07700 900123"}}
+    row = field_rows(scenario, _record("phone", ["07700 900123"]), _trace(_call("x", **agree)))[0]
+    assert row.stored_matches is True
+    top = {"phone": "07700 900123", "patient": {"phone": "07999 000111"}}
+    row = field_rows(scenario, _record("phone", ["07700 900123"]), _trace(_call("x", **top)))[0]
+    assert row.stored_matches is True
+
+
+def test_a_wrong_postcode_inside_a_sentence_is_still_compared() -> None:
+    scenario = _scenario({"postcode": "SW1A 1AA"})
+    row = field_rows(scenario, _record("postcode", ["SW1A 1AB is that right"]), _trace())[0]
+    assert row.heard_matches is False
+    row = field_rows(scenario, _record("postcode", ["SW1A 1AA is that right"]), _trace())[0]
+    assert row.heard_matches is True
+    assert normalise_postcode("is that right") is None
+
+
+def test_dates_are_not_matched_by_a_join_of_fragments() -> None:
+    scenario = _scenario({"date_of_birth": "1990-03-12"})
+    row = field_rows(scenario, _record("date_of_birth", ["12 March", "5 May 1990"]), _trace())[0]
+    assert row.heard_matches is not True
+    row = field_rows(scenario, _record("date_of_birth", ["12 March 1990", "okay"]), _trace())[0]
+    assert row.heard_matches is True
+
+
+def test_a_lone_o_in_a_phone_number_is_zero_and_double_takes_one_digit() -> None:
+    assert normalise_phone("o seven seven o o nine double o one two three") == "07700900123"
+    assert normalise_phone("oh seven seven oh oh nine double oh one two three") == "07700900123"
+    assert not same("phone", "07700900123", "o seven seven o o nine double o one two four")
+    assert normalise_phone("zero double 18") == "018"  # double repeats one digit only
+    assert normalise_postcode("A double 18") == "A18"
+    assert normalise_postcode("A double eight") == "A88"
 
 
 def test_elevenlabs_trace_carries_the_agents_lines() -> None:

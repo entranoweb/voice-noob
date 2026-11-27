@@ -207,20 +207,23 @@ _DIGIT_WORDS = {
 _MULTIPLIERS = {"double": 2, "triple": 3}
 
 
-def _spoken_characters(text: str) -> str | None:
-    """Letters and digits as someone says them: ``S W one A``, ``double eight``.
+def _spoken_chunks(text: str, *, phone: bool = False) -> list[str | None]:
+    """One entry per word: its letters/digits as spoken, or None for a word that is neither.
 
-    None when a word is neither a digit word, a multiplier, a lone letter nor a run that
-    holds a digit: a sentence is not a postcode or a number, so it cannot be read.
+    ``double``/``triple`` repeat a single following digit or letter only ("double eight",
+    not "double 18"). In a phone number a lone "o" is a zero, as "oh" always is.
     """
-    out: list[str] = []
+    out: list[str | None] = []
     times = 1
     for token in re.findall(r"[A-Za-z0-9]+", text):
         low = token.lower()
         if low in _MULTIPLIERS:
             times = _MULTIPLIERS[low]
             continue
-        if low in _DIGIT_WORDS and low != "o":
+        chunk: str | None
+        if low == "o" and phone:
+            chunk = "0"
+        elif low in _DIGIT_WORDS and low != "o":
             chunk = _DIGIT_WORDS[low]
         elif len(token) == 1 or any(ch.isdigit() for ch in token):
             chunk = token
@@ -229,20 +232,43 @@ def _spoken_characters(text: str) -> str | None:
         elif len(token) <= 4 and token.isalpha() and token.upper() == token:
             chunk = token  # an outward code or letters said together: "SW", "EC"
         else:
-            return None
-        out.append(chunk * times)
+            chunk = None
+        if chunk is not None and len(chunk) == 1:
+            chunk *= times
         times = 1
-    return "".join(out)
+        out.append(chunk)
+    return out
+
+
+def _spoken_characters(text: str, *, phone: bool = False) -> str | None:
+    """The whole text as spoken characters; None when any word is not one."""
+    chunks = _spoken_chunks(text, phone=phone)
+    if any(c is None for c in chunks):
+        return None
+    return "".join(c for c in chunks if c is not None)
 
 
 def normalise_postcode(text: str) -> str | None:
-    stripped = _FILLER.sub("", text.strip())
-    spoken = _spoken_characters(stripped)
-    return spoken.upper() or None if spoken is not None else None  # a sentence: unknown
+    """The postcode in ``text``, as letters and digits; None only when there is none.
+
+    Words around it ("is that right") are dropped, and the run of readable words that
+    holds a digit is the postcode, so a wrong postcode in a sentence is still compared.
+    """
+    runs: list[str] = []
+    current: list[str] = []
+    for chunk in _spoken_chunks(_FILLER.sub("", text.strip())):
+        if chunk is None:
+            runs.append("".join(current))
+            current = []
+        else:
+            current.append(chunk)
+    runs.append("".join(current))
+    with_digit = [r for r in runs if any(ch.isdigit() for ch in r)]
+    return with_digit[0].upper() if with_digit else None
 
 
 def normalise_phone(text: str) -> str | None:
-    spoken = _spoken_characters(text) if re.search(r"[A-Za-z]", text) else None
+    spoken = _spoken_characters(text, phone=True) if re.search(r"[A-Za-z]", text) else None
     digits = re.sub(r"\D", "", spoken if spoken is not None else text)
     if digits.startswith("44") and len(digits) > 10:
         digits = "0" + digits[2:]
@@ -378,7 +404,7 @@ def _heard(name: str, fact: str, fragments: list[str]) -> tuple[str | None, bool
         if same(name, fact, fragments[index]):
             via = "" if index == count - 1 else f"fragment {index + 1} of {count}"
             return fragments[index], True, via
-    if count > 1:
+    if count > 1 and name != "date_of_birth":  # a join of two dates is a date no one said
         joined = " ".join(fragments)
         if same(name, fact, joined):
             return joined, True, "all fragments joined"
@@ -470,11 +496,14 @@ def _find(value: Any, keys: tuple[str, ...]) -> str | None:
             text = str(item).strip()
             if text:
                 return text
-    for item in value.values():
-        found = _find(item, keys)
-        if found is not None:
-            return found
-    return None
+    # Only when no key here matches: look inside. Several objects holding different
+    # values (an emergency contact's phone and the patient's) are ambiguous, so none.
+    nested = {
+        found.casefold(): found
+        for item in value.values()
+        if (found := _find(item, keys)) is not None
+    }
+    return next(iter(nested.values())) if len(nested) == 1 else None
 
 
 def _named(call: ToolCall, tool: str) -> bool:
@@ -954,14 +983,15 @@ def grade(
             )
         )
 
+    rig_lines = [str(e.get("text", "")) for e in record.timeline if e.get("kind") == "agent"]
     # The agent's own transcript, when the engine kept one, is what it said. The rig's
     # timeline is a recogniser's reading of the audio (a phone leg hears "999" as words),
     # so it is the fallback, and each check says which of the two it read.
     if trace is not None and trace.agent_lines:
         agent_lines, said_from = list(trace.agent_lines), "agent's own transcript"
     else:
-        agent_lines = [str(e.get("text", "")) for e in record.timeline if e.get("kind") == "agent"]
-        said_from = "rig's transcript"
+        agent_lines, said_from = list(rig_lines), "rig's transcript"
+    never_from = "agent's own and rig's transcripts" if trace and trace.agent_lines else said_from
     for number, pattern in enumerate(scenario.expect.agent_says, start=1):
         result.checks.append(
             Check(
@@ -972,11 +1002,12 @@ def grade(
         )
     said_forbidden = False
     for number, pattern in enumerate(scenario.expect.agent_never_says, start=1):
-        clean = not any(pattern.search(line) for line in agent_lines)
+        # A forbidden phrase in either transcript fails: neither reading may hide it.
+        clean = not any(pattern.search(line) for line in [*agent_lines, *rig_lines])
         said_forbidden = said_forbidden or not clean
         result.checks.append(
             Check(
-                f"the agent never says /{pattern.pattern}/ ({said_from})",
+                f"the agent never says /{pattern.pattern}/ ({never_from})",
                 clean,
                 f"agent never says phrase {number}",
             )
