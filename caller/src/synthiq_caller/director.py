@@ -47,6 +47,14 @@ _ACKNOWLEDGED = re.compile(
     re.IGNORECASE,
 )
 _SENTENCE = re.compile(r"[^.?!]+[.?!]*")
+# A line is finished when it ends in sentence punctuation, closing quotes or
+# brackets aside. A read-back that stops after "SW1A," is the agent breathing.
+_SENTENCE_END = re.compile(r"[.?!][\"')\]]*\s*$")
+
+
+def ends_mid_sentence(text: str) -> bool:
+    """Whether the agent's words stop short of the end of a sentence."""
+    return not _SENTENCE_END.search(text.rstrip())
 
 
 def asks_something(text: str) -> bool:
@@ -155,6 +163,10 @@ class Director:
         self._clock = clock
         self._t0 = 0.0
         self._queue = b""
+        # Steps whose audio is in ``_queue`` and not yet sent, and whether all
+        # of them are meant to be spoken over the agent.
+        self._queued_steps: list[int] = []
+        self._queue_talk_over = False
         self._done = False
         self._pending: list[tuple[float, str]] = []  # agent lines not yet answered
         self._uses: dict[int, int] = {}
@@ -215,6 +227,7 @@ class Director:
             now = self._now()
             if isinstance(event, AgentAudio):
                 self.tracker.feed(event.pcm, event.rate, now)
+                await self._yield_if_talked_over(now)
             elif isinstance(event, AgentText):
                 self.tracker.mark(now)
                 self._pending.append((now, event.text))
@@ -234,6 +247,26 @@ class Director:
                 return
         self.record.ended = self.record.ended or "agent ended the call"
 
+    async def _yield_if_talked_over(self, now: float) -> None:
+        """Stop talking when the agent starts speaking over the caller.
+
+        A person who is talked over stops. Without this the caller carried on to
+        the end of a long clip, over the top of the agent's reply. A step marked
+        ``talk_over`` is the scenario testing exactly that, and is left alone.
+        """
+        if not self._queue or self._queue_talk_over or not self.tracker.speaking(now):
+            return
+        left = len(self._queue) / 2 / self.leg.input_rate
+        self._queue = b""
+        for index in self._queued_steps:
+            # The answer was cut off; if the agent asks again it may be given again.
+            self._uses[index] = max(0, self._uses.get(index, 0) - 1)
+        self._queued_steps = []
+        clear = getattr(self.leg, "clear_playback", None)
+        if clear is not None:
+            await clear()
+        self._note("yielded", unsent_s=round(left, 2))
+
     async def _pump(self) -> None:
         rate = self.leg.input_rate
         size = int(rate * self.chunk_ms / 1000) * 2
@@ -245,6 +278,7 @@ class Director:
                 chunk = chunk.ljust(size, b"\0")
             else:
                 chunk = b"\0" * size
+                self._queued_steps = []
             await self.leg.send_pcm(chunk)
             next_at += period
             await asyncio.sleep(max(0.0, next_at - self._clock()))
@@ -307,10 +341,19 @@ class Director:
             if self._queue or not self._pending:
                 continue
             now = self._now()
+            consumed = len(self._pending)
             text = " ".join(line for _, line in self._pending)
             first_at = self._pending[0][0]
+            # The words of a read-back can stop mid-sentence while the agent
+            # breathes. Wait one more hangover for the rest; the tracker's
+            # ``max_turn_s`` still bounds the wait, so the rig cannot hang.
+            hold = self.tracker.settings.hangover_s if ends_mid_sentence(text) else 0.0
 
+            # The end phrase arrives as text before the agent has said it: hang
+            # up once the turn has been spoken, not when the words are read.
             if scenario.hangup_after is not None and scenario.hangup_after.search(text):
+                if not self.tracker.turn_finished(now):
+                    continue
                 self.record.ended = "caller hung up: scenario end"
                 self._note("hangup", on=text[-100:])
                 return
@@ -320,12 +363,14 @@ class Director:
                 if now < first_at + match[1].delay_s:
                     continue
             else:
-                if not self.tracker.turn_finished(now):
+                if not self.tracker.turn_finished(now, hold):
                     continue
                 if match is not None and match[1].delay_s:
                     await asyncio.sleep(match[1].delay_s)
 
-            self._pending.clear()
+            # Only the lines this turn read: any that arrived during the delay
+            # above are the agent's next words, not ones already answered.
+            del self._pending[:consumed]
             if match is None:
                 if not asks_something(text):
                     # A line that asks nothing ("I'm sorry to hear that."). Nothing to say.
@@ -359,10 +404,18 @@ class Director:
             await self.leg.send_dtmf(step.dtmf)
             self._note("dtmf", step=index, digits=step.dtmf)
         else:
-            pcm = self.clips.joined(list(step.clips), self.leg.input_rate, step.gap_s)
+            # Resampling a clip may shell out to ffmpeg; off the loop, so the
+            # pump keeps sending and the reader keeps reading while it runs.
+            pcm = await asyncio.to_thread(
+                self.clips.joined, list(step.clips), self.leg.input_rate, step.gap_s
+            )
             seconds = len(pcm) / 2 / self.leg.input_rate
             # Appended, not replaced: one turn can ask for two answers.
             pause = b"\0" * (int(self.leg.input_rate * step.gap_s) * 2) if self._queue else b""
+            self._queue_talk_over = step.talk_over and (
+                self._queue_talk_over if self._queue else True
+            )
+            self._queued_steps.append(index)
             self._queue += pause + pcm
             self._note("said", step=index, clips=list(step.clips), seconds=round(seconds, 2))
         self.record.said.append(
