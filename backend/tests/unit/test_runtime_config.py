@@ -30,10 +30,10 @@ def _settings(**values: Any) -> Settings:
 # ---------------------------------------------------------------- settings
 
 
-def test_defaults_are_info_and_a_small_pool() -> None:
+def test_defaults_are_info_and_the_old_pool() -> None:
     s = _settings()
     assert s.effective_log_level == logging.INFO
-    assert (s.DB_POOL_SIZE, s.DB_MAX_OVERFLOW) == (10, 5)
+    assert (s.DB_POOL_SIZE, s.DB_MAX_OVERFLOW) == (50, 50)
     assert pytest.approx(0.1) == s.SENTRY_TRACES_SAMPLE_RATE
 
 
@@ -313,12 +313,16 @@ def test_deployment_documents_every_new_variable() -> None:
         assert f"`{name}`" in text, name
 
 
-def test_default_pool_fits_postgres_default_compose_limit() -> None:
+def test_default_pool_fits_the_compose_postgres_limit() -> None:
     """workers x (size + overflow) must stay under max_connections, with headroom."""
-    s = _settings()
-    workers = 8  # gunicorn.conf.py caps the default at 8
     import re
 
-    match = re.search(r"POSTGRES_MAX_CONNECTIONS:-(\d+)", COMPOSE.read_text())
-    assert match is not None
-    assert workers * (s.DB_POOL_SIZE + s.DB_MAX_OVERFLOW) <= int(match.group(1)) - 20
+    text = COMPOSE.read_text()
+    size = int(re.search(r"DB_POOL_SIZE:\s*\$\{DB_POOL_SIZE:-(\d+)\}", text).group(1))  # type: ignore[union-attr]
+    overflow = int(re.search(r"DB_MAX_OVERFLOW:\s*\$\{DB_MAX_OVERFLOW:-(\d+)\}", text).group(1))  # type: ignore[union-attr]
+    limit = int(re.search(r"POSTGRES_MAX_CONNECTIONS:-(\d+)", text).group(1))  # type: ignore[union-attr]
+    # The compose defaults are the code defaults: no silent capacity change.
+    s = _settings()
+    assert (size, overflow) == (s.DB_POOL_SIZE, s.DB_MAX_OVERFLOW)
+    workers = 8  # gunicorn.conf.py caps the default at 8
+    assert workers * (size + overflow) <= limit - 20

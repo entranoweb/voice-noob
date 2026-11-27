@@ -341,8 +341,8 @@ class Settings(BaseSettings):
     # backups and an operator's psql. A phone call holds one connection for its
     # whole length, so DB_POOL_SIZE + DB_MAX_OVERFLOW is also about how many
     # calls one worker can carry.
-    DB_POOL_SIZE: int = Field(default=10, ge=1)
-    DB_MAX_OVERFLOW: int = Field(default=5, ge=0)
+    DB_POOL_SIZE: int = Field(default=50, ge=1)
+    DB_MAX_OVERFLOW: int = Field(default=50, ge=0)
 
     # OpenTelemetry
     OTEL_ENABLED: bool = False
