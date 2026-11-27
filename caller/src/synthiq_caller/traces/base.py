@@ -36,6 +36,9 @@ class Trace:
     # The engine reported the call as finished when this was read, so nothing
     # more will be added to it. False for a reader that cannot tell.
     final: bool = False
+    # What the agent said, as the engine's own transcript has it (not the rig's
+    # recogniser's reading of the audio). Empty when the engine kept no agent text.
+    agent_lines: list[str] = field(default_factory=list)
 
     def to_json(self) -> dict[str, Any]:
         return asdict(self)
@@ -48,6 +51,7 @@ class Trace:
             step_path=list(data.get("step_path", [])),
             termination=data.get("termination", ""),
             final=bool(data.get("final", False)),
+            agent_lines=[str(x) for x in data.get("agent_lines") or []],
         )
 
 

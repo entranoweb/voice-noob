@@ -100,6 +100,9 @@ def parse_conversation(conversation: dict[str, Any], call_ref: str = "") -> Trac
     for turn in conversation.get("transcript") or []:
         at = turn.get("time_in_call_secs")
         node = str(turn.get("workflow_node_id") or "")
+        said = turn.get("message")
+        if turn.get("role") == "agent" and isinstance(said, str) and said.strip():
+            trace.agent_lines.append(said)
         if node and (not trace.step_path or trace.step_path[-1] != node):
             trace.step_path.append(node)
         direct_calls = {str(call.get("tool_name")): call for call in turn.get("tool_calls") or []}
