@@ -668,6 +668,19 @@ def _batch(args: argparse.Namespace) -> int:
     if args.only:
         scenarios = [(f, s) for f, s in scenarios if any(o in f for o in args.only)]
         chains = [(f, c) for f, c in chains if any(o in f for o in args.only)]
+    args.shuffle_seed = None
+    if args.seed is not None and not args.shuffle:
+        raise SystemExit("--seed only means something with --shuffle; nothing was run")
+    if args.shuffle:
+        import secrets
+
+        from synthiq_caller.batch import shuffled
+
+        # The seed is recorded in the run manifest, so an order can be repeated.
+        args.shuffle_seed = args.seed if args.seed is not None else secrets.randbelow(2**32)
+        scenarios = shuffled(scenarios, args.shuffle_seed)
+        chains = shuffled(chains, args.shuffle_seed)
+        print(f"order: shuffled with seed {args.shuffle_seed} (--shuffle --seed N repeats it)")
     hooks = _hooks(args)
     if args.dry_run:
         _require_something(args, scenarios, chains)
@@ -1029,6 +1042,13 @@ def _main(argv: list[str] | None = None) -> int:
         default="",
         help="keep the name budget in this file, so batches run one after another share it",
     )
+    bat.add_argument(
+        "--shuffle",
+        action="store_true",
+        help="run the scenarios in a random order instead of file name order; the seed is "
+        "printed and recorded in the run manifest",
+    )
+    bat.add_argument("--seed", type=int, default=None, help="the seed for --shuffle")
     bat.add_argument("--only", action="append", default=[], help="run files whose name contains")
     bat.add_argument(
         "--name-budget",

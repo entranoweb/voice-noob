@@ -38,6 +38,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import random
 import re
 import time
 from collections.abc import Awaitable, Callable, Sequence
@@ -409,6 +410,13 @@ def load_scenarios(
         for p in _scenario_files(directory)
         if not is_chain_file(p)
     ]
+
+
+def shuffled[T](items: list[tuple[str, T]], seed: int) -> list[tuple[str, T]]:
+    """``items`` in an order fixed by ``seed``; the same seed and files give the same order."""
+    ordered = sorted(items, key=lambda item: item[0])
+    random.Random(seed).shuffle(ordered)
+    return ordered
 
 
 def load_chains(
