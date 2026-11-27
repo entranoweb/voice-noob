@@ -93,6 +93,8 @@ def parse_call(call: dict[str, Any], call_ref: str = "") -> Trace:
         if not isinstance(entry, dict):
             continue
         role = entry.get("role")
+        if role == "agent" and isinstance(entry.get("content"), str) and entry["content"].strip():
+            trace.agent_lines.append(entry["content"])
         if role in _SPEECH_ROLES:
             until = _spoken_until(entry)
             if until is not None:
