@@ -8,6 +8,7 @@ from typing import Any
 
 from synthiq_caller.completeness import Completeness, read_object, read_run
 from synthiq_caller.stats import describe, gate, wilson_interval
+from synthiq_caller.timing import TimingTally, describe_timing, measure
 
 
 @dataclass
@@ -89,6 +90,8 @@ class Summary:
     legs: dict[str, int] = field(default_factory=dict)
     # Why calls could not be graded, when the run says (a trace that was not found).
     ungraded_reasons: dict[str, int] = field(default_factory=dict)
+    # Response time, re-asks and call length over every call placed (``timing.py``).
+    timing: TimingTally = field(default_factory=TimingTally)
 
 
 def failing_step(payload: dict[str, Any]) -> str:
@@ -160,6 +163,7 @@ def summarise(directory: str | Path) -> Summary:
         graded = payload["grade"]
         outcome = graded["outcome"]
         summary.runs += 1
+        summary.timing.add(measure(payload))
         name = graded["scenario"]
         tally = summary.by_scenario.setdefault(name, [0, 0])
         placed = summary.by_scenario_placed.setdefault(name, [0, 0])
@@ -448,6 +452,8 @@ def render(summary: Summary) -> str:
             "by line: " + ", ".join(f"{name} {n}" for name, n in sorted(summary.legs.items()))
         )
 
+    lines.append("")
+    lines += describe_timing(summary.timing.to_json())
     lines.append("\nper scenario")
     for name, (passed, total) in sorted(summary.by_scenario.items()):
         lines.append(f"  {describe(passed, total):<52} {name}")

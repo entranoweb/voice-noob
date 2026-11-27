@@ -37,6 +37,7 @@ from synthiq_caller.completeness import combine, read_json, read_run
 from synthiq_caller.jsonio import write_json
 from synthiq_caller.report import FieldTally, Summary, failing_step, summarise
 from synthiq_caller.stats import describe, wilson_interval
+from synthiq_caller.timing import TimingTally, describe_timing
 from synthiq_caller.traces.common import UNAVAILABLE, UNAVAILABLE_KEY
 
 # "unknown": the call was not answered, died or ran out of time; nobody can say whose doing.
@@ -61,6 +62,7 @@ def merged(summaries: list[Summary]) -> Summary:
         for who, count in one.faults.items():
             total.faults[who] = total.faults.get(who, 0) + count
         total.rehearsals += one.rehearsals
+        total.timing.merge(one.timing)
         for name, (passed, graded) in one.by_scenario.items():
             tally = total.by_scenario.setdefault(name, [0, 0])
             tally[0] += passed
@@ -239,6 +241,7 @@ def build(
         "unavailable_calls": unavailable_calls,
         "labels_unverified_calls": unverified_calls,
         "failed_by_fault": dict(sorted(summary.faults.items())),
+        "timing": summary.timing.to_json(),
         "synthetic_calls": summary.synthetic_calls,
         "consent_missing_calls": summary.consent_missing_calls,
         "graded": graded,
@@ -661,6 +664,11 @@ def render_html(card: dict[str, Any]) -> str:
                 ],
             )
         )
+
+    parts.append("<h2>Response time, re-asks, call length</h2>")
+    # A card written before these were measured has no "timing": not measured.
+    timing = card.get("timing") or TimingTally().to_json()
+    parts += [f'<p class="meta">{_e(line)}</p>' for line in describe_timing(timing)]
 
     parts.append("<h2>Said, heard, stored</h2>")
     parts += _fields(card)
