@@ -1,0 +1,19 @@
+{
+  "lines": [
+    {
+      "text": "Hi, how can I help you today?",
+      "speech_s": 0.3
+    },
+    {
+      "text": "Sorry, goodbye.",
+      "speech_s": 0.3
+    }
+  ],
+  "trace": {
+    "tool_calls": [],
+    "step_path": [
+      "I1",
+      "NP_CHECK"
+    ]
+  }
+}

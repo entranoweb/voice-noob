@@ -1,0 +1,45 @@
+{
+  "lines": [
+    {
+      "text": "Hi, how can I help you today?",
+      "speech_s": 0.3
+    },
+    {
+      "text": "Could I take your date of birth?",
+      "speech_s": 0.3,
+      "hears": "20th of February, 2002"
+    },
+    {
+      "text": "And the best mobile number?",
+      "speech_s": 0.3
+    }
+  ],
+  "trace": {
+    "tool_calls": [
+      {
+        "name": "scripted_new_patient_check",
+        "arguments": {
+          "dateOfBirth": "20th of February, 2002"
+        },
+        "result": {},
+        "ok": true,
+        "step_id": "NP"
+      },
+      {
+        "name": "scripted_book_appointment",
+        "arguments": {
+          "slot": "any"
+        },
+        "result": {
+          "id": "A1"
+        },
+        "ok": true,
+        "step_id": "BK"
+      }
+    ],
+    "step_path": [
+      "I1",
+      "NP_CHECK"
+    ]
+  }
+}
