@@ -45,7 +45,7 @@ from app.models.workspace import AgentWorkspace, Workspace
 from app.services.telephony.base import CallDirection as CarrierDirection
 from app.services.telephony.base import CallInfo
 from app.services.telephony.base import CallStatus as CarrierStatus
-from app.services.telephony.outbound import OutboundRefusedError
+from app.services.telephony.outbound import OutboundRefusedError, place_outbound_call
 from app.services.telephony.telnyx_service import TelnyxService
 from app.services.telephony.twilio_service import TwilioService
 
@@ -490,35 +490,73 @@ class TestTelnyx:
         assert row.provider_call_id == "carrier-sid-early"
         assert row.ended_at is not None
 
-    @pytest.mark.asyncio
-    async def test_the_create_call_request_carries_a_status_callback_with_the_record_id(
-        self,
-    ) -> None:
-        seen: list[dict[str, Any]] = []
-
+    @staticmethod
+    def _telnyx_transport(create_response: dict[str, Any]) -> httpx.AsyncClient:
         def handler(request: httpx.Request) -> httpx.Response:
             if request.method == "GET":
                 return httpx.Response(
                     200, json={"data": [{"id": "app-1", "friendly_name": "voice-noob-inbound"}]}
                 )
-            seen.append(json.loads(request.content))
-            return httpx.Response(200, json={"call_sid": "s1"})
+            return httpx.Response(200, json=create_response)
 
-        service = TelnyxService("key")
-        service._http_client = httpx.AsyncClient(
+        return httpx.AsyncClient(
             transport=httpx.MockTransport(handler), base_url="https://api.telnyx.com/v2"
         )
 
-        await service.initiate_call(
-            to_number=CALLER,
-            from_number=TELNYX_NUMBER,
-            webhook_url=f"{PUBLIC}/webhooks/telnyx/answer?agent_id=a&record_id=r1",
-        )
+    async def _place(self, env: dict[str, Any], create_response: dict[str, Any]) -> uuid.UUID:
+        service = TelnyxService("key")
+        service._http_client = self._telnyx_transport(create_response)
+        async with env["sessions"]() as session:
+            agent = (
+                await session.execute(select(Agent).where(Agent.id == env["agent"].id))
+            ).scalar_one()
+            record, _ = await place_outbound_call(
+                session,
+                provider="telnyx",
+                service=service,
+                agent=agent,
+                user_uuid=user_id_to_uuid(env["user"].id),
+                workspace_id=env["w2"].id,
+                from_number=TELNYX_NUMBER,
+                to_number=CALLER,
+                answer_url=lambda rid: (
+                    f"{PUBLIC}/webhooks/telnyx/answer?agent_id={agent.id}&record_id={rid}"
+                ),
+            )
+            return record.id
 
-        assert (
-            seen[0]["StatusCallback"] == f"{PUBLIC}/webhooks/telnyx/status?agent_id=a&record_id=r1"
-        )
-        assert seen[0]["StatusCallbackMethod"] == "POST"
+    @pytest.mark.asyncio
+    async def test_an_app_level_status_callback_finds_the_outbound_call_by_call_sid(
+        self, env: dict[str, Any]
+    ) -> None:
+        record_id = await self._place(env, {"call_sid": "v3:out-1", "status": "queued"})
+        async with env["sessions"]() as session:
+            row = (
+                await session.execute(select(CallRecord).where(CallRecord.id == record_id))
+            ).scalar_one()
+            assert row.provider_call_id == "v3:out-1"
+            assert row.status == CallStatus.INITIATED.value
+
+        # What the application's own status_callback sends: the URL we set on the
+        # application carries no query, so nothing but the call's id names the call.
+        body = urlencode(
+            {"CallSid": "v3:out-1", "From": TELNYX_NUMBER, "To": CALLER, "CallStatus": "ringing"}
+        ).encode()
+        response = await self._post("/webhooks/telnyx/status", body, env["keys"]["w2"])
+
+        assert response.status_code == 200, response.text
+        assert await _status_of(env, "v3:out-1") == CallStatus.RINGING.value
+
+    @pytest.mark.asyncio
+    async def test_a_create_response_without_call_sid_leaves_the_record_pending(
+        self, env: dict[str, Any]
+    ) -> None:
+        record_id = await self._place(env, {"data": {"sid": "not-the-documented-field"}})
+        async with env["sessions"]() as session:
+            row = (
+                await session.execute(select(CallRecord).where(CallRecord.id == record_id))
+            ).scalar_one()
+        assert row.provider_call_id == f"pending:{record_id}"
 
 
 class TestTwilio:

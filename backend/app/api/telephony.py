@@ -668,6 +668,11 @@ async def _configure_webhook_for_provider(
     webhook_success = await service.configure_phone_number_webhook(
         phone_number_id=number_id,
         voice_url=voice_url,
+        # Only Telnyx: its outbound create-call takes no status callback, so the
+        # application is where progress events are pointed.
+        status_callback_url=(
+            f"{public_url}/webhooks/telnyx/status" if provider == "telnyx" else None
+        ),
     )
     if webhook_success:
         log.info("webhook_configured", provider=provider, voice_url=voice_url)

@@ -1,5 +1,7 @@
 """Telnyx telephony service implementation."""
 
+from typing import Any
+
 import httpx
 import structlog
 import telnyx
@@ -17,22 +19,18 @@ logger = structlog.get_logger()
 
 
 TEXML_APP_NAME = "voice-noob-inbound"
+TEXML_APP_PAGE_SIZE = 250
 
 
 def _call_id_from_response(body: dict[str, object]) -> str:
-    """The call id from a create-call response.
+    """The ``call_sid`` of Telnyx's flat create-call response; empty when absent.
 
-    Documented: a flat ``call_sid``. Also accepted, in case Telnyx wraps it as
-    its other endpoints do: the same under ``data``, or ``sid`` /
-    ``call_control_id``. Empty when none is present, never invented.
+    Documented (CreateTexmlCall): ``{"call_sid", "from", "to", "status"}`` with
+    no ``data`` wrapper. Nothing else is accepted and nothing is invented: an
+    empty id leaves the call record ``pending:<id>``.
     """
-    inner = body.get("data")
-    for source in (body, inner if isinstance(inner, dict) else {}):
-        for key in ("call_sid", "sid", "call_control_id"):
-            value = source.get(key)
-            if isinstance(value, str) and value:
-                return value
-    return ""
+    value = body.get("call_sid")
+    return value if isinstance(value, str) else ""
 
 
 class TelnyxConfigurationError(Exception):
@@ -97,26 +95,23 @@ class TelnyxService(TelephonyProvider):
         client = await self._get_http_client()
 
         # Telnyx "Create a connection-scoped TeXML call": POST
-        # /texml/calls/{texml_application_id}. Field names are case-sensitive
-        # PascalCase; `Url` overrides the application's XML request URL.
-        # The StatusCallback* fields are NOT listed on this operation (they are
-        # on the account-scoped one), so Telnyx may ignore them; they are the
-        # answer URL's twin and carry the same record_id when honoured.
-        payload = {
-            "To": to_number,
-            "From": from_number,
-            "Url": webhook_url,
-            "StatusCallback": webhook_url.replace("/answer", "/status"),
-            "StatusCallbackMethod": "POST",
-            "StatusCallbackEvent": "initiated ringing answered completed",
-        }
+        # /texml/calls/{texml_application_id}. The request accepts From, To, Url,
+        # Method and Texml, PascalCase and case-sensitive; `Url` overrides the
+        # application's XML request URL. It takes no StatusCallback: progress
+        # events come from the application's own `status_callback`, set where the
+        # application is created (`_get_or_create_texml_application`).
+        payload = {"To": to_number, "From": from_number, "Url": webhook_url}
 
         application_id = await self._get_texml_application_id()
         response = await client.post(f"/texml/calls/{application_id}", json=payload)
         response.raise_for_status()
-        call_id = _call_id_from_response(response.json())
+        body = response.json()
+        call_id = _call_id_from_response(body)
 
-        self.logger.info("call_initiated", call_sid=call_id)
+        if call_id:
+            self.logger.info("call_initiated", call_sid=call_id)
+        else:
+            self.logger.error("telnyx_create_call_response_has_no_call_sid", keys=sorted(body))
 
         return CallInfo(
             call_id=call_id,
@@ -514,33 +509,30 @@ class TelnyxService(TelephonyProvider):
         app_name = TEXML_APP_NAME
 
         try:
-            # List existing TeXML applications
-            response = await client.get("/texml_applications")
-            response.raise_for_status()
-            data = response.json()
+            app = await self._find_texml_application()
+            if app is not None:
+                app_id = app.get("id")
+                # Update the URLs in case they changed. Documented fields:
+                # voice_url, voice_method, status_callback, status_callback_method.
+                update_payload: dict[str, str] = {"voice_url": voice_url, "voice_method": "post"}
+                if status_callback_url:
+                    update_payload["status_callback"] = status_callback_url
+                    update_payload["status_callback_method"] = "post"
 
-            # Look for existing app with our name
-            for app in data.get("data", []):
-                if app.get("friendly_name") == app_name:
-                    app_id = app.get("id")
-                    # Update the webhook URL in case it changed
-                    update_payload: dict[str, str] = {"voice_url": voice_url}
-                    if status_callback_url:
-                        update_payload["status_callback_url"] = status_callback_url
-
-                    await client.patch(f"/texml_applications/{app_id}", json=update_payload)
-                    self.logger.info("updated_texml_app", id=app_id)
-                    return str(app_id)
+                response = await client.patch(f"/texml_applications/{app_id}", json=update_payload)
+                response.raise_for_status()
+                self.logger.info("updated_texml_app", id=app_id)
+                return str(app_id)
 
             # Create new TeXML application
             create_payload: dict[str, str] = {
                 "friendly_name": app_name,
                 "voice_url": voice_url,
-                "voice_method": "POST",
+                "voice_method": "post",
             }
             if status_callback_url:
-                create_payload["status_callback_url"] = status_callback_url
-                create_payload["status_callback_method"] = "POST"
+                create_payload["status_callback"] = status_callback_url
+                create_payload["status_callback_method"] = "post"
 
             response = await client.post("/texml_applications", json=create_payload)
             response.raise_for_status()
@@ -553,6 +545,46 @@ class TelnyxService(TelephonyProvider):
             log_exception(self.logger, "texml_app_error", e)
             return None
 
+    async def _find_texml_application(self) -> dict[str, Any] | None:
+        """The one TeXML application named `TEXML_APP_NAME`, or None.
+
+        Pages through ``GET /texml_applications`` (``page[size]``/``page[number]``,
+        ``meta.total_pages``), filtered by name.
+
+        Raises:
+            TelnyxConfigurationError: when more than one application has the name,
+                since picking one would send calls through the wrong application.
+        """
+        client = await self._get_http_client()
+        matches: list[dict[str, Any]] = []
+        page = 1
+        while True:
+            response = await client.get(
+                "/texml_applications",
+                params={
+                    "filter[friendly_name]": TEXML_APP_NAME,
+                    "page[size]": TEXML_APP_PAGE_SIZE,
+                    "page[number]": page,
+                },
+            )
+            response.raise_for_status()
+            body = response.json()
+            matches.extend(
+                app
+                for app in body.get("data", [])
+                if app.get("friendly_name") == TEXML_APP_NAME and app.get("id")
+            )
+            total_pages = (body.get("meta") or {}).get("total_pages") or 1
+            if page >= total_pages:
+                break
+            page += 1
+        if len(matches) > 1:
+            raise TelnyxConfigurationError(
+                f"{len(matches)} Telnyx TeXML applications are named '{TEXML_APP_NAME}'. "
+                "Delete or rename the extras in Telnyx Mission Control so exactly one remains."
+            )
+        return matches[0] if matches else None
+
     async def _get_texml_application_id(self) -> str:
         """The id of the TeXML application the purchase flow attaches numbers to.
 
@@ -561,19 +593,16 @@ class TelnyxService(TelephonyProvider):
         without our voice URL would answer calls with nothing.
 
         Raises:
-            TelnyxConfigurationError: when the account has no such application.
+            TelnyxConfigurationError: when the account has none, or several.
         """
-        client = await self._get_http_client()
-        response = await client.get("/texml_applications")
-        response.raise_for_status()
-        for app in response.json().get("data", []):
-            if app.get("friendly_name") == TEXML_APP_NAME and app.get("id"):
-                return str(app["id"])
-        raise TelnyxConfigurationError(
-            f"No Telnyx TeXML application named '{TEXML_APP_NAME}' exists on this account. "
-            "Buy or assign a number through Synthiq first (that creates it), or create a "
-            "TeXML application with that name in Telnyx Mission Control."
-        )
+        app = await self._find_texml_application()
+        if app is None:
+            raise TelnyxConfigurationError(
+                f"No Telnyx TeXML application named '{TEXML_APP_NAME}' exists on this account. "
+                "Buy or assign a number through Synthiq first (that creates it), or create a "
+                "TeXML application with that name in Telnyx Mission Control."
+            )
+        return str(app["id"])
 
     def generate_answer_response(self, websocket_url: str, agent_id: str | None = None) -> str:  # noqa: ARG002
         """Generate TeXML response to answer a call and stream to WebSocket.
