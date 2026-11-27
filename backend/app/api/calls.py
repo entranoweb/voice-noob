@@ -7,14 +7,16 @@ from typing import Any
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import case, desc, func, select
+from sqlalchemy import ColumnElement, case, desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.auth import CurrentUser, user_id_to_uuid
 from app.core.ownership import parse_uuid
 from app.db.session import get_db
+from app.models.agent import Agent
 from app.models.call_record import CallRecord
+from app.models.contact import Contact
 from app.services.qa.call_metrics import metrics_for_call
 
 router = APIRouter(prefix="/api/v1/calls", tags=["calls"])
@@ -97,6 +99,54 @@ class CallRecordListResponse(BaseModel):
 # =============================================================================
 
 
+def _like_pattern(text: str) -> str:
+    """Contains-pattern for ILIKE with the user's own % and _ taken literally."""
+    escaped = text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
+def _list_filters(
+    *,
+    user_id: int,
+    agent_id: str | None,
+    workspace_id: str | None,
+    direction: str | None,
+    status: str | None,
+    search: str | None,
+) -> list[ColumnElement[bool]]:
+    """WHERE conditions for the call list, beyond the owner check."""
+    filters: list[ColumnElement[bool]] = []
+    if agent_id:
+        filters.append(CallRecord.agent_id == parse_uuid(agent_id, "Agent"))
+    if workspace_id:
+        filters.append(CallRecord.workspace_id == parse_uuid(workspace_id, "Workspace"))
+    if direction:
+        filters.append(CallRecord.direction == direction)
+    if status:
+        filters.append(CallRecord.status == status)
+    term = (search or "").replace("\x00", "").strip()
+    if term:
+        pattern = _like_pattern(term)
+        full_name = func.trim(Contact.first_name + " " + func.coalesce(Contact.last_name, ""))
+        filters.append(
+            or_(
+                CallRecord.from_number.ilike(pattern, escape="\\"),
+                CallRecord.to_number.ilike(pattern, escape="\\"),
+                CallRecord.agent_id.in_(
+                    select(Agent.id).where(
+                        Agent.user_id == user_id, Agent.name.ilike(pattern, escape="\\")
+                    )
+                ),
+                CallRecord.contact_id.in_(
+                    select(Contact.id).where(
+                        Contact.user_id == user_id, full_name.ilike(pattern, escape="\\")
+                    )
+                ),
+            )
+        )
+    return filters
+
+
 @router.get("", response_model=CallRecordListResponse)
 async def list_calls(
     current_user: CurrentUser,
@@ -109,6 +159,11 @@ async def list_calls(
         default=None, description="Filter by direction: inbound or outbound"
     ),
     status: str | None = Query(default=None, description="Filter by status"),
+    search: str | None = Query(
+        default=None,
+        max_length=100,
+        description="Case-insensitive match on agent name, contact name or either number",
+    ),
 ) -> CallRecordListResponse:
     """List call records for the current user.
 
@@ -120,6 +175,7 @@ async def list_calls(
         agent_id: Optional filter by agent ID
         direction: Optional filter by direction
         status: Optional filter by status
+        search: Optional text matched against agent name, contact name and numbers
 
     Returns:
         Paginated list of call records
@@ -139,31 +195,22 @@ async def list_calls(
         )
     )
 
-    # Apply filters
-    if agent_id:
-        query = query.where(CallRecord.agent_id == parse_uuid(agent_id, "Agent"))
-    if workspace_id:
-        query = query.where(CallRecord.workspace_id == parse_uuid(workspace_id, "Workspace"))
-    if direction:
-        query = query.where(CallRecord.direction == direction)
-    if status:
-        query = query.where(CallRecord.status == status)
+    # Apply filters. The count and the page share one list, so they cannot disagree.
+    filters = _list_filters(
+        user_id=current_user.id,
+        agent_id=agent_id,
+        workspace_id=workspace_id,
+        direction=direction,
+        status=status,
+        search=search,
+    )
+    query = query.where(*filters)
 
     # Get total count
-    count_query = select(CallRecord.id).where(CallRecord.user_id == user_uuid)
-    if agent_id:
-        count_query = count_query.where(CallRecord.agent_id == parse_uuid(agent_id, "Agent"))
-    if workspace_id:
-        count_query = count_query.where(
-            CallRecord.workspace_id == parse_uuid(workspace_id, "Workspace")
-        )
-    if direction:
-        count_query = count_query.where(CallRecord.direction == direction)
-    if status:
-        count_query = count_query.where(CallRecord.status == status)
+    count_query = select(func.count(CallRecord.id)).where(CallRecord.user_id == user_uuid, *filters)
 
     count_result = await db.execute(count_query)
-    total = len(count_result.all())
+    total = count_result.scalar_one()
 
     # Apply pagination and ordering
     offset = (page - 1) * page_size

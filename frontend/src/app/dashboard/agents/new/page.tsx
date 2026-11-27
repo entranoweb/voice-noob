@@ -68,7 +68,7 @@ const agentFormSchema = z.object({
   phoneNumberId: z.string().optional(),
 
   // Advanced
-  enableRecording: z.boolean().default(true),
+  enableRecording: z.boolean().default(false),
   enableTranscript: z.boolean().default(true),
   turnDetectionMode: z.enum(["server-vad", "pushToTalk"]).default("server-vad"),
 
@@ -121,7 +121,7 @@ const defaultValues: Partial<AgentFormValues> = {
   temperature: 0.7,
   maxTokens: 2000,
   telephonyProvider: "telnyx",
-  enableRecording: true,
+  enableRecording: false,
   enableTranscript: true,
   turnDetectionMode: "server-vad",
   enabledTools: [],
@@ -882,22 +882,6 @@ export default function NewAgentPage() {
                   />
 
                   <Separator />
-
-                  <FormField
-                    control={form.control}
-                    name="enableRecording"
-                    render={({ field }) => (
-                      <FormItem className="flex flex-row items-center justify-between rounded-lg border p-4">
-                        <div className="space-y-0.5">
-                          <FormLabel className="text-base">Enable Call Recording</FormLabel>
-                          <FormDescription>Record all calls for quality assurance</FormDescription>
-                        </div>
-                        <FormControl>
-                          <Switch checked={field.value} onCheckedChange={field.onChange} />
-                        </FormControl>
-                      </FormItem>
-                    )}
-                  />
 
                   <FormField
                     control={form.control}

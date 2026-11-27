@@ -178,7 +178,7 @@ const agentFormSchema = z.object({
   enabledTools: z.array(z.string()).default([]),
   enabledToolIds: z.record(z.string(), z.array(z.string())).default({}),
   phoneNumberId: z.string().optional(),
-  enableRecording: z.boolean().default(true),
+  enableRecording: z.boolean().default(false),
   enableTranscript: z.boolean().default(true),
   selectedWorkspaces: z
     .array(z.string())
@@ -210,7 +210,7 @@ export default function CreateAgentPage() {
       enabledTools: [],
       enabledToolIds: {},
       phoneNumberId: "",
-      enableRecording: true,
+      enableRecording: false,
       enableTranscript: true,
       selectedWorkspaces: [],
     },
@@ -1087,28 +1087,8 @@ Guidelines:
                 <CardContent className="space-y-4 p-6">
                   <div className="mb-2">
                     <h2 className="text-lg font-medium">Call Settings</h2>
-                    <p className="text-sm text-muted-foreground">
-                      Configure recording and transcription
-                    </p>
+                    <p className="text-sm text-muted-foreground">Configure transcription</p>
                   </div>
-
-                  <FormField
-                    control={form.control}
-                    name="enableRecording"
-                    render={({ field }) => (
-                      <FormItem className="flex flex-row items-center justify-between rounded-lg border p-3">
-                        <div className="space-y-0.5">
-                          <FormLabel className="text-sm font-medium">Call Recording</FormLabel>
-                          <FormDescription className="text-xs">
-                            Record all calls for quality assurance
-                          </FormDescription>
-                        </div>
-                        <FormControl>
-                          <Switch checked={field.value} onCheckedChange={field.onChange} />
-                        </FormControl>
-                      </FormItem>
-                    )}
-                  />
 
                   <FormField
                     control={form.control}
