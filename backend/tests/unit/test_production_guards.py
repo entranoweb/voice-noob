@@ -222,7 +222,15 @@ class TestProductionComposeFile:
         self, compose: dict[str, Any]
     ) -> None:
         """A typo in the compose file passes a variable nothing reads."""
-        extras = {"REDIS_PASSWORD", "POSTGRES_HOST", "REDIS_HOST", "TRUSTED_PROXY_IPS"}
+        extras = {
+            "REDIS_PASSWORD",
+            "POSTGRES_HOST",
+            "REDIS_HOST",
+            "TRUSTED_PROXY_IPS",
+            # Read by gunicorn.conf.py, not by Settings.
+            "GUNICORN_WORKERS",
+            "GUNICORN_MAX_REQUESTS",
+        }
         backend = compose["services"]["backend"]["environment"]
 
         unknown = [n for n in backend if n not in Settings.model_fields and n not in extras]
