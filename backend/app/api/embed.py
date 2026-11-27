@@ -62,7 +62,7 @@ from app.core.limits import (
     truncate_with_marker,
 )
 from app.core.log_redaction import log_exception
-from app.core.ownership import AGENT_WORKSPACE_ORDER
+from app.core.ownership import agent_workspace_id
 from app.core.safe_errors import tool_failure
 from app.core.stream_token_use import claim_stream_token
 from app.db.session import get_db
@@ -319,8 +319,6 @@ async def _get_embed_agent_context(
 
     Returns (agent, workspace_id, user_id_int) or None once the socket is closed.
     """
-    from app.models.workspace import AgentWorkspace
-
     agent = await get_agent_by_public_id(public_id, db)
     if not agent or not agent.embed_enabled or not agent.is_active:
         await websocket.send_json({"type": "error", "error": "Agent not available"})
@@ -329,21 +327,15 @@ async def _get_embed_agent_context(
 
     log.info("agent_loaded", agent_name=agent.name, tier=agent.pricing_tier)
 
-    workspace_result = await db.execute(
-        select(AgentWorkspace)
-        .where(AgentWorkspace.agent_id == agent.id)
-        .order_by(*AGENT_WORKSPACE_ORDER)
-        .limit(1)
-    )
-    agent_workspace = workspace_result.scalar_one_or_none()
+    workspace_id = await agent_workspace_id(db, agent)
 
-    if not agent_workspace:
+    if workspace_id is None:
         log.warning("no_workspace_for_agent")
         await websocket.send_json({"type": "error", "error": "Agent not configured properly"})
         await websocket.close(code=4000)
         return None
 
-    return agent, agent_workspace.workspace_id, agent.user_id
+    return agent, workspace_id, agent.user_id
 
 
 async def _admit_embed_socket(
@@ -571,7 +563,6 @@ async def get_embed_ephemeral_token(  # noqa: PLR0915
     import httpx
 
     from app.api.settings import get_user_api_keys
-    from app.models.workspace import AgentWorkspace
     from app.services.gpt_realtime import build_instructions_with_language
 
     log = logger.bind(endpoint="embed_token", public_id=public_id, origin=origin)
@@ -611,27 +602,19 @@ async def get_embed_ephemeral_token(  # noqa: PLR0915
         )
 
     # Get workspace for API key lookup
-    workspace_result = await db.execute(
-        select(AgentWorkspace)
-        .where(AgentWorkspace.agent_id == agent.id)
-        .order_by(*AGENT_WORKSPACE_ORDER)
-        .limit(1)
-    )
-    agent_workspace = workspace_result.scalar_one_or_none()
+    workspace_id = await agent_workspace_id(db, agent)
 
-    if not agent_workspace:
+    if workspace_id is None:
         log.warning("no_workspace_for_agent")
         raise HTTPException(status_code=500, detail="Agent not configured properly")
 
     # Get OpenAI API key - agent.user_id is now directly the integer user ID
     user_uuid = user_id_to_uuid(agent.user_id)
-    user_settings = await get_user_api_keys(
-        user_uuid, db, workspace_id=agent_workspace.workspace_id
-    )
+    user_settings = await get_user_api_keys(user_uuid, db, workspace_id=workspace_id)
 
     # Strictly use workspace API key - no fallback to global key for billing isolation
     if not user_settings or not user_settings.openai_api_key:
-        log.warning("workspace_missing_openai_key", workspace_id=str(agent_workspace.workspace_id))
+        log.warning("workspace_missing_openai_key", workspace_id=str(workspace_id))
         raise HTTPException(
             status_code=400,
             detail="OpenAI API key not configured for this workspace. Please add it in Settings > Workspace API Keys.",
@@ -647,9 +630,7 @@ async def get_embed_ephemeral_token(  # noqa: PLR0915
     # instructions used to be returned to the browser so the page could send
     # them on itself, which handed the owner's system prompt to anyone who asked
     # this endpoint for a token.
-    ws_query_result = await db.execute(
-        select(Workspace).where(Workspace.id == agent_workspace.workspace_id)
-    )
+    ws_query_result = await db.execute(select(Workspace).where(Workspace.id == workspace_id))
     ws_obj = ws_query_result.scalar_one_or_none()
     workspace_timezone = (
         ws_obj.settings.get("timezone", "UTC") if ws_obj and ws_obj.settings else "UTC"
@@ -665,7 +646,6 @@ async def get_embed_ephemeral_token(  # noqa: PLR0915
     # through /tool-call, with the owner's credentials, never in the browser.
     from app.services.tools.registry import ToolRegistry
 
-    workspace_id = agent_workspace.workspace_id
     integrations = await get_workspace_integrations(
         user_id_to_uuid(agent.user_id), workspace_id, db
     )
@@ -846,13 +826,7 @@ async def execute_embed_tool_call(
     user_id_int = agent.user_id
 
     # Get workspace for this agent (needed for proper CRM scoping)
-    from app.models.workspace import AgentWorkspace
-
-    workspace_result = await db.execute(
-        select(AgentWorkspace).where(AgentWorkspace.agent_id == agent.id).limit(1)
-    )
-    agent_workspace = workspace_result.scalar_one_or_none()
-    workspace_id = agent_workspace.workspace_id if agent_workspace else None
+    workspace_id = await agent_workspace_id(db, agent)
 
     # Get integration credentials for the workspace
     integrations: dict[str, dict[str, Any]] = {}
@@ -927,7 +901,6 @@ async def save_embed_transcript(
     - Only saves for active, embed-enabled agents
     """
     from app.models.call_record import CallDirection, CallRecord, CallStatus
-    from app.models.workspace import AgentWorkspace
 
     log = logger.bind(
         endpoint="embed_transcript",
@@ -959,11 +932,7 @@ async def save_embed_transcript(
         return {"success": True, "message": "Empty transcript skipped"}
 
     # Get workspace for this agent
-    workspace_result = await db.execute(
-        select(AgentWorkspace).where(AgentWorkspace.agent_id == agent.id).limit(1)
-    )
-    agent_workspace = workspace_result.scalar_one_or_none()
-    workspace_id = agent_workspace.workspace_id if agent_workspace else None
+    workspace_id = await agent_workspace_id(db, agent)
 
     # Create call record for widget session
     call_record = CallRecord(

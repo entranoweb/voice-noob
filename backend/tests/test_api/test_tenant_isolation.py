@@ -1048,6 +1048,43 @@ class TestRealtimeBadIds:
 
         assert response.status_code < 500
 
+    @pytest.mark.asyncio
+    async def test_transcript_is_filed_under_the_default_workspace(self, world: World) -> None:
+        """An agent linked to two workspaces saves its call under the default one,
+        however the link rows happen to be stored."""
+        from app.models.call_record import CallRecord
+
+        async with world.sessions() as session:
+            default_link = (
+                await session.execute(
+                    select(AgentWorkspace).where(AgentWorkspace.agent_id == world.alice.agent.id)
+                )
+            ).scalar_one()
+            second = Workspace(user_id=world.alice.user.id, name="second")
+            session.add(second)
+            await session.commit()
+            session.add(AgentWorkspace(agent_id=world.alice.agent.id, workspace_id=second.id))
+            await session.commit()
+            # A new row version is written after the other link, so a lookup
+            # with no ORDER BY reads the second workspace first.
+            default_link.updated_at = datetime.now(UTC)
+            await session.commit()
+
+        response = await world.client.post(
+            f"/api/v1/realtime/transcript/{world.alice.agent.id}",
+            headers=world.alice.headers,
+            json={"session_id": "s-two", "transcript": "hello", "duration_seconds": 1},
+        )
+
+        assert response.status_code == 200
+        async with world.sessions() as session:
+            record = (
+                await session.execute(
+                    select(CallRecord).where(CallRecord.provider_call_id == "s-two")
+                )
+            ).scalar_one()
+        assert record.workspace_id == world.alice.workspace.id
+
 
 class TestRealtimeRateLimits:
     """The routes that mint a key or run a tool are limited per client address."""
