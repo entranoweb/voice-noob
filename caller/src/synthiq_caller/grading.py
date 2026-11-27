@@ -200,14 +200,50 @@ def _build(year: int, month: int, day: int) -> str | None:
         return None
 
 
+_DIGIT_WORDS = {
+    "zero": "0", "oh": "0", "o": "0", "one": "1", "two": "2", "three": "3", "four": "4",
+    "five": "5", "six": "6", "seven": "7", "eight": "8", "nine": "9",
+}  # fmt: skip
+_MULTIPLIERS = {"double": 2, "triple": 3}
+
+
+def _spoken_characters(text: str) -> str | None:
+    """Letters and digits as someone says them: ``S W one A``, ``double eight``.
+
+    None when a word is neither a digit word, a multiplier, a lone letter nor a run that
+    holds a digit: a sentence is not a postcode or a number, so it cannot be read.
+    """
+    out: list[str] = []
+    times = 1
+    for token in re.findall(r"[A-Za-z0-9]+", text):
+        low = token.lower()
+        if low in _MULTIPLIERS:
+            times = _MULTIPLIERS[low]
+            continue
+        if low in _DIGIT_WORDS and low != "o":
+            chunk = _DIGIT_WORDS[low]
+        elif len(token) == 1 or any(ch.isdigit() for ch in token):
+            chunk = token
+        elif low in _DIGIT_WORDS:
+            chunk = _DIGIT_WORDS[low]
+        elif len(token) <= 4 and token.isalpha() and token.upper() == token:
+            chunk = token  # an outward code or letters said together: "SW", "EC"
+        else:
+            return None
+        out.append(chunk * times)
+        times = 1
+    return "".join(out)
+
+
 def normalise_postcode(text: str) -> str | None:
     stripped = _FILLER.sub("", text.strip())
-    value = re.sub(r"[^A-Za-z0-9]", "", stripped).upper()
-    return value or None
+    spoken = _spoken_characters(stripped)
+    return spoken.upper() or None if spoken is not None else None  # a sentence: unknown
 
 
 def normalise_phone(text: str) -> str | None:
-    digits = re.sub(r"\D", "", text)
+    spoken = _spoken_characters(text) if re.search(r"[A-Za-z]", text) else None
+    digits = re.sub(r"\D", "", spoken if spoken is not None else text)
     if digits.startswith("44") and len(digits) > 10:
         digits = "0" + digits[2:]
     return digits or None
@@ -254,6 +290,9 @@ class FieldRow:
     # A synthetic voice gave this answer, so "heard" says nothing about how the
     # agent hears a real caller.
     synthetic: bool = False
+    # Which of what the agent heard matched, when it matched: "fragment 2 of 3" or
+    # "all fragments joined". Empty when nothing matched, or the last fragment did.
+    heard_via: str = ""
 
 
 @dataclass
@@ -287,15 +326,31 @@ class Grade:
         return asdict(self)
 
 
-def _stored_value(trace: Trace, keys: tuple[str, ...]) -> str | None:
-    """The last value any tool received under one of ``keys``."""
-    found: str | None = None
-    for call in trace.tool_calls:
-        for key in keys:
-            value = call.arguments.get(key)
-            if isinstance(value, str | int) and str(value).strip():
-                found = str(value)
-    return found
+def _stored_value(
+    trace: Trace, keys: tuple[str, ...], prefer: tuple[ToolExpectation, ...] = ()
+) -> str | None:
+    """The last value a tool received under one of ``keys``, nested objects included.
+
+    A tool the scenario expects to be called (``prefer``) is read first: a later lookup
+    that happens to carry the same key is not what the system was told to keep. With no
+    such tool, or none of them carrying the key, any tool's last value is the fallback.
+    """
+    expected = [c for c in trace.tool_calls if any(_expects(e, c) for e in prefer if e.called)]
+    for calls in (expected, trace.tool_calls):
+        found: str | None = None
+        for call in calls:
+            value = _find(call.arguments, keys)
+            if value is not None:
+                found = value
+        if found is not None:
+            return found
+    return None
+
+
+def _expects(expected: ToolExpectation, call: ToolCall) -> bool:
+    wanted = (expected.name or expected.name_contains).casefold()
+    name = call.name.casefold()
+    return name == wanted if expected.name else wanted in name
 
 
 def _carries(arguments: dict[str, Any], wanted: dict[str, str]) -> bool:
@@ -305,6 +360,32 @@ def _carries(arguments: dict[str, Any], wanted: dict[str, str]) -> bool:
         if got is None or str(got).strip().casefold() != value.strip().casefold():
             return False
     return True
+
+
+def _heard(name: str, fact: str, fragments: list[str]) -> tuple[str | None, bool | None, str]:
+    """What the agent heard, whether it matches, and which fragment said so.
+
+    The recogniser reports an answer in pieces, so a match in any piece, or in the pieces
+    joined, counts; the row says which. True only for a match; False when something was
+    heard and read and differs; None ("unknown") when nothing was heard or nothing heard
+    could be read as a value of this kind. A value that cannot be read is never "wrong".
+    """
+    if not fragments:
+        return None, None, ""
+    count = len(fragments)
+    last = fragments[-1]
+    for index in range(count - 1, -1, -1):
+        if same(name, fact, fragments[index]):
+            via = "" if index == count - 1 else f"fragment {index + 1} of {count}"
+            return fragments[index], True, via
+    if count > 1:
+        joined = " ".join(fragments)
+        if same(name, fact, joined):
+            return joined, True, "all fragments joined"
+    norm = NORMALISERS[name]
+    if norm(fact) is None or all(norm(text) is None for text in fragments):
+        return last, None, ""
+    return last, False, ""
 
 
 def field_rows(
@@ -319,7 +400,7 @@ def field_rows(
         if not answers:
             continue
         heard_all = [text for said in answers for text in said.heard]
-        heard = heard_all[-1] if heard_all else None
+        heard, heard_ok, heard_via = _heard(name, fact, heard_all)
         keys = scenario.stored_keys.get(name) or DEFAULT_STORED_KEYS[name]
         # The system's own record wins; what the tool was sent is the fallback,
         # and only when the read-back did not speak of this field at all. A
@@ -331,9 +412,8 @@ def field_rows(
             stored = read_back[name].strip() or None
             source = READ_BACK
         elif trace is not None:
-            stored = _stored_value(trace, keys)
+            stored = _stored_value(trace, keys, tuple(scenario.expect.tools))
             source = TOOL_CALL if stored is not None else ""
-        heard_ok = same(name, fact, heard) if heard is not None else None
         stored_ok = same(name, fact, stored) if stored is not None else None
         if emptied:
             stored_ok = False
@@ -348,7 +428,7 @@ def field_rows(
             verdict = "not stored" if (trace is not None or read_back is not None) else "no trace"
         elif heard_ok:
             verdict = "heard correctly, stored wrongly"
-        elif heard is None:
+        elif heard is None or heard_ok is None:
             verdict = "stored wrongly"
         else:
             verdict = "misheard, stored wrongly"
@@ -370,6 +450,7 @@ def field_rows(
                 source,
                 unverified,
                 synthetic,
+                heard_via,
             )  # fmt: skip
         )
     return rows
@@ -873,11 +954,18 @@ def grade(
             )
         )
 
-    agent_lines = [str(e.get("text", "")) for e in record.timeline if e.get("kind") == "agent"]
+    # The agent's own transcript, when the engine kept one, is what it said. The rig's
+    # timeline is a recogniser's reading of the audio (a phone leg hears "999" as words),
+    # so it is the fallback, and each check says which of the two it read.
+    if trace is not None and trace.agent_lines:
+        agent_lines, said_from = list(trace.agent_lines), "agent's own transcript"
+    else:
+        agent_lines = [str(e.get("text", "")) for e in record.timeline if e.get("kind") == "agent"]
+        said_from = "rig's transcript"
     for number, pattern in enumerate(scenario.expect.agent_says, start=1):
         result.checks.append(
             Check(
-                f"the agent says /{pattern.pattern}/",
+                f"the agent says /{pattern.pattern}/ ({said_from})",
                 any(pattern.search(line) for line in agent_lines),
                 f"agent says expected phrase {number}",
             )
@@ -888,7 +976,7 @@ def grade(
         said_forbidden = said_forbidden or not clean
         result.checks.append(
             Check(
-                f"the agent never says /{pattern.pattern}/",
+                f"the agent never says /{pattern.pattern}/ ({said_from})",
                 clean,
                 f"agent never says phrase {number}",
             )
