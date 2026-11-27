@@ -81,7 +81,12 @@ def test_the_engine_is_built_from_the_pool_settings() -> None:
 @pytest.fixture
 def restore_structlog() -> Any:
     yield
-    structlog.reset_defaults()
+    # Put back what app.main configured, not structlog's defaults: other tests
+    # (test_log_pii.py) assert the redaction processor is in the live pipeline.
+    from app.core.config import settings
+    from app.core.logging_setup import configure_logging
+
+    configure_logging(settings.effective_log_level)
 
 
 def test_configured_level_decides_what_is_printed(
@@ -98,6 +103,10 @@ def test_configured_level_decides_what_is_printed(
     assert "frame_event" not in out
     # #66's redaction is still in the chain.
     assert PHONE not in out
+
+    from app.core.log_redaction import redact_event_dict
+
+    assert redact_event_dict in structlog.get_config()["processors"]
 
     configure_logging(logging.WARNING)
     structlog.get_logger().info("lifecycle_line")
