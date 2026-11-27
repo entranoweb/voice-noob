@@ -1,0 +1,79 @@
+{
+  "name": "Caller keys the date of birth on the keypad",
+  "description": "The caller presses the date of birth as digits (ddmmyyyy) instead of saying it (dtmf). Needs the phone leg: the socket leg has no keypad channel. Expected: the agent accepts the digits and looks the caller up.",
+  "mutates": "none",
+  "requires": "Adam Armstrong is registered with date of birth 1995-01-01 and has one upcoming appointment. The call hangs up before anything is moved.",
+  "persona": {
+    "facts": {
+      "name": "adam armstrong",
+      "date_of_birth": "1995-01-01"
+    }
+  },
+  "max_seconds": 60,
+  "hangup_after": "one you'd like to (?:move|cancel)|anything else",
+  "steps": [
+    {
+      "when": "how can i help",
+      "clips": [
+        "2026-11-20T120849Z_j3sh_01_opener"
+      ],
+      "intended": "Can you rearrange my appointment, please?",
+      "max_uses": 2
+    },
+    {
+      "when": "full name|your name|registered under",
+      "clips": [
+        "2026-11-20T120849Z_j3sh_02_name"
+      ],
+      "intended": "It's Adam Armstrong.",
+      "max_uses": 2,
+      "field": "name"
+    },
+    {
+      "when": "date of birth",
+      "dtmf": "01011995",
+      "intended": "Keypad: 01 01 1995",
+      "max_uses": 2
+    }
+  ],
+  "expect": {
+    "tools": [
+      {
+        "name": "example_v2_verify_identity"
+      }
+    ],
+    "fields": [
+      "name"
+    ],
+    "agent_never_says": [
+      "didn't catch|couldn't hear|don't understand|say that again"
+    ]
+  },
+  "tool_outcomes": {
+    "example_v2_verify_identity": {
+      "path": "verified",
+      "success": [
+        "true"
+      ]
+    },
+    "example_v2_book": {
+      "path": "bookOutcome",
+      "success": [
+        "BOOKED"
+      ]
+    },
+    "example_v2_reschedule_appointment": {
+      "path": "rescheduleOutcome",
+      "success": [
+        "RESCHEDULED"
+      ]
+    },
+    "example_v2_register_patient": {
+      "path": "newPatientRegistered",
+      "success": [
+        "true"
+      ]
+    }
+  },
+  "identity_budget": 2
+}

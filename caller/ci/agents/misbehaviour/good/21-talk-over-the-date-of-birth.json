@@ -1,0 +1,42 @@
+{
+  "lines": [
+    {
+      "text": "Hi, how can I help you today?",
+      "speech_s": 0.3
+    },
+    {
+      "text": "Could I take your full name?",
+      "speech_s": 0.3,
+      "hears": "Adam Armstrong"
+    },
+    {
+      "text": "Could I take your date of birth?",
+      "speech_s": 1.5,
+      "hears": "first of January, nineteen ninety-five"
+    },
+    {
+      "text": "Thank you. Which is the one you'd like to move or cancel?",
+      "speech_s": 0.3
+    }
+  ],
+  "trace": {
+    "tool_calls": [
+      {
+        "name": "example_v2_verify_identity",
+        "arguments": {
+          "name": "Adam Armstrong",
+          "dateOfBirth": "first of January, nineteen ninety-five"
+        },
+        "result": {
+          "verified": true
+        },
+        "ok": true,
+        "step_id": "VERIFY"
+      }
+    ],
+    "step_path": [
+      "I1",
+      "VERIFY"
+    ]
+  }
+}
