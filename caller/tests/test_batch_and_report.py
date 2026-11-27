@@ -285,13 +285,13 @@ def test_a_refused_tool_is_named_as_the_failing_step(tmp_path: Path) -> None:
 
 def test_the_shipped_scenarios_parse_and_say_what_they_change() -> None:
     scenarios = load_scenarios(SCENARIOS)
-    assert len(scenarios) == 20
+    assert len(scenarios) == 24
     by_level: dict[str, int] = {}
     for file, loaded in scenarios:
         assert loaded.mutates != "unknown", file
         assert loaded.expect.tools or loaded.expect.agent_says or loaded.expect.fields, file
         by_level[loaded.mutates] = by_level.get(loaded.mutates, 0) + 1
-    assert by_level == {"books": 7, "moves": 2, "registers": 3, "none": 8}
+    assert by_level == {"books": 7, "moves": 2, "registers": 3, "none": 12}
     # The two that need a recording say so, and name no clip that could be mistaken for one.
     needing = [file for file, loaded in scenarios if loaded.missing_clips]
     assert needing == ["19-out-of-scope-then-shoulder.json", "20-booking-for-a-son.json"]
