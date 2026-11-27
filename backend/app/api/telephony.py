@@ -59,7 +59,7 @@ from app.services.telephony.outbound import (
     place_outbound_call,
 )
 from app.services.telephony.telnyx_events import parse_telnyx_webhook
-from app.services.telephony.telnyx_service import TelnyxService
+from app.services.telephony.telnyx_service import TelnyxConfigurationError, TelnyxService
 from app.services.telephony.twilio_service import TwilioService
 
 if TYPE_CHECKING:
@@ -668,6 +668,11 @@ async def _configure_webhook_for_provider(
     webhook_success = await service.configure_phone_number_webhook(
         phone_number_id=number_id,
         voice_url=voice_url,
+        # Only Telnyx: its outbound create-call takes no status callback, so the
+        # application is where progress events are pointed.
+        status_callback_url=(
+            f"{public_url}/webhooks/telnyx/status" if provider == "telnyx" else None
+        ),
     )
     if webhook_success:
         log.info("webhook_configured", provider=provider, voice_url=voice_url)
@@ -891,6 +896,8 @@ async def initiate_call(
         )
     except OutboundRefusedError as refused:
         raise HTTPException(status_code=refused.status_code, detail=refused.detail) from refused
+    except TelnyxConfigurationError as missing:
+        raise HTTPException(status_code=400, detail=str(missing)) from missing
 
     log.info("call_initiated", call_id=call_info.call_id, provider=provider)
     log.info("call_record_created", record_id=str(call_record.id))
