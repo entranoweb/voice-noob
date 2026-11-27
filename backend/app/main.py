@@ -1,6 +1,5 @@
 """Main FastAPI application entry point."""
 
-import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
@@ -35,7 +34,9 @@ from app.api import settings as settings_api
 from app.core.config import InsecureDefaultCredentialsError, settings
 from app.core.first_admin import ensure_first_admin
 from app.core.limiter import limiter
-from app.core.log_redaction import install_stdlib_redaction, redact_event_dict
+from app.core.log_redaction import install_stdlib_redaction
+from app.core.logging_setup import configure_logging
+from app.core.sentry import init_sentry
 from app.db.redis import close_redis, get_redis, require_min_redis_version
 from app.db.session import AsyncSessionLocal, engine
 from app.middleware.body_limit import BodySizeLimitMiddleware
@@ -48,24 +49,7 @@ from app.services.caller_audio import start_audio_expiry_worker, stop_audio_expi
 from app.services.campaign_worker import start_campaign_worker, stop_campaign_worker
 from app.services.data_protection import start_retention_worker, stop_retention_worker
 
-# Configure structured logging with async processors
-structlog.configure(
-    processors=[
-        structlog.contextvars.merge_contextvars,
-        structlog.processors.add_log_level,
-        structlog.processors.TimeStamper(fmt="iso"),
-        structlog.processors.StackInfoRenderer(),
-        structlog.processors.format_exc_info,
-        redact_event_dict,
-        structlog.processors.JSONRenderer(),
-    ],
-    wrapper_class=structlog.make_filtering_bound_logger(
-        logging.WARNING if not settings.DEBUG else logging.DEBUG
-    ),
-    context_class=dict,
-    logger_factory=structlog.PrintLoggerFactory(),
-    cache_logger_on_first_use=True,
-)
+configure_logging(settings.effective_log_level)
 
 install_stdlib_redaction()
 
@@ -110,18 +94,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:  # noqa: PLR0912
         logger.exception("Failed to check/create admin user - continuing anyway")
 
     # Initialize Sentry if configured (non-fatal)
-    if settings.SENTRY_DSN:
-        try:
-            import sentry_sdk
-
-            sentry_sdk.init(
-                dsn=settings.SENTRY_DSN,
-                environment=settings.SENTRY_ENVIRONMENT,
-                traces_sample_rate=settings.SENTRY_TRACES_SAMPLE_RATE,
-            )
+    try:
+        if init_sentry(settings):
             logger.info("Sentry initialized")
-        except Exception:
-            logger.exception("Failed to initialize Sentry - continuing without error tracking")
+    except Exception:
+        logger.exception("Failed to initialize Sentry - continuing without error tracking")
 
     # Start campaign worker (non-fatal)
     try:
