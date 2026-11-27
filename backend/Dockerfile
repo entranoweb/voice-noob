@@ -1,10 +1,12 @@
 # Backend Dockerfile for Synthiq Voice Platform
-FROM python:3.12-slim AS builder
+# Base images are pinned by version and digest. To bump: pull the new tag, read its
+# digest with `docker buildx imagetools inspect <tag>`, and change both together.
+FROM python:3.12.16-slim@sha256:191083cdf6c7bda8c76158983163ead5d5cf7b77cf3033e805bb0f5296f51b4b AS builder
 
 WORKDIR /app
 
 # Install uv for fast dependency management
-RUN pip install uv
+RUN pip install uv==0.13.10
 
 # Copy dependency files
 COPY pyproject.toml uv.lock ./
@@ -13,7 +15,7 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev
 
 # Production stage
-FROM python:3.12-slim
+FROM python:3.12.16-slim@sha256:191083cdf6c7bda8c76158983163ead5d5cf7b77cf3033e805bb0f5296f51b4b
 
 WORKDIR /app
 
